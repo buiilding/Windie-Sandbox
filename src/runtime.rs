@@ -1,89 +1,62 @@
-use anyhow::Result;
+//! Runtime flow coordination.
+//!
+//! Coordinates runtime flows across output, store, context, and LLM components.
+//! One-shot query primitives live here so CLI and future UI clients can reuse
+//! the same execution path.
 
-use crate::conversation::{Conversation, Message};
-use crate::input::TerminalInput;
-use crate::llm::BifrostClient;
-use crate::output::TerminalOutput;
+use anyhow::{Context, Result};
+
+use crate::context::ContextBuilder;
+use crate::conversation::{ConversationId, Message, Role};
+use crate::llm::RuntimeLlm;
+use crate::output::RuntimeOutput;
 use crate::store::Store;
 
-pub struct ChatRuntime {
-    input: TerminalInput,
-    output: TerminalOutput,
-    llm: BifrostClient,
-    store: Store,
-    conversation_id: String,
-    conversation: Conversation,
-}
+pub(crate) async fn query_conversation<O, L>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+{
+    let parent_message_id = store
+        .load_messages(conversation_id)
+        .context("failed to load conversation messages")?
+        .last()
+        .and_then(|message| message.id.clone());
+    let model_messages =
+        ContextBuilder::build(store, conversation_id).context("failed to build model context")?;
 
-impl ChatRuntime {
-    pub fn new(
-        input: TerminalInput,
-        output: TerminalOutput,
-        llm: BifrostClient,
-        store: Store,
-        conversation_id: String,
-        messages: Vec<Message>,
-    ) -> Self {
-        Self {
-            input,
-            output,
-            llm,
-            store,
+    output.start_assistant_message();
+    let reply = llm
+        .stream(&model_messages, |text| output.assistant_delta(text))
+        .await
+        .context("failed to stream assistant response")?;
+    output.end_assistant_message();
+
+    let assistant_message_id = store
+        .save_message(
             conversation_id,
-            conversation: Conversation::from_messages(messages),
-        }
-    }
+            parent_message_id.as_ref(),
+            Role::Assistant,
+            &reply,
+            None,
+        )
+        .context("failed to save assistant message")?;
 
-    pub async fn run(&mut self) -> Result<()> {
-        loop {
-            let Some(input) = self.input.read("> ")? else {
-                self.output.newline();
-                return Ok(());
-            };
-
-            let input = input.trim();
-            if input.is_empty() {
-                continue;
-            }
-
-            let parent_message_id = self.conversation.last_message_id().map(str::to_string);
-            let user_message_id = self.store.save_message(
-                &self.conversation_id,
-                parent_message_id.as_deref(),
-                "user",
-                input,
-                None,
-            )?;
-            self.conversation.add_message(Message {
-                id: Some(user_message_id.clone()),
-                parent_message_id,
-                role: "user".to_string(),
-                content: input.to_string(),
-                metadata: None,
-            });
-
-            self.output.start_assistant_message();
-            let reply = self
-                .llm
-                .stream(self.conversation.messages(), |text| {
-                    self.output.assistant_delta(text)
-                })
-                .await?;
-            self.output.end_assistant_message();
-            let assistant_message_id = self.store.save_message(
-                &self.conversation_id,
-                Some(&user_message_id),
-                "assistant",
-                &reply,
-                None,
-            )?;
-            self.conversation.add_message(Message {
-                id: Some(assistant_message_id),
-                parent_message_id: Some(user_message_id),
-                role: "assistant".to_string(),
-                content: reply,
-                metadata: None,
-            });
-        }
-    }
+    Ok(Message {
+        id: Some(assistant_message_id),
+        parent_message_id,
+        role: Role::Assistant,
+        content: reply,
+        metadata: None,
+    })
 }
+
+#[allow(dead_code)]
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;

@@ -1,13 +1,48 @@
+//! Startup command parsing for the Windie CLI.
+//!
+//! This module owns command-line arguments only. It maps raw argv text into
+//! typed commands such as `new`, `ls`, `append`, `update`, `query`, `gateway`,
+//! and `bench`. It should not open the database, call Bifrost, or print output.
+
 use std::env;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::conversation::{ConversationId, MessageId, Role};
+use crate::llm::ModelName;
+use crate::perf::BenchmarkMode;
 
 pub enum Command {
-    Chat,
+    Append {
+        conversation_id: ConversationId,
+        role: Role,
+        text: String,
+    },
+    Bench {
+        mode: BenchmarkMode,
+        conversation_id: Option<ConversationId>,
+    },
+    GatewayStart,
+    GatewayStop,
     Help,
+    Invalid,
     List,
     New,
-    Open(String),
+    Noop,
+    Query {
+        conversation_id: ConversationId,
+        model: Option<ModelName>,
+    },
+    RemoveConversation(ConversationId),
+    RemoveMessage {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    },
+    Show(ConversationId),
+    Status,
+    Update {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+        text: String,
+    },
     Version,
 }
 
@@ -15,55 +50,88 @@ pub fn read() -> Command {
     command_from_args(env::args())
 }
 
-pub fn print_help() {
-    println!("windie");
-    println!();
-    println!("Usage:");
-    println!("  windie");
-    println!("  windie new");
-    println!("  windie list");
-    println!("  windie open <conversation_id>");
-    println!();
-    println!("Options:");
-    println!("  -h, --help       Show help");
-    println!("  -V, --version    Show version");
-}
-
-pub fn print_version() {
-    println!("windie {VERSION}");
-}
-
 fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     let mut args = args.into_iter();
     let _program = args.next();
+    let args = args.collect::<Vec<_>>();
 
-    while let Some(arg) = args.next() {
-        if arg == "--help" || arg == "-h" {
-            return Command::Help;
+    match args.as_slice() {
+        [] => Command::Noop,
+        [arg] if arg == "--help" || arg == "-h" => Command::Help,
+        [arg] if arg == "--version" || arg == "-V" => Command::Version,
+        [arg] if arg == "bench" => Command::Bench {
+            mode: BenchmarkMode::Local,
+            conversation_id: None,
+        },
+        [command, mode] if command == "bench" && mode == "live" => Command::Bench {
+            mode: BenchmarkMode::Live,
+            conversation_id: None,
+        },
+        [command, conversation_id] if command == "bench" => Command::Bench {
+            mode: BenchmarkMode::Conversation,
+            conversation_id: Some(ConversationId::new(conversation_id.as_str())),
+        },
+        [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
+        [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
+        [arg] if arg == "new" => Command::New,
+        [arg] if arg == "ls" => Command::List,
+        [command, conversation_id] if command == "show" => {
+            Command::Show(ConversationId::new(conversation_id.as_str()))
         }
+        [command, conversation_id, role_flag, role, text_flag, text]
+            if command == "append" && role_flag == "--role" && text_flag == "--text" =>
+        {
+            let Some(role) = parse_role(role) else {
+                return Command::Invalid;
+            };
 
-        if arg == "--version" || arg == "-V" {
-            return Command::Version;
-        }
-
-        if arg == "new" {
-            return Command::New;
-        }
-
-        if arg == "list" {
-            return Command::List;
-        }
-
-        if arg == "open" {
-            if let Some(conversation_id) = args.next() {
-                return Command::Open(conversation_id);
+            Command::Append {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                role,
+                text: text.to_string(),
             }
-
-            return Command::Help;
         }
+        [command, conversation_id, message_id, text_flag, text]
+            if command == "update" && text_flag == "--text" =>
+        {
+            Command::Update {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                message_id: MessageId::new(message_id.as_str()),
+                text: text.to_string(),
+            }
+        }
+        [command, conversation_id] if command == "rm" => {
+            Command::RemoveConversation(ConversationId::new(conversation_id.as_str()))
+        }
+        [command, conversation_id, message_id] if command == "rm" => Command::RemoveMessage {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            message_id: MessageId::new(message_id.as_str()),
+        },
+        [command, conversation_id] if command == "query" => Command::Query {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            model: None,
+        },
+        [command, conversation_id, model_flag, model]
+            if command == "query" && model_flag == "--model" =>
+        {
+            Command::Query {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: Some(ModelName::new(model.as_str())),
+            }
+        }
+        [arg] if arg == "status" => Command::Status,
+        _ => Command::Invalid,
     }
+}
 
-    Command::Chat
+fn parse_role(role: &str) -> Option<Role> {
+    match role {
+        "system" => Some(Role::System),
+        "user" => Some(Role::User),
+        "assistant" => Some(Role::Assistant),
+        "tool" => Some(Role::Tool),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -71,10 +139,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_chat_command_by_default() {
+    fn reads_noop_command_by_default() {
         let command = command_from_args(["windie".to_string()]);
 
-        assert!(matches!(command, Command::Chat));
+        assert!(matches!(command, Command::Noop));
     }
 
     #[test]
@@ -106,14 +174,14 @@ mod tests {
     }
 
     #[test]
-    fn reads_first_known_command() {
+    fn rejects_combined_top_level_options() {
         let command = command_from_args([
             "windie".to_string(),
             "--version".to_string(),
             "--help".to_string(),
         ]);
 
-        assert!(matches!(command, Command::Version));
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]
@@ -124,27 +192,267 @@ mod tests {
     }
 
     #[test]
-    fn reads_list_command() {
-        let command = command_from_args(["windie".to_string(), "list".to_string()]);
+    fn reads_gateway_start_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "gateway".to_string(),
+            "start".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::GatewayStart));
+    }
+
+    #[test]
+    fn reads_gateway_stop_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "gateway".to_string(),
+            "stop".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::GatewayStop));
+    }
+
+    #[test]
+    fn rejects_unknown_gateway_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "gateway".to_string(),
+            "restart".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_ls_command() {
+        let command = command_from_args(["windie".to_string(), "ls".to_string()]);
 
         assert!(matches!(command, Command::List));
     }
 
     #[test]
-    fn reads_open_command() {
-        let command = command_from_args([
-            "windie".to_string(),
-            "open".to_string(),
-            "conversation-id".to_string(),
-        ]);
+    fn rejects_list_command() {
+        let command = command_from_args(["windie".to_string(), "list".to_string()]);
 
-        assert!(matches!(command, Command::Open(id) if id == "conversation-id"));
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]
-    fn reads_open_without_id_as_help() {
-        let command = command_from_args(["windie".to_string(), "open".to_string()]);
+    fn reads_show_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "show".to_string(),
+            "conversation-id".to_string(),
+        ]);
 
-        assert!(matches!(command, Command::Help));
+        assert!(matches!(command, Command::Show(id) if id.as_str() == "conversation-id"));
+    }
+
+    #[test]
+    fn rejects_show_without_id() {
+        let command = command_from_args(["windie".to_string(), "show".to_string()]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_append_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "append".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "hello".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Append {
+                conversation_id,
+                role: Role::User,
+                text,
+            } if conversation_id.as_str() == "conversation-id" && text == "hello"
+        ));
+    }
+
+    #[test]
+    fn rejects_append_with_unknown_role() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "append".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "owner".to_string(),
+            "--text".to_string(),
+            "hello".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_update_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "update".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+            "--text".to_string(),
+            "new text".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Update {
+                conversation_id,
+                message_id,
+                text,
+            } if conversation_id.as_str() == "conversation-id"
+                && message_id.as_str() == "message-id"
+                && text == "new text"
+        ));
+    }
+
+    #[test]
+    fn reads_remove_conversation_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(
+            matches!(command, Command::RemoveConversation(id) if id.as_str() == "conversation-id")
+        );
+    }
+
+    #[test]
+    fn reads_remove_message_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::RemoveMessage {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn reads_query_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "query".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Query {
+                conversation_id,
+                model: None,
+            } if conversation_id.as_str() == "conversation-id"
+        ));
+    }
+
+    #[test]
+    fn reads_query_with_model_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "query".to_string(),
+            "conversation-id".to_string(),
+            "--model".to_string(),
+            "openai/gpt-4o-mini".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Query {
+                conversation_id,
+                model: Some(model),
+            } if conversation_id.as_str() == "conversation-id" && model.as_str() == "openai/gpt-4o-mini"
+        ));
+    }
+
+    #[test]
+    fn reads_status_command() {
+        let command = command_from_args(["windie".to_string(), "status".to_string()]);
+
+        assert!(matches!(command, Command::Status));
+    }
+
+    #[test]
+    fn reads_bench_command() {
+        let command = command_from_args(["windie".to_string(), "bench".to_string()]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Local,
+                conversation_id: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn reads_live_bench_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "live".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Live,
+                conversation_id: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn reads_conversation_bench_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Conversation,
+                conversation_id: Some(id),
+            } if id.as_str() == "conversation-id"
+        ));
+    }
+
+    #[test]
+    fn rejects_bench_with_extra_arg() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "conversation-id".to_string(),
+            "extra".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_unknown_command_as_invalid() {
+        let command = command_from_args(["windie".to_string(), "whatever".to_string()]);
+
+        assert!(matches!(command, Command::Invalid));
     }
 }

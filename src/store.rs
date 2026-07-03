@@ -1,30 +1,50 @@
+//! SQLite persistence boundary.
+//!
+//! This module owns persisted conversations, messages, and compactions. Other
+//! modules should not know about SQLite tables or queries.
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use uuid::Uuid;
 
-use crate::conversation::Message;
+use crate::conversation::{CompactionId, ConversationId, Message, MessageId, Role};
 
+impl FromSql for Role {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value.as_str()? {
+            "system" => Ok(Self::System),
+            "user" => Ok(Self::User),
+            "assistant" => Ok(Self::Assistant),
+            "tool" => Ok(Self::Tool),
+            role => Err(FromSqlError::Other(
+                format!("unknown message role: {role}").into(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const ACTIVE_CONVERSATION_KEY: &str = "active_conversation_id";
+const DATABASE_SCHEMA_VERSION: i32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationInfo {
-    pub id: String,
+    pub id: ConversationId,
     pub title: Option<String>,
     pub message_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct Compaction {
-    pub id: String,
-    pub conversation_id: String,
-    pub through_message_id: String,
+    pub id: CompactionId,
+    pub conversation_id: ConversationId,
+    pub through_message_id: MessageId,
     pub content: String,
     pub created_at: i64,
 }
@@ -46,22 +66,44 @@ impl Store {
         let store = Self {
             connection: Connection::open(path).context("failed to open database")?,
         };
+        store.configure()?;
         store.migrate()?;
 
         Ok(store)
     }
 
     #[cfg(test)]
-    fn open_memory() -> Result<Self> {
+    pub(crate) fn open_memory() -> Result<Self> {
         let store = Self {
             connection: Connection::open_in_memory().context("failed to open memory database")?,
         };
+        store.configure()?;
         store.migrate()?;
 
         Ok(store)
     }
 
+    fn configure(&self) -> Result<()> {
+        self.connection
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = NORMAL;
+                PRAGMA busy_timeout = 5000;
+                ",
+            )
+            .context("failed to configure database")
+    }
+
     pub fn migrate(&self) -> Result<()> {
+        let existing_version = self.database_schema_version()?;
+        if existing_version > DATABASE_SCHEMA_VERSION {
+            return Err(anyhow!(
+                "database schema version {existing_version} is newer than supported version {DATABASE_SCHEMA_VERSION}"
+            ));
+        }
+
         self.connection
             .execute_batch(
                 "
@@ -96,11 +138,6 @@ impl Store {
                     FOREIGN KEY (through_message_id) REFERENCES messages(id)
                 );
 
-                CREATE TABLE IF NOT EXISTS app_state (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
                 ON messages(conversation_id, created_at);
 
@@ -108,11 +145,21 @@ impl Store {
                 ON compactions(conversation_id, created_at);
                 ",
             )
-            .context("failed to migrate database")
+            .context("failed to migrate database")?;
+
+        self.connection
+            .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)
+            .context("failed to set database schema version")
     }
 
-    pub fn create_conversation(&self) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
+    fn database_schema_version(&self) -> Result<i32> {
+        self.connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .context("failed to read database schema version")
+    }
+
+    pub fn create_conversation(&self) -> Result<ConversationId> {
+        let id = ConversationId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
 
         self.connection
@@ -121,14 +168,15 @@ impl Store {
                 INSERT INTO conversations (id, title, created_at, updated_at)
                 VALUES (?1, NULL, ?2, ?2)
                 ",
-                params![id, now],
+                params![id.as_str(), now],
             )
             .context("failed to create conversation")?;
 
         Ok(id)
     }
 
-    pub fn get_or_create_default_conversation(&self) -> Result<String> {
+    #[cfg(test)]
+    pub(crate) fn get_or_create_default_conversation(&self) -> Result<ConversationId> {
         let now = now_millis()?;
 
         self.connection
@@ -141,50 +189,7 @@ impl Store {
             )
             .context("failed to create default conversation")?;
 
-        Ok(DEFAULT_CONVERSATION_ID.to_string())
-    }
-
-    pub fn get_or_create_active_conversation(&self) -> Result<String> {
-        if let Some(conversation_id) = self.active_conversation_id()? {
-            if self.conversation_exists(&conversation_id)? {
-                return Ok(conversation_id);
-            }
-        }
-
-        let conversation_id = self.get_or_create_default_conversation()?;
-        self.set_active_conversation(&conversation_id)?;
-
-        Ok(conversation_id)
-    }
-
-    pub fn active_conversation_id(&self) -> Result<Option<String>> {
-        self.connection
-            .query_row(
-                "SELECT value FROM app_state WHERE key = ?1",
-                params![ACTIVE_CONVERSATION_KEY],
-                |row| row.get(0),
-            )
-            .optional()
-            .context("failed to load active conversation")
-    }
-
-    pub fn set_active_conversation(&self, conversation_id: &str) -> Result<()> {
-        if !self.conversation_exists(conversation_id)? {
-            return Err(anyhow!("conversation does not exist: {conversation_id}"));
-        }
-
-        self.connection
-            .execute(
-                "
-                INSERT INTO app_state (key, value)
-                VALUES (?1, ?2)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                ",
-                params![ACTIVE_CONVERSATION_KEY, conversation_id],
-            )
-            .context("failed to set active conversation")?;
-
-        Ok(())
+        Ok(ConversationId::new(DEFAULT_CONVERSATION_ID))
     }
 
     pub fn list_conversations(&self) -> Result<Vec<ConversationInfo>> {
@@ -207,7 +212,7 @@ impl Store {
         let conversations = statement
             .query_map([], |row| {
                 Ok(ConversationInfo {
-                    id: row.get(0)?,
+                    id: ConversationId::new(row.get::<_, String>(0)?),
                     title: row.get(1)?,
                     message_count: row.get(2)?,
                 })
@@ -219,7 +224,9 @@ impl Store {
         Ok(conversations)
     }
 
-    pub fn load_messages(&self, conversation_id: &str) -> Result<Vec<Message>> {
+    pub fn load_messages(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
         let mut statement = self
             .connection
             .prepare(
@@ -233,15 +240,7 @@ impl Store {
             .context("failed to prepare message load")?;
 
         let messages = statement
-            .query_map(params![conversation_id], |row| {
-                Ok(Message {
-                    id: Some(row.get(0)?),
-                    parent_message_id: row.get(1)?,
-                    role: row.get(2)?,
-                    content: row.get(3)?,
-                    metadata: row.get(4)?,
-                })
-            })
+            .query_map(params![conversation_id.as_str()], read_message_row)
             .context("failed to load messages")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read messages")?;
@@ -249,19 +248,20 @@ impl Store {
         Ok(messages)
     }
 
-    #[allow(dead_code)]
     pub fn load_messages_after(
         &self,
-        conversation_id: &str,
-        message_id: Option<&str>,
+        conversation_id: &ConversationId,
+        message_id: Option<&MessageId>,
     ) -> Result<Vec<Message>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
         let Some(message_id) = message_id else {
             return self.load_messages(conversation_id);
         };
 
         let (created_at, rowid) = self
-            .message_position(message_id)?
-            .ok_or_else(|| anyhow!("message does not exist: {message_id}"))?;
+            .message_position(conversation_id, message_id)?
+            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))?;
 
         let mut statement = self
             .connection
@@ -280,15 +280,10 @@ impl Store {
             .context("failed to prepare message load after checkpoint")?;
 
         let messages = statement
-            .query_map(params![conversation_id, created_at, rowid], |row| {
-                Ok(Message {
-                    id: Some(row.get(0)?),
-                    parent_message_id: row.get(1)?,
-                    role: row.get(2)?,
-                    content: row.get(3)?,
-                    metadata: row.get(4)?,
-                })
-            })
+            .query_map(
+                params![conversation_id.as_str(), created_at, rowid],
+                read_message_row,
+            )
             .context("failed to load messages after checkpoint")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read messages after checkpoint")?;
@@ -297,17 +292,28 @@ impl Store {
     }
 
     pub fn save_message(
-        &self,
-        conversation_id: &str,
-        parent_message_id: Option<&str>,
-        role: &str,
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        role: Role,
         content: &str,
         metadata: Option<&str>,
-    ) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
+    ) -> Result<MessageId> {
+        let id = MessageId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
 
-        self.connection
+        self.ensure_conversation_exists(conversation_id)?;
+
+        if let Some(parent_message_id) = parent_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, parent_message_id)?;
+        }
+
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start message save transaction")?;
+
+        transaction
             .execute(
                 "
                 INSERT INTO messages (
@@ -322,10 +328,10 @@ impl Store {
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ",
                 params![
-                    id,
-                    conversation_id,
-                    parent_message_id,
-                    role,
+                    id.as_str(),
+                    conversation_id.as_str(),
+                    parent_message_id.map(MessageId::as_str),
+                    role.as_str(),
                     content,
                     metadata,
                     now
@@ -333,13 +339,143 @@ impl Store {
             )
             .context("failed to save message")?;
 
-        self.touch_conversation(conversation_id, now)?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit message save")?;
 
         Ok(id)
     }
 
-    #[allow(dead_code)]
-    pub fn latest_compaction(&self, conversation_id: &str) -> Result<Option<Compaction>> {
+    pub fn update_message_text(
+        &mut self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+        content: &str,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start message update transaction")?;
+
+        transaction
+            .execute(
+                "UPDATE messages SET content = ?1 WHERE conversation_id = ?2 AND id = ?3",
+                params![content, conversation_id.as_str(), message_id.as_str()],
+            )
+            .context("failed to update message")?;
+        delete_compactions_for_conversation(&transaction, conversation_id)
+            .context("failed to delete compactions after message update")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit message update")?;
+
+        Ok(())
+    }
+
+    pub fn delete_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+
+        let parent_message_id = self
+            .connection
+            .query_row(
+                "
+                SELECT parent_message_id
+                FROM messages
+                WHERE conversation_id = ?1 AND id = ?2
+                ",
+                params![conversation_id.as_str(), message_id.as_str()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .context("failed to load message parent")?;
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start message delete transaction")?;
+
+        delete_compactions_for_conversation(&transaction, conversation_id)
+            .context("failed to delete compactions after message delete")?;
+        transaction
+            .execute(
+                "
+                UPDATE messages
+                SET parent_message_id = ?1
+                WHERE conversation_id = ?2 AND parent_message_id = ?3
+                ",
+                params![
+                    parent_message_id.as_deref(),
+                    conversation_id.as_str(),
+                    message_id.as_str()
+                ],
+            )
+            .context("failed to reconnect child messages")?;
+        transaction
+            .execute(
+                "DELETE FROM messages WHERE conversation_id = ?1 AND id = ?2",
+                params![conversation_id.as_str(), message_id.as_str()],
+            )
+            .context("failed to delete message")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit message delete")?;
+
+        Ok(())
+    }
+
+    pub fn delete_conversation(&mut self, conversation_id: &ConversationId) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start conversation delete transaction")?;
+
+        transaction
+            .execute(
+                "DELETE FROM compactions WHERE conversation_id = ?1",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to delete conversation compactions")?;
+        transaction
+            .execute(
+                "DELETE FROM messages WHERE conversation_id = ?1",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to delete conversation messages")?;
+        transaction
+            .execute(
+                "DELETE FROM conversations WHERE id = ?1",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to delete conversation")?;
+        transaction
+            .commit()
+            .context("failed to commit conversation delete")?;
+
+        Ok(())
+    }
+
+    pub fn latest_compaction(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Option<Compaction>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
         self.connection
             .query_row(
                 "
@@ -349,12 +485,12 @@ impl Store {
                 ORDER BY created_at DESC, rowid DESC
                 LIMIT 1
                 ",
-                params![conversation_id],
+                params![conversation_id.as_str()],
                 |row| {
                     Ok(Compaction {
-                        id: row.get(0)?,
-                        conversation_id: row.get(1)?,
-                        through_message_id: row.get(2)?,
+                        id: CompactionId::new(row.get::<_, String>(0)?),
+                        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+                        through_message_id: MessageId::new(row.get::<_, String>(2)?),
                         content: row.get(3)?,
                         created_at: row.get(4)?,
                     })
@@ -366,15 +502,24 @@ impl Store {
 
     #[allow(dead_code)]
     pub fn save_compaction(
-        &self,
-        conversation_id: &str,
-        through_message_id: &str,
+        &mut self,
+        conversation_id: &ConversationId,
+        through_message_id: &MessageId,
         content: &str,
-    ) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
+    ) -> Result<CompactionId> {
+        let id = CompactionId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
 
-        self.connection
+        self.ensure_conversation_exists(conversation_id)?;
+
+        self.ensure_message_belongs_to_conversation(conversation_id, through_message_id)?;
+
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start compaction save transaction")?;
+
+        transaction
             .execute(
                 "
                 INSERT INTO compactions (
@@ -386,44 +531,87 @@ impl Store {
                 )
                 VALUES (?1, ?2, ?3, ?4, ?5)
                 ",
-                params![id, conversation_id, through_message_id, content, now],
+                params![
+                    id.as_str(),
+                    conversation_id.as_str(),
+                    through_message_id.as_str(),
+                    content,
+                    now
+                ],
             )
             .context("failed to save compaction")?;
 
-        self.touch_conversation(conversation_id, now)?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit compaction save")?;
 
         Ok(id)
     }
 
-    #[allow(dead_code)]
-    fn message_position(&self, message_id: &str) -> Result<Option<(i64, i64)>> {
+    fn message_position(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<Option<(i64, i64)>> {
         self.connection
             .query_row(
-                "SELECT created_at, rowid FROM messages WHERE id = ?1",
-                params![message_id],
+                "
+                SELECT created_at, rowid
+                FROM messages
+                WHERE conversation_id = ?1 AND id = ?2
+                ",
+                params![conversation_id.as_str(), message_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .context("failed to load message position")
     }
 
-    fn touch_conversation(&self, conversation_id: &str, updated_at: i64) -> Result<()> {
+    fn message_conversation_id(&self, message_id: &MessageId) -> Result<Option<ConversationId>> {
         self.connection
-            .execute(
-                "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
-                params![updated_at, conversation_id],
+            .query_row(
+                "SELECT conversation_id FROM messages WHERE id = ?1",
+                params![message_id.as_str()],
+                |row| Ok(ConversationId::new(row.get::<_, String>(0)?)),
             )
-            .context("failed to update conversation timestamp")?;
+            .optional()
+            .context("failed to load message conversation")
+    }
+
+    fn ensure_message_belongs_to_conversation(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<()> {
+        let message_conversation_id = self
+            .message_conversation_id(message_id)?
+            .ok_or_else(|| anyhow!("message does not exist: {message_id}"))?;
+
+        if message_conversation_id != *conversation_id {
+            return Err(anyhow!(
+                "message does not belong to conversation: {message_id}"
+            ));
+        }
 
         Ok(())
     }
 
-    fn conversation_exists(&self, conversation_id: &str) -> Result<bool> {
+    fn ensure_conversation_exists(&self, conversation_id: &ConversationId) -> Result<()> {
+        if !self.conversation_exists(conversation_id)? {
+            return Err(anyhow!("conversation does not exist: {conversation_id}"));
+        }
+
+        Ok(())
+    }
+
+    fn conversation_exists(&self, conversation_id: &ConversationId) -> Result<bool> {
         let exists = self
             .connection
             .query_row(
                 "SELECT 1 FROM conversations WHERE id = ?1",
-                params![conversation_id],
+                params![conversation_id.as_str()],
                 |_| Ok(()),
             )
             .optional()
@@ -440,6 +628,41 @@ fn default_database_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".windie").join("windie.db"))
 }
 
+fn read_message_row(row: &Row<'_>) -> rusqlite::Result<Message> {
+    Ok(Message {
+        id: Some(MessageId::new(row.get::<_, String>(0)?)),
+        parent_message_id: row.get::<_, Option<String>>(1)?.map(MessageId::new),
+        role: row.get(2)?,
+        content: row.get(3)?,
+        metadata: row.get(4)?,
+    })
+}
+
+fn delete_compactions_for_conversation(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+) -> Result<()> {
+    transaction.execute(
+        "DELETE FROM compactions WHERE conversation_id = ?1",
+        params![conversation_id.as_str()],
+    )?;
+
+    Ok(())
+}
+
+fn touch_conversation_in_transaction(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    updated_at: i64,
+) -> Result<()> {
+    transaction.execute(
+        "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+        params![updated_at, conversation_id.as_str()],
+    )?;
+
+    Ok(())
+}
+
 fn now_millis() -> Result<i64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -449,175 +672,5 @@ fn now_millis() -> Result<i64> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn creates_default_conversation() {
-        let store = Store::open_memory().unwrap();
-
-        let conversation_id = store.get_or_create_default_conversation().unwrap();
-
-        assert_eq!(conversation_id, "default");
-    }
-
-    #[test]
-    fn creates_conversation_with_unique_id() {
-        let store = Store::open_memory().unwrap();
-
-        let first_id = store.create_conversation().unwrap();
-        let second_id = store.create_conversation().unwrap();
-
-        assert_ne!(first_id, second_id);
-    }
-
-    #[test]
-    fn tracks_active_conversation() {
-        let store = Store::open_memory().unwrap();
-        let conversation_id = store.create_conversation().unwrap();
-
-        store.set_active_conversation(&conversation_id).unwrap();
-
-        assert_eq!(
-            store.active_conversation_id().unwrap().as_deref(),
-            Some(conversation_id.as_str())
-        );
-    }
-
-    #[test]
-    fn rejects_missing_active_conversation() {
-        let store = Store::open_memory().unwrap();
-
-        let error = store.set_active_conversation("missing").unwrap_err();
-
-        assert!(error.to_string().contains("conversation does not exist"));
-    }
-
-    #[test]
-    fn creates_active_default_conversation_when_none_is_active() {
-        let store = Store::open_memory().unwrap();
-
-        let conversation_id = store.get_or_create_active_conversation().unwrap();
-
-        assert_eq!(conversation_id, "default");
-        assert_eq!(
-            store.active_conversation_id().unwrap().as_deref(),
-            Some("default")
-        );
-    }
-
-    #[test]
-    fn lists_conversations() {
-        let store = Store::open_memory().unwrap();
-        let conversation_id = store.create_conversation().unwrap();
-        store
-            .save_message(&conversation_id, None, "user", "hello", None)
-            .unwrap();
-
-        let conversations = store.list_conversations().unwrap();
-
-        assert_eq!(conversations.len(), 1);
-        assert_eq!(conversations[0].id, conversation_id);
-        assert_eq!(conversations[0].message_count, 1);
-    }
-
-    #[test]
-    fn saves_and_loads_messages() {
-        let store = Store::open_memory().unwrap();
-        let conversation_id = store.get_or_create_default_conversation().unwrap();
-
-        let user_id = store
-            .save_message(&conversation_id, None, "user", "hello", None)
-            .unwrap();
-        let assistant_id = store
-            .save_message(
-                &conversation_id,
-                Some(&user_id),
-                "assistant",
-                "hello back",
-                None,
-            )
-            .unwrap();
-
-        let messages = store.load_messages(&conversation_id).unwrap();
-
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].id.as_deref(), Some(user_id.as_str()));
-        assert_eq!(messages[0].content, "hello");
-        assert_eq!(messages[1].id.as_deref(), Some(assistant_id.as_str()));
-        assert_eq!(
-            messages[1].parent_message_id.as_deref(),
-            Some(user_id.as_str())
-        );
-        assert_eq!(messages[1].content, "hello back");
-    }
-
-    #[test]
-    fn preserves_metadata() {
-        let store = Store::open_memory().unwrap();
-        let conversation_id = store.get_or_create_default_conversation().unwrap();
-
-        store
-            .save_message(
-                &conversation_id,
-                None,
-                "assistant",
-                "",
-                Some(r#"{"tool_calls":[]}"#),
-            )
-            .unwrap();
-
-        let messages = store.load_messages(&conversation_id).unwrap();
-
-        assert_eq!(
-            messages[0].metadata.as_deref(),
-            Some(r#"{"tool_calls":[]}"#)
-        );
-    }
-
-    #[test]
-    fn loads_messages_after_checkpoint() {
-        let store = Store::open_memory().unwrap();
-        let conversation_id = store.get_or_create_default_conversation().unwrap();
-
-        let first_id = store
-            .save_message(&conversation_id, None, "user", "one", None)
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let second_id = store
-            .save_message(&conversation_id, Some(&first_id), "assistant", "two", None)
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        store
-            .save_message(&conversation_id, Some(&second_id), "user", "three", None)
-            .unwrap();
-
-        let messages = store
-            .load_messages_after(&conversation_id, Some(&first_id))
-            .unwrap();
-
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].content, "two");
-        assert_eq!(messages[1].content, "three");
-    }
-
-    #[test]
-    fn saves_and_loads_latest_compaction() {
-        let store = Store::open_memory().unwrap();
-        let conversation_id = store.get_or_create_default_conversation().unwrap();
-        let message_id = store
-            .save_message(&conversation_id, None, "user", "hello", None)
-            .unwrap();
-
-        let compaction_id = store
-            .save_compaction(&conversation_id, &message_id, "summary")
-            .unwrap();
-
-        let compaction = store.latest_compaction(&conversation_id).unwrap().unwrap();
-
-        assert_eq!(compaction.id, compaction_id);
-        assert_eq!(compaction.conversation_id, conversation_id);
-        assert_eq!(compaction.through_message_id, message_id);
-        assert_eq!(compaction.content, "summary");
-    }
-}
+#[path = "store_tests.rs"]
+mod tests;

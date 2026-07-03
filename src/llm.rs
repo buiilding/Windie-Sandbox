@@ -1,3 +1,8 @@
+//! OpenAI-compatible streaming LLM client.
+//!
+//! This module owns HTTP requests to Bifrost's chat completions endpoint and
+//! parsing streamed response chunks.
+
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -5,10 +10,54 @@ use serde::{Deserialize, Serialize};
 
 use crate::conversation::Message;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseUrl(String);
+
+impl BaseUrl {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self(url.into().trim_end_matches('/').to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for BaseUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelName(String);
+
+impl ModelName {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ModelName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+pub(crate) trait RuntimeLlm {
+    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>;
+}
+
 pub struct BifrostClient {
     http: Client,
-    base_url: String,
-    model: String,
+    base_url: BaseUrl,
+    model: ModelName,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,11 +83,11 @@ struct StreamDelta {
 }
 
 impl BifrostClient {
-    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(base_url: BaseUrl, model: ModelName) -> Self {
         Self {
             http: Client::new(),
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            model: model.into(),
+            base_url,
+            model,
         }
     }
 
@@ -51,7 +100,7 @@ impl BifrostClient {
         F: FnMut(&str) -> Result<()>,
     {
         let request = ChatRequest {
-            model: &self.model,
+            model: self.model.as_str(),
             messages,
             stream: true,
         };
@@ -71,18 +120,19 @@ impl BifrostClient {
         }
 
         let mut stream = response.bytes_stream();
+        let mut byte_buffer = Vec::new();
         let mut buffer = String::new();
         let mut answer = String::new();
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("failed to read chat stream")?;
-            let text =
-                std::str::from_utf8(&chunk).context("chat stream contained invalid utf-8")?;
 
-            buffer.push_str(text);
+            byte_buffer.extend_from_slice(&chunk);
+            append_valid_utf8(&mut byte_buffer, &mut buffer)?;
             process_stream_lines(&mut buffer, &mut answer, &mut handle_delta)?;
         }
 
+        finish_utf8(&mut byte_buffer, &mut buffer)?;
         process_final_stream_line(&mut buffer, &mut answer, &mut handle_delta)?;
 
         if answer.trim().is_empty() {
@@ -91,6 +141,51 @@ impl BifrostClient {
 
         Ok(answer)
     }
+}
+
+impl RuntimeLlm for BifrostClient {
+    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        BifrostClient::stream(self, messages, handle_delta).await
+    }
+}
+
+fn append_valid_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
+    match std::str::from_utf8(byte_buffer) {
+        Ok(text) => {
+            text_buffer.push_str(text);
+            byte_buffer.clear();
+            Ok(())
+        }
+        Err(error) => {
+            let valid_up_to = error.valid_up_to();
+            if valid_up_to > 0 {
+                let text = std::str::from_utf8(&byte_buffer[..valid_up_to])
+                    .context("chat stream contained invalid utf-8")?
+                    .to_string();
+                text_buffer.push_str(&text);
+                byte_buffer.drain(..valid_up_to);
+            }
+
+            if error.error_len().is_some() {
+                return Err(anyhow!("chat stream contained invalid utf-8"));
+            }
+
+            Ok(())
+        }
+    }
+}
+
+fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
+    append_valid_utf8(byte_buffer, text_buffer)?;
+
+    if !byte_buffer.is_empty() {
+        return Err(anyhow!("chat stream ended with incomplete utf-8"));
+    }
+
+    Ok(())
 }
 
 fn process_stream_lines<F>(
@@ -156,6 +251,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn base_url_removes_trailing_slash() {
+        let base_url = BaseUrl::new("http://localhost:8080/v1/");
+
+        assert_eq!(base_url.as_str(), "http://localhost:8080/v1");
+    }
+
+    #[test]
+    fn model_name_preserves_provider_prefix() {
+        let model = ModelName::new("openai/gpt-4o-mini");
+
+        assert_eq!(model.as_str(), "openai/gpt-4o-mini");
+    }
+
+    #[test]
+    fn builds_chat_endpoint_from_base_url() {
+        let llm = BifrostClient::new(
+            BaseUrl::new("http://localhost:8080/v1/"),
+            ModelName::new("openai/gpt-4o-mini"),
+        );
+
+        assert_eq!(
+            llm.chat_endpoint(),
+            "http://localhost:8080/v1/chat/completions"
+        );
+    }
+
+    #[test]
     fn parses_stream_content_delta() {
         let mut answer = String::new();
         let mut deltas = Vec::new();
@@ -173,6 +295,46 @@ mod tests {
 
         assert_eq!(answer, "Hello");
         assert_eq!(deltas, vec!["Hello"]);
+    }
+
+    #[test]
+    fn buffers_split_utf8_bytes() {
+        let text = "你";
+        let bytes = text.as_bytes();
+        let mut byte_buffer = Vec::new();
+        let mut text_buffer = String::new();
+
+        byte_buffer.extend_from_slice(&bytes[..1]);
+        append_valid_utf8(&mut byte_buffer, &mut text_buffer).unwrap();
+
+        assert!(text_buffer.is_empty());
+        assert_eq!(byte_buffer, bytes[..1]);
+
+        byte_buffer.extend_from_slice(&bytes[1..]);
+        append_valid_utf8(&mut byte_buffer, &mut text_buffer).unwrap();
+
+        assert_eq!(text_buffer, text);
+        assert!(byte_buffer.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_bytes() {
+        let mut byte_buffer = vec![0xff];
+        let mut text_buffer = String::new();
+
+        let error = append_valid_utf8(&mut byte_buffer, &mut text_buffer).unwrap_err();
+
+        assert_eq!(error.to_string(), "chat stream contained invalid utf-8");
+    }
+
+    #[test]
+    fn rejects_incomplete_final_utf8_bytes() {
+        let mut byte_buffer = vec![0xe4];
+        let mut text_buffer = String::new();
+
+        let error = finish_utf8(&mut byte_buffer, &mut text_buffer).unwrap_err();
+
+        assert_eq!(error.to_string(), "chat stream ended with incomplete utf-8");
     }
 
     #[test]
