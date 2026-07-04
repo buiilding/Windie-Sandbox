@@ -28,7 +28,7 @@ pub enum Command {
         parts: Vec<InsertPart>,
     },
     /// Run one benchmark mode. Conversation mode carries the target
-    /// conversation ID; local and live modes do not.
+    /// conversation ID; live mode does not.
     Bench {
         mode: BenchmarkMode,
         conversation_id: Option<ConversationId>,
@@ -250,16 +250,13 @@ fn parse_bench_command(args: &[String]) -> Command {
 
     let mut index = 0;
     let (mode, conversation_id) = match args.get(index).map(String::as_str) {
-        None => (BenchmarkMode::Local, None),
+        None => return Command::Invalid,
         Some("live") => {
             index += 1;
             (BenchmarkMode::Live, None)
         }
-        Some("ls") => {
-            index += 1;
-            (BenchmarkMode::List, None)
-        }
-        Some(argument) if argument.starts_with("--") => (BenchmarkMode::Local, None),
+        Some("ls") => return Command::Invalid,
+        Some(argument) if argument.starts_with("--") => return Command::Invalid,
         Some(conversation_id) => {
             index += 1;
             (
@@ -825,17 +822,10 @@ mod tests {
     }
 
     #[test]
-    fn reads_bench_command() {
+    fn rejects_bare_bench_command() {
         let command = command_from_args(["windie".to_string(), "bench".to_string()]);
 
-        assert!(matches!(
-            command,
-            Command::Bench {
-                mode: BenchmarkMode::Local,
-                conversation_id: None,
-                options,
-            } if options.runs == 1 && !options.json
-        ));
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]
@@ -857,22 +847,15 @@ mod tests {
     }
 
     #[test]
-    fn reads_list_bench_command() {
+    fn rejects_list_bench_command() {
         let command =
             command_from_args(["windie".to_string(), "bench".to_string(), "ls".to_string()]);
 
-        assert!(matches!(
-            command,
-            Command::Bench {
-                mode: BenchmarkMode::List,
-                conversation_id: None,
-                options,
-            } if options.runs == 1 && !options.json
-        ));
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]
-    fn reads_list_bench_with_runs_and_json() {
+    fn rejects_list_bench_with_runs_and_json() {
         let command = command_from_args([
             "windie".to_string(),
             "bench".to_string(),
@@ -882,14 +865,7 @@ mod tests {
             "--json".to_string(),
         ]);
 
-        assert!(matches!(
-            command,
-            Command::Bench {
-                mode: BenchmarkMode::List,
-                conversation_id: None,
-                options,
-            } if options.runs == 10 && options.json
-        ));
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]
@@ -932,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_local_bench_with_json_before_runs() {
+    fn rejects_bench_options_without_conversation_id() {
         let command = command_from_args([
             "windie".to_string(),
             "bench".to_string(),
@@ -941,14 +917,7 @@ mod tests {
             "10".to_string(),
         ]);
 
-        assert!(matches!(
-            command,
-            Command::Bench {
-                mode: BenchmarkMode::Local,
-                conversation_id: None,
-                options,
-            } if options.runs == 10 && options.json
-        ));
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]

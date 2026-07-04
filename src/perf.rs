@@ -2,8 +2,8 @@
 //!
 //! This module owns lightweight timing for the current local CLI/query path,
 //! repeated benchmark reports, JSON benchmark artifacts, and report comparison.
-//! Local and conversation benchmarks avoid provider calls. Live benchmarks are
-//! explicit because they send a real provider request.
+//! Conversation benchmarks avoid provider calls. Live benchmarks are explicit
+//! because they send a real provider request.
 
 use std::fs;
 use std::path::Path;
@@ -27,9 +27,6 @@ const REPORT_FORMAT_VERSION: u32 = 1;
 /// Benchmark mode selected by the CLI.
 pub enum BenchmarkMode {
     Conversation,
-    #[serde(rename = "ls")]
-    List,
-    Local,
     Live,
 }
 
@@ -38,8 +35,6 @@ impl BenchmarkMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Conversation => "conversation",
-            Self::List => "ls",
-            Self::Local => "local",
             Self::Live => "live",
         }
     }
@@ -88,10 +83,8 @@ pub struct PerformanceBaseline {
     pub context_system_prompt_load: Option<Duration>,
     pub context_compaction_load: Option<Duration>,
     pub context_flatten: Option<Duration>,
-    pub list_load: Option<Duration>,
     pub loaded_messages: Option<usize>,
     pub tree_messages: Option<usize>,
-    pub listed_conversations: Option<usize>,
     pub gateway_ready: Option<Duration>,
     pub first_token: Option<Duration>,
     pub full_response: Option<Duration>,
@@ -129,10 +122,8 @@ pub struct PerformanceSample {
     pub context_system_prompt_load_us: Option<u64>,
     pub context_compaction_load_us: Option<u64>,
     pub context_flatten_us: Option<u64>,
-    pub conversation_list_load_us: Option<u64>,
     pub active_path_messages: Option<usize>,
     pub tree_messages: Option<usize>,
-    pub conversations: Option<usize>,
     pub gateway_ready_us: Option<u64>,
     pub first_token_us: Option<u64>,
     pub full_response_us: Option<u64>,
@@ -155,7 +146,6 @@ pub struct PerformanceSummary {
     pub context_system_prompt_load: Option<DurationMetric>,
     pub context_compaction_load: Option<DurationMetric>,
     pub context_flatten: Option<DurationMetric>,
-    pub conversation_list_load: Option<DurationMetric>,
     pub gateway_ready: Option<DurationMetric>,
     pub first_token: Option<DurationMetric>,
     pub full_response: Option<DurationMetric>,
@@ -191,8 +181,8 @@ pub struct PerformanceComparisonRow {
 
 /// Runs the selected benchmark mode.
 ///
-/// Local and conversation modes are free/local. Live mode requires Bifrost and
-/// sends a tiny real model request.
+/// Conversation mode is free/local. Live mode requires Bifrost and sends a tiny
+/// real model request.
 pub async fn run(
     mode: BenchmarkMode,
     conversation_id: Option<ConversationId>,
@@ -214,35 +204,9 @@ pub async fn run(
         context_system_prompt_load,
         context_compaction_load,
         context_flatten,
-        list_load,
         loaded_messages,
         tree_messages,
-        listed_conversations,
     ) = match mode {
-        BenchmarkMode::Local => {
-            let store_started = Instant::now();
-            let _store = Store::open()?;
-
-            (
-                Some(store_started.elapsed()),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-        }
         BenchmarkMode::Conversation => {
             let store_started = Instant::now();
             let store = Store::open()?;
@@ -326,44 +290,13 @@ pub async fn run(
                 Some(context_system_prompt_load),
                 Some(context_compaction_load),
                 Some(context_flatten),
-                None,
                 Some(loaded_messages),
                 Some(tree_messages),
-                None,
-            )
-        }
-        BenchmarkMode::List => {
-            let store_started = Instant::now();
-            let store = Store::open()?;
-            let store_open = store_started.elapsed();
-
-            let list_started = Instant::now();
-            let listed_conversations = store.list_conversations()?.len();
-            let list_load = list_started.elapsed();
-
-            (
-                Some(store_open),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(list_load),
-                None,
-                None,
-                Some(listed_conversations),
             )
         }
         BenchmarkMode::Live => (
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None,
+            None,
         ),
     };
 
@@ -402,10 +335,8 @@ pub async fn run(
         context_system_prompt_load,
         context_compaction_load,
         context_flatten,
-        list_load,
         loaded_messages,
         tree_messages,
-        listed_conversations,
         gateway_ready,
         first_token,
         full_response,
@@ -520,10 +451,8 @@ impl PerformanceSample {
             context_system_prompt_load_us: baseline.context_system_prompt_load.map(duration_micros),
             context_compaction_load_us: baseline.context_compaction_load.map(duration_micros),
             context_flatten_us: baseline.context_flatten.map(duration_micros),
-            conversation_list_load_us: baseline.list_load.map(duration_micros),
             active_path_messages: baseline.loaded_messages,
             tree_messages: baseline.tree_messages,
-            conversations: baseline.listed_conversations,
             gateway_ready_us: baseline.gateway_ready.map(duration_micros),
             first_token_us: baseline.first_token.map(duration_micros),
             full_response_us: baseline.full_response.map(duration_micros),
@@ -586,11 +515,6 @@ impl PerformanceSummary {
                 samples
                     .iter()
                     .filter_map(|sample| sample.context_flatten_us),
-            ),
-            conversation_list_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.conversation_list_load_us),
             ),
             gateway_ready: duration_metric(
                 samples.iter().filter_map(|sample| sample.gateway_ready_us),
@@ -688,11 +612,6 @@ fn comparison_rows(
             "context flatten",
             &baseline.context_flatten,
             &current.context_flatten,
-        ),
-        (
-            "conversation list load",
-            &baseline.conversation_list_load,
-            &current.conversation_list_load,
         ),
         (
             "gateway ready",
@@ -797,10 +716,8 @@ mod tests {
                 active_path_load_us: Some(20),
                 tree_load_us: None,
                 context_build_us: Some(30),
-                conversation_list_load_us: None,
                 active_path_messages: Some(1),
                 tree_messages: Some(1),
-                conversations: None,
                 gateway_ready_us: None,
                 first_token_us: None,
                 full_response_us: None,
@@ -870,33 +787,5 @@ mod tests {
 
         let _ = std::fs::remove_file(baseline_path);
         let _ = std::fs::remove_file(current_path);
-    }
-
-    #[test]
-    fn compares_conversation_list_load() {
-        let baseline = PerformanceSummary {
-            conversation_list_load: Some(DurationMetric {
-                min_us: 50,
-                median_us: 50,
-                p95_us: 50,
-                max_us: 50,
-            }),
-            ..PerformanceSummary::default()
-        };
-        let current = PerformanceSummary {
-            conversation_list_load: Some(DurationMetric {
-                min_us: 75,
-                median_us: 75,
-                p95_us: 75,
-                max_us: 75,
-            }),
-            ..baseline.clone()
-        };
-
-        let rows = comparison_rows(&baseline, &current);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name, "conversation list load");
-        assert_eq!(rows[0].change_percent, 50.0);
     }
 }

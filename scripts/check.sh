@@ -29,29 +29,6 @@ if [ "$set_prompt_output" != "set systemprompt $conversation_id" ]; then
     exit 1
 fi
 message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role user --text hello)"
-bench_list_output="$(HOME="$check_home" target/release/windie bench ls)"
-if ! printf '%s\n' "$bench_list_output" | grep -q "mode: ls"; then
-    echo "expected list benchmark to print list mode" >&2
-    exit 1
-fi
-if ! printf '%s\n' "$bench_list_output" | grep -q "conversation list load:"; then
-    echo "expected list benchmark to measure conversation list load" >&2
-    exit 1
-fi
-if ! printf '%s\n' "$bench_list_output" | grep -q "conversations: 1"; then
-    echo "expected list benchmark to count one conversation" >&2
-    exit 1
-fi
-bench_list_report="$check_home/list.json"
-HOME="$check_home" target/release/windie bench ls --runs 2 --json > "$bench_list_report"
-if ! grep -q '"mode": "ls"' "$bench_list_report"; then
-    echo "expected list benchmark JSON report to include ls mode" >&2
-    exit 1
-fi
-if ! grep -q '"conversation_list_load": {' "$bench_list_report"; then
-    echo "expected list benchmark JSON report to include list load summary" >&2
-    exit 1
-fi
 bench_conversation_output="$(HOME="$check_home" target/release/windie bench "$conversation_id")"
 if ! printf '%s\n' "$bench_conversation_output" | grep -q "mode: conversation"; then
     echo "expected conversation benchmark to print conversation mode" >&2
@@ -191,6 +168,24 @@ set -e
 
 if [ "$list_exit_code" -ne 2 ]; then
     echo "expected removed list command to exit 2, got $list_exit_code" >&2
+    exit 1
+fi
+set +e
+target/release/windie bench >/dev/null
+bare_bench_exit_code=$?
+set -e
+
+if [ "$bare_bench_exit_code" -ne 2 ]; then
+    echo "expected bench without conversation id to exit 2, got $bare_bench_exit_code" >&2
+    exit 1
+fi
+set +e
+target/release/windie bench ls >/dev/null
+bench_list_exit_code=$?
+set -e
+
+if [ "$bench_list_exit_code" -ne 2 ]; then
+    echo "expected removed bench ls command to exit 2, got $bench_list_exit_code" >&2
     exit 1
 fi
 set +e

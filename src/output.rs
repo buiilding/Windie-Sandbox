@@ -92,17 +92,11 @@ impl TerminalOutput {
         if let Some(duration) = baseline.context_flatten {
             println!("context flatten: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.list_load {
-            println!("conversation list load: {}", format_duration(duration));
-        }
         if let Some(loaded_messages) = baseline.loaded_messages {
             println!("active path messages: {loaded_messages}");
         }
         if let Some(tree_messages) = baseline.tree_messages {
             println!("tree messages: {tree_messages}");
-        }
-        if let Some(listed_conversations) = baseline.listed_conversations {
-            println!("conversations: {listed_conversations}");
         }
         if let Some(duration) = baseline.gateway_ready {
             println!("gateway ready: {}", format_duration(duration));
@@ -309,8 +303,6 @@ fn help_lines() -> Vec<String> {
         "  windie status",
         "  windie gateway start",
         "  windie gateway stop",
-        "  windie bench",
-        "  windie bench ls",
         "  windie bench <conversation_id>",
         "  windie bench <conversation_id> --runs 100 --json",
         "  windie bench compare <baseline.json> <current.json>",
@@ -318,10 +310,8 @@ fn help_lines() -> Vec<String> {
         "",
         "Notes:",
         "  windie exits successfully without runtime action.",
-        "  windie bench measures local store open only.",
-        "  windie bench ls measures conversation list loading.",
         "  windie bench <conversation_id> measures active path, tree, and context build.",
-        "  windie bench --json writes a persistent benchmark artifact to stdout.",
+        "  windie bench <conversation_id> --json writes a persistent benchmark artifact to stdout.",
         "  windie bench compare compares two JSON benchmark artifacts.",
         "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
         "  windie gateway stop stops the local Bifrost gateway.",
@@ -408,11 +398,6 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
         &mut lines,
         "context flatten",
         report.summary.context_flatten.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "conversation list load",
-        report.summary.conversation_list_load.as_ref(),
     );
     push_metric_lines(
         &mut lines,

@@ -48,7 +48,6 @@ fn formats_help_lines() {
     );
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
-    assert!(lines.contains(&"  windie bench ls".to_string()));
     assert!(lines.contains(&"  windie bench <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie bench <conversation_id> --runs 100 --json".to_string()));
     assert!(lines.contains(&"  windie bench compare <baseline.json> <current.json>".to_string()));
@@ -329,5 +328,4 @@ fn formats_performance_comparison_lines() {
 fn live_benchmark_mode_reports_provider_call() {
     assert!(crate::perf::BenchmarkMode::Live.may_call_provider());
     assert!(!crate::perf::BenchmarkMode::Conversation.may_call_provider());
-    assert!(!crate::perf::BenchmarkMode::Local.may_call_provider());
 }

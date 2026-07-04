@@ -294,21 +294,6 @@ If the gateway is not running, the command reports that instead of failing.
 ## Benchmarks
 
 ```text
-windie bench
-```
-
-Run local/free performance baseline for store open only. Does not start Bifrost
-and does not send a provider request.
-
-```text
-windie bench ls
-```
-
-Run local/free performance baseline for conversation listing. Measures store
-open, conversation list load, and number of conversations returned. Does not
-start Bifrost and does not send a provider request.
-
-```text
 windie bench <conversation_id>
 ```
 
