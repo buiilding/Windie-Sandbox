@@ -2,31 +2,22 @@
 
 ## Project Intent
 
-Windie is a Rust-first, CLI-first local AI querying foundation.
+Windie is the foundational implementation of an AI runtime for the operating
+system.
 
-Windie is a ground-up rebuild of the local AI computer-runtime idea. The older
-WindieOS explored the broad product vision: AI present inside the user's
-desktop session, with access to files, shell, browser-use, computer-use,
-memory, permissions, tools, and workflow context. AIOS/agentd explored a
-related ownership lesson: durable runtime state, execution, and user interfaces
-must have clear boundaries.
+The purpose of this codebase is to build the lower-level runtime that lets AI
+operate on a user's computer reliably, safely, quickly, and consistently.
+Windie should become the foundation for AI that can live inside the local
+operating environment, understand runtime state, act through explicit
+permission boundaries, and eventually behave in a proactive, computer-native
+way.
 
-This project keeps that long-term direction but intentionally restarts from a
-smaller, faster, more hackable foundation. Do not copy old WindieOS complexity
-into this codebase. Build one clean primitive at a time.
+Build one clean primitive at a time. Keep the foundation small, fast,
+inspectable, and hackable.
 The whole codebase should reflect this file.
 
-The current goal is not to build a full agent or a TUI. The current goal is to
+The current goal is to
 build the cleanest minimal local AI runtime primitives:
-
-```text
-explicit CLI command
--> persisted conversation state
--> model-facing context when needed
--> OpenAI-compatible LLM request when needed
--> persisted result
--> terminal output
-```
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
@@ -47,12 +38,11 @@ would break a stated project invariant.
 
 ## North Star
 
-Windie is not a generic chatbot. The long-term goal is a local AI runtime that
+The long-term goal is a local AI runtime that
 lives on the user's computer and can eventually grow into an AI operating
 layer.
 
-The system should feel like an AI presence inside the computer: aware of local
-context, able to use tools with permission, sandboxed by default, and extended
+The system should be able to use tools with permission, sandboxed by default, and extended
 through clean components.
 
 The long-term runtime should support a general wakeup primitive. A wakeup is any
@@ -64,24 +54,16 @@ query the model, and continue only within permission boundaries.
 
 The future direction includes:
 
-- local terminal-first AI interaction
-- conversation/session editing, resend, continuation, and forking
+- local AI interaction through clean clients
+- dynamic conversation/session manipulation such as append, remove, truncate, forks.
 - local shell execution with explicit permission boundaries
 - browser-use and computer-use as local capabilities
 - user-controlled memory and workspace context
 - clear approval policy for risky actions
-- hackable components that can be inspected, replaced, and extended
-
-Do not implement the whole AI OS early. Build the small primitives that could
-support it later: chat, persistence, context, tools, permissions, process
-execution, memory, and UI surfaces. The long-term product can grow toward the
-old WindieOS idea of AI living inside the user's computing environment, but this
-implementation must stay performance-first and architecture-first. Prefer the
-smallest lower-level primitive that is correct, tested, and fast.
 
 ## Runtime Quality Bar
 
-Windie is a foundational AI sandbox runtime, not a prototype chatbot. The
+Windie is a foundational AI sandbox runtime. The
 codebase should prioritize safety, reliability, clarity, consistency,
 auditability, and performance.
 
@@ -99,8 +81,6 @@ reading the whole codebase. If a design becomes hard to explain, treat that as a
 code smell.
 
 ## Ownership Boundaries
-
-Use the ownership lesson from the older workspaces:
 
 ```text
 Windie owns local interaction, conversation/runtime flow, and future local tools.
@@ -154,9 +134,7 @@ Not in scope yet:
 - Memory systems beyond persisted conversation messages and future compaction checkpoints.
 - Killing Bifrost automatically on Windie exit.
 
-The CLI should be boring, explicit, and composable. Bare `windie` must not start
-chat, create conversations, query models, or mutate persisted state. It should
-exit successfully without runtime action. Future TUI, desktop, browser, voice,
+The CLI should be boring, explicit, and composable. Future TUI, desktop, browser, voice,
 and wakeup clients should call the same runtime and store primitives that the
 CLI uses.
 
@@ -236,34 +214,6 @@ can gradually understand Windie well enough to navigate and modify it.
 - Do not reintroduce slash commands unless explicitly requested.
 - Do not add agent/tool behavior until explicitly requested.
 - Keep dependencies small and justified.
-
-## Runtime Behavior
-
-The current expected behavior is command-driven:
-
-```text
-parse explicit command
-load or mutate persisted conversation state
-build model context only for query-like commands
-stream model response only for query-like commands
-save assistant response only after successful inference
-print command output
-exit
-```
-
-Keep primitive operations separate. Put concrete CLI command inventory in
-`commands.md`, not in this file.
-
-Query-like commands and live benchmark commands must not silently start Bifrost.
-They require the gateway to already be running and should tell the user how to
-start the gateway if it is not.
-
-Do not add convenience wrappers that mix update, remove, query, and append into
-one unclear command. If a future convenience wrapper is needed, add it only
-after the primitive commands are correct.
-
-If a model request fails, let the error stop the program. Do not silently
-continue after failed inference.
 
 ## Verification
 
