@@ -4,7 +4,8 @@ use anyhow::{Error, Result, anyhow};
 use std::sync::Mutex;
 
 use super::*;
-use crate::conversation::Message;
+use crate::conversation::{Message, ToolCall};
+use crate::llm::{AssistantResponse, FinishReason};
 
 struct NoopOutput;
 
@@ -16,12 +17,14 @@ impl RuntimeOutput for NoopOutput {
     }
 
     fn end_assistant_message(&self) {}
+
+    fn assistant_tool_calls(&self, _tool_calls: &[ToolCall]) {}
 }
 
 struct FailingLlm;
 
 impl RuntimeLlm for FailingLlm {
-    async fn stream<F>(&self, _messages: &[Message], _handle_delta: F) -> Result<String>
+    async fn stream<F>(&self, _messages: &[Message], _handle_delta: F) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
@@ -46,14 +49,22 @@ impl CapturingLlm {
 }
 
 impl RuntimeLlm for CapturingLlm {
-    async fn stream<F>(&self, messages: &[Message], mut handle_delta: F) -> Result<String>
+    async fn stream<F>(
+        &self,
+        messages: &[Message],
+        mut handle_delta: F,
+    ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
         *self.messages.lock().unwrap() = messages.to_vec();
         handle_delta("captured")?;
 
-        Ok("captured".to_string())
+        Ok(AssistantResponse {
+            content: "captured".to_string(),
+            tool_calls: Vec::new(),
+            finish_reason: Some(FinishReason::Stop),
+        })
     }
 }
 
@@ -66,13 +77,40 @@ impl ReplyLlm {
 }
 
 impl RuntimeLlm for ReplyLlm {
-    async fn stream<F>(&self, _messages: &[Message], mut handle_delta: F) -> Result<String>
+    async fn stream<F>(
+        &self,
+        _messages: &[Message],
+        mut handle_delta: F,
+    ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
         handle_delta(&self.reply)?;
 
-        Ok(self.reply.clone())
+        Ok(AssistantResponse {
+            content: self.reply.clone(),
+            tool_calls: Vec::new(),
+            finish_reason: Some(FinishReason::Stop),
+        })
+    }
+}
+
+struct ToolCallLlm;
+
+impl RuntimeLlm for ToolCallLlm {
+    async fn stream<F>(&self, _messages: &[Message], _handle_delta: F) -> Result<AssistantResponse>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        Ok(AssistantResponse {
+            content: String::new(),
+            tool_calls: vec![ToolCall::function(
+                "call_123",
+                "run_shell",
+                r#"{"command":"ls"}"#,
+            )],
+            finish_reason: Some(FinishReason::ToolCalls),
+        })
     }
 }
 
@@ -163,6 +201,27 @@ async fn query_conversation_uses_active_path() {
     assert_eq!(captured.len(), 2);
     assert_eq!(captured[0].content, "root");
     assert_eq!(captured[1].content, "active");
+}
+
+#[tokio::test]
+async fn query_conversation_saves_tool_calls_in_metadata() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "list files", None)
+        .unwrap();
+
+    let assistant_message =
+        query_conversation(&NoopOutput, &ToolCallLlm, &mut store, &conversation_id)
+            .await
+            .unwrap();
+    let metadata = assistant_message.metadata.as_ref().unwrap();
+
+    assert!(assistant_message.content.is_empty());
+    assert_eq!(metadata.tool_calls.len(), 1);
+    assert_eq!(metadata.tool_calls[0].id.as_str(), "call_123");
+    assert_eq!(metadata.tool_calls[0].name(), "run_shell");
+    assert_eq!(metadata.tool_calls[0].arguments(), r#"{"command":"ls"}"#);
 }
 
 #[tokio::test]

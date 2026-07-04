@@ -9,7 +9,7 @@ use std::io::{self, Write};
 
 use anyhow::{Context, Result};
 
-use crate::conversation::{ConversationId, Message, MessageId};
+use crate::conversation::{ConversationId, Message, MessageId, MessagePart, ToolCall};
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::store::ConversationInfo;
 
@@ -20,6 +20,7 @@ pub(crate) trait RuntimeOutput {
     fn start_assistant_message(&self);
     fn assistant_delta(&self, text: &str) -> Result<()>;
     fn end_assistant_message(&self);
+    fn assistant_tool_calls(&self, tool_calls: &[ToolCall]);
 }
 
 /// Concrete stdout/stderr-free terminal printer for the CLI.
@@ -224,6 +225,24 @@ impl TerminalOutput {
     pub fn end_assistant_message(&self) {
         println!("\n");
     }
+
+    /// Prints model-requested tool calls after the stream is complete.
+    pub fn assistant_tool_calls(&self, tool_calls: &[ToolCall]) {
+        if tool_calls.is_empty() {
+            return;
+        }
+
+        println!("tool calls");
+        for tool_call in tool_calls {
+            println!(
+                "{}  {}  {}",
+                tool_call.id,
+                tool_call.name(),
+                text_preview(tool_call.arguments())
+            );
+        }
+        println!();
+    }
 }
 
 /// Shared line printer for help and invalid usage output.
@@ -402,6 +421,10 @@ impl RuntimeOutput for TerminalOutput {
     fn end_assistant_message(&self) {
         TerminalOutput::end_assistant_message(self);
     }
+
+    fn assistant_tool_calls(&self, tool_calls: &[ToolCall]) {
+        TerminalOutput::assistant_tool_calls(self, tool_calls);
+    }
 }
 
 /// Humanizes a message count for the conversation list.
@@ -456,7 +479,7 @@ fn message_lines(messages: &[Message]) -> Vec<String> {
             "{}  {}  {}",
             message.role.as_str(),
             id,
-            message_preview(&message.content)
+            message_preview(message)
         ));
     }
 
@@ -518,7 +541,7 @@ fn append_tree_lines(
             active_marker,
             message.role.as_str(),
             id,
-            message_preview(&message.content)
+            message_preview(message)
         ));
         append_tree_lines(
             lines,
@@ -530,13 +553,38 @@ fn append_tree_lines(
     }
 }
 
-/// Normalizes message text into a compact, Unicode-safe preview.
-fn message_preview(content: &str) -> String {
+/// Normalizes one message into a compact, Unicode-safe preview.
+fn message_preview(message: &Message) -> String {
+    let text = text_preview(&message.content);
+    let image_count = message
+        .parts
+        .iter()
+        .filter(|part| matches!(part, MessagePart::Image(_)))
+        .count();
+    let preview = match (text.is_empty(), image_count) {
+        (true, 0) => String::new(),
+        (true, 1) => "[image]".to_string(),
+        (true, count) => format!("[{count} images]"),
+        (false, 0) => text,
+        (false, 1) => format!("{text} [image]"),
+        (false, count) => format!("{text} [{count} images]"),
+    };
+
+    truncate_preview(&preview)
+}
+
+/// Normalizes text into a compact, Unicode-safe preview.
+fn text_preview(content: &str) -> String {
     let preview = content.split_whitespace().collect::<Vec<_>>().join(" ");
 
+    truncate_preview(&preview)
+}
+
+/// Truncates preview text to the terminal display limit.
+fn truncate_preview(preview: &str) -> String {
     let truncated = preview.chars().take(80).collect::<String>();
     if truncated.len() == preview.len() {
-        return preview;
+        return preview.to_string();
     }
 
     format!("{truncated}...")

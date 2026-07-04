@@ -10,11 +10,15 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::conversation::{CompactionId, ConversationId, Message, MessageId, Role};
+use crate::conversation::{
+    CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
+    MessagePart, Role,
+};
 
 /// Decodes message roles from SQLite into the typed runtime role.
 impl FromSql for Role {
@@ -486,10 +490,11 @@ impl Store {
         parent_message_id: Option<&MessageId>,
         role: Role,
         content: &str,
-        metadata: Option<&str>,
+        metadata: Option<&MessageMetadata>,
     ) -> Result<MessageId> {
         let id = MessageId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
+        let metadata_json = encode_message_metadata(metadata)?;
 
         self.ensure_conversation_exists(conversation_id)?;
 
@@ -522,7 +527,7 @@ impl Store {
                     parent_message_id.map(MessageId::as_str),
                     role.as_str(),
                     content,
-                    metadata,
+                    metadata_json.as_deref(),
                     now
                 ],
             )
@@ -763,6 +768,7 @@ impl Store {
                 .parent_message_id
                 .as_ref()
                 .and_then(|parent_message_id| message_id_map.get(parent_message_id.as_str()));
+            let metadata_json = encode_message_metadata(message.metadata.as_ref())?;
 
             transaction
                 .execute(
@@ -784,7 +790,7 @@ impl Store {
                         forked_parent_message_id.map(MessageId::as_str),
                         message.role.as_str(),
                         message.content.as_str(),
-                        message.metadata.as_deref(),
+                        metadata_json.as_deref(),
                         now + index as i64
                     ],
                 )
@@ -1120,13 +1126,194 @@ fn default_database_path() -> Result<PathBuf> {
 
 /// Converts one SQLite message row into the runtime message type.
 fn read_message_row(row: &Row<'_>) -> rusqlite::Result<Message> {
+    let metadata_json = row.get::<_, Option<String>>(4)?;
+
     Ok(Message {
         id: Some(MessageId::new(row.get::<_, String>(0)?)),
         parent_message_id: row.get::<_, Option<String>>(1)?.map(MessageId::new),
         role: row.get(2)?,
         content: row.get(3)?,
-        metadata: row.get(4)?,
+        parts: Vec::new(),
+        metadata: decode_message_metadata(metadata_json)?,
     })
+}
+
+/// Converts one SQLite message part row into the runtime message part type.
+fn read_message_part_row(row: &Row<'_>) -> rusqlite::Result<(String, MessagePart)> {
+    let message_id = row.get::<_, String>(0)?;
+    let kind = row.get::<_, String>(1)?;
+    let part = match kind.as_str() {
+        "text" => MessagePart::Text(row.get::<_, String>(2)?),
+        "image" => MessagePart::Image(ImagePart {
+            asset_id: ImageAssetId::new(row.get::<_, String>(3)?),
+            mime_type: row.get(4)?,
+            bytes: row.get(5)?,
+        }),
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                1,
+                Type::Text,
+                format!("unknown message part kind: {kind}").into(),
+            ));
+        }
+    };
+
+    Ok((message_id, part))
+}
+
+/// Serializes typed message metadata for SQLite storage.
+fn encode_message_metadata(metadata: Option<&MessageMetadata>) -> Result<Option<String>> {
+    metadata
+        .map(serde_json::to_string)
+        .transpose()
+        .context("failed to serialize message metadata")
+}
+
+/// Decodes SQLite JSON metadata into the typed runtime metadata model.
+fn decode_message_metadata(metadata: Option<String>) -> rusqlite::Result<Option<MessageMetadata>> {
+    metadata
+        .map(|metadata| {
+            serde_json::from_str(&metadata).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+            })
+        })
+        .transpose()
+}
+
+/// Writes all ordered parts for one message into an existing transaction.
+fn insert_message_parts_in_transaction(
+    transaction: &Transaction<'_>,
+    message_id: &MessageId,
+    parts: &[MessagePart],
+    now: i64,
+) -> Result<()> {
+    for (position, part) in parts.iter().enumerate() {
+        match part {
+            MessagePart::Text(text) => {
+                insert_text_part_in_transaction(transaction, message_id, position, text)
+                    .context("failed to save text message part")?;
+            }
+            MessagePart::Image(image) => {
+                let image_asset_id = insert_image_asset_in_transaction(
+                    transaction,
+                    &image.mime_type,
+                    &image.bytes,
+                    now,
+                )
+                .context("failed to copy image asset")?;
+                insert_image_part_in_transaction(
+                    transaction,
+                    message_id,
+                    position,
+                    &image_asset_id,
+                )
+                .context("failed to save image message part")?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Writes one text message part into an existing transaction.
+fn insert_text_part_in_transaction(
+    transaction: &Transaction<'_>,
+    message_id: &MessageId,
+    position: usize,
+    text: &str,
+) -> Result<()> {
+    transaction
+        .execute(
+            "
+            INSERT INTO message_parts (id, message_id, position, kind, text, image_asset_id)
+            VALUES (?1, ?2, ?3, 'text', ?4, NULL)
+            ",
+            params![
+                Uuid::new_v4().to_string(),
+                message_id.as_str(),
+                position as i64,
+                text
+            ],
+        )
+        .context("failed to save text message part")?;
+
+    Ok(())
+}
+
+/// Copies image bytes into image asset storage inside an existing transaction.
+fn insert_image_asset_in_transaction(
+    transaction: &Transaction<'_>,
+    mime_type: &str,
+    bytes: &[u8],
+    now: i64,
+) -> Result<ImageAssetId> {
+    let asset_id = ImageAssetId::new(Uuid::new_v4().to_string());
+    let sha256 = sha256_hex(bytes);
+
+    transaction
+        .execute(
+            "
+            INSERT INTO image_assets (id, bytes, mime_type, sha256, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ",
+            params![asset_id.as_str(), bytes, mime_type, sha256, now],
+        )
+        .context("failed to save image asset")?;
+
+    Ok(asset_id)
+}
+
+/// Links one image asset to an ordered message part.
+fn insert_image_part_in_transaction(
+    transaction: &Transaction<'_>,
+    message_id: &MessageId,
+    position: usize,
+    image_asset_id: &ImageAssetId,
+) -> Result<()> {
+    transaction
+        .execute(
+            "
+            INSERT INTO message_parts (id, message_id, position, kind, text, image_asset_id)
+            VALUES (?1, ?2, ?3, 'image', NULL, ?4)
+            ",
+            params![
+                Uuid::new_v4().to_string(),
+                message_id.as_str(),
+                position as i64,
+                image_asset_id.as_str()
+            ],
+        )
+        .context("failed to save image message part")?;
+
+    Ok(())
+}
+
+/// Removes image assets no remaining message part references.
+fn delete_orphan_image_assets_in_transaction(transaction: &Transaction<'_>) -> Result<()> {
+    transaction
+        .execute(
+            "
+            DELETE FROM image_assets
+            WHERE id NOT IN (
+                SELECT image_asset_id
+                FROM message_parts
+                WHERE image_asset_id IS NOT NULL
+            )
+            ",
+            [],
+        )
+        .context("failed to delete orphan image assets")?;
+
+    Ok(())
+}
+
+/// Returns lowercase hex SHA-256 text for stored asset identity metadata.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 /// Deletes all compaction checkpoints for a conversation inside an existing

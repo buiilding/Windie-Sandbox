@@ -7,8 +7,8 @@
 use anyhow::{Context, Result};
 
 use crate::context::ContextBuilder;
-use crate::conversation::{ConversationId, Message, Role};
-use crate::llm::RuntimeLlm;
+use crate::conversation::{ConversationId, Message, MessageMetadata, Role};
+use crate::llm::{AssistantResponse, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::store::Store;
 
@@ -35,19 +35,21 @@ where
         ContextBuilder::build(store, conversation_id).context("failed to build model context")?;
 
     output.start_assistant_message();
-    let reply = llm
+    let assistant_response = llm
         .stream(&model_messages, |text| output.assistant_delta(text))
         .await
         .context("failed to stream assistant response")?;
     output.end_assistant_message();
+    output.assistant_tool_calls(&assistant_response.tool_calls);
 
+    let metadata = assistant_metadata(&assistant_response);
     let assistant_message_id = store
         .insert_message(
             conversation_id,
             parent_message_id.as_ref(),
             Role::Assistant,
-            &reply,
-            None,
+            &assistant_response.content,
+            metadata.as_ref(),
         )
         .context("failed to save assistant message")?;
 
@@ -55,8 +57,20 @@ where
         id: Some(assistant_message_id),
         parent_message_id,
         role: Role::Assistant,
-        content: reply,
-        metadata: None,
+        content: assistant_response.content,
+        parts: Vec::new(),
+        metadata,
+    })
+}
+
+/// Builds typed assistant metadata when tool calls are present.
+fn assistant_metadata(response: &AssistantResponse) -> Option<MessageMetadata> {
+    if response.tool_calls.is_empty() {
+        return None;
+    }
+
+    Some(MessageMetadata {
+        tool_calls: response.tool_calls.clone(),
     })
 }
 

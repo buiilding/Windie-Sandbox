@@ -3,12 +3,14 @@
 //! This module owns HTTP requests to Bifrost's chat completions endpoint and
 //! parsing streamed response chunks.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::conversation::Message;
+use crate::conversation::{Message, ToolCall};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the OpenAI-compatible provider adapter.
@@ -60,9 +62,26 @@ impl std::fmt::Display for ModelName {
 /// Tests use this trait to simulate success and failure without making network
 /// requests.
 pub(crate) trait RuntimeLlm {
-    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<String>
+    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Complete assistant response received from a streaming chat request.
+pub struct AssistantResponse {
+    pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub finish_reason: Option<FinishReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Normalized reason the provider stopped the assistant stream.
+pub enum FinishReason {
+    Stop,
+    Length,
+    ToolCalls,
+    Other,
 }
 
 /// HTTP client for Bifrost's OpenAI-compatible chat completions endpoint.
@@ -89,6 +108,7 @@ struct ChatStreamChunk {
 #[derive(Debug, Deserialize)]
 /// One candidate choice inside a streamed chat chunk.
 struct StreamChoice {
+    finish_reason: Option<String>,
     delta: StreamDelta,
 }
 
@@ -96,6 +116,42 @@ struct StreamChoice {
 /// Incremental assistant content inside a streamed choice.
 struct StreamDelta {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<StreamToolCallDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+/// Incremental tool-call payload inside a streamed choice.
+struct StreamToolCallDelta {
+    index: u16,
+    id: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    function: Option<StreamToolCallFunctionDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+/// Incremental function-call fields inside a streamed tool call.
+struct StreamToolCallFunctionDelta {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Default)]
+/// In-progress assistant stream state.
+struct AssistantStreamState {
+    content: String,
+    tool_calls: BTreeMap<u16, PartialToolCall>,
+    finish_reason: Option<FinishReason>,
+}
+
+#[derive(Debug, Default)]
+/// Tool call assembled from multiple streaming chunks.
+struct PartialToolCall {
+    id: Option<String>,
+    kind: Option<String>,
+    name: Option<String>,
+    arguments: String,
 }
 
 impl BifrostClient {
@@ -113,9 +169,13 @@ impl BifrostClient {
         format!("{}/chat/completions", self.base_url)
     }
 
-    /// Sends the chat request, streams assistant deltas to the caller, and
-    /// returns the full assistant response.
-    pub async fn stream<F>(&self, messages: &[Message], mut handle_delta: F) -> Result<String>
+    /// Sends the chat request, streams assistant text deltas to the caller, and
+    /// returns the complete assistant response including tool calls.
+    pub async fn stream<F>(
+        &self,
+        messages: &[Message],
+        mut handle_delta: F,
+    ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
@@ -142,7 +202,7 @@ impl BifrostClient {
         let mut stream = response.bytes_stream();
         let mut byte_buffer = Vec::new();
         let mut buffer = String::new();
-        let mut answer = String::new();
+        let mut state = AssistantStreamState::default();
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("failed to read chat stream")?;
@@ -151,22 +211,25 @@ impl BifrostClient {
             // bytes are decoded separately from line parsing.
             byte_buffer.extend_from_slice(&chunk);
             append_valid_utf8(&mut byte_buffer, &mut buffer)?;
-            process_stream_lines(&mut buffer, &mut answer, &mut handle_delta)?;
+            process_stream_lines(&mut buffer, &mut state, &mut handle_delta)?;
         }
 
         finish_utf8(&mut byte_buffer, &mut buffer)?;
-        process_final_stream_line(&mut buffer, &mut answer, &mut handle_delta)?;
+        process_final_stream_line(&mut buffer, &mut state, &mut handle_delta)?;
 
-        if answer.trim().is_empty() {
-            return Err(anyhow!("chat stream did not include assistant content"));
+        let response = state.finalize()?;
+        if response.content.trim().is_empty() && response.tool_calls.is_empty() {
+            return Err(anyhow!(
+                "chat stream did not include assistant content or tool calls"
+            ));
         }
 
-        Ok(answer)
+        Ok(response)
     }
 }
 
 impl RuntimeLlm for BifrostClient {
-    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<String>
+    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
@@ -217,7 +280,7 @@ fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()
 /// Processes every complete newline-delimited SSE line currently buffered.
 fn process_stream_lines<F>(
     buffer: &mut String,
-    answer: &mut String,
+    state: &mut AssistantStreamState,
     handle_delta: &mut F,
 ) -> Result<()>
 where
@@ -226,7 +289,7 @@ where
     while let Some(line_end) = buffer.find('\n') {
         let line = buffer[..line_end].trim_end_matches('\r').to_string();
         buffer.drain(..=line_end);
-        process_stream_line(&line, answer, handle_delta)?;
+        process_stream_line(&line, state, handle_delta)?;
     }
 
     Ok(())
@@ -236,7 +299,7 @@ where
 /// newline.
 fn process_final_stream_line<F>(
     buffer: &mut String,
-    answer: &mut String,
+    state: &mut AssistantStreamState,
     handle_delta: &mut F,
 ) -> Result<()>
 where
@@ -247,11 +310,15 @@ where
     }
 
     let line = std::mem::take(buffer);
-    process_stream_line(line.trim_end_matches('\r'), answer, handle_delta)
+    process_stream_line(line.trim_end_matches('\r'), state, handle_delta)
 }
 
 /// Parses one SSE line and forwards assistant content deltas.
-fn process_stream_line<F>(line: &str, answer: &mut String, handle_delta: &mut F) -> Result<()>
+fn process_stream_line<F>(
+    line: &str,
+    state: &mut AssistantStreamState,
+    handle_delta: &mut F,
+) -> Result<()>
 where
     F: FnMut(&str) -> Result<()>,
 {
@@ -267,13 +334,88 @@ where
     let chunk: ChatStreamChunk =
         serde_json::from_str(data).context("failed to parse chat stream chunk")?;
     for choice in chunk.choices {
+        if let Some(finish_reason) = choice.finish_reason {
+            state.finish_reason = Some(FinishReason::from_provider(&finish_reason));
+        }
+
         if let Some(content) = choice.delta.content {
             handle_delta(&content)?;
-            answer.push_str(&content);
+            state.content.push_str(&content);
+        }
+
+        for tool_call in choice.delta.tool_calls {
+            state.push_tool_call_delta(tool_call);
         }
     }
 
     Ok(())
+}
+
+impl FinishReason {
+    /// Converts provider finish reason text into Windie's small enum.
+    fn from_provider(value: &str) -> Self {
+        match value {
+            "stop" => Self::Stop,
+            "length" => Self::Length,
+            "tool_calls" => Self::ToolCalls,
+            _ => Self::Other,
+        }
+    }
+}
+
+impl AssistantStreamState {
+    /// Applies one streamed tool-call delta to the in-progress call at its
+    /// provider index.
+    fn push_tool_call_delta(&mut self, delta: StreamToolCallDelta) {
+        let tool_call = self.tool_calls.entry(delta.index).or_default();
+
+        if let Some(id) = delta.id {
+            tool_call.id = Some(id);
+        }
+        if let Some(kind) = delta.kind {
+            tool_call.kind = Some(kind);
+        }
+        if let Some(function) = delta.function {
+            if let Some(name) = function.name {
+                tool_call.name = Some(name);
+            }
+            if let Some(arguments) = function.arguments {
+                tool_call.arguments.push_str(&arguments);
+            }
+        }
+    }
+
+    /// Converts the stream state into a complete assistant response.
+    fn finalize(self) -> Result<AssistantResponse> {
+        let tool_calls = self
+            .tool_calls
+            .into_iter()
+            .map(|(index, tool_call)| tool_call.finalize(index))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(AssistantResponse {
+            content: self.content,
+            tool_calls,
+            finish_reason: self.finish_reason,
+        })
+    }
+}
+
+impl PartialToolCall {
+    /// Validates and returns one complete tool call after streaming has ended.
+    fn finalize(self, index: u16) -> Result<ToolCall> {
+        let id = self
+            .id
+            .ok_or_else(|| anyhow!("tool call {index} did not include id"))?;
+        let name = self
+            .name
+            .ok_or_else(|| anyhow!("tool call {index} did not include function name"))?;
+
+        let mut tool_call = ToolCall::function(id, name, self.arguments);
+        tool_call.index = index;
+
+        Ok(tool_call)
+    }
 }
 
 #[cfg(test)]
@@ -289,9 +431,9 @@ mod tests {
 
     #[test]
     fn model_name_preserves_provider_prefix() {
-        let model = ModelName::new("openai/gpt-4o-mini");
+        let model = ModelName::new("anthropic/claude-3-5-haiku");
 
-        assert_eq!(model.as_str(), "openai/gpt-4o-mini");
+        assert_eq!(model.as_str(), "anthropic/claude-3-5-haiku");
     }
 
     #[test]
@@ -309,7 +451,7 @@ mod tests {
 
     #[test]
     fn parses_stream_content_delta() {
-        let mut answer = String::new();
+        let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
         let mut handle_delta = |text: &str| {
             deltas.push(text.to_string());
@@ -318,13 +460,40 @@ mod tests {
 
         process_stream_line(
             r#"data: {"choices":[{"delta":{"content":"Hello"}}]}"#,
-            &mut answer,
+            &mut state,
             &mut handle_delta,
         )
         .unwrap();
 
-        assert_eq!(answer, "Hello");
+        assert_eq!(state.content, "Hello");
         assert_eq!(deltas, vec!["Hello"]);
+    }
+
+    #[test]
+    fn assembles_streamed_tool_call() {
+        let mut state = AssistantStreamState::default();
+        let mut handle_delta = |_text: &str| Ok(());
+
+        process_stream_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"run_shell","arguments":"{\"command\""}}]}}]}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+        process_stream_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"ls\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+
+        let response = state.finalize().unwrap();
+
+        assert_eq!(response.finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id.as_str(), "call_123");
+        assert_eq!(response.tool_calls[0].name(), "run_shell");
+        assert_eq!(response.tool_calls[0].arguments(), r#"{"command":"ls"}"#);
     }
 
     #[test]
@@ -369,31 +538,31 @@ mod tests {
 
     #[test]
     fn ignores_done_stream_line() {
-        let mut answer = String::new();
+        let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
         let mut handle_delta = |text: &str| {
             deltas.push(text.to_string());
             Ok(())
         };
 
-        process_stream_line("data: [DONE]", &mut answer, &mut handle_delta).unwrap();
+        process_stream_line("data: [DONE]", &mut state, &mut handle_delta).unwrap();
 
-        assert!(answer.is_empty());
+        assert!(state.content.is_empty());
         assert!(deltas.is_empty());
     }
 
     #[test]
     fn ignores_non_data_stream_line() {
-        let mut answer = String::new();
+        let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
         let mut handle_delta = |text: &str| {
             deltas.push(text.to_string());
             Ok(())
         };
 
-        process_stream_line("event: message", &mut answer, &mut handle_delta).unwrap();
+        process_stream_line("event: message", &mut state, &mut handle_delta).unwrap();
 
-        assert!(answer.is_empty());
+        assert!(state.content.is_empty());
         assert!(deltas.is_empty());
     }
 
@@ -403,24 +572,24 @@ mod tests {
              data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\
              data: [DONE]\n"
             .to_string();
-        let mut answer = String::new();
+        let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
         let mut handle_delta = |text: &str| {
             deltas.push(text.to_string());
             Ok(())
         };
 
-        process_stream_lines(&mut buffer, &mut answer, &mut handle_delta).unwrap();
+        process_stream_lines(&mut buffer, &mut state, &mut handle_delta).unwrap();
 
         assert!(buffer.is_empty());
-        assert_eq!(answer, "Hello");
+        assert_eq!(state.content, "Hello");
         assert_eq!(deltas, vec!["Hel", "lo"]);
     }
 
     #[test]
     fn keeps_partial_line_in_buffer() {
         let mut buffer = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}".to_string();
-        let mut answer = String::new();
+        let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
 
         {
@@ -429,11 +598,11 @@ mod tests {
                 Ok(())
             };
 
-            process_stream_lines(&mut buffer, &mut answer, &mut handle_delta).unwrap();
+            process_stream_lines(&mut buffer, &mut state, &mut handle_delta).unwrap();
         }
 
         assert!(!buffer.is_empty());
-        assert!(answer.is_empty());
+        assert!(state.content.is_empty());
         assert!(deltas.is_empty());
 
         {
@@ -442,11 +611,11 @@ mod tests {
                 Ok(())
             };
 
-            process_final_stream_line(&mut buffer, &mut answer, &mut handle_delta).unwrap();
+            process_final_stream_line(&mut buffer, &mut state, &mut handle_delta).unwrap();
         }
 
         assert!(buffer.is_empty());
-        assert_eq!(answer, "Hello");
+        assert_eq!(state.content, "Hello");
         assert_eq!(deltas, vec!["Hello"]);
     }
 }
