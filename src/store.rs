@@ -161,6 +161,26 @@ impl Store {
                     FOREIGN KEY (parent_message_id) REFERENCES messages(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS image_assets (
+                    id TEXT PRIMARY KEY,
+                    bytes BLOB NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS message_parts (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    text TEXT,
+                    image_asset_id TEXT,
+
+                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY (image_asset_id) REFERENCES image_assets(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS compactions (
                     id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
@@ -177,6 +197,9 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS messages_parent_idx
                 ON messages(conversation_id, parent_message_id);
+
+                CREATE INDEX IF NOT EXISTS message_parts_message_idx
+                ON message_parts(message_id, position);
 
                 CREATE INDEX IF NOT EXISTS conversations_updated_idx
                 ON conversations(updated_at);
@@ -312,11 +335,13 @@ impl Store {
             )
             .context("failed to prepare message load")?;
 
-        let messages = statement
+        let mut messages = statement
             .query_map(params![conversation_id.as_str()], read_message_row)
             .context("failed to load messages")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read messages")?;
+        self.attach_message_parts(&mut messages)
+            .context("failed to load message parts")?;
 
         Ok(messages)
     }
@@ -487,7 +512,7 @@ impl Store {
             )
             .context("failed to prepare active path load")?;
 
-        let path = statement
+        let mut path = statement
             .query_map(
                 params![conversation_id.as_str(), message_id.as_str()],
                 read_message_row,
@@ -495,6 +520,8 @@ impl Store {
             .context("failed to load active path")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read active path")?;
+        self.attach_message_parts(&mut path)
+            .context("failed to load active path parts")?;
 
         Ok(path)
     }
@@ -536,7 +563,7 @@ impl Store {
             )
             .context("failed to prepare message load after checkpoint")?;
 
-        let messages = statement
+        let mut messages = statement
             .query_map(
                 params![conversation_id.as_str(), created_at, rowid],
                 read_message_row,
@@ -544,8 +571,67 @@ impl Store {
             .context("failed to load messages after checkpoint")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read messages after checkpoint")?;
+        self.attach_message_parts(&mut messages)
+            .context("failed to load message parts after checkpoint")?;
 
         Ok(messages)
+    }
+
+    /// Attaches ordered text/image parts to already-loaded message rows.
+    fn attach_message_parts(&self, messages: &mut [Message]) -> Result<()> {
+        let message_ids = messages
+            .iter()
+            .filter_map(|message| message.id.as_ref())
+            .map(|id| id.as_str().to_string())
+            .collect::<Vec<_>>();
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+
+        let placeholders = (1..=message_ids.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "
+            SELECT
+                message_parts.message_id,
+                message_parts.kind,
+                message_parts.text,
+                image_assets.id,
+                image_assets.mime_type,
+                image_assets.bytes
+            FROM message_parts
+            LEFT JOIN image_assets ON image_assets.id = message_parts.image_asset_id
+            WHERE message_parts.message_id IN ({placeholders})
+            ORDER BY message_parts.message_id, message_parts.position, message_parts.rowid
+            "
+        );
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .context("failed to prepare message part load")?;
+        let mut parts_by_message = HashMap::<String, Vec<MessagePart>>::new();
+        let parts = statement
+            .query_map(params_from_iter(message_ids.iter()), read_message_part_row)
+            .context("failed to load message parts")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read message parts")?;
+
+        for (message_id, part) in parts {
+            parts_by_message.entry(message_id).or_default().push(part);
+        }
+
+        for message in messages {
+            let Some(message_id) = message.id.as_ref() else {
+                continue;
+            };
+            message.parts = parts_by_message
+                .remove(message_id.as_str())
+                .unwrap_or_default();
+        }
+
+        Ok(())
     }
 
     /// Inserts a new message and updates the conversation timestamp in one
@@ -609,6 +695,80 @@ impl Store {
         transaction
             .commit()
             .context("failed to commit message save")?;
+
+        Ok(id)
+    }
+
+    /// Inserts one user message with copied image bytes and updates the active
+    /// message pointer.
+    ///
+    /// The plain `content` column remains the text preview. Ordered
+    /// `message_parts` preserve the model-facing text/image structure.
+    pub fn insert_user_message_with_image(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> Result<MessageId> {
+        let id = MessageId::new(Uuid::new_v4().to_string());
+        let now = now_millis()?;
+
+        self.ensure_conversation_exists(conversation_id)?;
+
+        if let Some(parent_message_id) = parent_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, parent_message_id)?;
+        }
+
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start image message save transaction")?;
+
+        transaction
+            .execute(
+                "
+                INSERT INTO messages (
+                    id,
+                    conversation_id,
+                    parent_message_id,
+                    role,
+                    content,
+                    metadata,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)
+                ",
+                params![
+                    id.as_str(),
+                    conversation_id.as_str(),
+                    parent_message_id.map(MessageId::as_str),
+                    Role::User.as_str(),
+                    content,
+                    now
+                ],
+            )
+            .context("failed to save image message")?;
+
+        let mut position = 0;
+        if !content.is_empty() {
+            insert_text_part_in_transaction(&transaction, &id, position, content)
+                .context("failed to save image message text part")?;
+            position += 1;
+        }
+        let image_asset_id = insert_image_asset_in_transaction(&transaction, mime_type, bytes, now)
+            .context("failed to save image asset")?;
+        insert_image_part_in_transaction(&transaction, &id, position, &image_asset_id)
+            .context("failed to save image message part")?;
+
+        set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
+            .context("failed to set active message")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit image message save")?;
 
         Ok(id)
     }
@@ -717,6 +877,8 @@ impl Store {
                 params![conversation_id.as_str(), message_id.as_str()],
             )
             .context("failed to delete message subtree")?;
+        delete_orphan_image_assets_in_transaction(&transaction)
+            .context("failed to delete orphan image assets")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -784,6 +946,8 @@ impl Store {
                 params![conversation_id.as_str(), message_id.as_str()],
             )
             .context("failed to prune conversation descendants")?;
+        delete_orphan_image_assets_in_transaction(&transaction)
+            .context("failed to delete orphan image assets")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -864,6 +1028,13 @@ impl Store {
                     ],
                 )
                 .context("failed to copy forked conversation message")?;
+            insert_message_parts_in_transaction(
+                &transaction,
+                &forked_message_id,
+                &message.parts,
+                now + index as i64,
+            )
+            .context("failed to copy forked conversation message parts")?;
 
             message_id_map.insert(source_message_id.as_str().to_string(), forked_message_id);
         }
@@ -912,6 +1083,8 @@ impl Store {
                 params![conversation_id.as_str()],
             )
             .context("failed to delete conversation messages")?;
+        delete_orphan_image_assets_in_transaction(&transaction)
+            .context("failed to delete orphan image assets")?;
         transaction
             .execute(
                 "DELETE FROM conversations WHERE id = ?1",

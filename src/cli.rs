@@ -26,6 +26,7 @@ pub enum Command {
         conversation_id: ConversationId,
         role: Role,
         text: String,
+        image_path: Option<PathBuf>,
     },
     /// Run one benchmark mode. Conversation mode carries the target
     /// conversation ID; local and live modes do not.
@@ -115,19 +116,7 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [command, conversation_id] if command == "tree" => {
             Command::Tree(ConversationId::new(conversation_id.as_str()))
         }
-        [command, conversation_id, role_flag, role, text_flag, text]
-            if command == "insert" && role_flag == "--role" && text_flag == "--text" =>
-        {
-            let Some(role) = parse_role(role) else {
-                return Command::Invalid;
-            };
-
-            Command::Insert {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                role,
-                text: text.to_string(),
-            }
-        }
+        [command, rest @ ..] if command == "insert" => parse_insert_command(rest),
         [command, conversation_id, message_id, text_flag, text]
             if command == "update" && text_flag == "--text" =>
         {
@@ -174,6 +163,69 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         }
         [arg] if arg == "status" => Command::Status,
         _ => Command::Invalid,
+    }
+}
+
+/// Parses `windie insert <conversation_id> --role <role> [--text <text>] [--image <path>]`.
+fn parse_insert_command(args: &[String]) -> Command {
+    let Some(conversation_id) = args.first() else {
+        return Command::Invalid;
+    };
+
+    let mut role = None;
+    let mut text = None;
+    let mut image_path = None;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--role") => {
+                let Some(value) = args.get(index + 1) else {
+                    return Command::Invalid;
+                };
+                if role.is_some() {
+                    return Command::Invalid;
+                }
+                role = parse_role(value);
+                index += 2;
+            }
+            Some("--text") => {
+                let Some(value) = args.get(index + 1) else {
+                    return Command::Invalid;
+                };
+                if text.is_some() {
+                    return Command::Invalid;
+                }
+                text = Some(value.to_string());
+                index += 2;
+            }
+            Some("--image") => {
+                let Some(value) = args.get(index + 1) else {
+                    return Command::Invalid;
+                };
+                if image_path.is_some() {
+                    return Command::Invalid;
+                }
+                image_path = Some(PathBuf::from(value));
+                index += 2;
+            }
+            _ => return Command::Invalid,
+        }
+    }
+
+    let Some(role) = role else {
+        return Command::Invalid;
+    };
+    let text = text.unwrap_or_default();
+    if text.is_empty() && image_path.is_none() {
+        return Command::Invalid;
+    }
+
+    Command::Insert {
+        conversation_id: ConversationId::new(conversation_id.as_str()),
+        role,
+        text,
+        image_path,
     }
 }
 
@@ -431,7 +483,60 @@ mod tests {
                 conversation_id,
                 role: Role::User,
                 text,
+                image_path: None,
             } if conversation_id.as_str() == "conversation-id" && text == "hello"
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_image() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "what is this?".to_string(),
+            "--image".to_string(),
+            "image.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Insert {
+                conversation_id,
+                role: Role::User,
+                text,
+                image_path: Some(path),
+            } if conversation_id.as_str() == "conversation-id"
+                && text == "what is this?"
+                && path == PathBuf::from("image.png")
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_only_image() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--image".to_string(),
+            "image.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Insert {
+                conversation_id,
+                role: Role::User,
+                text,
+                image_path: Some(path),
+            } if conversation_id.as_str() == "conversation-id"
+                && text.is_empty()
+                && path == PathBuf::from("image.png")
         ));
     }
 
@@ -620,6 +725,26 @@ mod tests {
                 conversation_id,
                 model: Some(model),
             } if conversation_id.as_str() == "conversation-id" && model.as_str() == "openai/gpt-4o-mini"
+        ));
+    }
+
+    #[test]
+    fn reads_query_with_provider_qualified_model() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "query".to_string(),
+            "conversation-id".to_string(),
+            "--model".to_string(),
+            "anthropic/claude-3-5-haiku".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Query {
+                conversation_id,
+                model: Some(model),
+            } if conversation_id.as_str() == "conversation-id"
+                && model.as_str() == "anthropic/claude-3-5-haiku"
         ));
     }
 

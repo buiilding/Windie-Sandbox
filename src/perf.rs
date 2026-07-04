@@ -358,6 +358,7 @@ async fn run_live_request(
         parent_message_id: None,
         role: Role::User,
         content: BENCH_PROMPT.to_string(),
+        parts: Vec::new(),
         metadata: None,
     }];
 
@@ -374,7 +375,7 @@ async fn run_live_request(
         .await?;
     let full_response = request_started.elapsed();
 
-    Ok((first_token, full_response, response.len()))
+    Ok((first_token, full_response, response.content.len()))
 }
 
 impl PerformanceSample {

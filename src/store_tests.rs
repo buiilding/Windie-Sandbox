@@ -1,6 +1,7 @@
 //! Tests for the SQLite persistence boundary.
 
 use super::*;
+use crate::conversation::{MessagePart, ToolCall};
 
 fn index_exists(store: &Store, index_name: &str) -> bool {
     store
@@ -399,23 +400,46 @@ fn rejects_message_parent_from_another_conversation() {
 fn preserves_metadata() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call_123",
+            "run_shell",
+            r#"{"command":"ls"}"#,
+        )],
+    };
 
     store
-        .insert_message(
+        .insert_message(&conversation_id, None, Role::Assistant, "", Some(&metadata))
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(messages[0].metadata.as_ref(), Some(&metadata));
+}
+
+#[test]
+fn saves_and_loads_image_message_parts() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+
+    store
+        .insert_user_message_with_image(
             &conversation_id,
             None,
-            Role::Assistant,
-            "",
-            Some(r#"{"tool_calls":[]}"#),
+            "what is this?",
+            "image/png",
+            &[1, 2, 3],
         )
         .unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
 
-    assert_eq!(
-        messages[0].metadata.as_deref(),
-        Some(r#"{"tool_calls":[]}"#)
-    );
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "what is this?");
+    assert_eq!(messages[0].parts.len(), 2);
+    assert!(matches!(&messages[0].parts[0], MessagePart::Text(text) if text == "what is this?"));
+    assert!(matches!(&messages[0].parts[1], MessagePart::Image(image)
+        if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
 }
 
 #[test]
@@ -698,6 +722,13 @@ fn rejects_truncating_after_message_from_another_conversation() {
 fn forks_conversation_at_message() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    let metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call_456",
+            "run_shell",
+            r#"{"command":"pwd"}"#,
+        )],
+    };
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -708,7 +739,7 @@ fn forks_conversation_at_message() {
             Some(&first_id),
             Role::Assistant,
             "two",
-            Some(r#"{"source":"test"}"#),
+            Some(&metadata),
         )
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -737,10 +768,7 @@ fn forks_conversation_at_message() {
     assert_eq!(forked_messages[0].content, "one");
     assert_eq!(forked_messages[1].role, Role::Assistant);
     assert_eq!(forked_messages[1].content, "two");
-    assert_eq!(
-        forked_messages[1].metadata.as_deref(),
-        Some(r#"{"source":"test"}"#)
-    );
+    assert_eq!(forked_messages[1].metadata.as_ref(), Some(&metadata));
     assert_ne!(forked_messages[0].id.as_deref(), Some(first_id.as_str()));
     assert_eq!(
         forked_messages[1].parent_message_id.as_deref(),

@@ -1,7 +1,7 @@
 //! Tests for terminal output formatting.
 
 use super::*;
-use crate::conversation::{ConversationId, MessageId, Role};
+use crate::conversation::{ConversationId, ImageAssetId, ImagePart, MessageId, MessagePart, Role};
 use crate::perf::{
     BenchmarkMode, DurationMetric, PerformanceComparison, PerformanceComparisonRow,
     PerformanceReport, PerformanceSummary,
@@ -31,6 +31,10 @@ fn formats_help_lines() {
         )
     );
     assert!(lines.contains(
+        &"  windie insert <conversation_id> --role user --text \"what is this?\" --image <path>"
+            .to_string()
+    ));
+    assert!(lines.contains(
         &"  windie update <conversation_id> <message_id> --text \"new text\"".to_string()
     ));
     assert!(lines.contains(
@@ -39,6 +43,9 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie truncate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie fork <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie query <conversation_id>".to_string()));
+    assert!(
+        lines.contains(&"  windie query <conversation_id> --model <provider/model>".to_string())
+    );
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
     assert!(lines.contains(&"  windie bench ls".to_string()));
@@ -152,6 +159,32 @@ fn formats_unsaved_message_id() {
     let lines = message_lines(&messages);
 
     assert_eq!(lines, vec!["messages", "user  <unsaved>  draft"]);
+}
+
+#[test]
+fn formats_image_message_preview() {
+    let messages = vec![Message {
+        id: Some(MessageId::new("message-id")),
+        parent_message_id: None,
+        role: Role::User,
+        content: "what is this?".to_string(),
+        parts: vec![
+            MessagePart::Text("what is this?".to_string()),
+            MessagePart::Image(ImagePart {
+                asset_id: ImageAssetId::new("image-id"),
+                mime_type: "image/png".to_string(),
+                bytes: vec![1, 2, 3],
+            }),
+        ],
+        metadata: None,
+    }];
+
+    let lines = message_lines(&messages);
+
+    assert_eq!(
+        lines,
+        vec!["messages", "user  message-id  what is this? [image]"]
+    );
 }
 
 #[test]

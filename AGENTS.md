@@ -91,8 +91,18 @@ Bifrost owns provider inference, model routing, provider keys, and LLM observabi
 Clients own user interface surfaces such as CLI, desktop app, browser UI, or voice.
 ```
 
+For multimodal input, Windie owns local file reading, durable copied image
+storage, typed message parts, and OpenAI-compatible request shape. Bifrost and
+the provider own model capability rejection.
+
 The current CLI is the first client and the first runtime surface. It is not the
 whole product.
+
+For each provider Windie wants Bifrost to use, Bifrost needs provider config
+once. The provider row names the provider, such as `anthropic`. The key row
+points to the environment variable, such as `env.ANTHROPIC_API_KEY`. Use the
+same pattern for Gemini, Groq, OpenRouter, and other providers. The actual
+secret value should stay in Windie's explicit `.env` provider-key file.
 
 ## Current Scope
 
@@ -108,14 +118,19 @@ Allowed in the current scope:
 - SQLite-backed conversation persistence.
 - Multiple persisted conversations.
 - Message insert, update, and remove primitives.
+- User image input with copied local image bytes.
+- Conversation-level system prompt primitive.
 - Conversation truncate and fork primitives.
 - Active path selection and full conversation tree inspection.
 - One-shot conversation query primitive.
+- Per-query model override with Bifrost-qualified model names.
+- Tool-call receiving and persistence without tool execution.
 - Model-facing context construction.
 - Future-ready compaction storage.
 - Basic local performance baselines, repeated benchmark runs, and JSON
   benchmark comparison.
 - OpenAI-compatible `/chat/completions` requests.
+- OpenAI-compatible image request serialization.
 - Bifrost gateway health check.
 - Explicit Bifrost gateway start and stop commands.
 - Explicit `.env` provider-key environment for Bifrost gateway startup.
@@ -135,6 +150,7 @@ Not in scope yet:
 - Plugin systems.
 - Web dashboard.
 - General config files beyond the explicit Bifrost `.env` provider-key file.
+- Persisted conversation/global model selection.
 - Slash commands.
 - Automatic history compaction.
 - Memory systems beyond persisted conversation messages and future compaction checkpoints.

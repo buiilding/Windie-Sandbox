@@ -89,6 +89,7 @@ marks the active message.
 
 ```text
 windie insert <conversation_id> --role user --text "hello"
+windie insert <conversation_id> --role user --text "what is this?" --image ./image.png
 ```
 
 Insert one message into a conversation tree without querying the model.
@@ -117,6 +118,13 @@ windie insert <conversation_id> --role assistant --text "hello back"
 ```
 
 The command prints the new message ID.
+
+`--image` copies the image bytes into Windie's SQLite storage and inserts an
+ordered image part on the user message. The first implementation supports one
+local image path per inserted user message. Windie validates only local file
+readability and basic image extension. Bifrost/provider owns model capability
+errors, so `query` prints the provider rejection if the selected model does not
+accept image input.
 
 ```text
 windie update <conversation_id> <message_id> --text "new text"
@@ -192,14 +200,31 @@ windie query <conversation_id>
 Run one model response from the active path and insert the assistant message.
 Requires the local Bifrost gateway to already be running.
 
+If the model returns tool calls, Windie stores those tool calls on the assistant
+message and prints a tool-call summary. Windie does not execute tools yet.
+
 ```text
-windie query <conversation_id> --model openai/gpt-4o-mini
+windie query <conversation_id> --model <provider/model>
 ```
 
 Run one model response from the active path using a specific model. Requires the
 local Bifrost gateway to already be running.
 
-The model name is passed to Bifrost, for example `openai/gpt-4o-mini`.
+The model name is passed to Bifrost for this one request only. Windie does not
+persist conversation or global model selection yet.
+
+Bifrost must have provider config once for each provider used by Windie. The
+provider row names the provider, such as `anthropic`. The key row points to the
+environment variable, such as `env.ANTHROPIC_API_KEY`. Use the same pattern for
+Gemini, Groq, OpenRouter, and other providers.
+
+Examples:
+
+```text
+windie query <conversation_id> --model openai/gpt-4o-mini
+windie query <conversation_id> --model anthropic/claude-3-5-haiku
+windie query <conversation_id> --model ollama/llama3.2
+```
 
 ## Runtime Status
 

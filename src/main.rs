@@ -15,7 +15,8 @@ mod runtime;
 mod store;
 
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::cli::Command;
 use crate::conversation::{ConversationId, MessageId, Role};
@@ -59,7 +60,8 @@ async fn main() -> Result<()> {
             conversation_id,
             role,
             text,
-        } => insert_message(conversation_id, role, &text),
+            image_path,
+        } => insert_message(conversation_id, role, &text, image_path.as_deref()),
         Command::Fork {
             conversation_id,
             message_id,
@@ -236,25 +238,77 @@ fn show_tree(conversation_id: ConversationId) -> Result<()> {
 ///
 /// The parent is set to the active message so the store keeps a tree and the
 /// runtime continues from the selected path.
-fn insert_message(conversation_id: ConversationId, role: Role, text: &str) -> Result<()> {
+fn insert_message(
+    conversation_id: ConversationId,
+    role: Role,
+    text: &str,
+    image_path: Option<&Path>,
+) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
     let parent_message_id = store
         .active_message_id(&conversation_id)
         .context("failed to load active message")?;
-    let message_id = store
-        .insert_message(
-            &conversation_id,
-            parent_message_id.as_ref(),
-            role,
-            text,
-            None,
-        )
-        .context("failed to insert message")?;
+    let message_id = if let Some(image_path) = image_path {
+        if role != Role::User {
+            anyhow::bail!("image input is only supported for user messages");
+        }
+
+        let image = read_image_input(image_path)?;
+        store
+            .insert_user_message_with_image(
+                &conversation_id,
+                parent_message_id.as_ref(),
+                text,
+                &image.mime_type,
+                &image.bytes,
+            )
+            .context("failed to insert image message")?
+    } else {
+        store
+            .insert_message(
+                &conversation_id,
+                parent_message_id.as_ref(),
+                role,
+                text,
+                None,
+            )
+            .context("failed to insert message")?
+    };
 
     output.inserted_message(&message_id);
 
     Ok(())
+}
+
+/// Image bytes and MIME type read from a local file before persistence.
+struct ImageInput {
+    mime_type: String,
+    bytes: Vec<u8>,
+}
+
+/// Reads a local image file for durable storage.
+fn read_image_input(path: &Path) -> Result<ImageInput> {
+    let mime_type = image_mime_type(path)
+        .with_context(|| format!("unsupported image type: {}", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("failed to read image: {}", path.display()))?;
+
+    Ok(ImageInput { mime_type, bytes })
+}
+
+/// Infers the small set of image MIME types Windie can send to Bifrost.
+fn image_mime_type(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let mime_type = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return None,
+    };
+
+    Some(mime_type.to_string())
 }
 
 /// Selects one message as the active runtime node.
