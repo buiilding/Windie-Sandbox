@@ -16,9 +16,9 @@ mod runtime;
 mod store;
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::cli::Command;
+use crate::cli::{Command, InsertPart};
 use crate::conversation::{ConversationId, MessageId, Role};
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::read_image_input;
@@ -26,7 +26,7 @@ use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
 use crate::runtime::query_conversation;
-use crate::store::Store;
+use crate::store::{ImagePayload, MessagePayload, Store};
 
 const BASE_URL: &str = "http://localhost:8080/v1";
 const GATEWAY_URL: &str = "http://localhost:8080";
@@ -60,9 +60,8 @@ async fn main() -> Result<()> {
         Command::Insert {
             conversation_id,
             role,
-            text,
-            image_path,
-        } => insert_message(conversation_id, role, &text, image_path.as_deref()),
+            parts,
+        } => insert_message(conversation_id, role, &parts),
         Command::Fork {
             conversation_id,
             message_id,
@@ -239,39 +238,51 @@ fn show_tree(conversation_id: ConversationId) -> Result<()> {
 ///
 /// The parent is set to the active message so the store keeps a tree and the
 /// runtime continues from the selected path.
-fn insert_message(
-    conversation_id: ConversationId,
-    role: Role,
-    text: &str,
-    image_path: Option<&Path>,
-) -> Result<()> {
+fn insert_message(conversation_id: ConversationId, role: Role, parts: &[InsertPart]) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
     let parent_message_id = store
         .active_message_id(&conversation_id)
         .context("failed to load active message")?;
-    let message_id = if let Some(image_path) = image_path {
+    let has_image = parts
+        .iter()
+        .any(|part| matches!(part, InsertPart::Image(_)));
+    let has_multiple_parts = parts.len() > 1;
+    let content = insert_content(parts);
+    let message_id = if has_image || has_multiple_parts {
         if role != Role::User {
-            anyhow::bail!("image input is only supported for user messages");
+            anyhow::bail!("multi-part input is only supported for user messages");
         }
 
-        let image = read_image_input(image_path)?;
+        let loaded_parts = parts
+            .iter()
+            .map(load_insert_part)
+            .collect::<Result<Vec<_>>>()?;
+        let payloads = loaded_parts
+            .iter()
+            .map(|part| match part {
+                LoadedInsertPart::Text(text) => MessagePayload::Text(text),
+                LoadedInsertPart::Image(image) => MessagePayload::Image(ImagePayload {
+                    mime_type: &image.mime_type,
+                    bytes: &image.bytes,
+                }),
+            })
+            .collect::<Vec<_>>();
         store
-            .insert_user_message_with_image(
+            .insert_user_message_with_parts(
                 &conversation_id,
                 parent_message_id.as_ref(),
-                text,
-                &image.mime_type,
-                &image.bytes,
+                &content,
+                &payloads,
             )
-            .context("failed to insert image message")?
+            .context("failed to insert multi-part message")?
     } else {
         store
             .insert_message(
                 &conversation_id,
                 parent_message_id.as_ref(),
                 role,
-                text,
+                &content,
                 None,
             )
             .context("failed to insert message")?
@@ -280,6 +291,32 @@ fn insert_message(
     output.inserted_message(&message_id);
 
     Ok(())
+}
+
+/// Loaded version of one ordered insert part.
+enum LoadedInsertPart {
+    Text(String),
+    Image(crate::image_input::ImageInput),
+}
+
+/// Reads file-backed insert parts while preserving text parts as provided.
+fn load_insert_part(part: &InsertPart) -> Result<LoadedInsertPart> {
+    match part {
+        InsertPart::Text(text) => Ok(LoadedInsertPart::Text(text.clone())),
+        InsertPart::Image(path) => read_image_input(path).map(LoadedInsertPart::Image),
+    }
+}
+
+/// Builds the plain text preview stored in the message row.
+fn insert_content(parts: &[InsertPart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            InsertPart::Text(text) => Some(text.as_str()),
+            InsertPart::Image(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Selects one message as the active runtime node.

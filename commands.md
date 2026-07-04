@@ -90,6 +90,8 @@ marks the active message.
 ```text
 windie insert <conversation_id> --role user --text "hello"
 windie insert <conversation_id> --role user --text "what is this?" --image ./image.png
+windie insert <conversation_id> --role user --text "compare these" --image ./a.png --image ./b.png
+windie insert <conversation_id> --role user --text "first" --image ./a.png --text "second" --image ./b.png
 ```
 
 Insert one message into a conversation tree without querying the model.
@@ -119,10 +121,12 @@ windie insert <conversation_id> --role assistant --text "hello back"
 
 The command prints the new message ID.
 
-`--image` copies the image bytes into Windie's SQLite storage and inserts an
-ordered image part on the user message. The first implementation supports one
-local image path per inserted user message. Windie validates only local file
-readability and basic image extension. Bifrost/provider owns model capability
+Each `--text` inserts an ordered text part. Each `--image` copies the image
+bytes into Windie's SQLite storage and inserts an ordered image part. Repeating
+or interleaving `--text` and `--image` stores multiple parts on the same user
+message in flag order. The message row keeps a plain text preview by joining
+all text parts with newlines. Windie validates local file readability, size,
+basic image extension, and image header. Bifrost/provider owns model capability
 errors, so `query` prints the provider rejection if the selected model does not
 accept image input.
 

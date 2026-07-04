@@ -25,8 +25,7 @@ pub enum Command {
     Insert {
         conversation_id: ConversationId,
         role: Role,
-        text: String,
-        image_path: Option<PathBuf>,
+        parts: Vec<InsertPart>,
     },
     /// Run one benchmark mode. Conversation mode carries the target
     /// conversation ID; local and live modes do not.
@@ -78,6 +77,13 @@ pub enum Command {
         text: String,
     },
     Version,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One ordered input part from `windie insert`.
+pub enum InsertPart {
+    Text(String),
+    Image(PathBuf),
 }
 
 /// Reads process argv and returns the parsed command for this invocation.
@@ -166,15 +172,14 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     }
 }
 
-/// Parses `windie insert <conversation_id> --role <role> [--text <text>] [--image <path>]`.
+/// Parses `windie insert <conversation_id> --role <role> [--text <text>] [--image <path>]...`.
 fn parse_insert_command(args: &[String]) -> Command {
     let Some(conversation_id) = args.first() else {
         return Command::Invalid;
     };
 
     let mut role = None;
-    let mut text = None;
-    let mut image_path = None;
+    let mut parts = Vec::new();
     let mut index = 1;
 
     while index < args.len() {
@@ -193,20 +198,14 @@ fn parse_insert_command(args: &[String]) -> Command {
                 let Some(value) = args.get(index + 1) else {
                     return Command::Invalid;
                 };
-                if text.is_some() {
-                    return Command::Invalid;
-                }
-                text = Some(value.to_string());
+                parts.push(InsertPart::Text(value.to_string()));
                 index += 2;
             }
             Some("--image") => {
                 let Some(value) = args.get(index + 1) else {
                     return Command::Invalid;
                 };
-                if image_path.is_some() {
-                    return Command::Invalid;
-                }
-                image_path = Some(PathBuf::from(value));
+                parts.push(InsertPart::Image(PathBuf::from(value)));
                 index += 2;
             }
             _ => return Command::Invalid,
@@ -216,16 +215,22 @@ fn parse_insert_command(args: &[String]) -> Command {
     let Some(role) = role else {
         return Command::Invalid;
     };
-    let text = text.unwrap_or_default();
-    if text.is_empty() && image_path.is_none() {
+    if parts.is_empty() || parts.iter().all(empty_text_part) {
         return Command::Invalid;
     }
 
     Command::Insert {
         conversation_id: ConversationId::new(conversation_id.as_str()),
         role,
-        text,
-        image_path,
+        parts,
+    }
+}
+
+/// Returns whether an insert part carries no user-visible input.
+fn empty_text_part(part: &InsertPart) -> bool {
+    match part {
+        InsertPart::Text(text) => text.is_empty(),
+        InsertPart::Image(_) => false,
     }
 }
 
@@ -482,9 +487,9 @@ mod tests {
             Command::Insert {
                 conversation_id,
                 role: Role::User,
-                text,
-                image_path: None,
-            } if conversation_id.as_str() == "conversation-id" && text == "hello"
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![InsertPart::Text("hello".to_string())]
         ));
     }
 
@@ -507,11 +512,77 @@ mod tests {
             Command::Insert {
                 conversation_id,
                 role: Role::User,
-                text,
-                image_path: Some(path),
+                parts,
             } if conversation_id.as_str() == "conversation-id"
-                && text == "what is this?"
-                && path == PathBuf::from("image.png")
+                && parts == vec![
+                    InsertPart::Text("what is this?".to_string()),
+                    InsertPart::Image(PathBuf::from("image.png")),
+                ]
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_multiple_images() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "compare these".to_string(),
+            "--image".to_string(),
+            "first.png".to_string(),
+            "--image".to_string(),
+            "second.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Insert {
+                conversation_id,
+                role: Role::User,
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![
+                    InsertPart::Text("compare these".to_string()),
+                    InsertPart::Image(PathBuf::from("first.png")),
+                    InsertPart::Image(PathBuf::from("second.png")),
+                ]
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_interleaved_text_and_images() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "first".to_string(),
+            "--image".to_string(),
+            "first.png".to_string(),
+            "--text".to_string(),
+            "second".to_string(),
+            "--image".to_string(),
+            "second.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Insert {
+                conversation_id,
+                role: Role::User,
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![
+                    InsertPart::Text("first".to_string()),
+                    InsertPart::Image(PathBuf::from("first.png")),
+                    InsertPart::Text("second".to_string()),
+                    InsertPart::Image(PathBuf::from("second.png")),
+                ]
         ));
     }
 
@@ -532,11 +603,9 @@ mod tests {
             Command::Insert {
                 conversation_id,
                 role: Role::User,
-                text,
-                image_path: Some(path),
+                parts,
             } if conversation_id.as_str() == "conversation-id"
-                && text.is_empty()
-                && path == PathBuf::from("image.png")
+                && parts == vec![InsertPart::Image(PathBuf::from("image.png"))]
         ));
     }
 

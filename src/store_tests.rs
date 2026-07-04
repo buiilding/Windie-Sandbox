@@ -423,12 +423,17 @@ fn saves_and_loads_image_message_parts() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     store
-        .insert_user_message_with_image(
+        .insert_user_message_with_parts(
             &conversation_id,
             None,
             "what is this?",
-            "image/png",
-            &[1, 2, 3],
+            &[
+                MessagePayload::Text("what is this?"),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/png",
+                    bytes: &[1, 2, 3],
+                }),
+            ],
         )
         .unwrap();
 
@@ -443,17 +448,96 @@ fn saves_and_loads_image_message_parts() {
 }
 
 #[test]
+fn saves_and_loads_multiple_image_message_parts() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+
+    store
+        .insert_user_message_with_parts(
+            &conversation_id,
+            None,
+            "compare these",
+            &[
+                MessagePayload::Text("compare these"),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/png",
+                    bytes: &[1, 2, 3],
+                }),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/jpeg",
+                    bytes: &[4, 5, 6],
+                }),
+            ],
+        )
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "compare these");
+    assert_eq!(messages[0].parts.len(), 3);
+    assert!(matches!(&messages[0].parts[0], MessagePart::Text(text) if text == "compare these"));
+    assert!(matches!(&messages[0].parts[1], MessagePart::Image(image)
+        if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
+    assert!(matches!(&messages[0].parts[2], MessagePart::Image(image)
+        if image.mime_type == "image/jpeg" && image.bytes == vec![4, 5, 6]));
+}
+
+#[test]
+fn saves_and_loads_interleaved_text_and_image_message_parts() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+
+    store
+        .insert_user_message_with_parts(
+            &conversation_id,
+            None,
+            "first\nsecond",
+            &[
+                MessagePayload::Text("first"),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/png",
+                    bytes: &[1, 2, 3],
+                }),
+                MessagePayload::Text("second"),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/jpeg",
+                    bytes: &[4, 5, 6],
+                }),
+            ],
+        )
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "first\nsecond");
+    assert_eq!(messages[0].parts.len(), 4);
+    assert!(matches!(&messages[0].parts[0], MessagePart::Text(text) if text == "first"));
+    assert!(matches!(&messages[0].parts[1], MessagePart::Image(image)
+        if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
+    assert!(matches!(&messages[0].parts[2], MessagePart::Text(text) if text == "second"));
+    assert!(matches!(&messages[0].parts[3], MessagePart::Image(image)
+        if image.mime_type == "image/jpeg" && image.bytes == vec![4, 5, 6]));
+}
+
+#[test]
 fn updates_image_message_text_part_with_content() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     let message_id = store
-        .insert_user_message_with_image(
+        .insert_user_message_with_parts(
             &conversation_id,
             None,
             "what is this?",
-            "image/png",
-            &[1, 2, 3],
+            &[
+                MessagePayload::Text("what is this?"),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/png",
+                    bytes: &[1, 2, 3],
+                }),
+            ],
         )
         .unwrap();
 
@@ -476,12 +560,17 @@ fn updating_image_message_to_empty_text_removes_text_part() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     let message_id = store
-        .insert_user_message_with_image(
+        .insert_user_message_with_parts(
             &conversation_id,
             None,
             "what is this?",
-            "image/png",
-            &[1, 2, 3],
+            &[
+                MessagePayload::Text("what is this?"),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/png",
+                    bytes: &[1, 2, 3],
+                }),
+            ],
         )
         .unwrap();
 

@@ -57,6 +57,20 @@ pub struct Compaction {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+/// Raw image bytes ready to be copied into message asset storage.
+pub struct ImagePayload<'a> {
+    pub mime_type: &'a str,
+    pub bytes: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy)]
+/// One ordered message part ready to be persisted.
+pub enum MessagePayload<'a> {
+    Text(&'a str),
+    Image(ImagePayload<'a>),
+}
+
 /// SQLite-backed persistence boundary for conversations, messages, and
 /// compactions.
 pub struct Store {
@@ -699,19 +713,22 @@ impl Store {
         Ok(id)
     }
 
-    /// Inserts one user message with copied image bytes and updates the active
+    /// Inserts one user message with ordered text/image parts and updates the active
     /// message pointer.
     ///
     /// The plain `content` column remains the text preview. Ordered
     /// `message_parts` preserve the model-facing text/image structure.
-    pub fn insert_user_message_with_image(
+    pub fn insert_user_message_with_parts(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: Option<&MessageId>,
         content: &str,
-        mime_type: &str,
-        bytes: &[u8],
+        parts: &[MessagePayload<'_>],
     ) -> Result<MessageId> {
+        if parts.is_empty() {
+            return Err(anyhow!("message parts require at least one part"));
+        }
+
         let id = MessageId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
 
@@ -751,16 +768,25 @@ impl Store {
             )
             .context("failed to save image message")?;
 
-        let mut position = 0;
-        if !content.is_empty() {
-            insert_text_part_in_transaction(&transaction, &id, position, content)
-                .context("failed to save image message text part")?;
-            position += 1;
+        for (position, part) in parts.iter().enumerate() {
+            match part {
+                MessagePayload::Text(text) => {
+                    insert_text_part_in_transaction(&transaction, &id, position, text)
+                        .context("failed to save message text part")?;
+                }
+                MessagePayload::Image(image) => {
+                    let image_asset_id = insert_image_asset_in_transaction(
+                        &transaction,
+                        image.mime_type,
+                        image.bytes,
+                        now,
+                    )
+                    .context("failed to save image asset")?;
+                    insert_image_part_in_transaction(&transaction, &id, position, &image_asset_id)
+                        .context("failed to save image message part")?;
+                }
+            }
         }
-        let image_asset_id = insert_image_asset_in_transaction(&transaction, mime_type, bytes, now)
-            .context("failed to save image asset")?;
-        insert_image_part_in_transaction(&transaction, &id, position, &image_asset_id)
-            .context("failed to save image message part")?;
 
         set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
             .context("failed to set active message")?;

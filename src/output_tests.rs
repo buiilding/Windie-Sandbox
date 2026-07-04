@@ -31,7 +31,7 @@ fn formats_help_lines() {
         )
     );
     assert!(lines.contains(
-        &"  windie insert <conversation_id> --role user --text \"what is this?\" --image <path>"
+        &"  windie insert <conversation_id> --role user --text \"first\" --image <path> --text \"second\""
             .to_string()
     ));
     assert!(lines.contains(

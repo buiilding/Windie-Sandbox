@@ -270,7 +270,7 @@ fn help_lines() -> Vec<String> {
         "  windie show <conversation_id>",
         "  windie tree <conversation_id>",
         "  windie insert <conversation_id> --role user --text \"hello\"",
-        "  windie insert <conversation_id> --role user --text \"what is this?\" --image <path>",
+        "  windie insert <conversation_id> --role user --text \"first\" --image <path> --text \"second\"",
         "  windie update <conversation_id> <message_id> --text \"new text\"",
         "  windie set systemprompt <conversation_id> --text \"system prompt\"",
         "  windie rm <conversation_id>",

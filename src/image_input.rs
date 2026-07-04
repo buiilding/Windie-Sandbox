@@ -75,7 +75,10 @@ fn validate_image_header(mime_type: &str, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn rejects_unknown_image_extension() {
@@ -135,9 +138,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
 
         env::temp_dir().join(format!(
-            "windie-image-input-{}-{nanos}.{extension}",
+            "windie-image-input-{}-{nanos}-{counter}.{extension}",
             std::process::id()
         ))
     }
