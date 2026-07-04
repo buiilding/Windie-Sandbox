@@ -64,6 +64,19 @@ windie rm <conversation_id> <message_id>
 Remove one message from a conversation.
 
 ```text
+windie truncate <conversation_id> <message_id>
+```
+
+Remove all messages after one message in a conversation.
+
+```text
+windie fork <conversation_id> <message_id>
+```
+
+Create a new conversation copied from the start of an existing conversation
+through one message.
+
+```text
 windie query <conversation_id>
 ```
 

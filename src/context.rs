@@ -47,10 +47,10 @@ mod tests {
         let conversation_id = store.create_conversation().unwrap();
 
         store
-            .save_message(&conversation_id, None, Role::User, "hello", None)
+            .append_message(&conversation_id, None, Role::User, "hello", None)
             .unwrap();
         store
-            .save_message(&conversation_id, None, Role::Assistant, "hello back", None)
+            .append_message(&conversation_id, None, Role::Assistant, "hello back", None)
             .unwrap();
 
         let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
@@ -68,10 +68,10 @@ mod tests {
         let conversation_id = store.create_conversation().unwrap();
 
         let first_id = store
-            .save_message(&conversation_id, None, Role::User, "one", None)
+            .append_message(&conversation_id, None, Role::User, "one", None)
             .unwrap();
         let second_id = store
-            .save_message(
+            .append_message(
                 &conversation_id,
                 Some(&first_id),
                 Role::Assistant,
@@ -80,7 +80,7 @@ mod tests {
             )
             .unwrap();
         store
-            .save_message(
+            .append_message(
                 &conversation_id,
                 Some(&second_id),
                 Role::User,

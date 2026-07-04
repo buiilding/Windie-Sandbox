@@ -89,6 +89,18 @@ impl TerminalOutput {
         println!("removed message {message_id}");
     }
 
+    pub fn truncated_conversation(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) {
+        println!("truncated conversation {conversation_id} after message {message_id}");
+    }
+
+    pub fn forked_conversation(&self, conversation_id: &ConversationId) {
+        println!("{conversation_id}");
+    }
+
     pub fn status(&self, gateway_running: bool) {
         println!("status");
         println!(
@@ -164,6 +176,8 @@ fn help_lines() -> Vec<String> {
         "  windie update <conversation_id> <message_id> --text \"new text\"",
         "  windie rm <conversation_id>",
         "  windie rm <conversation_id> <message_id>",
+        "  windie truncate <conversation_id> <message_id>",
+        "  windie fork <conversation_id> <message_id>",
         "  windie query <conversation_id>",
         "  windie query <conversation_id> --model openai/gpt-4o-mini",
         "  windie status",

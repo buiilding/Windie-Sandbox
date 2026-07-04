@@ -3,6 +3,7 @@
 //! This module owns persisted conversations, messages, and compactions. Other
 //! modules should not know about SQLite tables or queries.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -291,7 +292,7 @@ impl Store {
         Ok(messages)
     }
 
-    pub fn save_message(
+    pub fn append_message(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: Option<&MessageId>,
@@ -348,7 +349,7 @@ impl Store {
         Ok(id)
     }
 
-    pub fn update_message_text(
+    pub fn replace_message(
         &mut self,
         conversation_id: &ConversationId,
         message_id: &MessageId,
@@ -380,7 +381,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn delete_message(
+    pub fn remove_message(
         &mut self,
         conversation_id: &ConversationId,
         message_id: &MessageId,
@@ -437,7 +438,125 @@ impl Store {
         Ok(())
     }
 
-    pub fn delete_conversation(&mut self, conversation_id: &ConversationId) -> Result<()> {
+    pub fn truncate_after_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        let (created_at, rowid) = self
+            .message_position(conversation_id, message_id)?
+            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))?;
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start conversation truncate transaction")?;
+
+        delete_compactions_for_conversation(&transaction, conversation_id)
+            .context("failed to delete compactions after conversation truncate")?;
+        transaction
+            .execute(
+                "
+                DELETE FROM messages
+                WHERE conversation_id = ?1
+                  AND (
+                    created_at > ?2
+                    OR (created_at = ?2 AND rowid > ?3)
+                  )
+                ",
+                params![conversation_id.as_str(), created_at, rowid],
+            )
+            .context("failed to truncate conversation messages")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit conversation truncate")?;
+
+        Ok(())
+    }
+
+    pub fn fork_conversation_at_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<ConversationId> {
+        self.ensure_conversation_exists(conversation_id)?;
+        let (created_at, rowid) = self
+            .message_position(conversation_id, message_id)?
+            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))?;
+
+        let source_messages = self
+            .load_messages_through_position(conversation_id, created_at, rowid)
+            .context("failed to load messages for conversation fork")?;
+        let forked_conversation_id = ConversationId::new(Uuid::new_v4().to_string());
+        let mut message_id_map = HashMap::new();
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start conversation fork transaction")?;
+
+        transaction
+            .execute(
+                "
+                INSERT INTO conversations (id, title, created_at, updated_at)
+                VALUES (?1, NULL, ?2, ?2)
+                ",
+                params![forked_conversation_id.as_str(), now],
+            )
+            .context("failed to create forked conversation")?;
+
+        for (index, message) in source_messages.iter().enumerate() {
+            let source_message_id = message
+                .id
+                .as_ref()
+                .ok_or_else(|| anyhow!("stored message is missing id"))?;
+            let forked_message_id = MessageId::new(Uuid::new_v4().to_string());
+            let forked_parent_message_id = message
+                .parent_message_id
+                .as_ref()
+                .and_then(|parent_message_id| message_id_map.get(parent_message_id.as_str()));
+
+            transaction
+                .execute(
+                    "
+                    INSERT INTO messages (
+                        id,
+                        conversation_id,
+                        parent_message_id,
+                        role,
+                        content,
+                        metadata,
+                        created_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    ",
+                    params![
+                        forked_message_id.as_str(),
+                        forked_conversation_id.as_str(),
+                        forked_parent_message_id.map(MessageId::as_str),
+                        message.role.as_str(),
+                        message.content.as_str(),
+                        message.metadata.as_deref(),
+                        now + index as i64
+                    ],
+                )
+                .context("failed to copy forked conversation message")?;
+
+            message_id_map.insert(source_message_id.as_str().to_string(), forked_message_id);
+        }
+
+        transaction
+            .commit()
+            .context("failed to commit conversation fork")?;
+
+        Ok(forked_conversation_id)
+    }
+
+    pub fn remove_conversation(&mut self, conversation_id: &ConversationId) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
 
         let transaction = self
@@ -567,6 +686,37 @@ impl Store {
             )
             .optional()
             .context("failed to load message position")
+    }
+
+    fn load_messages_through_position(
+        &self,
+        conversation_id: &ConversationId,
+        created_at: i64,
+        rowid: i64,
+    ) -> Result<Vec<Message>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT id, parent_message_id, role, content, metadata
+                FROM messages
+                WHERE conversation_id = ?1
+                  AND (
+                    created_at < ?2
+                    OR (created_at = ?2 AND rowid <= ?3)
+                  )
+                ORDER BY created_at, rowid
+                ",
+            )
+            .context("failed to prepare message load through checkpoint")?;
+
+        let messages = statement
+            .query_map(params![conversation_id.as_str(), created_at, rowid], read_message_row)
+            .context("failed to load messages through checkpoint")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read messages through checkpoint")?;
+
+        Ok(messages)
     }
 
     fn message_conversation_id(&self, message_id: &MessageId) -> Result<Option<ConversationId>> {

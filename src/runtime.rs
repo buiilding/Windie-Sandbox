@@ -38,7 +38,7 @@ where
     output.end_assistant_message();
 
     let assistant_message_id = store
-        .save_message(
+        .append_message(
             conversation_id,
             parent_message_id.as_ref(),
             Role::Assistant,

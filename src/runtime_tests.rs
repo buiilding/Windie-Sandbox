@@ -61,7 +61,7 @@ async fn query_conversation_saves_assistant_message() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let user_id = store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let assistant_message = query_conversation(

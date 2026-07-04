@@ -110,6 +110,7 @@ Allowed in the current scope:
 - SQLite-backed conversation persistence.
 - Multiple persisted conversations.
 - Message append, update, and remove primitives.
+- Conversation truncate and fork primitives.
 - One-shot conversation query primitive.
 - Model-facing context construction.
 - Future-ready compaction storage.

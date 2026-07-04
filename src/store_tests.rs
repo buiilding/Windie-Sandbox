@@ -56,7 +56,7 @@ fn lists_conversations() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let conversations = store.list_conversations().unwrap();
@@ -93,10 +93,10 @@ fn saves_and_loads_messages() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     let user_id = store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
     let assistant_id = store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&user_id),
             Role::Assistant,
@@ -123,7 +123,7 @@ fn rejects_saving_message_to_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
 
     let error = store
-        .save_message(
+        .append_message(
             &ConversationId::new("missing"),
             None,
             Role::User,
@@ -140,11 +140,11 @@ fn saves_message_with_parent_from_same_conversation() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let parent_id = store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let message_id = store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&parent_id),
             Role::Assistant,
@@ -169,11 +169,11 @@ fn rejects_message_parent_from_another_conversation() {
     let first_conversation_id = store.create_conversation().unwrap();
     let second_conversation_id = store.create_conversation().unwrap();
     let parent_id = store
-        .save_message(&first_conversation_id, None, Role::User, "hello", None)
+        .append_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let error = store
-        .save_message(
+        .append_message(
             &second_conversation_id,
             Some(&parent_id),
             Role::Assistant,
@@ -195,7 +195,7 @@ fn preserves_metadata() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     store
-        .save_message(
+        .append_message(
             &conversation_id,
             None,
             Role::Assistant,
@@ -218,11 +218,11 @@ fn loads_messages_after_checkpoint() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     let first_id = store
-        .save_message(&conversation_id, None, Role::User, "one", None)
+        .append_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let second_id = store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&first_id),
             Role::Assistant,
@@ -232,7 +232,7 @@ fn loads_messages_after_checkpoint() {
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&second_id),
             Role::User,
@@ -256,7 +256,7 @@ fn rejects_load_messages_after_checkpoint_from_another_conversation() {
     let first_conversation_id = store.create_conversation().unwrap();
     let second_conversation_id = store.create_conversation().unwrap();
     let first_message_id = store
-        .save_message(&first_conversation_id, None, Role::User, "one", None)
+        .append_message(&first_conversation_id, None, Role::User, "one", None)
         .unwrap();
 
     let error = store
@@ -271,7 +271,7 @@ fn rejects_load_messages_after_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let message_id = store
-        .save_message(&conversation_id, None, Role::User, "one", None)
+        .append_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
 
     let error = store
@@ -287,11 +287,11 @@ fn updates_message_text_without_deleting_later_messages() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     let user_id = store
-        .save_message(&conversation_id, None, Role::User, "helo", None)
+        .append_message(&conversation_id, None, Role::User, "helo", None)
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let assistant_id = store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&user_id),
             Role::Assistant,
@@ -301,7 +301,7 @@ fn updates_message_text_without_deleting_later_messages() {
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&assistant_id),
             Role::User,
@@ -311,7 +311,7 @@ fn updates_message_text_without_deleting_later_messages() {
         .unwrap();
 
     store
-        .update_message_text(&conversation_id, &user_id, "hello")
+        .replace_message(&conversation_id, &user_id, "hello")
         .unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
@@ -330,11 +330,11 @@ fn rejects_updating_message_from_another_conversation() {
     let first_conversation_id = store.create_conversation().unwrap();
     let second_conversation_id = store.create_conversation().unwrap();
     let message_id = store
-        .save_message(&first_conversation_id, None, Role::User, "hello", None)
+        .append_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let error = store
-        .update_message_text(&second_conversation_id, &message_id, "hi")
+        .replace_message(&second_conversation_id, &message_id, "hi")
         .unwrap_err();
 
     assert!(
@@ -349,11 +349,11 @@ fn rejects_updating_message_in_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let message_id = store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let error = store
-        .update_message_text(&ConversationId::new("missing"), &message_id, "hi")
+        .replace_message(&ConversationId::new("missing"), &message_id, "hi")
         .unwrap_err();
 
     assert!(error.to_string().contains("conversation does not exist"));
@@ -364,10 +364,10 @@ fn deletes_message_and_reconnects_child_messages() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let first_id = store
-        .save_message(&conversation_id, None, Role::User, "one", None)
+        .append_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
     let second_id = store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&first_id),
             Role::Assistant,
@@ -376,7 +376,7 @@ fn deletes_message_and_reconnects_child_messages() {
         )
         .unwrap();
     let third_id = store
-        .save_message(
+        .append_message(
             &conversation_id,
             Some(&second_id),
             Role::User,
@@ -388,7 +388,7 @@ fn deletes_message_and_reconnects_child_messages() {
         .save_compaction(&conversation_id, &third_id, "summary")
         .unwrap();
 
-    store.delete_message(&conversation_id, &second_id).unwrap();
+    store.remove_message(&conversation_id, &second_id).unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
     let compaction = store.latest_compaction(&conversation_id).unwrap();
@@ -409,11 +409,11 @@ fn rejects_deleting_message_from_another_conversation() {
     let first_conversation_id = store.create_conversation().unwrap();
     let second_conversation_id = store.create_conversation().unwrap();
     let message_id = store
-        .save_message(&first_conversation_id, None, Role::User, "hello", None)
+        .append_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let error = store
-        .delete_message(&second_conversation_id, &message_id)
+        .remove_message(&second_conversation_id, &message_id)
         .unwrap_err();
 
     assert!(
@@ -424,17 +424,148 @@ fn rejects_deleting_message_from_another_conversation() {
 }
 
 #[test]
+fn truncates_conversation_after_message() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .append_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let second_id = store
+        .append_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let third_id = store
+        .append_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+    store
+        .save_compaction(&conversation_id, &third_id, "summary")
+        .unwrap();
+
+    store
+        .truncate_after_message(&conversation_id, &second_id)
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    let compaction = store.latest_compaction(&conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].id.as_deref(), Some(first_id.as_str()));
+    assert_eq!(messages[1].id.as_deref(), Some(second_id.as_str()));
+    assert_eq!(messages[0].content, "one");
+    assert_eq!(messages[1].content, "two");
+    assert!(compaction.is_none());
+}
+
+#[test]
+fn rejects_truncating_after_message_from_another_conversation() {
+    let mut store = Store::open_memory().unwrap();
+    let first_conversation_id = store.create_conversation().unwrap();
+    let second_conversation_id = store.create_conversation().unwrap();
+    let message_id = store
+        .append_message(&first_conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+
+    let error = store
+        .truncate_after_message(&second_conversation_id, &message_id)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("message does not exist"));
+}
+
+#[test]
+fn forks_conversation_at_message() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .append_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let second_id = store
+        .append_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            Some(r#"{"source":"test"}"#),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    store
+        .append_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+
+    let forked_conversation_id = store
+        .fork_conversation_at_message(&conversation_id, &second_id)
+        .unwrap();
+
+    let source_messages = store.load_messages(&conversation_id).unwrap();
+    let forked_messages = store.load_messages(&forked_conversation_id).unwrap();
+
+    assert_ne!(forked_conversation_id, conversation_id);
+    assert_eq!(source_messages.len(), 3);
+    assert_eq!(forked_messages.len(), 2);
+    assert_eq!(forked_messages[0].role, Role::User);
+    assert_eq!(forked_messages[0].content, "one");
+    assert_eq!(forked_messages[1].role, Role::Assistant);
+    assert_eq!(forked_messages[1].content, "two");
+    assert_eq!(
+        forked_messages[1].metadata.as_deref(),
+        Some(r#"{"source":"test"}"#)
+    );
+    assert_ne!(forked_messages[0].id.as_deref(), Some(first_id.as_str()));
+    assert_eq!(
+        forked_messages[1].parent_message_id.as_deref(),
+        forked_messages[0].id.as_deref()
+    );
+}
+
+#[test]
+fn rejects_forking_at_message_from_another_conversation() {
+    let mut store = Store::open_memory().unwrap();
+    let first_conversation_id = store.create_conversation().unwrap();
+    let second_conversation_id = store.create_conversation().unwrap();
+    let message_id = store
+        .append_message(&first_conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+
+    let error = store
+        .fork_conversation_at_message(&second_conversation_id, &message_id)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("message does not exist"));
+}
+
+#[test]
 fn deletes_conversation() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let message_id = store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
     store
         .save_compaction(&conversation_id, &message_id, "summary")
         .unwrap();
 
-    store.delete_conversation(&conversation_id).unwrap();
+    store.remove_conversation(&conversation_id).unwrap();
 
     assert!(store.list_conversations().unwrap().is_empty());
 }
@@ -444,7 +575,7 @@ fn rejects_deleting_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
 
     let error = store
-        .delete_conversation(&ConversationId::new("missing"))
+        .remove_conversation(&ConversationId::new("missing"))
         .unwrap_err();
 
     assert!(error.to_string().contains("conversation does not exist"));
@@ -455,7 +586,7 @@ fn saves_and_loads_latest_compaction() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.get_or_create_default_conversation().unwrap();
     let message_id = store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let compaction_id = store
@@ -497,7 +628,7 @@ fn rejects_compaction_checkpoint_from_another_conversation() {
     let first_conversation_id = store.create_conversation().unwrap();
     let second_conversation_id = store.create_conversation().unwrap();
     let message_id = store
-        .save_message(&first_conversation_id, None, Role::User, "hello", None)
+        .append_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let error = store
@@ -516,7 +647,7 @@ fn rejects_saving_compaction_to_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let message_id = store
-        .save_message(&conversation_id, None, Role::User, "hello", None)
+        .append_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
     let error = store

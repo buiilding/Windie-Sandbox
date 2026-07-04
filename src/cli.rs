@@ -20,6 +20,10 @@ pub enum Command {
         mode: BenchmarkMode,
         conversation_id: Option<ConversationId>,
     },
+    Fork {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    },
     GatewayStart,
     GatewayStop,
     Help,
@@ -38,6 +42,10 @@ pub enum Command {
     },
     Show(ConversationId),
     Status,
+    Truncate {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    },
     Update {
         conversation_id: ConversationId,
         message_id: MessageId,
@@ -104,6 +112,14 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
             Command::RemoveConversation(ConversationId::new(conversation_id.as_str()))
         }
         [command, conversation_id, message_id] if command == "rm" => Command::RemoveMessage {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            message_id: MessageId::new(message_id.as_str()),
+        },
+        [command, conversation_id, message_id] if command == "truncate" => Command::Truncate {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            message_id: MessageId::new(message_id.as_str()),
+        },
+        [command, conversation_id, message_id] if command == "fork" => Command::Fork {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             message_id: MessageId::new(message_id.as_str()),
         },
@@ -341,6 +357,42 @@ mod tests {
         assert!(matches!(
             command,
             Command::RemoveMessage {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn reads_truncate_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "truncate".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Truncate {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn reads_fork_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "fork".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Fork {
                 conversation_id,
                 message_id,
             } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"

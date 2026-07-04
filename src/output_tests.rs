@@ -22,6 +22,8 @@ fn formats_help_lines() {
     assert!(lines.contains(
         &"  windie update <conversation_id> <message_id> --text \"new text\"".to_string()
     ));
+    assert!(lines.contains(&"  windie truncate <conversation_id> <message_id>".to_string()));
+    assert!(lines.contains(&"  windie fork <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie query <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));

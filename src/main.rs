@@ -48,6 +48,10 @@ async fn main() -> Result<()> {
             role,
             text,
         } => append_message(conversation_id, role, &text),
+        Command::Fork {
+            conversation_id,
+            message_id,
+        } => fork_conversation(conversation_id, message_id),
         Command::List => list_conversations(),
         Command::New => new_conversation(),
         Command::Query {
@@ -61,6 +65,10 @@ async fn main() -> Result<()> {
         } => remove_message(conversation_id, message_id),
         Command::Show(conversation_id) => show_conversation(conversation_id),
         Command::Status => status().await,
+        Command::Truncate {
+            conversation_id,
+            message_id,
+        } => truncate_conversation(conversation_id, message_id),
         Command::Update {
             conversation_id,
             message_id,
@@ -151,7 +159,7 @@ fn append_message(conversation_id: ConversationId, role: Role, text: &str) -> Re
         .last()
         .and_then(|message| message.id.clone());
     let message_id = store
-        .save_message(
+        .append_message(
             &conversation_id,
             parent_message_id.as_ref(),
             role,
@@ -174,7 +182,7 @@ fn update_message(
     let output = TerminalOutput;
 
     store
-        .update_message_text(&conversation_id, &message_id, text)
+        .replace_message(&conversation_id, &message_id, text)
         .context("failed to update message")?;
     output.updated_message(&message_id);
 
@@ -186,7 +194,7 @@ fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
     let output = TerminalOutput;
 
     store
-        .delete_conversation(&conversation_id)
+        .remove_conversation(&conversation_id)
         .context("failed to remove conversation")?;
     output.removed_conversation(&conversation_id);
 
@@ -198,9 +206,33 @@ fn remove_message(conversation_id: ConversationId, message_id: MessageId) -> Res
     let output = TerminalOutput;
 
     store
-        .delete_message(&conversation_id, &message_id)
+        .remove_message(&conversation_id, &message_id)
         .context("failed to remove message")?;
     output.removed_message(&message_id);
+
+    Ok(())
+}
+
+fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+
+    store
+        .truncate_after_message(&conversation_id, &message_id)
+        .context("failed to truncate conversation")?;
+    output.truncated_conversation(&conversation_id, &message_id);
+
+    Ok(())
+}
+
+fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+    let forked_conversation_id = store
+        .fork_conversation_at_message(&conversation_id, &message_id)
+        .context("failed to fork conversation")?;
+
+    output.forked_conversation(&forked_conversation_id);
 
     Ok(())
 }
