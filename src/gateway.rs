@@ -206,7 +206,9 @@ impl BifrostGateway {
 
         match launcher {
             BifrostLauncher::Dev(paths) => start_dev_process(&paths, environment),
-            BifrostLauncher::Npx(paths) => start_npx_process(&paths, environment),
+            BifrostLauncher::Npx(paths) => {
+                start_npx_process(&paths, npx_process_environment(environment))
+            }
             BifrostLauncher::Docker(paths) => start_docker_process(&paths, environment),
         }
     }
@@ -264,7 +266,7 @@ fn start_dev_process(paths: &BifrostPaths, environment: Vec<(String, String)>) -
         .arg(BIFROST_PORT)
         .current_dir(&paths.dir)
         .env_clear()
-        .envs(public_process_environment(environment))
+        .envs(environment)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -465,11 +467,11 @@ fn command_exists_in_paths(program: &str, paths: impl IntoIterator<Item = PathBu
     paths.into_iter().any(|path| path.join(program).is_file())
 }
 
-/// Adds only process-launch variables needed by public Node/npm launchers.
+/// Adds only process-launch variables needed by the public Node/npm launcher.
 ///
 /// Provider keys still come from Windie's explicit `.env` file. `PATH` lets the
 /// `npx` shim find `node`, and `HOME` lets npm use its normal cache location.
-fn public_process_environment(mut environment: Vec<(String, String)>) -> Vec<(String, String)> {
+fn npx_process_environment(mut environment: Vec<(String, String)>) -> Vec<(String, String)> {
     if let Some(path) = env::var_os("PATH").and_then(|value| value.into_string().ok()) {
         environment.push(("PATH".to_string(), path));
     }
@@ -709,6 +711,26 @@ mod tests {
                 ("EMPTY".to_string(), "".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn npx_process_environment_preserves_provider_keys() {
+        let environment =
+            npx_process_environment(vec![("OPENAI_API_KEY".to_string(), "sk-test".to_string())]);
+
+        assert!(environment.contains(&("OPENAI_API_KEY".to_string(), "sk-test".to_string())));
+    }
+
+    #[test]
+    fn npx_process_environment_adds_process_launch_variables() {
+        let environment = npx_process_environment(Vec::new());
+
+        if env::var_os("PATH").is_some() {
+            assert!(environment.iter().any(|(key, _)| key == "PATH"));
+        }
+        if env::var_os("HOME").is_some() {
+            assert!(environment.iter().any(|(key, _)| key == "HOME"));
+        }
     }
 
     #[test]

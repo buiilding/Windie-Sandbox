@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 use crate::cli::{Command, InsertPart};
-use crate::conversation::{ConversationId, MessageId, Role};
+use crate::conversation::{ConversationId, MessageId, Role, ToolSchema, ToolSchemaName};
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::read_image_input;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
@@ -57,11 +57,15 @@ async fn main() -> Result<()> {
         } => compare_benchmarks(baseline_path, current_path),
         Command::GatewayStart => start_gateway().await,
         Command::GatewayStop => stop_gateway().await,
-        Command::Insert {
+        Command::InsertMessage {
             conversation_id,
             role,
             parts,
         } => insert_message(conversation_id, role, &parts),
+        Command::InsertToolSchema {
+            conversation_id,
+            tool_schema,
+        } => insert_tool_schema(conversation_id, &tool_schema),
         Command::Fork {
             conversation_id,
             message_id,
@@ -77,6 +81,11 @@ async fn main() -> Result<()> {
             conversation_id,
             message_id,
         } => remove_message(conversation_id, message_id),
+        Command::RemoveSystemPrompt(conversation_id) => remove_system_prompt(conversation_id),
+        Command::RemoveToolSchema {
+            conversation_id,
+            name,
+        } => remove_tool_schema(conversation_id, name),
         Command::Show(conversation_id) => show_conversation(conversation_id),
         Command::Status => status().await,
         Command::SetSystemPrompt {
@@ -88,11 +97,16 @@ async fn main() -> Result<()> {
             message_id,
         } => truncate_conversation(conversation_id, message_id),
         Command::Tree(conversation_id) => show_tree(conversation_id),
-        Command::Update {
+        Command::UpdateMessage {
             conversation_id,
             message_id,
             text,
         } => update_message(conversation_id, message_id, &text),
+        Command::UpdateToolSchema {
+            conversation_id,
+            current_name,
+            tool_schema,
+        } => update_tool_schema(conversation_id, current_name, &tool_schema),
     }
 }
 
@@ -358,6 +372,62 @@ fn set_system_prompt(conversation_id: ConversationId, text: &str) -> Result<()> 
         .set_system_prompt(&conversation_id, text)
         .context("failed to set system prompt")?;
     output.set_system_prompt(&conversation_id);
+
+    Ok(())
+}
+
+/// Clears the conversation-level system prompt.
+fn remove_system_prompt(conversation_id: ConversationId) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+
+    store
+        .remove_system_prompt(&conversation_id)
+        .context("failed to remove system prompt")?;
+    output.removed_system_prompt(&conversation_id);
+
+    Ok(())
+}
+
+/// Inserts one conversation-level tool schema.
+fn insert_tool_schema(conversation_id: ConversationId, tool_schema: &ToolSchema) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+
+    store
+        .insert_tool_schema(&conversation_id, tool_schema)
+        .context("failed to insert tool schema")?;
+    output.inserted_tool_schema(&tool_schema.name);
+
+    Ok(())
+}
+
+/// Updates one conversation-level tool schema.
+fn update_tool_schema(
+    conversation_id: ConversationId,
+    current_name: ToolSchemaName,
+    tool_schema: &ToolSchema,
+) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+
+    store
+        .update_tool_schema(&conversation_id, &current_name, tool_schema)
+        .context("failed to update tool schema")?;
+    output.updated_tool_schema(&tool_schema.name);
+
+    Ok(())
+}
+
+/// Removes one conversation-level tool schema.
+fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+
+    store
+        .remove_tool_schema(&conversation_id, &name)
+        .context("failed to remove tool schema")?;
+    output.removed_tool_schema(&name);
 
     Ok(())
 }

@@ -88,10 +88,10 @@ marks the active message.
 ## Messages
 
 ```text
-windie insert <conversation_id> --role user --text "hello"
-windie insert <conversation_id> --role user --text "what is this?" --image ./image.png
-windie insert <conversation_id> --role user --text "compare these" --image ./a.png --image ./b.png
-windie insert <conversation_id> --role user --text "first" --image ./a.png --text "second" --image ./b.png
+windie insert <conversation_id> message --role user --text "hello"
+windie insert <conversation_id> message --role user --text "what is this?" --image ./image.png
+windie insert <conversation_id> message --role user --text "compare these" --image ./a.png --image ./b.png
+windie insert <conversation_id> message --role user --text "first" --image ./a.png --text "second" --image ./b.png
 ```
 
 Insert one message into a conversation tree without querying the model.
@@ -103,7 +103,6 @@ root.
 The role must currently be one of:
 
 ```text
-system
 user
 assistant
 tool
@@ -115,8 +114,9 @@ request to execute a tool.
 Examples:
 
 ```text
-windie insert <conversation_id> --role user --text "hello"
-windie insert <conversation_id> --role assistant --text "hello back"
+windie insert <conversation_id> message --role user --text "hello"
+windie insert <conversation_id> message --role assistant --text "hello back"
+windie insert <conversation_id> message --role tool --text "tool output"
 ```
 
 The command prints the new message ID.
@@ -131,16 +131,17 @@ errors, so `query` prints the provider rejection if the selected model does not
 accept image input.
 
 ```text
-windie update <conversation_id> <message_id> --text "new text"
+windie update <conversation_id> message <message_id> --text "new text"
 ```
 
 Replace one message's text without querying the model.
 
 This mutates only the selected message content. It does not remove later
-messages and does not run inference.
+messages, does not run inference, does not change role, and preserves assistant
+metadata such as tool calls, reasoning, refusal, audio, and annotations.
 
 ```text
-windie set systemprompt <conversation_id> --text "system prompt"
+windie set <conversation_id> systemprompt --text "system prompt"
 ```
 
 Set or replace the conversation-level system prompt.
@@ -149,6 +150,42 @@ The system prompt is not inserted into the message tree. During `query`, Windie
 prepends it to the active path before sending context to Bifrost. Setting the
 system prompt works on an empty conversation tree and also replaces an existing
 system prompt.
+
+```text
+windie rm <conversation_id> systemprompt
+```
+
+Remove the conversation-level system prompt without changing messages.
+
+## Tool Schemas
+
+```text
+windie insert <conversation_id> toolschema --name run_shell --description "Run a shell command" --parameters '{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}'
+```
+
+Insert one conversation-level tool schema.
+
+A tool schema is a definition sent to the model during `query`. It is not a
+message, not a tool call, and not permission to execute anything.
+
+The schema name must be 1-64 ASCII letters, numbers, `_`, or `-`. The
+description must contain non-whitespace text. `--parameters` must be a JSON
+object.
+
+```text
+windie update <conversation_id> toolschema run_shell --name run_shell --description "Run a shell command on the local machine" --parameters '{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}'
+```
+
+Update one existing tool schema. The final `--name` value is the stored name
+after the update.
+
+```text
+windie rm <conversation_id> toolschema run_shell
+```
+
+Remove one conversation-level tool schema.
+
+## Tree Control
 
 ```text
 windie activate <conversation_id> <message_id>
@@ -170,7 +207,7 @@ This deletes the conversation tree and all messages/compactions owned by that
 conversation tree.
 
 ```text
-windie rm <conversation_id> <message_id>
+windie rm <conversation_id> message <message_id>
 ```
 
 Remove one message from a conversation tree.

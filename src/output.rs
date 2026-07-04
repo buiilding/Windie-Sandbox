@@ -9,7 +9,9 @@ use std::io::{self, Write};
 
 use anyhow::{Context, Result};
 
-use crate::conversation::{ConversationId, Message, MessageId, MessagePart, ToolCall};
+use crate::conversation::{
+    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
+};
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::store::ConversationInfo;
 
@@ -76,6 +78,9 @@ impl TerminalOutput {
         }
         if let Some(duration) = baseline.tree_part_load {
             println!("tree part/image load: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.tool_schema_load {
+            println!("tool schema load: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.context_build {
             println!("context build: {}", format_duration(duration));
@@ -153,6 +158,26 @@ impl TerminalOutput {
     /// Confirms that the conversation-level system prompt was set.
     pub fn set_system_prompt(&self, conversation_id: &ConversationId) {
         println!("set systemprompt {conversation_id}");
+    }
+
+    /// Confirms that the conversation-level system prompt was removed.
+    pub fn removed_system_prompt(&self, conversation_id: &ConversationId) {
+        println!("removed systemprompt {conversation_id}");
+    }
+
+    /// Confirms that one tool schema was inserted.
+    pub fn inserted_tool_schema(&self, name: &ToolSchemaName) {
+        println!("inserted toolschema {name}");
+    }
+
+    /// Confirms that one tool schema was updated.
+    pub fn updated_tool_schema(&self, name: &ToolSchemaName) {
+        println!("updated toolschema {name}");
+    }
+
+    /// Confirms that one tool schema was removed.
+    pub fn removed_tool_schema(&self, name: &ToolSchemaName) {
+        println!("removed toolschema {name}");
     }
 
     /// Confirms that one message was selected as active.
@@ -290,12 +315,16 @@ fn help_lines() -> Vec<String> {
         "  windie activate <conversation_id> <message_id>",
         "  windie show <conversation_id>",
         "  windie tree <conversation_id>",
-        "  windie insert <conversation_id> --role user --text \"hello\"",
-        "  windie insert <conversation_id> --role user --text \"first\" --image <path> --text \"second\"",
-        "  windie update <conversation_id> <message_id> --text \"new text\"",
-        "  windie set systemprompt <conversation_id> --text \"system prompt\"",
+        "  windie insert <conversation_id> message --role user --text \"hello\"",
+        "  windie insert <conversation_id> message --role user --text \"first\" --image <path> --text \"second\"",
+        "  windie insert <conversation_id> toolschema --name <name> --description <text> --parameters <json>",
+        "  windie update <conversation_id> message <message_id> --text \"new text\"",
+        "  windie update <conversation_id> toolschema <name> --name <name> --description <text> --parameters <json>",
+        "  windie set <conversation_id> systemprompt --text \"system prompt\"",
         "  windie rm <conversation_id>",
-        "  windie rm <conversation_id> <message_id>",
+        "  windie rm <conversation_id> message <message_id>",
+        "  windie rm <conversation_id> systemprompt",
+        "  windie rm <conversation_id> toolschema <name>",
         "  windie truncate <conversation_id> <message_id>",
         "  windie fork <conversation_id> <message_id>",
         "  windie query <conversation_id>",
@@ -317,7 +346,8 @@ fn help_lines() -> Vec<String> {
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie query requires the local Bifrost gateway to be running.",
         "  windie query --model passes the model name to Bifrost for one request.",
-        "  windie set systemprompt sets or replaces the conversation system prompt.",
+        "  windie set <conversation_id> systemprompt sets or replaces the conversation system prompt.",
+        "  windie insert <conversation_id> toolschema adds a model-facing tool definition.",
         "  windie bench live sends a real provider request and may cost money.",
         "",
         "Options:",
@@ -373,6 +403,11 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
         &mut lines,
         "tree part/image load",
         report.summary.tree_part_load.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "tool schema load",
+        report.summary.tool_schema_load.as_ref(),
     );
     push_metric_lines(
         &mut lines,

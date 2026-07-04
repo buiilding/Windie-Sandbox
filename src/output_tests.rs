@@ -25,21 +25,30 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie show <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie tree <conversation_id>".to_string()));
-    assert!(
-        lines.contains(
-            &"  windie insert <conversation_id> --role user --text \"hello\"".to_string()
-        )
-    );
     assert!(lines.contains(
-        &"  windie insert <conversation_id> --role user --text \"first\" --image <path> --text \"second\""
+        &"  windie insert <conversation_id> message --role user --text \"hello\"".to_string()
+    ));
+    assert!(lines.contains(
+        &"  windie insert <conversation_id> message --role user --text \"first\" --image <path> --text \"second\""
             .to_string()
     ));
     assert!(lines.contains(
-        &"  windie update <conversation_id> <message_id> --text \"new text\"".to_string()
+        &"  windie insert <conversation_id> toolschema --name <name> --description <text> --parameters <json>"
+            .to_string()
     ));
     assert!(lines.contains(
-        &"  windie set systemprompt <conversation_id> --text \"system prompt\"".to_string()
+        &"  windie update <conversation_id> message <message_id> --text \"new text\"".to_string()
     ));
+    assert!(lines.contains(
+        &"  windie update <conversation_id> toolschema <name> --name <name> --description <text> --parameters <json>"
+            .to_string()
+    ));
+    assert!(lines.contains(
+        &"  windie set <conversation_id> systemprompt --text \"system prompt\"".to_string()
+    ));
+    assert!(lines.contains(&"  windie rm <conversation_id> message <message_id>".to_string()));
+    assert!(lines.contains(&"  windie rm <conversation_id> systemprompt".to_string()));
+    assert!(lines.contains(&"  windie rm <conversation_id> toolschema <name>".to_string()));
     assert!(lines.contains(&"  windie truncate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie fork <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie query <conversation_id>".to_string()));

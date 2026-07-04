@@ -4,7 +4,7 @@ use anyhow::{Error, Result, anyhow};
 use std::sync::Mutex;
 
 use super::*;
-use crate::conversation::{Message, ToolCall};
+use crate::conversation::{Message, MessageMetadata, ToolCall, ToolSchema, ToolSchemaName};
 use crate::llm::{AssistantResponse, FinishReason};
 
 struct NoopOutput;
@@ -24,7 +24,12 @@ impl RuntimeOutput for NoopOutput {
 struct FailingLlm;
 
 impl RuntimeLlm for FailingLlm {
-    async fn stream<F>(&self, _messages: &[Message], _handle_delta: F) -> Result<AssistantResponse>
+    async fn stream<F>(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _handle_delta: F,
+    ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
@@ -38,12 +43,14 @@ struct ReplyLlm {
 
 struct CapturingLlm {
     messages: Mutex<Vec<Message>>,
+    tools: Mutex<Vec<ToolSchema>>,
 }
 
 impl CapturingLlm {
     fn new() -> Self {
         Self {
             messages: Mutex::new(Vec::new()),
+            tools: Mutex::new(Vec::new()),
         }
     }
 }
@@ -52,17 +59,19 @@ impl RuntimeLlm for CapturingLlm {
     async fn stream<F>(
         &self,
         messages: &[Message],
+        tools: &[ToolSchema],
         mut handle_delta: F,
     ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
         *self.messages.lock().unwrap() = messages.to_vec();
+        *self.tools.lock().unwrap() = tools.to_vec();
         handle_delta("captured")?;
 
         Ok(AssistantResponse {
             content: "captured".to_string(),
-            tool_calls: Vec::new(),
+            metadata: MessageMetadata::default(),
             finish_reason: Some(FinishReason::Stop),
         })
     }
@@ -80,6 +89,7 @@ impl RuntimeLlm for ReplyLlm {
     async fn stream<F>(
         &self,
         _messages: &[Message],
+        _tools: &[ToolSchema],
         mut handle_delta: F,
     ) -> Result<AssistantResponse>
     where
@@ -89,7 +99,7 @@ impl RuntimeLlm for ReplyLlm {
 
         Ok(AssistantResponse {
             content: self.reply.clone(),
-            tool_calls: Vec::new(),
+            metadata: MessageMetadata::default(),
             finish_reason: Some(FinishReason::Stop),
         })
     }
@@ -98,17 +108,25 @@ impl RuntimeLlm for ReplyLlm {
 struct ToolCallLlm;
 
 impl RuntimeLlm for ToolCallLlm {
-    async fn stream<F>(&self, _messages: &[Message], _handle_delta: F) -> Result<AssistantResponse>
+    async fn stream<F>(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _handle_delta: F,
+    ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
         Ok(AssistantResponse {
             content: String::new(),
-            tool_calls: vec![ToolCall::function(
-                "call_123",
-                "run_shell",
-                r#"{"command":"ls"}"#,
-            )],
+            metadata: MessageMetadata {
+                tool_calls: vec![ToolCall::function(
+                    "call_123",
+                    "run_shell",
+                    r#"{"command":"ls"}"#,
+                )],
+                ..Default::default()
+            },
             finish_reason: Some(FinishReason::ToolCalls),
         })
     }
@@ -201,6 +219,30 @@ async fn query_conversation_uses_active_path() {
     assert_eq!(captured.len(), 2);
     assert_eq!(captured[0].content, "root");
     assert_eq!(captured[1].content, "active");
+}
+
+#[tokio::test]
+async fn query_conversation_passes_tool_schemas_to_llm() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new("run_shell"),
+        description: "Run a shell command".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+    store
+        .insert_tool_schema(&conversation_id, &tool_schema)
+        .unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let llm = CapturingLlm::new();
+
+    query_conversation(&NoopOutput, &llm, &mut store, &conversation_id)
+        .await
+        .unwrap();
+
+    assert_eq!(*llm.tools.lock().unwrap(), vec![tool_schema]);
 }
 
 #[tokio::test]

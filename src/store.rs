@@ -1,7 +1,7 @@
 //! SQLite persistence boundary.
 //!
-//! This module owns persisted conversations, messages, and compactions. Other
-//! modules should not know about SQLite tables or queries.
+//! This module owns persisted conversations, messages, compactions, and tool
+//! schemas. Other modules should not know about SQLite tables or queries.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
-    MessagePart, Role,
+    MessagePart, Role, ToolSchema, ToolSchemaName,
 };
 
 /// Decodes message roles from SQLite into the typed runtime role.
@@ -37,7 +37,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 4;
+const DATABASE_SCHEMA_VERSION: i32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -206,6 +206,18 @@ impl Store {
                     FOREIGN KEY (through_message_id) REFERENCES messages(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS tool_schemas (
+                    conversation_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+
+                    PRIMARY KEY (conversation_id, name),
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                );
+
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
                 ON messages(conversation_id, created_at);
 
@@ -220,6 +232,9 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS compactions_conversation_created_idx
                 ON compactions(conversation_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
+                ON tool_schemas(conversation_id, created_at);
                 ",
             )
             .context("failed to migrate database")?;
@@ -418,6 +433,165 @@ impl Store {
         transaction
             .commit()
             .context("failed to commit system prompt update")?;
+
+        Ok(())
+    }
+
+    /// Clears the conversation-level system prompt without changing messages.
+    pub fn remove_system_prompt(&mut self, conversation_id: &ConversationId) -> Result<()> {
+        self.set_system_prompt(conversation_id, "")
+    }
+
+    /// Loads all tool schemas configured on one conversation.
+    ///
+    /// Tool schemas are conversation-level model inputs. They are not message
+    /// nodes and do not imply that Windie can execute the tools.
+    pub fn load_tool_schemas(&self, conversation_id: &ConversationId) -> Result<Vec<ToolSchema>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT name, description, parameters_json
+                FROM tool_schemas
+                WHERE conversation_id = ?1
+                ORDER BY created_at, rowid
+                ",
+            )
+            .context("failed to prepare tool schema load")?;
+
+        let tool_schemas = statement
+            .query_map(params![conversation_id.as_str()], read_tool_schema_row)
+            .context("failed to load tool schemas")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read tool schemas")?;
+
+        Ok(tool_schemas)
+    }
+
+    /// Inserts one tool schema for a conversation.
+    pub fn insert_tool_schema(
+        &mut self,
+        conversation_id: &ConversationId,
+        tool_schema: &ToolSchema,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        validate_tool_schema(tool_schema)?;
+
+        let now = now_millis()?;
+        let parameters_json = encode_tool_parameters(&tool_schema.parameters)
+            .context("failed to encode tool schema")?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start tool schema insert transaction")?;
+
+        transaction
+            .execute(
+                "
+                INSERT INTO tool_schemas (
+                    conversation_id,
+                    name,
+                    description,
+                    parameters_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                ",
+                params![
+                    conversation_id.as_str(),
+                    tool_schema.name.as_str(),
+                    tool_schema.description.as_str(),
+                    parameters_json.as_str(),
+                    now
+                ],
+            )
+            .context("failed to insert tool schema")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit tool schema insert")?;
+
+        Ok(())
+    }
+
+    /// Updates one existing tool schema, including an optional rename.
+    pub fn update_tool_schema(
+        &mut self,
+        conversation_id: &ConversationId,
+        current_name: &ToolSchemaName,
+        tool_schema: &ToolSchema,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        self.ensure_tool_schema_exists(conversation_id, current_name)?;
+        validate_tool_schema(tool_schema)?;
+
+        let now = now_millis()?;
+        let parameters_json = encode_tool_parameters(&tool_schema.parameters)
+            .context("failed to encode tool schema")?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start tool schema update transaction")?;
+
+        transaction
+            .execute(
+                "
+                UPDATE tool_schemas
+                SET name = ?1,
+                    description = ?2,
+                    parameters_json = ?3,
+                    updated_at = ?4
+                WHERE conversation_id = ?5 AND name = ?6
+                ",
+                params![
+                    tool_schema.name.as_str(),
+                    tool_schema.description.as_str(),
+                    parameters_json.as_str(),
+                    now,
+                    conversation_id.as_str(),
+                    current_name.as_str()
+                ],
+            )
+            .context("failed to update tool schema")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit tool schema update")?;
+
+        Ok(())
+    }
+
+    /// Removes one tool schema from a conversation.
+    pub fn remove_tool_schema(
+        &mut self,
+        conversation_id: &ConversationId,
+        name: &ToolSchemaName,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        self.ensure_tool_schema_exists(conversation_id, name)?;
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start tool schema delete transaction")?;
+
+        transaction
+            .execute(
+                "DELETE FROM tool_schemas WHERE conversation_id = ?1 AND name = ?2",
+                params![conversation_id.as_str(), name.as_str()],
+            )
+            .context("failed to remove tool schema")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit tool schema delete")?;
 
         Ok(())
     }
@@ -1130,6 +1304,12 @@ impl Store {
             .context("failed to delete conversation compactions")?;
         transaction
             .execute(
+                "DELETE FROM tool_schemas WHERE conversation_id = ?1",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to delete conversation tool schemas")?;
+        transaction
+            .execute(
                 "DELETE FROM messages WHERE conversation_id = ?1",
                 params![conversation_id.as_str()],
             )
@@ -1261,7 +1441,7 @@ impl Store {
             .context("failed to load message position")
     }
 
-    /// Loads messages from the beginning through a chronological checkpoint.
+    /// Loads descendant message IDs below one message in the conversation tree.
     fn descendant_message_ids(
         &self,
         conversation_id: &ConversationId,
@@ -1351,6 +1531,35 @@ impl Store {
         Ok(())
     }
 
+    /// Returns an error when a tool schema name is not present on the
+    /// conversation being mutated.
+    fn ensure_tool_schema_exists(
+        &self,
+        conversation_id: &ConversationId,
+        name: &ToolSchemaName,
+    ) -> Result<()> {
+        let exists = self
+            .connection
+            .query_row(
+                "
+                SELECT 1
+                FROM tool_schemas
+                WHERE conversation_id = ?1 AND name = ?2
+                ",
+                params![conversation_id.as_str(), name.as_str()],
+                |_| Ok(()),
+            )
+            .optional()
+            .context("failed to check tool schema")?
+            .is_some();
+
+        if !exists {
+            return Err(anyhow!("tool schema does not exist: {name}"));
+        }
+
+        Ok(())
+    }
+
     /// Checks whether one conversation row exists.
     fn conversation_exists(&self, conversation_id: &ConversationId) -> Result<bool> {
         let exists = self
@@ -1431,6 +1640,20 @@ fn read_message_row(row: &Row<'_>) -> rusqlite::Result<Message> {
     })
 }
 
+/// Converts one SQLite tool schema row into the runtime tool schema type.
+fn read_tool_schema_row(row: &Row<'_>) -> rusqlite::Result<ToolSchema> {
+    let parameters_json = row.get::<_, String>(2)?;
+    let parameters = serde_json::from_str(&parameters_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
+    })?;
+
+    Ok(ToolSchema {
+        name: ToolSchemaName::new(row.get::<_, String>(0)?),
+        description: row.get(1)?,
+        parameters,
+    })
+}
+
 /// Converts one SQLite message part row into the runtime message part type.
 fn read_message_part_row(row: &Row<'_>) -> rusqlite::Result<(String, MessagePart)> {
     let message_id = row.get::<_, String>(0)?;
@@ -1471,6 +1694,29 @@ fn decode_message_metadata(metadata: Option<String>) -> rusqlite::Result<Option<
             })
         })
         .transpose()
+}
+
+/// Serializes a tool's JSON schema parameters for SQLite storage.
+fn encode_tool_parameters(parameters: &serde_json::Value) -> Result<String> {
+    if !parameters.is_object() {
+        return Err(anyhow!("tool schema parameters must be a JSON object"));
+    }
+
+    serde_json::to_string(parameters).context("failed to serialize tool schema parameters")
+}
+
+/// Validates the tool schema contract before storing it.
+fn validate_tool_schema(tool_schema: &ToolSchema) -> Result<()> {
+    if !tool_schema.name.is_valid() {
+        return Err(anyhow!(
+            "tool schema name must be 1-64 characters using letters, numbers, '_', or '-'"
+        ));
+    }
+    if !tool_schema.has_valid_description() {
+        return Err(anyhow!("tool schema description must not be empty"));
+    }
+
+    Ok(())
 }
 
 /// Writes all ordered parts for one message into an existing transaction.

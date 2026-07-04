@@ -7,7 +7,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use crate::conversation::{ConversationId, MessageId, Role};
+use crate::conversation::{ConversationId, MessageId, Role, ToolSchema, ToolSchemaName};
 use crate::llm::ModelName;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
 
@@ -22,10 +22,15 @@ pub enum Command {
         message_id: MessageId,
     },
     /// Insert one message into a conversation without model inference.
-    Insert {
+    InsertMessage {
         conversation_id: ConversationId,
         role: Role,
         parts: Vec<InsertPart>,
+    },
+    /// Insert one conversation-level tool schema.
+    InsertToolSchema {
+        conversation_id: ConversationId,
+        tool_schema: ToolSchema,
     },
     /// Run one benchmark mode. Conversation mode carries the target
     /// conversation ID; live mode does not.
@@ -60,6 +65,11 @@ pub enum Command {
         conversation_id: ConversationId,
         message_id: MessageId,
     },
+    RemoveSystemPrompt(ConversationId),
+    RemoveToolSchema {
+        conversation_id: ConversationId,
+        name: ToolSchemaName,
+    },
     Show(ConversationId),
     Status,
     SetSystemPrompt {
@@ -71,10 +81,15 @@ pub enum Command {
         message_id: MessageId,
     },
     Tree(ConversationId),
-    Update {
+    UpdateMessage {
         conversation_id: ConversationId,
         message_id: MessageId,
         text: String,
+    },
+    UpdateToolSchema {
+        conversation_id: ConversationId,
+        current_name: ToolSchemaName,
+        tool_schema: ToolSchema,
     },
     Version,
 }
@@ -123,22 +138,27 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
             Command::Tree(ConversationId::new(conversation_id.as_str()))
         }
         [command, rest @ ..] if command == "insert" => parse_insert_command(rest),
-        [command, conversation_id, message_id, text_flag, text]
-            if command == "update" && text_flag == "--text" =>
-        {
-            Command::Update {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                message_id: MessageId::new(message_id.as_str()),
-                text: text.to_string(),
-            }
-        }
+        [command, rest @ ..] if command == "update" => parse_update_command(rest),
         [command, conversation_id] if command == "rm" => {
             Command::RemoveConversation(ConversationId::new(conversation_id.as_str()))
         }
-        [command, conversation_id, message_id] if command == "rm" => Command::RemoveMessage {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            message_id: MessageId::new(message_id.as_str()),
-        },
+        [command, conversation_id, subject, message_id]
+            if command == "rm" && subject == "message" =>
+        {
+            Command::RemoveMessage {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                message_id: MessageId::new(message_id.as_str()),
+            }
+        }
+        [command, conversation_id, subject] if command == "rm" && subject == "systemprompt" => {
+            Command::RemoveSystemPrompt(ConversationId::new(conversation_id.as_str()))
+        }
+        [command, conversation_id, subject, name] if command == "rm" && subject == "toolschema" => {
+            Command::RemoveToolSchema {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                name: ToolSchemaName::new(name.as_str()),
+            }
+        }
         [command, conversation_id, message_id] if command == "truncate" => Command::Truncate {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             message_id: MessageId::new(message_id.as_str()),
@@ -147,7 +167,7 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             message_id: MessageId::new(message_id.as_str()),
         },
-        [command, subject, conversation_id, text_flag, text]
+        [command, conversation_id, subject, text_flag, text]
             if command == "set" && subject == "systemprompt" && text_flag == "--text" =>
         {
             Command::SetSystemPrompt {
@@ -172,15 +192,24 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     }
 }
 
-/// Parses `windie insert <conversation_id> --role <role> [--text <text>] [--image <path>]...`.
+/// Parses object inserts under one conversation.
 fn parse_insert_command(args: &[String]) -> Command {
-    let Some(conversation_id) = args.first() else {
-        return Command::Invalid;
-    };
+    match args {
+        [conversation_id, subject, rest @ ..] if subject == "message" => {
+            parse_insert_message_command(conversation_id, rest)
+        }
+        [conversation_id, subject, rest @ ..] if subject == "toolschema" => {
+            parse_insert_tool_schema_command(conversation_id, rest)
+        }
+        _ => Command::Invalid,
+    }
+}
 
+/// Parses `windie insert <conversation_id> message --role <role> [--text <text>] [--image <path>]...`.
+fn parse_insert_message_command(conversation_id: &str, args: &[String]) -> Command {
     let mut role = None;
     let mut parts = Vec::new();
-    let mut index = 1;
+    let mut index = 0;
 
     while index < args.len() {
         match args.get(index).map(String::as_str) {
@@ -219,11 +248,100 @@ fn parse_insert_command(args: &[String]) -> Command {
         return Command::Invalid;
     }
 
-    Command::Insert {
-        conversation_id: ConversationId::new(conversation_id.as_str()),
+    Command::InsertMessage {
+        conversation_id: ConversationId::new(conversation_id),
         role,
         parts,
     }
+}
+
+/// Parses `windie insert <conversation_id> toolschema --name <name> --description <text> --parameters <json>`.
+fn parse_insert_tool_schema_command(conversation_id: &str, args: &[String]) -> Command {
+    let Some(tool_schema) = parse_tool_schema_flags(args) else {
+        return Command::Invalid;
+    };
+
+    Command::InsertToolSchema {
+        conversation_id: ConversationId::new(conversation_id),
+        tool_schema,
+    }
+}
+
+/// Parses object updates under one conversation.
+fn parse_update_command(args: &[String]) -> Command {
+    match args {
+        [conversation_id, subject, message_id, text_flag, text]
+            if subject == "message" && text_flag == "--text" =>
+        {
+            Command::UpdateMessage {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                message_id: MessageId::new(message_id.as_str()),
+                text: text.to_string(),
+            }
+        }
+        [conversation_id, subject, current_name, rest @ ..] if subject == "toolschema" => {
+            let Some(tool_schema) = parse_tool_schema_flags(rest) else {
+                return Command::Invalid;
+            };
+
+            Command::UpdateToolSchema {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                current_name: ToolSchemaName::new(current_name.as_str()),
+                tool_schema,
+            }
+        }
+        _ => Command::Invalid,
+    }
+}
+
+/// Parses a complete tool schema flag set.
+fn parse_tool_schema_flags(args: &[String]) -> Option<ToolSchema> {
+    let mut name = None;
+    let mut description = None;
+    let mut parameters = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--name") => {
+                if name.is_some() {
+                    return None;
+                }
+                name = args
+                    .get(index + 1)
+                    .map(|value| ToolSchemaName::new(value.as_str()));
+                index += 2;
+            }
+            Some("--description") => {
+                if description.is_some() {
+                    return None;
+                }
+                description = args.get(index + 1).cloned();
+                index += 2;
+            }
+            Some("--parameters") => {
+                if parameters.is_some() {
+                    return None;
+                }
+                parameters = args
+                    .get(index + 1)
+                    .and_then(|value| serde_json::from_str(value).ok());
+                index += 2;
+            }
+            _ => return None,
+        }
+    }
+
+    let tool_schema = ToolSchema {
+        name: name?,
+        description: description?,
+        parameters: parameters?,
+    };
+    if !tool_schema.name.is_valid() || !tool_schema.has_valid_description() {
+        return None;
+    }
+
+    Some(tool_schema)
 }
 
 /// Returns whether an insert part carries no user-visible input.
@@ -308,7 +426,6 @@ fn parse_benchmark_options(args: &[String]) -> Option<BenchmarkOptions> {
 /// model.
 fn parse_role(role: &str) -> Option<Role> {
     match role {
-        "system" => Some(Role::System),
         "user" => Some(Role::User),
         "assistant" => Some(Role::Assistant),
         "tool" => Some(Role::Tool),
@@ -473,6 +590,7 @@ mod tests {
             "windie".to_string(),
             "insert".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "--role".to_string(),
             "user".to_string(),
             "--text".to_string(),
@@ -481,7 +599,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Insert {
+            Command::InsertMessage {
                 conversation_id,
                 role: Role::User,
                 parts,
@@ -496,6 +614,7 @@ mod tests {
             "windie".to_string(),
             "insert".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "--role".to_string(),
             "user".to_string(),
             "--text".to_string(),
@@ -506,7 +625,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Insert {
+            Command::InsertMessage {
                 conversation_id,
                 role: Role::User,
                 parts,
@@ -524,6 +643,7 @@ mod tests {
             "windie".to_string(),
             "insert".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "--role".to_string(),
             "user".to_string(),
             "--text".to_string(),
@@ -536,7 +656,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Insert {
+            Command::InsertMessage {
                 conversation_id,
                 role: Role::User,
                 parts,
@@ -555,6 +675,7 @@ mod tests {
             "windie".to_string(),
             "insert".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "--role".to_string(),
             "user".to_string(),
             "--text".to_string(),
@@ -569,7 +690,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Insert {
+            Command::InsertMessage {
                 conversation_id,
                 role: Role::User,
                 parts,
@@ -589,6 +710,7 @@ mod tests {
             "windie".to_string(),
             "insert".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "--role".to_string(),
             "user".to_string(),
             "--image".to_string(),
@@ -597,7 +719,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Insert {
+            Command::InsertMessage {
                 conversation_id,
                 role: Role::User,
                 parts,
@@ -612,6 +734,7 @@ mod tests {
             "windie".to_string(),
             "insert".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "--role".to_string(),
             "owner".to_string(),
             "--text".to_string(),
@@ -642,6 +765,7 @@ mod tests {
             "windie".to_string(),
             "update".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "message-id".to_string(),
             "--text".to_string(),
             "new text".to_string(),
@@ -649,7 +773,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Update {
+            Command::UpdateMessage {
                 conversation_id,
                 message_id,
                 text,
@@ -657,6 +781,117 @@ mod tests {
                 && message_id.as_str() == "message-id"
                 && text == "new text"
         ));
+    }
+
+    #[test]
+    fn reads_insert_tool_schema_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            "run_shell".to_string(),
+            "--description".to_string(),
+            "Run a shell command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::InsertToolSchema {
+                conversation_id,
+                tool_schema,
+            } if conversation_id.as_str() == "conversation-id"
+                && tool_schema.name.as_str() == "run_shell"
+                && tool_schema.description == "Run a shell command"
+                && tool_schema.parameters == serde_json::json!({"type":"object"})
+        ));
+    }
+
+    #[test]
+    fn reads_update_tool_schema_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "update".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "run_shell".to_string(),
+            "--name".to_string(),
+            "shell".to_string(),
+            "--description".to_string(),
+            "Run command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::UpdateToolSchema {
+                conversation_id,
+                current_name,
+                tool_schema,
+            } if conversation_id.as_str() == "conversation-id"
+                && current_name.as_str() == "run_shell"
+                && tool_schema.name.as_str() == "shell"
+                && tool_schema.description == "Run command"
+                && tool_schema.parameters == serde_json::json!({"type":"object"})
+        ));
+    }
+
+    #[test]
+    fn rejects_tool_schema_with_empty_name() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            String::new(),
+            "--description".to_string(),
+            "Run a shell command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_tool_schema_with_invalid_name_characters() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            "run shell".to_string(),
+            "--description".to_string(),
+            "Run a shell command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_tool_schema_with_empty_description() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            "run_shell".to_string(),
+            "--description".to_string(),
+            "   ".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]
@@ -678,6 +913,7 @@ mod tests {
             "windie".to_string(),
             "rm".to_string(),
             "conversation-id".to_string(),
+            "message".to_string(),
             "message-id".to_string(),
         ]);
 
@@ -687,6 +923,39 @@ mod tests {
                 conversation_id,
                 message_id,
             } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn reads_remove_systemprompt_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+            "systemprompt".to_string(),
+        ]);
+
+        assert!(
+            matches!(command, Command::RemoveSystemPrompt(id) if id.as_str() == "conversation-id")
+        );
+    }
+
+    #[test]
+    fn reads_remove_tool_schema_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "run_shell".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::RemoveToolSchema {
+                conversation_id,
+                name,
+            } if conversation_id.as_str() == "conversation-id" && name.as_str() == "run_shell"
         ));
     }
 
@@ -748,8 +1017,8 @@ mod tests {
         let command = command_from_args([
             "windie".to_string(),
             "set".to_string(),
-            "systemprompt".to_string(),
             "conversation-id".to_string(),
+            "systemprompt".to_string(),
             "--text".to_string(),
             "You are concise.".to_string(),
         ]);
@@ -768,8 +1037,8 @@ mod tests {
         let command = command_from_args([
             "windie".to_string(),
             "set".to_string(),
-            "systemprompt".to_string(),
             "conversation-id".to_string(),
+            "systemprompt".to_string(),
         ]);
 
         assert!(matches!(command, Command::Invalid));

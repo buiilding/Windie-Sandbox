@@ -11,7 +11,10 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::conversation::{ImagePart, Message, MessagePart, Role, ToolCall};
+use crate::conversation::{
+    AssistantAnnotation, AssistantAudio, ImagePart, Message, MessageMetadata, MessagePart,
+    ReasoningDetail, ToolCall, ToolSchema,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the OpenAI-compatible provider adapter.
@@ -63,16 +66,21 @@ impl std::fmt::Display for ModelName {
 /// Tests use this trait to simulate success and failure without making network
 /// requests.
 pub(crate) trait RuntimeLlm {
-    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<AssistantResponse>
+    async fn stream<F>(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        handle_delta: F,
+    ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 /// Complete assistant response received from a streaming chat request.
 pub struct AssistantResponse {
     pub content: String,
-    pub tool_calls: Vec<ToolCall>,
+    pub metadata: MessageMetadata,
     pub finish_reason: Option<FinishReason>,
 }
 
@@ -97,16 +105,44 @@ pub struct BifrostClient {
 struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ChatTool<'a>>>,
     stream: bool,
 }
 
 #[derive(Debug, Serialize)]
 /// OpenAI-compatible message payload sent to Bifrost.
 struct ChatMessage<'a> {
-    role: Role,
+    role: crate::conversation::Role,
     content: ChatMessageContent<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<&'a [ToolCall]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_details: Option<&'a [ReasoningDetail]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio: Option<&'a AssistantAudio>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<&'a [AssistantAnnotation]>,
+}
+
+#[derive(Debug, Serialize)]
+/// OpenAI-compatible function tool definition sent to Bifrost.
+struct ChatTool<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ChatToolFunction<'a>,
+}
+
+#[derive(Debug, Serialize)]
+/// Function schema inside one OpenAI-compatible tool definition.
+struct ChatToolFunction<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,6 +200,13 @@ struct StreamChoice {
 /// Incremental assistant content inside a streamed choice.
 struct StreamDelta {
     content: Option<String>,
+    refusal: Option<String>,
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_details: Vec<ReasoningDetail>,
+    audio: Option<AssistantAudio>,
+    #[serde(default)]
+    annotations: Vec<AssistantAnnotation>,
     #[serde(default)]
     tool_calls: Vec<StreamToolCallDelta>,
 }
@@ -189,7 +232,9 @@ struct StreamToolCallFunctionDelta {
 /// In-progress assistant stream state.
 struct AssistantStreamState {
     content: String,
+    metadata: MessageMetadata,
     tool_calls: BTreeMap<u16, PartialToolCall>,
+    reasoning_details: BTreeMap<u16, PartialReasoningDetail>,
     finish_reason: Option<FinishReason>,
 }
 
@@ -200,6 +245,12 @@ struct PartialToolCall {
     kind: Option<String>,
     name: Option<String>,
     arguments: String,
+}
+
+#[derive(Debug)]
+/// Reasoning detail assembled from multiple streaming chunks.
+struct PartialReasoningDetail {
+    detail: ReasoningDetail,
 }
 
 impl BifrostClient {
@@ -222,6 +273,7 @@ impl BifrostClient {
     pub async fn stream<F>(
         &self,
         messages: &[Message],
+        tools: &[ToolSchema],
         mut handle_delta: F,
     ) -> Result<AssistantResponse>
     where
@@ -230,6 +282,7 @@ impl BifrostClient {
         let request = ChatRequest {
             model: self.model.as_str(),
             messages: chat_messages(messages),
+            tools: chat_tools(tools),
             stream: true,
         };
 
@@ -266,9 +319,9 @@ impl BifrostClient {
         process_final_stream_line(&mut buffer, &mut state, &mut handle_delta)?;
 
         let response = state.finalize()?;
-        if response.content.trim().is_empty() && response.tool_calls.is_empty() {
+        if response.content.trim().is_empty() && response.metadata.is_empty() {
             return Err(anyhow!(
-                "chat stream did not include assistant content or tool calls"
+                "chat stream did not include assistant content or metadata"
             ));
         }
 
@@ -287,16 +340,50 @@ impl<'a> ChatMessage<'a> {
         let tool_calls = message
             .metadata
             .as_ref()
-            .filter(|_| message.role == Role::Assistant)
+            .filter(|_| message.role == crate::conversation::Role::Assistant)
             .map(|metadata| metadata.tool_calls.as_slice())
             .filter(|tool_calls| !tool_calls.is_empty());
+        let metadata = message
+            .metadata
+            .as_ref()
+            .filter(|_| message.role == crate::conversation::Role::Assistant);
 
         Self {
             role: message.role,
             content: chat_message_content(message),
             tool_calls,
+            refusal: metadata.and_then(|metadata| metadata.refusal.as_deref()),
+            reasoning: metadata.and_then(|metadata| metadata.reasoning.as_deref()),
+            reasoning_details: metadata
+                .map(|metadata| metadata.reasoning_details.as_slice())
+                .filter(|reasoning_details| !reasoning_details.is_empty()),
+            audio: metadata.and_then(|metadata| metadata.audio.as_ref()),
+            annotations: metadata
+                .map(|metadata| metadata.annotations.as_slice())
+                .filter(|annotations| !annotations.is_empty()),
         }
     }
+}
+
+/// Converts Windie's tool schemas into the OpenAI-compatible request shape.
+fn chat_tools(tools: &[ToolSchema]) -> Option<Vec<ChatTool<'_>>> {
+    if tools.is_empty() {
+        return None;
+    }
+
+    Some(
+        tools
+            .iter()
+            .map(|tool| ChatTool {
+                kind: "function",
+                function: ChatToolFunction {
+                    name: tool.name.as_str(),
+                    description: tool.description.as_str(),
+                    parameters: &tool.parameters,
+                },
+            })
+            .collect(),
+    )
 }
 
 /// Converts one message body into plain text or ordered multimodal parts.
@@ -334,11 +421,16 @@ fn chat_image_part(image: &ImagePart) -> ChatImagePart {
 }
 
 impl RuntimeLlm for BifrostClient {
-    async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<AssistantResponse>
+    async fn stream<F>(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        handle_delta: F,
+    ) -> Result<AssistantResponse>
     where
         F: FnMut(&str) -> Result<()>,
     {
-        BifrostClient::stream(self, messages, handle_delta).await
+        BifrostClient::stream(self, messages, tools, handle_delta).await
     }
 }
 
@@ -447,6 +539,21 @@ where
             handle_delta(&content)?;
             state.content.push_str(&content);
         }
+        if let Some(refusal) = choice.delta.refusal {
+            append_optional_text(&mut state.metadata.refusal, &refusal);
+        }
+        if let Some(reasoning) = choice.delta.reasoning {
+            append_optional_text(&mut state.metadata.reasoning, &reasoning);
+        }
+        if let Some(audio) = choice.delta.audio {
+            state.push_audio_delta(audio);
+        }
+        if !choice.delta.annotations.is_empty() {
+            state.metadata.annotations.extend(choice.delta.annotations);
+        }
+        for reasoning_detail in choice.delta.reasoning_details {
+            state.push_reasoning_detail_delta(reasoning_detail);
+        }
 
         for tool_call in choice.delta.tool_calls {
             state.push_tool_call_delta(tool_call);
@@ -490,17 +597,48 @@ impl AssistantStreamState {
         }
     }
 
+    /// Applies one streamed reasoning detail delta by its provider index.
+    fn push_reasoning_detail_delta(&mut self, detail: ReasoningDetail) {
+        self.reasoning_details
+            .entry(detail.index)
+            .and_modify(|partial| partial.push_delta(detail.clone()))
+            .or_insert_with(|| PartialReasoningDetail { detail });
+    }
+
+    /// Applies one streamed audio delta to the assistant audio metadata lane.
+    fn push_audio_delta(&mut self, delta: AssistantAudio) {
+        if let Some(audio) = self.metadata.audio.as_mut() {
+            if !delta.id.is_empty() {
+                audio.id = delta.id;
+            }
+            audio.data.push_str(&delta.data);
+            if delta.expires_at != 0 {
+                audio.expires_at = delta.expires_at;
+            }
+            audio.transcript.push_str(&delta.transcript);
+        } else {
+            self.metadata.audio = Some(delta);
+        }
+    }
+
     /// Converts the stream state into a complete assistant response.
     fn finalize(self) -> Result<AssistantResponse> {
+        let mut metadata = self.metadata;
         let tool_calls = self
             .tool_calls
             .into_iter()
             .map(|(index, tool_call)| tool_call.finalize(index))
             .collect::<Result<Vec<_>>>()?;
+        metadata.tool_calls = tool_calls;
+        metadata.reasoning_details = self
+            .reasoning_details
+            .into_values()
+            .map(|partial| partial.detail)
+            .collect();
 
         Ok(AssistantResponse {
             content: self.content,
-            tool_calls,
+            metadata,
             finish_reason: self.finish_reason,
         })
     }
@@ -523,11 +661,43 @@ impl PartialToolCall {
     }
 }
 
+impl PartialReasoningDetail {
+    /// Appends text-like reasoning fields while keeping latest identity fields.
+    fn push_delta(&mut self, delta: ReasoningDetail) {
+        self.detail.kind = delta.kind;
+        if delta.id.is_some() {
+            self.detail.id = delta.id;
+        }
+        append_optional_field(&mut self.detail.summary, delta.summary);
+        append_optional_field(&mut self.detail.text, delta.text);
+        if delta.signature.is_some() {
+            self.detail.signature = delta.signature;
+        }
+        append_optional_field(&mut self.detail.data, delta.data);
+    }
+}
+
+/// Appends one text delta into an optional accumulated text field.
+fn append_optional_text(target: &mut Option<String>, delta: &str) {
+    match target {
+        Some(value) => value.push_str(delta),
+        None => *target = Some(delta.to_string()),
+    }
+}
+
+/// Appends an optional text delta into an optional accumulated text field.
+fn append_optional_field(target: &mut Option<String>, delta: Option<String>) {
+    if let Some(delta) = delta {
+        append_optional_text(target, &delta);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::conversation::{
-        ImageAssetId, MessageId, MessageMetadata, ToolCallFunction, ToolCallId, ToolCallKind,
+        ImageAssetId, MessageId, MessageMetadata, ReasoningDetailKind, Role, ToolCallFunction,
+        ToolCallId, ToolCallKind, ToolSchema, ToolSchemaName,
     };
 
     #[test]
@@ -570,6 +740,7 @@ mod tests {
         let request = ChatRequest {
             model: "openai/gpt-4o-mini",
             messages: chat_messages(&messages),
+            tools: None,
             stream: true,
         };
 
@@ -603,11 +774,13 @@ mod tests {
                         arguments: r#"{"command":"ls"}"#.to_string(),
                     },
                 }],
+                ..Default::default()
             }),
         }];
         let request = ChatRequest {
             model: "openai/gpt-4o-mini",
             messages: chat_messages(&messages),
+            tools: None,
             stream: true,
         };
 
@@ -655,6 +828,7 @@ mod tests {
         let request = ChatRequest {
             model: "openai/gpt-4o-mini",
             messages: chat_messages(&messages),
+            tools: None,
             stream: true,
         };
 
@@ -670,6 +844,52 @@ mod tests {
                         {"type": "text", "text": "what is this?"},
                         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQID"}}
                     ]
+                }],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_tool_schemas_for_chat_request() {
+        let tools = vec![ToolSchema {
+            name: ToolSchemaName::new("run_shell"),
+            description: "Run a shell command".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"}
+                },
+                "required": ["command"]
+            }),
+        }];
+        let request = ChatRequest {
+            model: "openai/gpt-4o-mini",
+            messages: Vec::new(),
+            tools: chat_tools(&tools),
+            stream: true,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "messages": [],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "run_shell",
+                        "description": "Run a shell command",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string"}
+                            },
+                            "required": ["command"]
+                        }
+                    }
                 }],
                 "stream": true
             })
@@ -697,6 +917,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_stream_assistant_metadata_lanes() {
+        let mut state = AssistantStreamState::default();
+        let mut handle_delta = |_text: &str| Ok(());
+
+        process_stream_line(
+            r#"data: {"choices":[{"delta":{"refusal":"no","reasoning":"think","reasoning_details":[{"index":0,"type":"reasoning.text","text":"think"}]}}]}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+
+        let response = state.finalize().unwrap();
+
+        assert_eq!(response.metadata.refusal.as_deref(), Some("no"));
+        assert_eq!(response.metadata.reasoning.as_deref(), Some("think"));
+        assert_eq!(response.metadata.reasoning_details.len(), 1);
+        assert_eq!(
+            response.metadata.reasoning_details[0].kind,
+            ReasoningDetailKind::Text
+        );
+        assert_eq!(
+            response.metadata.reasoning_details[0].text.as_deref(),
+            Some("think")
+        );
+    }
+
+    #[test]
     fn assembles_streamed_tool_call() {
         let mut state = AssistantStreamState::default();
         let mut handle_delta = |_text: &str| Ok(());
@@ -717,10 +964,13 @@ mod tests {
         let response = state.finalize().unwrap();
 
         assert_eq!(response.finish_reason, Some(FinishReason::ToolCalls));
-        assert_eq!(response.tool_calls.len(), 1);
-        assert_eq!(response.tool_calls[0].id.as_str(), "call_123");
-        assert_eq!(response.tool_calls[0].name(), "run_shell");
-        assert_eq!(response.tool_calls[0].arguments(), r#"{"command":"ls"}"#);
+        assert_eq!(response.metadata.tool_calls.len(), 1);
+        assert_eq!(response.metadata.tool_calls[0].id.as_str(), "call_123");
+        assert_eq!(response.metadata.tool_calls[0].name(), "run_shell");
+        assert_eq!(
+            response.metadata.tool_calls[0].arguments(),
+            r#"{"command":"ls"}"#
+        );
     }
 
     #[test]

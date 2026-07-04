@@ -1,10 +1,12 @@
 //! Core conversation data.
 //!
 //! Defines typed conversation IDs, message IDs, image asset IDs, compaction IDs,
-//! message roles, message parts, and messages. This file only models runtime
-//! data; it does not save, print, read input, or call the LLM.
+//! tool schema names, message roles, message parts, assistant metadata, and
+//! messages. This file only models runtime data; it does not save, print, read
+//! input, or call the LLM.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Stable identifier for one persisted conversation.
@@ -162,6 +164,71 @@ impl std::ops::Deref for ToolCallId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Stable name for one conversation-level tool schema.
+pub struct ToolSchemaName(String);
+
+impl ToolSchemaName {
+    /// Wraps raw tool schema name text so tool schema identity stays
+    /// type-distinct from general strings.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// Exposes the tool schema name as plain text at persistence, request, and
+    /// display boundaries.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Returns whether the name is valid for OpenAI-compatible function tool
+    /// schemas.
+    ///
+    /// Windie keeps this rule on the typed name so CLI parsing, persistence,
+    /// and future clients can share one contract.
+    pub fn is_valid(&self) -> bool {
+        let name = self.as_str();
+
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    }
+}
+
+impl std::fmt::Display for ToolSchemaName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::ops::Deref for ToolSchemaName {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Conversation-level tool definition that can be sent to the model.
+///
+/// This is only the schema. It does not execute the tool and does not grant any
+/// permission. Execution must go through future explicit runtime boundaries.
+pub struct ToolSchema {
+    pub name: ToolSchemaName,
+    pub description: String,
+    pub parameters: Value,
+}
+
+impl ToolSchema {
+    /// Returns whether the human-facing description carries meaningful text.
+    pub fn has_valid_description(&self) -> bool {
+        !self.description.trim().is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Function call requested by the model.
 ///
@@ -222,9 +289,98 @@ pub struct ToolCallFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Metadata stored on assistant messages that requested tool calls.
+#[serde(rename_all = "snake_case")]
+/// Bifrost-normalized reasoning detail kind for assistant thinking output.
+pub enum ReasoningDetailKind {
+    #[serde(rename = "reasoning.summary")]
+    Summary,
+    #[serde(rename = "reasoning.encrypted")]
+    Encrypted,
+    #[serde(rename = "reasoning.text")]
+    Text,
+    #[serde(rename = "reasoning.content_blocks")]
+    ContentBlocks,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One structured assistant reasoning block returned by the provider adapter.
+pub struct ReasoningDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub index: u16,
+    #[serde(rename = "type")]
+    pub kind: ReasoningDetailKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Assistant audio output metadata returned by audio-capable models.
+pub struct AssistantAudio {
+    pub id: String,
+    pub data: String,
+    pub expires_at: i64,
+    pub transcript: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Citation or annotation attached to an assistant message.
+pub struct AssistantAnnotation {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub url_citation: AssistantCitation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// URL citation payload inside an assistant annotation.
+pub struct AssistantCitation {
+    pub start_index: i64,
+    pub end_index: i64,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Value>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Metadata stored on assistant messages outside normal visible text.
+///
+/// Each field is a separate assistant output lane so future UIs can render
+/// text, tool calls, reasoning, refusals, audio, and citations separately.
 pub struct MessageMetadata {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_details: Vec<ReasoningDetail>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AssistantAudio>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<AssistantAnnotation>,
+}
+
+impl MessageMetadata {
+    /// Returns whether the assistant message has any metadata lane populated.
+    pub fn is_empty(&self) -> bool {
+        self.tool_calls.is_empty()
+            && self.refusal.is_none()
+            && self.reasoning.is_none()
+            && self.reasoning_details.is_empty()
+            && self.audio.is_none()
+            && self.annotations.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

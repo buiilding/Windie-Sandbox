@@ -78,6 +78,7 @@ pub struct PerformanceBaseline {
     pub tree_load: Option<Duration>,
     pub tree_row_load: Option<Duration>,
     pub tree_part_load: Option<Duration>,
+    pub tool_schema_load: Option<Duration>,
     pub context_build: Option<Duration>,
     pub context_active_path_load: Option<Duration>,
     pub context_system_prompt_load: Option<Duration>,
@@ -117,6 +118,8 @@ pub struct PerformanceSample {
     pub tree_load_us: Option<u64>,
     pub tree_row_load_us: Option<u64>,
     pub tree_part_load_us: Option<u64>,
+    #[serde(default)]
+    pub tool_schema_load_us: Option<u64>,
     pub context_build_us: Option<u64>,
     pub context_active_path_load_us: Option<u64>,
     pub context_system_prompt_load_us: Option<u64>,
@@ -141,6 +144,8 @@ pub struct PerformanceSummary {
     pub tree_load: Option<DurationMetric>,
     pub tree_row_load: Option<DurationMetric>,
     pub tree_part_load: Option<DurationMetric>,
+    #[serde(default)]
+    pub tool_schema_load: Option<DurationMetric>,
     pub context_build: Option<DurationMetric>,
     pub context_active_path_load: Option<DurationMetric>,
     pub context_system_prompt_load: Option<DurationMetric>,
@@ -199,6 +204,7 @@ pub async fn run(
         tree_load,
         tree_row_load,
         tree_part_load,
+        tool_schema_load,
         context_build,
         context_active_path_load,
         context_system_prompt_load,
@@ -254,6 +260,10 @@ pub async fn run(
             let tree_messages = tree.len();
             let tree_load = tree_started.elapsed();
 
+            let tool_schema_started = Instant::now();
+            let _ = store.load_tool_schemas(conversation_id)?;
+            let tool_schema_load = tool_schema_started.elapsed();
+
             let context_started = Instant::now();
             let context_active_path_started = Instant::now();
             let context_active_path = store.load_active_path(conversation_id)?;
@@ -285,6 +295,7 @@ pub async fn run(
                 Some(tree_load),
                 Some(tree_row_load),
                 Some(tree_part_load),
+                Some(tool_schema_load),
                 Some(context_build),
                 Some(context_active_path_load),
                 Some(context_system_prompt_load),
@@ -296,7 +307,7 @@ pub async fn run(
         }
         BenchmarkMode::Live => (
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None,
+            None, None,
         ),
     };
 
@@ -330,6 +341,7 @@ pub async fn run(
         tree_load,
         tree_row_load,
         tree_part_load,
+        tool_schema_load,
         context_build,
         context_active_path_load,
         context_system_prompt_load,
@@ -421,7 +433,7 @@ async fn run_live_request(
     let request_started = Instant::now();
     let mut first_token = None;
     let response = llm
-        .stream(&messages, |delta| {
+        .stream(&messages, &[], |delta| {
             if first_token.is_none() && !delta.is_empty() {
                 first_token = Some(request_started.elapsed());
             }
@@ -446,6 +458,7 @@ impl PerformanceSample {
             tree_load_us: baseline.tree_load.map(duration_micros),
             tree_row_load_us: baseline.tree_row_load.map(duration_micros),
             tree_part_load_us: baseline.tree_part_load.map(duration_micros),
+            tool_schema_load_us: baseline.tool_schema_load.map(duration_micros),
             context_build_us: baseline.context_build.map(duration_micros),
             context_active_path_load_us: baseline.context_active_path_load.map(duration_micros),
             context_system_prompt_load_us: baseline.context_system_prompt_load.map(duration_micros),
@@ -492,6 +505,11 @@ impl PerformanceSummary {
             ),
             tree_part_load: duration_metric(
                 samples.iter().filter_map(|sample| sample.tree_part_load_us),
+            ),
+            tool_schema_load: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.tool_schema_load_us),
             ),
             context_build: duration_metric(
                 samples.iter().filter_map(|sample| sample.context_build_us),
@@ -587,6 +605,11 @@ fn comparison_rows(
             "tree part/image load",
             &baseline.tree_part_load,
             &current.tree_part_load,
+        ),
+        (
+            "tool schema load",
+            &baseline.tool_schema_load,
+            &current.tool_schema_load,
         ),
         (
             "context build",

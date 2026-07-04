@@ -125,6 +125,9 @@ Allowed in the current scope:
 - One-shot conversation query primitive.
 - Per-query model override with Bifrost-qualified model names.
 - Tool-call receiving and persistence without tool execution.
+- Conversation-level tool schema persistence and model request serialization.
+- Typed assistant metadata lanes for tool calls, reasoning, refusal, audio, and
+  annotations.
 - Model-facing context construction.
 - Future-ready compaction storage.
 - Basic local performance baselines, repeated benchmark runs, and JSON
@@ -171,7 +174,7 @@ src/main.rs          wires components together
 src/cli.rs           startup CLI arguments
 src/output.rs        terminal output only
 src/output_tests.rs  terminal output tests
-src/conversation.rs  message types and in-memory conversation state
+src/conversation.rs  message types, tool schema types, and assistant metadata types
 src/context.rs       model-facing context construction
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
@@ -190,11 +193,13 @@ Keep boundaries strict:
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
 - Only `image_input.rs` should know about local image file loading.
 - Only `output.rs` should know about printing.
-- Only `conversation.rs` should own message roles and typed conversation/message identifiers.
+- Only `conversation.rs` should own message roles, typed conversation/message
+  identifiers, tool schema types, and assistant metadata types.
 - Only `context.rs` should decide what history the model sees.
 - Only `perf.rs` should own benchmark timing logic.
 - Only `runtime.rs` should coordinate query-like runtime flows.
-- Only `store.rs` should own persisted message history and know about SQLite tables and queries.
+- Only `store.rs` should own persisted message history, tool schemas, and know
+  about SQLite tables and queries.
 - `main.rs` should stay small and only wire components together.
 
 ## Teaching Requirement

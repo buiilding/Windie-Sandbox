@@ -23,12 +23,13 @@ if [ "$list_output" != "no conversations" ]; then
     exit 1
 fi
 conversation_id="$(HOME="$check_home" target/release/windie new)"
-set_prompt_output="$(HOME="$check_home" target/release/windie set systemprompt "$conversation_id" --text "You are concise.")"
+set_prompt_output="$(HOME="$check_home" target/release/windie set "$conversation_id" systemprompt --text "You are concise.")"
 if [ "$set_prompt_output" != "set systemprompt $conversation_id" ]; then
     echo "expected set systemprompt to confirm conversation id" >&2
     exit 1
 fi
-message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role user --text hello)"
+HOME="$check_home" target/release/windie insert "$conversation_id" toolschema --name run_shell --description "Run a shell command" --parameters '{"type":"object"}' >/dev/null
+message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" message --role user --text hello)"
 bench_conversation_output="$(HOME="$check_home" target/release/windie bench "$conversation_id")"
 if ! printf '%s\n' "$bench_conversation_output" | grep -q "mode: conversation"; then
     echo "expected conversation benchmark to print conversation mode" >&2
@@ -40,6 +41,10 @@ if ! printf '%s\n' "$bench_conversation_output" | grep -q "active path messages:
 fi
 if ! printf '%s\n' "$bench_conversation_output" | grep -q "tree messages: 1"; then
     echo "expected conversation benchmark to load one tree message" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_conversation_output" | grep -q "tool schema load:"; then
+    echo "expected conversation benchmark to include tool schema load" >&2
     exit 1
 fi
 bench_report="$check_home/baseline.json"
@@ -70,6 +75,10 @@ if ! grep -q '"context_build": {' "$bench_report"; then
     echo "expected JSON benchmark report to include context build summary" >&2
     exit 1
 fi
+if ! grep -q '"tool_schema_load": {' "$bench_report"; then
+    echo "expected JSON benchmark report to include tool schema load summary" >&2
+    exit 1
+fi
 bench_compare_output="$(target/release/windie bench compare "$bench_report" "$current_report")"
 if ! printf '%s\n' "$bench_compare_output" | grep -q "performance comparison"; then
     echo "expected benchmark compare to print comparison output" >&2
@@ -80,8 +89,8 @@ if ! printf '%s\n' "$show_output" | grep -q "user  $message_id  hello"; then
     echo "expected show to include inserted message" >&2
     exit 1
 fi
-assistant_message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role assistant --text hello-back)"
-third_message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role user --text next)"
+assistant_message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" message --role assistant --text hello-back)"
+third_message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" message --role user --text next)"
 tree_output="$(HOME="$check_home" target/release/windie tree "$conversation_id")"
 if ! printf '%s\n' "$tree_output" | grep -q "\\* user  $third_message_id  next"; then
     echo "expected tree to mark latest inserted message as active" >&2
@@ -113,15 +122,15 @@ if printf '%s\n' "$truncated_output" | grep -q "$third_message_id"; then
     echo "expected truncate to prune descendants after checkpoint" >&2
     exit 1
 fi
-HOME="$check_home" target/release/windie update "$conversation_id" "$message_id" --text hi >/dev/null
-HOME="$check_home" target/release/windie set systemprompt "$conversation_id" --text "You are direct." >/dev/null
+HOME="$check_home" target/release/windie update "$conversation_id" message "$message_id" --text hi >/dev/null
+HOME="$check_home" target/release/windie set "$conversation_id" systemprompt --text "You are direct." >/dev/null
 updated_output="$(HOME="$check_home" target/release/windie show "$conversation_id")"
 if ! printf '%s\n' "$updated_output" | grep -q "user  $message_id  hi"; then
     echo "expected show to include updated message" >&2
     exit 1
 fi
-HOME="$check_home" target/release/windie rm "$conversation_id" "$assistant_message_id" >/dev/null
-HOME="$check_home" target/release/windie rm "$conversation_id" "$message_id" >/dev/null
+HOME="$check_home" target/release/windie rm "$conversation_id" message "$assistant_message_id" >/dev/null
+HOME="$check_home" target/release/windie rm "$conversation_id" message "$message_id" >/dev/null
 removed_message_output="$(HOME="$check_home" target/release/windie show "$conversation_id")"
 if [ "$removed_message_output" != "no messages" ]; then
     echo "expected rm message to remove the only message" >&2
@@ -143,6 +152,17 @@ if [ "$removed_fork_output" != "no conversations" ]; then
     echo "expected rm conversation to remove forked conversation" >&2
     exit 1
 fi
+fixture_conversation_id="$(HOME="$check_home" WINDIE_BIN="$PWD/target/release/windie" scripts/create_benchmark_fixture.sh stress-100)"
+fixture_bench_output="$(HOME="$check_home" target/release/windie bench "$fixture_conversation_id")"
+if ! printf '%s\n' "$fixture_bench_output" | grep -q "active path messages: 100"; then
+    echo "expected stress fixture active path to have 100 messages" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$fixture_bench_output" | grep -q "tree messages: 164"; then
+    echo "expected stress fixture tree to have 164 messages" >&2
+    exit 1
+fi
+HOME="$check_home" target/release/windie rm "$fixture_conversation_id" >/dev/null
 set +e
 HOME="$check_home" target/release/windie show missing >/dev/null 2>&1
 missing_show_exit_code=$?

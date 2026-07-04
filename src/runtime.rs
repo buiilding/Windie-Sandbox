@@ -7,8 +7,8 @@
 use anyhow::{Context, Result};
 
 use crate::context::ContextBuilder;
-use crate::conversation::{ConversationId, Message, MessageMetadata, Role};
-use crate::llm::{AssistantResponse, RuntimeLlm};
+use crate::conversation::{ConversationId, Message, Role};
+use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
 use crate::store::Store;
 
@@ -33,16 +33,25 @@ where
         .context("failed to load active message")?;
     let model_messages =
         ContextBuilder::build(store, conversation_id).context("failed to build model context")?;
+    let tool_schemas = store
+        .load_tool_schemas(conversation_id)
+        .context("failed to load tool schemas")?;
 
     output.start_assistant_message();
     let assistant_response = llm
-        .stream(&model_messages, |text| output.assistant_delta(text))
+        .stream(&model_messages, &tool_schemas, |text| {
+            output.assistant_delta(text)
+        })
         .await
         .context("failed to stream assistant response")?;
     output.end_assistant_message();
-    output.assistant_tool_calls(&assistant_response.tool_calls);
+    output.assistant_tool_calls(&assistant_response.metadata.tool_calls);
 
-    let metadata = assistant_metadata(&assistant_response);
+    let metadata = if assistant_response.metadata.is_empty() {
+        None
+    } else {
+        Some(assistant_response.metadata)
+    };
     let assistant_message_id = store
         .insert_message(
             conversation_id,
@@ -60,17 +69,6 @@ where
         content: assistant_response.content,
         parts: Vec::new(),
         metadata,
-    })
-}
-
-/// Builds typed assistant metadata when tool calls are present.
-fn assistant_metadata(response: &AssistantResponse) -> Option<MessageMetadata> {
-    if response.tool_calls.is_empty() {
-        return None;
-    }
-
-    Some(MessageMetadata {
-        tool_calls: response.tool_calls.clone(),
     })
 }
 

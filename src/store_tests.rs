@@ -1,7 +1,7 @@
 //! Tests for the SQLite persistence boundary.
 
 use super::*;
-use crate::conversation::{MessagePart, ToolCall};
+use crate::conversation::{MessagePart, ToolCall, ToolSchema, ToolSchemaName};
 
 fn index_exists(store: &Store, index_name: &str) -> bool {
     store
@@ -406,6 +406,7 @@ fn preserves_metadata() {
             "run_shell",
             r#"{"command":"ls"}"#,
         )],
+        ..Default::default()
     };
 
     store
@@ -415,6 +416,133 @@ fn preserves_metadata() {
     let messages = store.load_messages(&conversation_id).unwrap();
 
     assert_eq!(messages[0].metadata.as_ref(), Some(&metadata));
+}
+
+#[test]
+fn replacing_message_text_preserves_metadata() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call_123",
+            "run_shell",
+            r#"{"command":"ls"}"#,
+        )],
+        reasoning: Some("thinking".to_string()),
+        ..Default::default()
+    };
+    let message_id = store
+        .insert_message(&conversation_id, None, Role::Assistant, "", Some(&metadata))
+        .unwrap();
+
+    store
+        .replace_message(&conversation_id, &message_id, "visible text")
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(messages[0].content, "visible text");
+    assert_eq!(messages[0].metadata.as_ref(), Some(&metadata));
+}
+
+#[test]
+fn saves_updates_and_removes_tool_schemas() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new("run_shell"),
+        description: "Run a shell command".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+
+    store
+        .insert_tool_schema(&conversation_id, &tool_schema)
+        .unwrap();
+
+    let loaded = store.load_tool_schemas(&conversation_id).unwrap();
+    assert_eq!(loaded, vec![tool_schema.clone()]);
+
+    let updated = ToolSchema {
+        name: ToolSchemaName::new("shell"),
+        description: "Run command".to_string(),
+        parameters: serde_json::json!({"type":"object","properties":{}}),
+    };
+    store
+        .update_tool_schema(
+            &conversation_id,
+            &ToolSchemaName::new("run_shell"),
+            &updated,
+        )
+        .unwrap();
+
+    let loaded = store.load_tool_schemas(&conversation_id).unwrap();
+    assert_eq!(loaded, vec![updated]);
+
+    store
+        .remove_tool_schema(&conversation_id, &ToolSchemaName::new("shell"))
+        .unwrap();
+
+    assert!(
+        store
+            .load_tool_schemas(&conversation_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn rejects_non_object_tool_schema_parameters() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new("bad"),
+        description: "Bad schema".to_string(),
+        parameters: serde_json::json!("not an object"),
+    };
+
+    let error = store
+        .insert_tool_schema(&conversation_id, &tool_schema)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("failed to encode tool schema"));
+}
+
+#[test]
+fn rejects_invalid_tool_schema_name() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new("run shell"),
+        description: "Run a shell command".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+
+    let error = store
+        .insert_tool_schema(&conversation_id, &tool_schema)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("tool schema name must be"));
+}
+
+#[test]
+fn rejects_empty_tool_schema_description() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new("run_shell"),
+        description: " ".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+
+    let error = store
+        .insert_tool_schema(&conversation_id, &tool_schema)
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("tool schema description must not be empty")
+    );
 }
 
 #[test]
@@ -872,6 +1000,7 @@ fn forks_conversation_at_message() {
             "run_shell",
             r#"{"command":"pwd"}"#,
         )],
+        ..Default::default()
     };
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
