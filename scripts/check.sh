@@ -23,6 +23,11 @@ if [ "$list_output" != "no conversations" ]; then
     exit 1
 fi
 conversation_id="$(HOME="$check_home" target/release/windie new)"
+set_prompt_output="$(HOME="$check_home" target/release/windie set systemprompt "$conversation_id" --text "You are concise.")"
+if [ "$set_prompt_output" != "set systemprompt $conversation_id" ]; then
+    echo "expected set systemprompt to confirm conversation id" >&2
+    exit 1
+fi
 message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role user --text hello)"
 bench_list_output="$(HOME="$check_home" target/release/windie bench ls)"
 if ! printf '%s\n' "$bench_list_output" | grep -q "mode: ls"; then
@@ -132,6 +137,7 @@ if printf '%s\n' "$truncated_output" | grep -q "$third_message_id"; then
     exit 1
 fi
 HOME="$check_home" target/release/windie update "$conversation_id" "$message_id" --text hi >/dev/null
+HOME="$check_home" target/release/windie set systemprompt "$conversation_id" --text "You are direct." >/dev/null
 updated_output="$(HOME="$check_home" target/release/windie show "$conversation_id")"
 if ! printf '%s\n' "$updated_output" | grep -q "user  $message_id  hi"; then
     echo "expected show to include updated message" >&2

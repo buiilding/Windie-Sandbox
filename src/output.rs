@@ -129,6 +129,11 @@ impl TerminalOutput {
         println!("updated message {message_id}");
     }
 
+    /// Confirms that the conversation-level system prompt was set.
+    pub fn set_system_prompt(&self, conversation_id: &ConversationId) {
+        println!("set systemprompt {conversation_id}");
+    }
+
     /// Confirms that one message was selected as active.
     pub fn activated_message(&self, message_id: &MessageId) {
         println!("activated message {message_id}");
@@ -266,6 +271,7 @@ fn help_lines() -> Vec<String> {
         "  windie tree <conversation_id>",
         "  windie insert <conversation_id> --role user --text \"hello\"",
         "  windie update <conversation_id> <message_id> --text \"new text\"",
+        "  windie set systemprompt <conversation_id> --text \"system prompt\"",
         "  windie rm <conversation_id>",
         "  windie rm <conversation_id> <message_id>",
         "  windie truncate <conversation_id> <message_id>",
@@ -292,6 +298,8 @@ fn help_lines() -> Vec<String> {
         "  windie gateway start starts the local Bifrost gateway.",
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie query requires the local Bifrost gateway to be running.",
+        "  windie query --model passes the model name to Bifrost for one request.",
+        "  windie set systemprompt sets or replaces the conversation system prompt.",
         "  windie bench live sends a real provider request and may cost money.",
         "",
         "Options:",

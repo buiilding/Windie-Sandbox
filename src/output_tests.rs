@@ -33,6 +33,9 @@ fn formats_help_lines() {
     assert!(lines.contains(
         &"  windie update <conversation_id> <message_id> --text \"new text\"".to_string()
     ));
+    assert!(lines.contains(
+        &"  windie set systemprompt <conversation_id> --text \"system prompt\"".to_string()
+    ));
     assert!(lines.contains(&"  windie truncate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie fork <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie query <conversation_id>".to_string()));
@@ -110,6 +113,7 @@ fn formats_messages_with_ids_and_roles() {
             parent_message_id: None,
             role: Role::User,
             content: "hello".to_string(),
+            parts: Vec::new(),
             metadata: None,
         },
         Message {
@@ -117,6 +121,7 @@ fn formats_messages_with_ids_and_roles() {
             parent_message_id: Some(MessageId::new("user-id")),
             role: Role::Assistant,
             content: "hello back".to_string(),
+            parts: Vec::new(),
             metadata: None,
         },
     ];
@@ -140,6 +145,7 @@ fn formats_unsaved_message_id() {
         parent_message_id: None,
         role: Role::User,
         content: "draft".to_string(),
+        parts: Vec::new(),
         metadata: None,
     }];
 
@@ -156,6 +162,7 @@ fn formats_message_tree_with_active_marker() {
             parent_message_id: None,
             role: Role::User,
             content: "root".to_string(),
+            parts: Vec::new(),
             metadata: None,
         },
         Message {
@@ -163,6 +170,7 @@ fn formats_message_tree_with_active_marker() {
             parent_message_id: Some(MessageId::new("root-id")),
             role: Role::Assistant,
             content: "active".to_string(),
+            parts: Vec::new(),
             metadata: None,
         },
         Message {
@@ -170,6 +178,7 @@ fn formats_message_tree_with_active_marker() {
             parent_message_id: Some(MessageId::new("root-id")),
             role: Role::Assistant,
             content: "branch".to_string(),
+            parts: Vec::new(),
             metadata: None,
         },
     ];
@@ -189,12 +198,12 @@ fn formats_message_tree_with_active_marker() {
 
 #[test]
 fn normalizes_message_preview_whitespace() {
-    assert_eq!(message_preview("hello\n\n  back"), "hello back");
+    assert_eq!(text_preview("hello\n\n  back"), "hello back");
 }
 
 #[test]
 fn truncates_long_message_preview() {
-    let preview = message_preview(
+    let preview = text_preview(
         "1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890",
     );
 
@@ -204,7 +213,7 @@ fn truncates_long_message_preview() {
 
 #[test]
 fn truncates_unicode_message_preview_without_byte_slicing() {
-    let preview = message_preview(&"你".repeat(81));
+    let preview = text_preview(&"你".repeat(81));
 
     assert_eq!(preview.chars().count(), 83);
     assert!(preview.ends_with("..."));

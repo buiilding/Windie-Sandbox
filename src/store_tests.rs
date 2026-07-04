@@ -141,6 +141,54 @@ fn lists_conversations() {
 }
 
 #[test]
+fn sets_and_replaces_system_prompt() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+
+    assert!(store.system_prompt(&conversation_id).unwrap().is_none());
+
+    store
+        .set_system_prompt(&conversation_id, "You are direct.")
+        .unwrap();
+    assert_eq!(
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
+        Some("You are direct.")
+    );
+
+    store
+        .set_system_prompt(&conversation_id, "You are concise.")
+        .unwrap();
+    assert_eq!(
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
+        Some("You are concise.")
+    );
+}
+
+#[test]
+fn clears_system_prompt_with_empty_text() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+
+    store
+        .set_system_prompt(&conversation_id, "You are direct.")
+        .unwrap();
+    store.set_system_prompt(&conversation_id, "").unwrap();
+
+    assert!(store.system_prompt(&conversation_id).unwrap().is_none());
+}
+
+#[test]
+fn rejects_system_prompt_for_missing_conversation() {
+    let mut store = Store::open_memory().unwrap();
+
+    let error = store
+        .set_system_prompt(&ConversationId::new("missing"), "prompt")
+        .unwrap_err();
+
+    assert!(error.to_string().contains("conversation does not exist"));
+}
+
+#[test]
 fn loads_empty_messages_for_existing_conversation() {
     let store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();

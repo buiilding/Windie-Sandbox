@@ -37,7 +37,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 2;
+const DATABASE_SCHEMA_VERSION: i32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -143,6 +143,7 @@ impl Store {
                     id TEXT PRIMARY KEY,
                     title TEXT,
                     active_message_id TEXT,
+                    system_prompt TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -196,6 +197,18 @@ impl Store {
                     [],
                 )
                 .context("failed to add active message column")?;
+        }
+
+        if !self
+            .conversation_has_column("system_prompt")
+            .context("failed to inspect conversation columns")?
+        {
+            self.connection
+                .execute(
+                    "ALTER TABLE conversations ADD COLUMN system_prompt TEXT",
+                    [],
+                )
+                .context("failed to add system prompt column")?;
         }
 
         self.backfill_active_messages()
@@ -330,6 +343,62 @@ impl Store {
             .map(MessageId::new);
 
         Ok(active_message_id)
+    }
+
+    /// Loads the conversation-level system prompt.
+    ///
+    /// The system prompt is not part of the message tree. Context construction
+    /// prepends it to the model-facing messages when it exists.
+    pub fn system_prompt(&self, conversation_id: &ConversationId) -> Result<Option<String>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        self.connection
+            .query_row(
+                "SELECT system_prompt FROM conversations WHERE id = ?1",
+                params![conversation_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to load system prompt")
+            .map(Option::flatten)
+    }
+
+    /// Sets or replaces the conversation-level system prompt.
+    ///
+    /// Empty text clears the prompt by storing `NULL`. This keeps `set
+    /// systemprompt` idempotent: callers can set it before any messages exist
+    /// or replace it after a prompt already exists.
+    pub fn set_system_prompt(
+        &mut self,
+        conversation_id: &ConversationId,
+        content: &str,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let now = now_millis()?;
+        let content = if content.is_empty() {
+            None
+        } else {
+            Some(content)
+        };
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start system prompt transaction")?;
+
+        transaction
+            .execute(
+                "UPDATE conversations SET system_prompt = ?1 WHERE id = ?2",
+                params![content, conversation_id.as_str()],
+            )
+            .context("failed to save system prompt")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit system prompt update")?;
+
+        Ok(())
     }
 
     /// Sets the active message ID for one conversation.

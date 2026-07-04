@@ -16,26 +16,53 @@ pub struct ContextBuilder;
 impl ContextBuilder {
     /// Loads the active path unless a compaction checkpoint exists on that path.
     ///
-    /// With compaction, the model sees one synthetic system summary plus the
+    /// With a saved system prompt, the model sees that prompt first. With
+    /// compaction, the model also sees one synthetic system summary plus the
     /// active-path messages after the checkpoint. The full uncompressed tree
     /// remains in SQLite.
     pub fn build(store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         let active_path = store.load_active_path(conversation_id)?;
+        let system_prompt = store.system_prompt(conversation_id)?;
         let Some(compaction) = store.latest_compaction(conversation_id)? else {
-            return Ok(active_path);
+            return Ok(with_system_prompt(system_prompt, active_path));
         };
 
         let Some(compaction_index) = active_path
             .iter()
             .position(|message| message.id.as_ref() == Some(&compaction.through_message_id))
         else {
-            return Ok(active_path);
+            return Ok(with_system_prompt(system_prompt, active_path));
         };
 
         let mut messages = vec![compaction_message(&compaction.content)];
         messages.extend(active_path.into_iter().skip(compaction_index + 1));
 
-        Ok(messages)
+        Ok(with_system_prompt(system_prompt, messages))
+    }
+}
+
+/// Prepends the conversation-level system prompt when one is set.
+fn with_system_prompt(system_prompt: Option<String>, messages: Vec<Message>) -> Vec<Message> {
+    let Some(system_prompt) = system_prompt else {
+        return messages;
+    };
+
+    let mut model_messages = Vec::with_capacity(messages.len() + 1);
+    model_messages.push(system_prompt_message(system_prompt));
+    model_messages.extend(messages);
+
+    model_messages
+}
+
+/// Converts a saved system prompt into a model-facing system message.
+fn system_prompt_message(content: String) -> Message {
+    Message {
+        id: None,
+        parent_message_id: None,
+        role: Role::System,
+        content,
+        parts: Vec::new(),
+        metadata: None,
     }
 }
 
@@ -46,6 +73,7 @@ fn compaction_message(content: &str) -> Message {
         parent_message_id: None,
         role: Role::System,
         content: format!("{COMPACTION_PREFIX}{content}"),
+        parts: Vec::new(),
         metadata: None,
     }
 }
@@ -79,6 +107,26 @@ mod tests {
         assert_eq!(messages[0].content, "hello");
         assert_eq!(messages[1].role, Role::Assistant);
         assert_eq!(messages[1].content, "hello back");
+    }
+
+    #[test]
+    fn prepends_conversation_system_prompt() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = store.create_conversation().unwrap();
+        store
+            .set_system_prompt(&conversation_id, "You are concise.")
+            .unwrap();
+        store
+            .insert_message(&conversation_id, None, Role::User, "hello", None)
+            .unwrap();
+
+        let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[0].content, "You are concise.");
+        assert_eq!(messages[1].role, Role::User);
+        assert_eq!(messages[1].content, "hello");
     }
 
     #[test]

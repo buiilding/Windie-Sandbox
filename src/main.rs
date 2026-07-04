@@ -77,6 +77,10 @@ async fn main() -> Result<()> {
         } => remove_message(conversation_id, message_id),
         Command::Show(conversation_id) => show_conversation(conversation_id),
         Command::Status => status().await,
+        Command::SetSystemPrompt {
+            conversation_id,
+            text,
+        } => set_system_prompt(conversation_id, &text),
         Command::Truncate {
             conversation_id,
             message_id,
@@ -279,6 +283,19 @@ fn update_message(
         .replace_message(&conversation_id, &message_id, text)
         .context("failed to update message")?;
     output.updated_message(&message_id);
+
+    Ok(())
+}
+
+/// Sets or replaces the conversation-level system prompt.
+fn set_system_prompt(conversation_id: ConversationId, text: &str) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+
+    store
+        .set_system_prompt(&conversation_id, text)
+        .context("failed to set system prompt")?;
+    output.set_system_prompt(&conversation_id);
 
     Ok(())
 }

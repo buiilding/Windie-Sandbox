@@ -62,6 +62,10 @@ pub enum Command {
     },
     Show(ConversationId),
     Status,
+    SetSystemPrompt {
+        conversation_id: ConversationId,
+        text: String,
+    },
     Truncate {
         conversation_id: ConversationId,
         message_id: MessageId,
@@ -148,6 +152,14 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             message_id: MessageId::new(message_id.as_str()),
         },
+        [command, subject, conversation_id, text_flag, text]
+            if command == "set" && subject == "systemprompt" && text_flag == "--text" =>
+        {
+            Command::SetSystemPrompt {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                text: text.to_string(),
+            }
+        }
         [command, conversation_id] if command == "query" => Command::Query {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             model: None,
@@ -558,6 +570,38 @@ mod tests {
                 model: None,
             } if conversation_id.as_str() == "conversation-id"
         ));
+    }
+
+    #[test]
+    fn reads_set_systemprompt_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "set".to_string(),
+            "systemprompt".to_string(),
+            "conversation-id".to_string(),
+            "--text".to_string(),
+            "You are concise.".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::SetSystemPrompt {
+                conversation_id,
+                text,
+            } if conversation_id.as_str() == "conversation-id" && text == "You are concise."
+        ));
+    }
+
+    #[test]
+    fn rejects_set_systemprompt_without_text() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "set".to_string(),
+            "systemprompt".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]

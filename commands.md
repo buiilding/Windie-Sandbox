@@ -128,6 +128,17 @@ This mutates only the selected message content. It does not remove later
 messages and does not run inference.
 
 ```text
+windie set systemprompt <conversation_id> --text "system prompt"
+```
+
+Set or replace the conversation-level system prompt.
+
+The system prompt is not inserted into the message tree. During `query`, Windie
+prepends it to the active path before sending context to Bifrost. Setting the
+system prompt works on an empty conversation tree and also replaces an existing
+system prompt.
+
+```text
 windie activate <conversation_id> <message_id>
 ```
 
