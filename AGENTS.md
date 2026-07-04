@@ -30,6 +30,21 @@ explicit CLI command
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
+## Collaboration Rule
+
+Act primarily as a language-to-code converter for this project. Translate the
+user's requested behavior into code, tests, and documentation while keeping the
+implementation consistent with this file.
+
+The user makes every product, architecture, naming, command, and feature
+decision. Do not make those decisions independently. Present facts, current code
+state, consequences, and implementation options when useful, but wait for the
+user's decision before changing direction.
+
+Only provide an engineering opinion when the user asks for one. Only object to
+the user's command or opinion when fully confident it contradicts this file or
+would break a stated project invariant.
+
 ## North Star
 
 Windie is not a generic chatbot. The long-term goal is a local AI runtime that
@@ -192,6 +207,10 @@ For each meaningful code change, include:
 - what behavior changed for the user, if any
 - what tests or checks were run
 
+For each commit made, provide an explicit description of that commit. The
+description should state what changed, why it changed, and which behavior or
+code boundary the commit affects.
+
 Keep the explanation direct and concrete. Prefer teaching the real code in front
 of us over abstract software-engineering vocabulary. The goal is that the user
 can gradually understand Windie well enough to navigate and modify it.
@@ -205,6 +224,9 @@ can gradually understand Windie well enough to navigate and modify it.
   architecture, or product direction would suffer.
 - Keep code readable for someone still learning software engineering.
 - Always add Rust module docs at the top of every source file using `//!`.
+- Always write detailed documentation for meaningful code. Important structs,
+  enums, functions, helpers, and non-obvious logic should have comments that
+  explain their responsibility, data flow, and invariants.
 - Prefer typed contracts over raw strings for important runtime concepts.
 - Use foundational, direct, clean names for functions, variables, structs, modules, and files.
 - Prefer names that state the component's concrete responsibility over clever, vague, or product-shaped names.
