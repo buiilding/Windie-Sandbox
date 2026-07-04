@@ -2,6 +2,10 @@
 
 use super::*;
 use crate::conversation::{ConversationId, MessageId, Role};
+use crate::perf::{
+    BenchmarkMode, DurationMetric, PerformanceComparison, PerformanceComparisonRow,
+    PerformanceReport, PerformanceSummary,
+};
 
 #[test]
 fn formats_empty_conversations() {
@@ -18,7 +22,14 @@ fn formats_help_lines() {
     assert!(lines.contains(&"Usage:".to_string()));
     assert!(lines.contains(&"  windie".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
+    assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie show <conversation_id>".to_string()));
+    assert!(lines.contains(&"  windie tree <conversation_id>".to_string()));
+    assert!(
+        lines.contains(
+            &"  windie insert <conversation_id> --role user --text \"hello\"".to_string()
+        )
+    );
     assert!(lines.contains(
         &"  windie update <conversation_id> <message_id> --text \"new text\"".to_string()
     ));
@@ -27,7 +38,10 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie query <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
+    assert!(lines.contains(&"  windie bench ls".to_string()));
     assert!(lines.contains(&"  windie bench <conversation_id>".to_string()));
+    assert!(lines.contains(&"  windie bench <conversation_id> --runs 100 --json".to_string()));
+    assert!(lines.contains(&"  windie bench compare <baseline.json> <current.json>".to_string()));
     assert!(lines.contains(&"  windie bench live".to_string()));
     assert!(lines.contains(&"Options:".to_string()));
 }
@@ -135,6 +149,45 @@ fn formats_unsaved_message_id() {
 }
 
 #[test]
+fn formats_message_tree_with_active_marker() {
+    let messages = vec![
+        Message {
+            id: Some(MessageId::new("root-id")),
+            parent_message_id: None,
+            role: Role::User,
+            content: "root".to_string(),
+            metadata: None,
+        },
+        Message {
+            id: Some(MessageId::new("active-id")),
+            parent_message_id: Some(MessageId::new("root-id")),
+            role: Role::Assistant,
+            content: "active".to_string(),
+            metadata: None,
+        },
+        Message {
+            id: Some(MessageId::new("branch-id")),
+            parent_message_id: Some(MessageId::new("root-id")),
+            role: Role::Assistant,
+            content: "branch".to_string(),
+            metadata: None,
+        },
+    ];
+
+    let lines = tree_lines(&messages, Some(&MessageId::new("active-id")));
+
+    assert_eq!(
+        lines,
+        vec![
+            "tree",
+            "  user  root-id  root",
+            "  * assistant  active-id  active",
+            "    assistant  branch-id  branch",
+        ]
+    );
+}
+
+#[test]
 fn normalizes_message_preview_whitespace() {
     assert_eq!(message_preview("hello\n\n  back"), "hello back");
 }
@@ -176,6 +229,64 @@ fn formats_duration_as_seconds() {
     let duration = std::time::Duration::from_millis(1420);
 
     assert_eq!(format_duration(duration), "1.42s");
+}
+
+#[test]
+fn formats_performance_report_lines() {
+    let report = PerformanceReport {
+        format_version: 1,
+        mode: BenchmarkMode::Conversation,
+        model: "openai/gpt-4o-mini".to_string(),
+        conversation_id: Some("conversation-id".to_string()),
+        runs: 3,
+        samples: vec![],
+        summary: PerformanceSummary {
+            store_open: Some(DurationMetric {
+                min_us: 100,
+                median_us: 200,
+                p95_us: 300,
+                max_us: 400,
+            }),
+            active_path_load: None,
+            tree_load: None,
+            context_build: None,
+            conversation_list_load: None,
+            gateway_ready: None,
+            first_token: None,
+            full_response: None,
+        },
+    };
+
+    let lines = performance_report_lines(&report);
+
+    assert_eq!(lines[0], "performance report");
+    assert!(lines.contains(&"mode: conversation".to_string()));
+    assert!(lines.contains(&"runs: 3".to_string()));
+    assert!(lines.contains(&"store open:".to_string()));
+    assert!(lines.contains(&"  median: 200us".to_string()));
+}
+
+#[test]
+fn formats_performance_comparison_lines() {
+    let comparison = PerformanceComparison {
+        baseline_mode: BenchmarkMode::Conversation,
+        current_mode: BenchmarkMode::Conversation,
+        baseline_runs: 100,
+        current_runs: 100,
+        rows: vec![PerformanceComparisonRow {
+            name: "context build",
+            baseline_median_us: 100,
+            current_median_us: 80,
+            change_percent: -20.0,
+        }],
+    };
+
+    let lines = performance_comparison_lines(&comparison);
+
+    assert_eq!(lines[0], "performance comparison");
+    assert!(lines.contains(&"baseline: conversation (100 runs)".to_string()));
+    assert!(lines.contains(&"current: conversation (100 runs)".to_string()));
+    assert!(lines.contains(&"context build: 100us -> 80us (-20.0%)".to_string()));
 }
 
 #[test]

@@ -1,22 +1,28 @@
 //! Startup command parsing for the Windie CLI.
 //!
 //! This module owns command-line arguments only. It maps raw argv text into
-//! typed commands such as `new`, `ls`, `append`, `update`, `query`, `gateway`,
+//! typed commands such as `new`, `ls`, `insert`, `update`, `query`, `gateway`,
 //! and `bench`. It should not open the database, call Bifrost, or print output.
 
 use std::env;
+use std::path::PathBuf;
 
 use crate::conversation::{ConversationId, MessageId, Role};
 use crate::llm::ModelName;
-use crate::perf::BenchmarkMode;
+use crate::perf::{BenchmarkMode, BenchmarkOptions};
 
 /// Parsed startup action for one `windie` process.
 ///
 /// This is the CLI boundary's typed contract. Downstream code should match on
 /// this enum instead of inspecting raw argv strings.
 pub enum Command {
-    /// Add one message to a conversation without model inference.
-    Append {
+    /// Select one message as the active runtime node for a conversation.
+    Activate {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    },
+    /// Insert one message into a conversation without model inference.
+    Insert {
         conversation_id: ConversationId,
         role: Role,
         text: String,
@@ -26,6 +32,12 @@ pub enum Command {
     Bench {
         mode: BenchmarkMode,
         conversation_id: Option<ConversationId>,
+        options: BenchmarkOptions,
+    },
+    /// Compare two persisted JSON benchmark reports.
+    BenchCompare {
+        baseline_path: PathBuf,
+        current_path: PathBuf,
     },
     /// Copy a conversation from the beginning through one checkpoint message.
     Fork {
@@ -54,6 +66,7 @@ pub enum Command {
         conversation_id: ConversationId,
         message_id: MessageId,
     },
+    Tree(ConversationId),
     Update {
         conversation_id: ConversationId,
         message_id: MessageId,
@@ -76,37 +89,36 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     let _program = args.next();
     let args = args.collect::<Vec<_>>();
 
+    if args.first().is_some_and(|arg| arg == "bench") {
+        return parse_bench_command(&args[1..]);
+    }
+
     match args.as_slice() {
         [] => Command::Noop,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
-        [arg] if arg == "bench" => Command::Bench {
-            mode: BenchmarkMode::Local,
-            conversation_id: None,
-        },
-        [command, mode] if command == "bench" && mode == "live" => Command::Bench {
-            mode: BenchmarkMode::Live,
-            conversation_id: None,
-        },
-        [command, conversation_id] if command == "bench" => Command::Bench {
-            mode: BenchmarkMode::Conversation,
-            conversation_id: Some(ConversationId::new(conversation_id.as_str())),
-        },
         [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
         [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
         [arg] if arg == "new" => Command::New,
         [arg] if arg == "ls" => Command::List,
+        [command, conversation_id, message_id] if command == "activate" => Command::Activate {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            message_id: MessageId::new(message_id.as_str()),
+        },
         [command, conversation_id] if command == "show" => {
             Command::Show(ConversationId::new(conversation_id.as_str()))
         }
+        [command, conversation_id] if command == "tree" => {
+            Command::Tree(ConversationId::new(conversation_id.as_str()))
+        }
         [command, conversation_id, role_flag, role, text_flag, text]
-            if command == "append" && role_flag == "--role" && text_flag == "--text" =>
+            if command == "insert" && role_flag == "--role" && text_flag == "--text" =>
         {
             let Some(role) = parse_role(role) else {
                 return Command::Invalid;
             };
 
-            Command::Append {
+            Command::Insert {
                 conversation_id: ConversationId::new(conversation_id.as_str()),
                 role,
                 text: text.to_string(),
@@ -151,6 +163,79 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [arg] if arg == "status" => Command::Status,
         _ => Command::Invalid,
     }
+}
+
+/// Parses benchmark commands and their optional output controls.
+///
+/// `--runs` repeats local measurements so users can compare median/p95 values
+/// across code changes. `--json` writes a persistent artifact to stdout.
+fn parse_bench_command(args: &[String]) -> Command {
+    if let [command, baseline_path, current_path] = args
+        && command == "compare"
+    {
+        return Command::BenchCompare {
+            baseline_path: PathBuf::from(baseline_path),
+            current_path: PathBuf::from(current_path),
+        };
+    }
+
+    let mut index = 0;
+    let (mode, conversation_id) = match args.get(index).map(String::as_str) {
+        None => (BenchmarkMode::Local, None),
+        Some("live") => {
+            index += 1;
+            (BenchmarkMode::Live, None)
+        }
+        Some("ls") => {
+            index += 1;
+            (BenchmarkMode::List, None)
+        }
+        Some(argument) if argument.starts_with("--") => (BenchmarkMode::Local, None),
+        Some(conversation_id) => {
+            index += 1;
+            (
+                BenchmarkMode::Conversation,
+                Some(ConversationId::new(conversation_id)),
+            )
+        }
+    };
+
+    let Some(options) = parse_benchmark_options(&args[index..]) else {
+        return Command::Invalid;
+    };
+
+    Command::Bench {
+        mode,
+        conversation_id,
+        options,
+    }
+}
+
+/// Parses optional benchmark flags after the mode/conversation selector.
+fn parse_benchmark_options(args: &[String]) -> Option<BenchmarkOptions> {
+    let mut options = BenchmarkOptions::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--json") => {
+                options.json = true;
+                index += 1;
+            }
+            Some("--runs") => {
+                let runs = args.get(index + 1)?.parse::<usize>().ok()?;
+                if runs == 0 {
+                    return None;
+                }
+
+                options.runs = runs;
+                index += 2;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(options)
 }
 
 /// Converts CLI role text into the typed role accepted by the conversation
@@ -281,6 +366,35 @@ mod tests {
     }
 
     #[test]
+    fn reads_tree_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "tree".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Tree(id) if id.as_str() == "conversation-id"));
+    }
+
+    #[test]
+    fn reads_activate_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "activate".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Activate {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
     fn rejects_show_without_id() {
         let command = command_from_args(["windie".to_string(), "show".to_string()]);
 
@@ -288,10 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn reads_append_command() {
+    fn reads_insert_command() {
         let command = command_from_args([
             "windie".to_string(),
-            "append".to_string(),
+            "insert".to_string(),
             "conversation-id".to_string(),
             "--role".to_string(),
             "user".to_string(),
@@ -301,7 +415,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Append {
+            Command::Insert {
                 conversation_id,
                 role: Role::User,
                 text,
@@ -310,13 +424,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_append_with_unknown_role() {
+    fn rejects_insert_with_unknown_role() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "owner".to_string(),
+            "--text".to_string(),
+            "hello".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_append_command() {
         let command = command_from_args([
             "windie".to_string(),
             "append".to_string(),
             "conversation-id".to_string(),
             "--role".to_string(),
-            "owner".to_string(),
+            "user".to_string(),
             "--text".to_string(),
             "hello".to_string(),
         ]);
@@ -466,7 +595,8 @@ mod tests {
             Command::Bench {
                 mode: BenchmarkMode::Local,
                 conversation_id: None,
-            }
+                options,
+            } if options.runs == 1 && !options.json
         ));
     }
 
@@ -483,7 +613,44 @@ mod tests {
             Command::Bench {
                 mode: BenchmarkMode::Live,
                 conversation_id: None,
-            }
+                options,
+            } if options.runs == 1 && !options.json
+        ));
+    }
+
+    #[test]
+    fn reads_list_bench_command() {
+        let command =
+            command_from_args(["windie".to_string(), "bench".to_string(), "ls".to_string()]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::List,
+                conversation_id: None,
+                options,
+            } if options.runs == 1 && !options.json
+        ));
+    }
+
+    #[test]
+    fn reads_list_bench_with_runs_and_json() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "ls".to_string(),
+            "--runs".to_string(),
+            "10".to_string(),
+            "--json".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::List,
+                conversation_id: None,
+                options,
+            } if options.runs == 10 && options.json
         ));
     }
 
@@ -500,8 +667,82 @@ mod tests {
             Command::Bench {
                 mode: BenchmarkMode::Conversation,
                 conversation_id: Some(id),
-            } if id.as_str() == "conversation-id"
+                options,
+            } if id.as_str() == "conversation-id" && options.runs == 1 && !options.json
         ));
+    }
+
+    #[test]
+    fn reads_conversation_bench_with_runs_and_json() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "conversation-id".to_string(),
+            "--runs".to_string(),
+            "100".to_string(),
+            "--json".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Conversation,
+                conversation_id: Some(id),
+                options,
+            } if id.as_str() == "conversation-id" && options.runs == 100 && options.json
+        ));
+    }
+
+    #[test]
+    fn reads_local_bench_with_json_before_runs() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "--json".to_string(),
+            "--runs".to_string(),
+            "10".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Local,
+                conversation_id: None,
+                options,
+            } if options.runs == 10 && options.json
+        ));
+    }
+
+    #[test]
+    fn reads_bench_compare_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "compare".to_string(),
+            "baseline.json".to_string(),
+            "current.json".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::BenchCompare {
+                baseline_path,
+                current_path,
+            } if baseline_path == PathBuf::from("baseline.json")
+                && current_path == PathBuf::from("current.json")
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_benchmark_runs() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "--runs".to_string(),
+            "0".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]

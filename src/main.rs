@@ -15,13 +15,14 @@ mod runtime;
 mod store;
 
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 
 use crate::cli::Command;
 use crate::conversation::{ConversationId, MessageId, Role};
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::output::TerminalOutput;
-use crate::perf::BenchmarkMode;
+use crate::perf::{BenchmarkMode, BenchmarkOptions};
 use crate::runtime::query_conversation;
 use crate::store::Store;
 
@@ -36,20 +37,29 @@ const INVALID_USAGE_EXIT_CODE: i32 = 2;
 async fn main() -> Result<()> {
     match cli::read() {
         Command::Noop => Ok(()),
+        Command::Activate {
+            conversation_id,
+            message_id,
+        } => activate_message(conversation_id, message_id),
         Command::Help => print_help(),
         Command::Invalid => invalid_usage(),
         Command::Version => print_version(),
         Command::Bench {
             mode,
             conversation_id,
-        } => benchmark(mode, conversation_id).await,
+            options,
+        } => benchmark(mode, conversation_id, options).await,
+        Command::BenchCompare {
+            baseline_path,
+            current_path,
+        } => compare_benchmarks(baseline_path, current_path),
         Command::GatewayStart => start_gateway().await,
         Command::GatewayStop => stop_gateway().await,
-        Command::Append {
+        Command::Insert {
             conversation_id,
             role,
             text,
-        } => append_message(conversation_id, role, &text),
+        } => insert_message(conversation_id, role, &text),
         Command::Fork {
             conversation_id,
             message_id,
@@ -71,6 +81,7 @@ async fn main() -> Result<()> {
             conversation_id,
             message_id,
         } => truncate_conversation(conversation_id, message_id),
+        Command::Tree(conversation_id) => show_tree(conversation_id),
         Command::Update {
             conversation_id,
             message_id,
@@ -105,19 +116,59 @@ fn print_version() -> Result<()> {
 
 /// Runs one benchmark mode and sends the measured baseline to the output
 /// boundary.
-async fn benchmark(mode: BenchmarkMode, conversation_id: Option<ConversationId>) -> Result<()> {
+async fn benchmark(
+    mode: BenchmarkMode,
+    conversation_id: Option<ConversationId>,
+    options: BenchmarkOptions,
+) -> Result<()> {
     let output = TerminalOutput;
-    let baseline = perf::run(
+
+    if options.runs == 1 && !options.json {
+        let baseline = perf::run(
+            mode,
+            conversation_id,
+            gateway_url(),
+            base_url(),
+            model_name(),
+        )
+        .await
+        .context("failed to run performance baseline")?;
+
+        output.performance_baseline(&baseline);
+
+        return Ok(());
+    }
+
+    let report = perf::run_report(
         mode,
         conversation_id,
         gateway_url(),
         base_url(),
         model_name(),
+        options.runs,
     )
     .await
-    .context("failed to run performance baseline")?;
+    .context("failed to run performance report")?;
 
-    output.performance_baseline(&baseline);
+    if options.json {
+        output.performance_report_json(&report)?;
+    } else {
+        output.performance_report(&report);
+    }
+
+    Ok(())
+}
+
+/// Reads two JSON benchmark artifacts and prints their median differences.
+fn compare_benchmarks(baseline_path: PathBuf, current_path: PathBuf) -> Result<()> {
+    let output = TerminalOutput;
+    let baseline =
+        perf::read_report(&baseline_path).context("failed to read baseline benchmark report")?;
+    let current =
+        perf::read_report(&current_path).context("failed to read current benchmark report")?;
+    let comparison = perf::compare_reports(&baseline, &current);
+
+    output.performance_comparison(&comparison);
 
     Ok(())
 }
@@ -148,12 +199,12 @@ fn list_conversations() -> Result<()> {
     Ok(())
 }
 
-/// Loads and prints the messages for one conversation.
+/// Loads and prints the active path for one conversation.
 fn show_conversation(conversation_id: ConversationId) -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
     let messages = store
-        .load_messages(&conversation_id)
+        .load_active_path(&conversation_id)
         .with_context(|| format!("failed to show conversation {conversation_id}"))?;
 
     output.conversation_messages(&messages);
@@ -161,29 +212,56 @@ fn show_conversation(conversation_id: ConversationId) -> Result<()> {
     Ok(())
 }
 
-/// Appends one explicit message to a conversation.
+/// Loads and prints the full message tree for one conversation.
+fn show_tree(conversation_id: ConversationId) -> Result<()> {
+    let store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+    let messages = store
+        .load_message_tree(&conversation_id)
+        .with_context(|| format!("failed to show conversation tree {conversation_id}"))?;
+    let active_message_id = store
+        .active_message_id(&conversation_id)
+        .context("failed to load active message")?;
+
+    output.conversation_tree(&messages, active_message_id.as_ref());
+
+    Ok(())
+}
+
+/// Inserts one explicit message into a conversation.
 ///
-/// The parent is set to the current last message so the store keeps a simple
-/// message chain for future editing/forking behavior.
-fn append_message(conversation_id: ConversationId, role: Role, text: &str) -> Result<()> {
+/// The parent is set to the active message so the store keeps a tree and the
+/// runtime continues from the selected path.
+fn insert_message(conversation_id: ConversationId, role: Role, text: &str) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
     let parent_message_id = store
-        .load_messages(&conversation_id)
-        .context("failed to load conversation messages")?
-        .last()
-        .and_then(|message| message.id.clone());
+        .active_message_id(&conversation_id)
+        .context("failed to load active message")?;
     let message_id = store
-        .append_message(
+        .insert_message(
             &conversation_id,
             parent_message_id.as_ref(),
             role,
             text,
             None,
         )
-        .context("failed to append message")?;
+        .context("failed to insert message")?;
 
-    output.appended_message(&message_id);
+    output.inserted_message(&message_id);
+
+    Ok(())
+}
+
+/// Selects one message as the active runtime node.
+fn activate_message(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+
+    store
+        .set_active_message(&conversation_id, &message_id)
+        .context("failed to activate message")?;
+    output.activated_message(&message_id);
 
     Ok(())
 }
@@ -231,7 +309,7 @@ fn remove_message(conversation_id: ConversationId, message_id: MessageId) -> Res
     Ok(())
 }
 
-/// Removes all messages after a checkpoint message inside one conversation.
+/// Prunes descendant messages after a checkpoint message inside one conversation.
 fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;

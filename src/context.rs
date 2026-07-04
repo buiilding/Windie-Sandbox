@@ -14,20 +14,26 @@ const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
 pub struct ContextBuilder;
 
 impl ContextBuilder {
-    /// Loads full history unless a compaction checkpoint exists.
+    /// Loads the active path unless a compaction checkpoint exists on that path.
     ///
     /// With compaction, the model sees one synthetic system summary plus the
-    /// messages after the checkpoint. The full uncompressed history remains in
-    /// SQLite.
+    /// active-path messages after the checkpoint. The full uncompressed tree
+    /// remains in SQLite.
     pub fn build(store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+        let active_path = store.load_active_path(conversation_id)?;
         let Some(compaction) = store.latest_compaction(conversation_id)? else {
-            return store.load_messages(conversation_id);
+            return Ok(active_path);
+        };
+
+        let Some(compaction_index) = active_path
+            .iter()
+            .position(|message| message.id.as_ref() == Some(&compaction.through_message_id))
+        else {
+            return Ok(active_path);
         };
 
         let mut messages = vec![compaction_message(&compaction.content)];
-        messages.extend(
-            store.load_messages_after(conversation_id, Some(&compaction.through_message_id))?,
-        );
+        messages.extend(active_path.into_iter().skip(compaction_index + 1));
 
         Ok(messages)
     }
@@ -53,11 +59,17 @@ mod tests {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = store.create_conversation().unwrap();
 
-        store
-            .append_message(&conversation_id, None, Role::User, "hello", None)
+        let first_id = store
+            .insert_message(&conversation_id, None, Role::User, "hello", None)
             .unwrap();
         store
-            .append_message(&conversation_id, None, Role::Assistant, "hello back", None)
+            .insert_message(
+                &conversation_id,
+                Some(&first_id),
+                Role::Assistant,
+                "hello back",
+                None,
+            )
             .unwrap();
 
         let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
@@ -75,10 +87,10 @@ mod tests {
         let conversation_id = store.create_conversation().unwrap();
 
         let first_id = store
-            .append_message(&conversation_id, None, Role::User, "one", None)
+            .insert_message(&conversation_id, None, Role::User, "one", None)
             .unwrap();
         let second_id = store
-            .append_message(
+            .insert_message(
                 &conversation_id,
                 Some(&first_id),
                 Role::Assistant,
@@ -87,7 +99,7 @@ mod tests {
             )
             .unwrap();
         store
-            .append_message(
+            .insert_message(
                 &conversation_id,
                 Some(&second_id),
                 Role::User,
@@ -109,5 +121,45 @@ mod tests {
         );
         assert_eq!(messages[1].role, Role::User);
         assert_eq!(messages[1].content, "three");
+    }
+
+    #[test]
+    fn ignores_compaction_outside_active_path() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = store.create_conversation().unwrap();
+
+        let root_id = store
+            .insert_message(&conversation_id, None, Role::User, "root", None)
+            .unwrap();
+        let inactive_id = store
+            .insert_message(
+                &conversation_id,
+                Some(&root_id),
+                Role::Assistant,
+                "inactive",
+                None,
+            )
+            .unwrap();
+        let active_id = store
+            .insert_message(
+                &conversation_id,
+                Some(&root_id),
+                Role::Assistant,
+                "active",
+                None,
+            )
+            .unwrap();
+        store
+            .save_compaction(&conversation_id, &inactive_id, "inactive summary")
+            .unwrap();
+        store
+            .set_active_message(&conversation_id, &active_id)
+            .unwrap();
+
+        let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "root");
+        assert_eq!(messages[1].content, "active");
     }
 }

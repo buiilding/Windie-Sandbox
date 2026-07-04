@@ -15,9 +15,9 @@ use crate::store::Store;
 /// Runs one query against one existing conversation.
 ///
 /// Data flow:
-/// load current parent -> build model context -> stream LLM output -> save the
-/// assistant reply. The assistant message is only persisted after successful
-/// inference.
+/// load active message -> build model context from active path -> stream LLM
+/// output -> save the assistant reply. The assistant message is only persisted
+/// after successful inference and becomes the new active message.
 pub(crate) async fn query_conversation<O, L>(
     output: &O,
     llm: &L,
@@ -29,10 +29,8 @@ where
     L: RuntimeLlm,
 {
     let parent_message_id = store
-        .load_messages(conversation_id)
-        .context("failed to load conversation messages")?
-        .last()
-        .and_then(|message| message.id.clone());
+        .active_message_id(conversation_id)
+        .context("failed to load active message")?;
     let model_messages =
         ContextBuilder::build(store, conversation_id).context("failed to build model context")?;
 
@@ -44,7 +42,7 @@ where
     output.end_assistant_message();
 
     let assistant_message_id = store
-        .append_message(
+        .insert_message(
             conversation_id,
             parent_message_id.as_ref(),
             Role::Assistant,

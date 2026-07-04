@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -19,6 +20,7 @@ const DEV_BIFROST_DIR: &str = "bifrost";
 const DEV_BIFROST_BINARY: &str = "tmp/bifrost-http";
 const DEV_BIFROST_APP_DIR: &str = "data";
 const BIFROST_PORT: &str = "8080";
+const ENV_FILE_NAME: &str = ".env";
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -160,14 +162,21 @@ impl BifrostGateway {
 
     /// Spawns the local development Bifrost binary with the known app dir and
     /// port.
+    ///
+    /// The child process environment is intentionally cleared first. Bifrost
+    /// receives only variables loaded from Windie's `.env` file so provider keys
+    /// are explicit instead of inherited from the user's shell environment.
     fn start_process(&self) -> Result<()> {
         let paths = find_dev_bifrost_paths()?;
+        let environment = load_bifrost_environment()?;
 
         Command::new(&paths.binary)
             .arg("-app-dir")
             .arg(&paths.app_dir)
             .arg("-port")
             .arg(BIFROST_PORT)
+            .env_clear()
+            .envs(environment)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -321,6 +330,86 @@ fn dev_bifrost_dirs(root: &Path) -> [PathBuf; 2] {
     ]
 }
 
+/// Loads the environment variables Windie explicitly gives to Bifrost.
+///
+/// Missing `.env` is allowed so the gateway can still start for development
+/// without provider keys. Provider calls may fail later until keys are added.
+fn load_bifrost_environment() -> Result<Vec<(String, String)>> {
+    let Some(path) = find_env_file_path() else {
+        return Ok(Vec::new());
+    };
+
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read environment file {}", path.display()))?;
+
+    parse_env_file(&text).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+/// Finds the first supported Windie environment file.
+///
+/// User runtime config takes precedence over the project-local development
+/// fallback.
+fn find_env_file_path() -> Option<PathBuf> {
+    env_file_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+/// Returns supported `.env` locations in lookup order.
+fn env_file_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(home) = env::var_os("HOME") {
+        paths.push(PathBuf::from(home).join(".windie").join(ENV_FILE_NAME));
+    }
+
+    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(ENV_FILE_NAME));
+
+    paths
+}
+
+/// Parses simple KEY=VALUE lines from a `.env` file.
+///
+/// Empty lines and `#` comments are ignored. `export KEY=VALUE` is accepted.
+/// Single or double quotes around the entire value are stripped.
+fn parse_env_file(text: &str) -> Result<Vec<(String, String)>> {
+    let mut values = Vec::new();
+
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let line = line.strip_prefix("export ").unwrap_or(line).trim();
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(anyhow!("invalid .env line {}", index + 1));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(anyhow!("empty .env key on line {}", index + 1));
+        }
+
+        values.push((key.to_string(), unquote_env_value(value.trim()).to_string()));
+    }
+
+    Ok(values)
+}
+
+/// Removes matching quote characters around a full `.env` value.
+fn unquote_env_value(value: &str) -> &str {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+        {
+            return &value[1..value.len() - 1];
+        }
+    }
+
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +419,37 @@ mod tests {
         let url = GatewayUrl::new("http://localhost:8080/");
 
         assert_eq!(url.as_str(), "http://localhost:8080");
+    }
+
+    #[test]
+    fn parses_env_file_values() {
+        let values = parse_env_file(
+            r#"
+            # provider keys
+            OPENAI_API_KEY=sk-test
+            export ANTHROPIC_API_KEY='sk-ant-test'
+            GEMINI_API_KEY="gemini-test"
+            EMPTY=
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            values,
+            vec![
+                ("OPENAI_API_KEY".to_string(), "sk-test".to_string()),
+                ("ANTHROPIC_API_KEY".to_string(), "sk-ant-test".to_string()),
+                ("GEMINI_API_KEY".to_string(), "gemini-test".to_string()),
+                ("EMPTY".to_string(), "".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_env_file_line() {
+        let error = parse_env_file("OPENAI_API_KEY").unwrap_err();
+
+        assert!(error.to_string().contains("invalid .env line 1"));
     }
 
     #[test]

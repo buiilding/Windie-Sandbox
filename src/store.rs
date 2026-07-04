@@ -3,7 +3,7 @@
 //! This module owns persisted conversations, messages, and compactions. Other
 //! modules should not know about SQLite tables or queries.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 1;
+const DATABASE_SCHEMA_VERSION: i32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -77,6 +77,7 @@ impl Store {
         };
         store.configure()?;
         store.migrate()?;
+        store.optimize()?;
 
         Ok(store)
     }
@@ -89,6 +90,7 @@ impl Store {
         };
         store.configure()?;
         store.migrate()?;
+        store.optimize()?;
 
         Ok(store)
     }
@@ -110,6 +112,14 @@ impl Store {
             .context("failed to configure database")
     }
 
+    /// Lets SQLite refresh planner statistics when it decides optimization is
+    /// useful.
+    fn optimize(&self) -> Result<()> {
+        self.connection
+            .execute_batch("PRAGMA optimize;")
+            .context("failed to optimize database")
+    }
+
     /// Creates or validates the current schema.
     ///
     /// Windie refuses to open databases from a newer schema version because this
@@ -128,6 +138,7 @@ impl Store {
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     title TEXT,
+                    active_message_id TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -159,11 +170,32 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
                 ON messages(conversation_id, created_at);
 
+                CREATE INDEX IF NOT EXISTS messages_parent_idx
+                ON messages(conversation_id, parent_message_id);
+
+                CREATE INDEX IF NOT EXISTS conversations_updated_idx
+                ON conversations(updated_at);
+
                 CREATE INDEX IF NOT EXISTS compactions_conversation_created_idx
                 ON compactions(conversation_id, created_at);
                 ",
             )
             .context("failed to migrate database")?;
+
+        if !self
+            .conversation_has_column("active_message_id")
+            .context("failed to inspect conversation columns")?
+        {
+            self.connection
+                .execute(
+                    "ALTER TABLE conversations ADD COLUMN active_message_id TEXT",
+                    [],
+                )
+                .context("failed to add active message column")?;
+        }
+
+        self.backfill_active_messages()
+            .context("failed to backfill active messages")?;
 
         self.connection
             .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)
@@ -185,8 +217,8 @@ impl Store {
         self.connection
             .execute(
                 "
-                INSERT INTO conversations (id, title, created_at, updated_at)
-                VALUES (?1, NULL, ?2, ?2)
+                INSERT INTO conversations (id, title, active_message_id, created_at, updated_at)
+                VALUES (?1, NULL, NULL, ?2, ?2)
                 ",
                 params![id.as_str(), now],
             )
@@ -204,8 +236,8 @@ impl Store {
         self.connection
             .execute(
                 "
-                INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at)
-                VALUES (?1, NULL, ?2, ?2)
+                INSERT OR IGNORE INTO conversations (id, title, active_message_id, created_at, updated_at)
+                VALUES (?1, NULL, NULL, ?2, ?2)
                 ",
                 params![DEFAULT_CONVERSATION_ID, now],
             )
@@ -247,7 +279,7 @@ impl Store {
         Ok(conversations)
     }
 
-    /// Loads all messages for one conversation in stable chronological order.
+    /// Loads all messages for one conversation in stable insertion order.
     pub fn load_messages(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         self.ensure_conversation_exists(conversation_id)?;
 
@@ -272,10 +304,134 @@ impl Store {
         Ok(messages)
     }
 
-    /// Loads messages after an optional checkpoint message.
+    /// Loads all stored messages for tree inspection.
+    pub fn load_message_tree(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+        self.load_messages(conversation_id)
+    }
+
+    /// Loads the active message ID for one conversation.
+    pub fn active_message_id(&self, conversation_id: &ConversationId) -> Result<Option<MessageId>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let active_message_id = self
+            .connection
+            .query_row(
+                "SELECT active_message_id FROM conversations WHERE id = ?1",
+                params![conversation_id.as_str()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .context("failed to load active message")?
+            .flatten()
+            .map(MessageId::new);
+
+        Ok(active_message_id)
+    }
+
+    /// Sets the active message ID for one conversation.
+    pub fn set_active_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start active message transaction")?;
+
+        set_active_message_in_transaction(&transaction, conversation_id, Some(message_id))
+            .context("failed to set active message")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit active message update")?;
+
+        Ok(())
+    }
+
+    /// Loads the selected root-to-active path for one conversation.
+    pub fn load_active_path(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+        let Some(message_id) = self.active_message_id(conversation_id)? else {
+            return Ok(Vec::new());
+        };
+
+        self.load_path_to_message(conversation_id, &message_id)
+    }
+
+    /// Loads the root-to-message path for one message inside a conversation.
+    pub fn load_path_to_message(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<Vec<Message>> {
+        self.ensure_conversation_exists(conversation_id)?;
+        self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                WITH RECURSIVE path(
+                    id,
+                    parent_message_id,
+                    role,
+                    content,
+                    metadata,
+                    depth
+                ) AS (
+                    SELECT
+                        id,
+                        parent_message_id,
+                        role,
+                        content,
+                        metadata,
+                        0
+                    FROM messages
+                    WHERE conversation_id = ?1 AND id = ?2
+
+                    UNION ALL
+
+                    SELECT
+                        messages.id,
+                        messages.parent_message_id,
+                        messages.role,
+                        messages.content,
+                        messages.metadata,
+                        path.depth + 1
+                    FROM messages
+                    JOIN path ON messages.id = path.parent_message_id
+                    WHERE messages.conversation_id = ?1
+                )
+                SELECT id, parent_message_id, role, content, metadata
+                FROM path
+                ORDER BY depth DESC
+                ",
+            )
+            .context("failed to prepare active path load")?;
+
+        let path = statement
+            .query_map(
+                params![conversation_id.as_str(), message_id.as_str()],
+                read_message_row,
+            )
+            .context("failed to load active path")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read active path")?;
+
+        Ok(path)
+    }
+
+    /// Loads messages after an optional checkpoint message in insertion order.
     ///
-    /// This is used by context compaction: the model can receive a summary
-    /// through the checkpoint plus only the newer messages.
+    /// This is intentionally not part of the active query path. It is kept as a
+    /// future compaction/checkpoint primitive for code that needs chronological
+    /// suffixes rather than root-to-active tree paths.
+    #[allow(dead_code)]
     pub fn load_messages_after(
         &self,
         conversation_id: &ConversationId,
@@ -319,11 +475,12 @@ impl Store {
         Ok(messages)
     }
 
-    /// Appends a new message and updates the conversation timestamp in one
+    /// Inserts a new message and updates the conversation timestamp in one
     /// transaction.
     ///
-    /// If a parent message is provided, it must belong to the same conversation.
-    pub fn append_message(
+    /// If a parent message is provided, the new message becomes that parent's
+    /// child. The parent must belong to the same conversation.
+    pub fn insert_message(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: Option<&MessageId>,
@@ -371,6 +528,8 @@ impl Store {
             )
             .context("failed to save message")?;
 
+        set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
+            .context("failed to set active message")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -416,11 +575,10 @@ impl Store {
         Ok(())
     }
 
-    /// Deletes one message and reconnects its children to the deleted message's
-    /// parent.
+    /// Deletes one message and all descendants below it.
     ///
-    /// This preserves a simple chain instead of leaving child messages pointing
-    /// at a missing parent.
+    /// If the active message is inside the deleted subtree, active moves to the
+    /// deleted message's parent.
     pub fn remove_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -441,6 +599,18 @@ impl Store {
                 |row| row.get::<_, Option<String>>(0),
             )
             .context("failed to load message parent")?;
+        let subtree_ids = self
+            .descendant_message_ids(conversation_id, message_id, true)
+            .context("failed to load message subtree")?;
+        let active_message_id = self.active_message_id(conversation_id)?;
+        let next_active_message_id = if active_message_id
+            .as_ref()
+            .is_some_and(|active_message_id| subtree_ids.contains(active_message_id.as_str()))
+        {
+            parent_message_id.as_deref().map(MessageId::new)
+        } else {
+            active_message_id
+        };
         let now = now_millis()?;
         let transaction = self
             .connection
@@ -449,26 +619,30 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message delete")?;
+        set_active_message_in_transaction(
+            &transaction,
+            conversation_id,
+            next_active_message_id.as_ref(),
+        )
+        .context("failed to update active message after delete")?;
         transaction
             .execute(
                 "
-                UPDATE messages
-                SET parent_message_id = ?1
-                WHERE conversation_id = ?2 AND parent_message_id = ?3
+                WITH RECURSIVE subtree(id) AS (
+                    SELECT ?2
+                    UNION ALL
+                    SELECT messages.id
+                    FROM messages
+                    JOIN subtree ON messages.parent_message_id = subtree.id
+                    WHERE messages.conversation_id = ?1
+                )
+                DELETE FROM messages
+                WHERE conversation_id = ?1
+                  AND id IN (SELECT id FROM subtree)
                 ",
-                params![
-                    parent_message_id.as_deref(),
-                    conversation_id.as_str(),
-                    message_id.as_str()
-                ],
-            )
-            .context("failed to reconnect child messages")?;
-        transaction
-            .execute(
-                "DELETE FROM messages WHERE conversation_id = ?1 AND id = ?2",
                 params![conversation_id.as_str(), message_id.as_str()],
             )
-            .context("failed to delete message")?;
+            .context("failed to delete message subtree")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -478,7 +652,7 @@ impl Store {
         Ok(())
     }
 
-    /// Deletes all messages after a checkpoint message in one transaction.
+    /// Deletes descendant messages below a checkpoint message in one transaction.
     ///
     /// Compactions are cleared because the visible history changed.
     pub fn truncate_after_message(
@@ -487,9 +661,19 @@ impl Store {
         message_id: &MessageId,
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
-        let (created_at, rowid) = self
-            .message_position(conversation_id, message_id)?
-            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))?;
+        self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        let descendant_ids = self
+            .descendant_message_ids(conversation_id, message_id, false)
+            .context("failed to load message descendants")?;
+        let active_message_id = self.active_message_id(conversation_id)?;
+        let next_active_message_id = if active_message_id
+            .as_ref()
+            .is_some_and(|active_message_id| descendant_ids.contains(active_message_id.as_str()))
+        {
+            Some(message_id.clone())
+        } else {
+            active_message_id
+        };
 
         let now = now_millis()?;
         let transaction = self
@@ -499,19 +683,33 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after conversation truncate")?;
+        set_active_message_in_transaction(
+            &transaction,
+            conversation_id,
+            next_active_message_id.as_ref(),
+        )
+        .context("failed to update active message after truncate")?;
         transaction
             .execute(
                 "
+                WITH RECURSIVE subtree(id) AS (
+                    SELECT messages.id
+                    FROM messages
+                    WHERE messages.conversation_id = ?1
+                      AND messages.parent_message_id = ?2
+                    UNION ALL
+                    SELECT messages.id
+                    FROM messages
+                    JOIN subtree ON messages.parent_message_id = subtree.id
+                    WHERE messages.conversation_id = ?1
+                )
                 DELETE FROM messages
                 WHERE conversation_id = ?1
-                  AND (
-                    created_at > ?2
-                    OR (created_at = ?2 AND rowid > ?3)
-                  )
+                  AND id IN (SELECT id FROM subtree)
                 ",
-                params![conversation_id.as_str(), created_at, rowid],
+                params![conversation_id.as_str(), message_id.as_str()],
             )
-            .context("failed to truncate conversation messages")?;
+            .context("failed to prune conversation descendants")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -532,12 +730,10 @@ impl Store {
         message_id: &MessageId,
     ) -> Result<ConversationId> {
         self.ensure_conversation_exists(conversation_id)?;
-        let (created_at, rowid) = self
-            .message_position(conversation_id, message_id)?
-            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))?;
+        self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
         let source_messages = self
-            .load_messages_through_position(conversation_id, created_at, rowid)
+            .load_path_to_message(conversation_id, message_id)
             .context("failed to load messages for conversation fork")?;
         let forked_conversation_id = ConversationId::new(Uuid::new_v4().to_string());
         let mut message_id_map = HashMap::new();
@@ -550,8 +746,8 @@ impl Store {
         transaction
             .execute(
                 "
-                INSERT INTO conversations (id, title, created_at, updated_at)
-                VALUES (?1, NULL, ?2, ?2)
+                INSERT INTO conversations (id, title, active_message_id, created_at, updated_at)
+                VALUES (?1, NULL, NULL, ?2, ?2)
                 ",
                 params![forked_conversation_id.as_str(), now],
             )
@@ -597,6 +793,16 @@ impl Store {
             message_id_map.insert(source_message_id.as_str().to_string(), forked_message_id);
         }
 
+        let forked_active_message_id = source_messages
+            .last()
+            .and_then(|message| message.id.as_ref())
+            .and_then(|message_id| message_id_map.get(message_id.as_str()));
+        set_active_message_in_transaction(
+            &transaction,
+            &forked_conversation_id,
+            forked_active_message_id,
+        )
+        .context("failed to set forked active message")?;
         transaction
             .commit()
             .context("failed to commit conversation fork")?;
@@ -613,6 +819,12 @@ impl Store {
             .transaction()
             .context("failed to start conversation delete transaction")?;
 
+        transaction
+            .execute(
+                "UPDATE conversations SET active_message_id = NULL WHERE id = ?1",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to clear active message")?;
         transaction
             .execute(
                 "DELETE FROM compactions WHERE conversation_id = ?1",
@@ -669,10 +881,13 @@ impl Store {
             .context("failed to load latest compaction")
     }
 
-    #[allow(dead_code)]
     /// Saves a compaction summary through a message checkpoint.
     ///
+    /// This is currently a stored primitive for future automatic compaction; no
+    /// CLI command writes compactions yet.
+    ///
     /// The checkpoint message must belong to the same conversation.
+    #[allow(dead_code)]
     pub fn save_compaction(
         &mut self,
         conversation_id: &ConversationId,
@@ -722,10 +937,12 @@ impl Store {
         Ok(id)
     }
 
-    /// Returns chronological position for a message inside a conversation.
+    /// Returns insertion position for a message inside a conversation.
     ///
-    /// `rowid` breaks ties when multiple rows share the same millisecond
-    /// timestamp.
+    /// This helper exists only for chronological suffix loading used by
+    /// compaction/checkpoint work. `rowid` breaks ties when multiple rows share
+    /// the same millisecond timestamp.
+    #[allow(dead_code)]
     fn message_position(
         &self,
         conversation_id: &ConversationId,
@@ -746,38 +963,51 @@ impl Store {
     }
 
     /// Loads messages from the beginning through a chronological checkpoint.
-    fn load_messages_through_position(
+    fn descendant_message_ids(
         &self,
         conversation_id: &ConversationId,
-        created_at: i64,
-        rowid: i64,
-    ) -> Result<Vec<Message>> {
+        message_id: &MessageId,
+        include_self: bool,
+    ) -> Result<HashSet<String>> {
+        let seed = if include_self {
+            "
+            SELECT ?2
+            "
+        } else {
+            "
+            SELECT messages.id
+            FROM messages
+            WHERE messages.conversation_id = ?1
+              AND messages.parent_message_id = ?2
+            "
+        };
+        let sql = format!(
+            "
+            WITH RECURSIVE subtree(id) AS (
+                {seed}
+                UNION ALL
+                SELECT messages.id
+                FROM messages
+                JOIN subtree ON messages.parent_message_id = subtree.id
+                WHERE messages.conversation_id = ?1
+            )
+            SELECT id FROM subtree
+            "
+        );
         let mut statement = self
             .connection
-            .prepare(
-                "
-                SELECT id, parent_message_id, role, content, metadata
-                FROM messages
-                WHERE conversation_id = ?1
-                  AND (
-                    created_at < ?2
-                    OR (created_at = ?2 AND rowid <= ?3)
-                  )
-                ORDER BY created_at, rowid
-                ",
-            )
-            .context("failed to prepare message load through checkpoint")?;
-
-        let messages = statement
+            .prepare(&sql)
+            .context("failed to prepare descendant load")?;
+        let ids = statement
             .query_map(
-                params![conversation_id.as_str(), created_at, rowid],
-                read_message_row,
+                params![conversation_id.as_str(), message_id.as_str()],
+                |row| row.get::<_, String>(0),
             )
-            .context("failed to load messages through checkpoint")?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read messages through checkpoint")?;
+            .context("failed to load descendants")?
+            .collect::<rusqlite::Result<HashSet<_>>>()
+            .context("failed to read descendants")?;
 
-        Ok(messages)
+        Ok(ids)
     }
 
     /// Finds which conversation owns a message ID.
@@ -837,6 +1067,48 @@ impl Store {
 
         Ok(exists)
     }
+
+    fn conversation_has_column(&self, column_name: &str) -> Result<bool> {
+        let mut statement = self
+            .connection
+            .prepare("PRAGMA table_info(conversations)")
+            .context("failed to prepare conversation column inspection")?;
+        let exists = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .context("failed to inspect conversation columns")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read conversation columns")?
+            .iter()
+            .any(|column| column == column_name);
+
+        Ok(exists)
+    }
+
+    fn backfill_active_messages(&self) -> Result<()> {
+        self.connection
+            .execute(
+                "
+                UPDATE conversations
+                SET active_message_id = (
+                    SELECT messages.id
+                    FROM messages
+                    WHERE messages.conversation_id = conversations.id
+                    ORDER BY messages.created_at DESC, messages.rowid DESC
+                    LIMIT 1
+                )
+                WHERE active_message_id IS NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM messages
+                    WHERE messages.conversation_id = conversations.id
+                  )
+                ",
+                [],
+            )
+            .context("failed to backfill active messages")?;
+
+        Ok(())
+    }
 }
 
 /// Builds the default user database path.
@@ -880,6 +1152,21 @@ fn touch_conversation_in_transaction(
     transaction.execute(
         "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
         params![updated_at, conversation_id.as_str()],
+    )?;
+
+    Ok(())
+}
+
+/// Updates the selected active message for a conversation inside an existing
+/// transaction.
+fn set_active_message_in_transaction(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    message_id: Option<&MessageId>,
+) -> Result<()> {
+    transaction.execute(
+        "UPDATE conversations SET active_message_id = ?1 WHERE id = ?2",
+        params![message_id.map(MessageId::as_str), conversation_id.as_str()],
     )?;
 
     Ok(())

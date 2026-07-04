@@ -12,7 +12,7 @@ windie
 Exit successfully without doing anything.
 
 Use this to verify the binary exists without starting chat, creating a
-conversation, opening Bifrost, or mutating persisted state.
+conversation tree, opening Bifrost, or mutating persisted state.
 
 ## Help
 
@@ -52,35 +52,50 @@ Use this to print the package version compiled into the binary.
 windie new
 ```
 
-Create a new empty conversation.
+Create a new empty conversation tree.
 
-Output is only the new conversation ID, so the command can be used by scripts.
+Output is only the new conversation tree ID, so the command can be used by
+scripts.
 
 ```text
 windie ls
 ```
 
-List all persisted conversations.
+List all persisted conversation trees.
 
-Output includes each conversation ID and message count. If no conversations
-exist, it prints `no conversations`.
+Output includes each conversation tree ID and message count. If no conversation
+trees exist, it prints `no conversations`.
 
 ```text
 windie show <conversation_id>
 ```
 
-Show message previews for one conversation.
+Show message previews for the active path in one conversation tree.
 
-Output includes each message role, message ID, and one-line text preview. If the
-conversation has no messages, it prints `no messages`.
+Output includes each active-path message role, message ID, and one-line text
+preview. If the conversation tree has no active messages, it prints
+`no messages`.
+
+```text
+windie tree <conversation_id>
+```
+
+Show the full message tree for one conversation tree.
+
+Output includes all branches. Indentation shows parent/child structure. `*`
+marks the active message.
 
 ## Messages
 
 ```text
-windie append <conversation_id> --role user --text "hello"
+windie insert <conversation_id> --role user --text "hello"
 ```
 
-Append one message to a conversation without querying the model.
+Insert one message into a conversation tree without querying the model.
+
+The new message is inserted as a child of the active message and becomes the new
+active message. If the conversation tree is empty, the new message becomes the
+root.
 
 The role must currently be one of:
 
@@ -89,6 +104,16 @@ system
 user
 assistant
 tool
+```
+
+`tool` currently means a tool output message. It is not a tool call schema or a
+request to execute a tool.
+
+Examples:
+
+```text
+windie insert <conversation_id> --role user --text "hello"
+windie insert <conversation_id> --role assistant --text "hello back"
 ```
 
 The command prints the new message ID.
@@ -103,40 +128,49 @@ This mutates only the selected message content. It does not remove later
 messages and does not run inference.
 
 ```text
+windie activate <conversation_id> <message_id>
+```
+
+Select one message as the active message.
+
+The active message defines the current runtime path through the conversation
+tree. `show`, `insert`, `query`, and context construction use this selected
+path.
+
+```text
 windie rm <conversation_id>
 ```
 
-Remove one conversation.
+Remove one conversation tree.
 
-This deletes the conversation and all messages/compactions owned by that
-conversation.
+This deletes the conversation tree and all messages/compactions owned by that
+conversation tree.
 
 ```text
 windie rm <conversation_id> <message_id>
 ```
 
-Remove one message from a conversation.
+Remove one message from a conversation tree.
 
-This deletes only that message. Remaining child messages are reconnected to the
-deleted message's parent.
+This deletes that message and its descendant subtree.
 
 ```text
 windie truncate <conversation_id> <message_id>
 ```
 
-Remove all messages after one message in a conversation.
+Remove all descendant messages after one message in a conversation tree.
 
-The checkpoint message is kept. Messages newer than the checkpoint are deleted.
+The checkpoint message is kept. Its children and deeper descendants are deleted.
 
 ```text
 windie fork <conversation_id> <message_id>
 ```
 
-Create a new conversation copied from the start of an existing conversation
-through one message.
+Create a new conversation tree copied from the start of an existing
+conversation tree through one message.
 
-The forked conversation receives new message IDs and can diverge independently.
-The command prints the new conversation ID.
+The forked conversation tree receives new message IDs and can diverge
+independently. The command prints the new conversation tree ID.
 
 ## Inference
 
@@ -144,15 +178,15 @@ The command prints the new conversation ID.
 windie query <conversation_id>
 ```
 
-Run one model response from the conversation and append the assistant message.
+Run one model response from the active path and insert the assistant message.
 Requires the local Bifrost gateway to already be running.
 
 ```text
 windie query <conversation_id> --model openai/gpt-4o-mini
 ```
 
-Run one model response using a specific model. Requires the local Bifrost gateway
-to already be running.
+Run one model response from the active path using a specific model. Requires the
+local Bifrost gateway to already be running.
 
 The model name is passed to Bifrost, for example `openai/gpt-4o-mini`.
 
@@ -177,6 +211,16 @@ Start the local Bifrost gateway.
 If the gateway is already running, the command reports that instead of starting
 a duplicate process.
 
+When Windie starts Bifrost, it clears the child process environment and passes
+only variables loaded from a Windie `.env` file. Lookup order:
+
+```text
+~/.windie/.env
+./.env in the Windie project directory
+```
+
+Use `.env.example` as the non-secret template. Do not commit real provider keys.
+
 ```text
 windie gateway stop
 ```
@@ -195,11 +239,47 @@ Run local/free performance baseline for store open only. Does not start Bifrost
 and does not send a provider request.
 
 ```text
+windie bench ls
+```
+
+Run local/free performance baseline for conversation listing. Measures store
+open, conversation list load, and number of conversations returned. Does not
+start Bifrost and does not send a provider request.
+
+```text
 windie bench <conversation_id>
 ```
 
-Run local/free performance baseline for one conversation load and model-facing
-context build. Does not start Bifrost and does not send a provider request.
+Run local/free performance baseline for one conversation tree. Measures active
+path load, full tree load, and model-facing context build. Does not start
+Bifrost and does not send a provider request.
+
+```text
+windie bench <conversation_id> --runs 100
+```
+
+Run the same local/free conversation benchmark repeatedly and print
+min/median/p95/max summaries. Use this when checking whether a local code change
+actually made the runtime path faster or slower.
+
+```text
+windie bench <conversation_id> --runs 100 --json
+```
+
+Run the repeated benchmark and write a persistent JSON benchmark artifact to
+stdout. Redirect this output to a file when saving a baseline:
+
+```text
+windie bench <conversation_id> --runs 100 --json > benches/baseline.json
+```
+
+```text
+windie bench compare <baseline.json> <current.json>
+```
+
+Compare two JSON benchmark artifacts and print median percentage changes.
+Negative percentages mean the current run is faster. Positive percentages mean
+the current run is slower.
 
 ```text
 windie bench live

@@ -21,6 +21,9 @@ build the cleanest minimal local AI runtime primitives:
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
+Conversation storage is a tree. Runtime execution uses one selected active path
+through that tree. Model context is the flattened active path.
+
 ## Collaboration Rule
 
 Act primarily as a language-to-code converter for this project. Translate the
@@ -55,7 +58,7 @@ query the model, and continue only within permission boundaries.
 The future direction includes:
 
 - local AI interaction through clean clients
-- dynamic conversation/session manipulation such as append, remove, truncate, forks.
+- dynamic conversation/session manipulation such as insert, remove, truncate, forks.
 - local shell execution with explicit permission boundaries
 - browser-use and computer-use as local capabilities
 - user-controlled memory and workspace context
@@ -104,15 +107,18 @@ Allowed in the current scope:
 - Typed conversation and message data model.
 - SQLite-backed conversation persistence.
 - Multiple persisted conversations.
-- Message append, update, and remove primitives.
+- Message insert, update, and remove primitives.
 - Conversation truncate and fork primitives.
+- Active path selection and full conversation tree inspection.
 - One-shot conversation query primitive.
 - Model-facing context construction.
 - Future-ready compaction storage.
-- Basic performance baseline measurement.
+- Basic local performance baselines, repeated benchmark runs, and JSON
+  benchmark comparison.
 - OpenAI-compatible `/chat/completions` requests.
 - Bifrost gateway health check.
 - Explicit Bifrost gateway start and stop commands.
+- Explicit `.env` provider-key environment for Bifrost gateway startup.
 - Clean module boundaries.
 
 Not in scope yet:
@@ -128,7 +134,7 @@ Not in scope yet:
 - Approval flows.
 - Plugin systems.
 - Web dashboard.
-- Config files.
+- General config files beyond the explicit Bifrost `.env` provider-key file.
 - Slash commands.
 - Automatic history compaction.
 - Memory systems beyond persisted conversation messages and future compaction checkpoints.

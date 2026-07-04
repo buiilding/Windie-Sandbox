@@ -23,23 +23,98 @@ if [ "$list_output" != "no conversations" ]; then
     exit 1
 fi
 conversation_id="$(HOME="$check_home" target/release/windie new)"
-message_id="$(HOME="$check_home" target/release/windie append "$conversation_id" --role user --text hello)"
+message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role user --text hello)"
+bench_list_output="$(HOME="$check_home" target/release/windie bench ls)"
+if ! printf '%s\n' "$bench_list_output" | grep -q "mode: ls"; then
+    echo "expected list benchmark to print list mode" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_list_output" | grep -q "conversation list load:"; then
+    echo "expected list benchmark to measure conversation list load" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_list_output" | grep -q "conversations: 1"; then
+    echo "expected list benchmark to count one conversation" >&2
+    exit 1
+fi
+bench_list_report="$check_home/list.json"
+HOME="$check_home" target/release/windie bench ls --runs 2 --json > "$bench_list_report"
+if ! grep -q '"mode": "ls"' "$bench_list_report"; then
+    echo "expected list benchmark JSON report to include ls mode" >&2
+    exit 1
+fi
+if ! grep -q '"conversation_list_load": {' "$bench_list_report"; then
+    echo "expected list benchmark JSON report to include list load summary" >&2
+    exit 1
+fi
 bench_conversation_output="$(HOME="$check_home" target/release/windie bench "$conversation_id")"
 if ! printf '%s\n' "$bench_conversation_output" | grep -q "mode: conversation"; then
     echo "expected conversation benchmark to print conversation mode" >&2
     exit 1
 fi
-if ! printf '%s\n' "$bench_conversation_output" | grep -q "loaded messages: 1"; then
-    echo "expected conversation benchmark to load one message" >&2
+if ! printf '%s\n' "$bench_conversation_output" | grep -q "active path messages: 1"; then
+    echo "expected conversation benchmark to load one active path message" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_conversation_output" | grep -q "tree messages: 1"; then
+    echo "expected conversation benchmark to load one tree message" >&2
+    exit 1
+fi
+bench_report="$check_home/baseline.json"
+current_report="$check_home/current.json"
+HOME="$check_home" target/release/windie bench "$conversation_id" --runs 2 --json > "$bench_report"
+HOME="$check_home" target/release/windie bench "$conversation_id" --runs 2 --json > "$current_report"
+if ! grep -q '"runs": 2' "$bench_report"; then
+    echo "expected JSON benchmark report to include run count" >&2
+    exit 1
+fi
+if ! grep -q '"format_version": 1' "$bench_report"; then
+    echo "expected JSON benchmark report to include format version" >&2
+    exit 1
+fi
+if ! grep -q '"samples": \[' "$bench_report"; then
+    echo "expected JSON benchmark report to include samples" >&2
+    exit 1
+fi
+if ! grep -q '"summary": {' "$bench_report"; then
+    echo "expected JSON benchmark report to include summary" >&2
+    exit 1
+fi
+if ! grep -q '"active_path_load": {' "$bench_report"; then
+    echo "expected JSON benchmark report to include active path load summary" >&2
+    exit 1
+fi
+if ! grep -q '"context_build": {' "$bench_report"; then
+    echo "expected JSON benchmark report to include context build summary" >&2
+    exit 1
+fi
+bench_compare_output="$(target/release/windie bench compare "$bench_report" "$current_report")"
+if ! printf '%s\n' "$bench_compare_output" | grep -q "performance comparison"; then
+    echo "expected benchmark compare to print comparison output" >&2
     exit 1
 fi
 show_output="$(HOME="$check_home" target/release/windie show "$conversation_id")"
 if ! printf '%s\n' "$show_output" | grep -q "user  $message_id  hello"; then
-    echo "expected show to include appended message" >&2
+    echo "expected show to include inserted message" >&2
     exit 1
 fi
-assistant_message_id="$(HOME="$check_home" target/release/windie append "$conversation_id" --role assistant --text hello-back)"
-third_message_id="$(HOME="$check_home" target/release/windie append "$conversation_id" --role user --text next)"
+assistant_message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role assistant --text hello-back)"
+third_message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" --role user --text next)"
+tree_output="$(HOME="$check_home" target/release/windie tree "$conversation_id")"
+if ! printf '%s\n' "$tree_output" | grep -q "\\* user  $third_message_id  next"; then
+    echo "expected tree to mark latest inserted message as active" >&2
+    exit 1
+fi
+HOME="$check_home" target/release/windie activate "$conversation_id" "$assistant_message_id" >/dev/null
+active_show_output="$(HOME="$check_home" target/release/windie show "$conversation_id")"
+if ! printf '%s\n' "$active_show_output" | grep -q "assistant  $assistant_message_id  hello-back"; then
+    echo "expected show to include activated path" >&2
+    exit 1
+fi
+if printf '%s\n' "$active_show_output" | grep -q "$third_message_id"; then
+    echo "expected show to exclude inactive branch" >&2
+    exit 1
+fi
 forked_conversation_id="$(HOME="$check_home" target/release/windie fork "$conversation_id" "$assistant_message_id")"
 forked_show_output="$(HOME="$check_home" target/release/windie show "$forked_conversation_id")"
 if ! printf '%s\n' "$forked_show_output" | grep -q "assistant  .*  hello-back"; then
@@ -53,7 +128,7 @@ fi
 HOME="$check_home" target/release/windie truncate "$conversation_id" "$assistant_message_id" >/dev/null
 truncated_output="$(HOME="$check_home" target/release/windie show "$conversation_id")"
 if printf '%s\n' "$truncated_output" | grep -q "$third_message_id"; then
-    echo "expected truncate to remove messages after checkpoint" >&2
+    echo "expected truncate to prune descendants after checkpoint" >&2
     exit 1
 fi
 HOME="$check_home" target/release/windie update "$conversation_id" "$message_id" --text hi >/dev/null
