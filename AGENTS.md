@@ -133,6 +133,8 @@ Allowed in the current scope:
 - OpenAI-compatible image request serialization.
 - Bifrost gateway health check.
 - Explicit Bifrost gateway start and stop commands.
+- Public Bifrost gateway startup through `npx @maximhq/bifrost` or Docker when
+  a local Bifrost checkout is not present.
 - Explicit `.env` provider-key environment for Bifrost gateway startup.
 - Clean module boundaries.
 

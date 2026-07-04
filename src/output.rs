@@ -323,7 +323,7 @@ fn help_lines() -> Vec<String> {
         "  windie bench <conversation_id> measures active path, tree, and context build.",
         "  windie bench --json writes a persistent benchmark artifact to stdout.",
         "  windie bench compare compares two JSON benchmark artifacts.",
-        "  windie gateway start starts the local Bifrost gateway.",
+        "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie query requires the local Bifrost gateway to be running.",
         "  windie query --model passes the model name to Bifrost for one request.",

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{ConversationId, Message, Role};
 use crate::gateway::{BifrostGateway, GatewayUrl};
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
@@ -251,33 +252,70 @@ pub async fn run(
                 .expect("conversation benchmark requires conversation id");
 
             let load_started = Instant::now();
-            let active_path_profile = store.load_active_path_profile(conversation_id)?;
-            let active_message_lookup = active_path_profile.timings.active_message_lookup;
-            let active_path_row_load = active_path_profile.timings.row_load;
-            let active_path_part_load = active_path_profile.timings.part_load;
-            let loaded_messages = active_path_profile.messages.len();
+            let active_message_lookup_started = Instant::now();
+            let active_message_id = store.active_message_id(conversation_id)?;
+            let active_message_lookup = active_message_lookup_started.elapsed();
+            let active_path = if let Some(active_message_id) = active_message_id.as_ref() {
+                let row_started = Instant::now();
+                let messages =
+                    store.load_path_to_message_rows(conversation_id, active_message_id)?;
+                let row_load = row_started.elapsed();
+
+                let part_started = Instant::now();
+                let mut messages = messages;
+                store
+                    .attach_message_parts(&mut messages)
+                    .context("failed to load active path parts")?;
+                let part_load = part_started.elapsed();
+
+                (messages, row_load, part_load)
+            } else {
+                (Vec::new(), Duration::ZERO, Duration::ZERO)
+            };
+            let loaded_messages = active_path.0.len();
+            let active_path_row_load = active_path.1;
+            let active_path_part_load = active_path.2;
             let conversation_load = load_started.elapsed();
 
             let tree_started = Instant::now();
-            let tree_profile = store.load_message_tree_profile(conversation_id)?;
-            let tree_row_load = tree_profile.timings.row_load;
-            let tree_part_load = tree_profile.timings.part_load;
-            let tree_messages = tree_profile.messages.len();
+            let tree_row_started = Instant::now();
+            let mut tree = store.load_message_rows(conversation_id)?;
+            let tree_row_load = tree_row_started.elapsed();
+
+            let tree_part_started = Instant::now();
+            store
+                .attach_message_parts(&mut tree)
+                .context("failed to load message tree parts")?;
+            let tree_part_load = tree_part_started.elapsed();
+            let tree_messages = tree.len();
             let tree_load = tree_started.elapsed();
 
             let context_started = Instant::now();
-            let context_profile =
-                crate::context::ContextBuilder::build_profile(&store, conversation_id)?;
-            let context_active_path_load = context_profile.timings.active_path_load;
-            let context_system_prompt_load = context_profile.timings.system_prompt_load;
-            let context_compaction_load = context_profile.timings.compaction_load;
-            let context_flatten = context_profile.timings.flatten;
+            let context_active_path_started = Instant::now();
+            let context_active_path = store.load_active_path(conversation_id)?;
+            let context_active_path_load = context_active_path_started.elapsed();
+
+            let context_system_prompt_started = Instant::now();
+            let context_system_prompt = store.system_prompt(conversation_id)?;
+            let context_system_prompt_load = context_system_prompt_started.elapsed();
+
+            let context_compaction_started = Instant::now();
+            let context_compaction = store.latest_compaction(conversation_id)?;
+            let context_compaction_load = context_compaction_started.elapsed();
+
+            let context_flatten_started = Instant::now();
+            let _ = ContextBuilder::flatten(ContextParts {
+                active_path: context_active_path,
+                system_prompt: context_system_prompt,
+                compaction: context_compaction,
+            });
+            let context_flatten = context_flatten_started.elapsed();
             let context_build = context_started.elapsed();
 
             (
                 Some(store_open),
                 Some(conversation_load),
-                active_message_lookup,
+                Some(active_message_lookup),
                 Some(active_path_row_load),
                 Some(active_path_part_load),
                 Some(tree_load),

@@ -251,8 +251,19 @@ Start the local Bifrost gateway.
 If the gateway is already running, the command reports that instead of starting
 a duplicate process.
 
-When Windie starts Bifrost, it clears the child process environment and passes
-only variables loaded from a Windie `.env` file. Lookup order:
+Launcher order:
+
+```text
+1. locally built sibling/workspace Bifrost binary
+2. public npx package: npx -y @maximhq/bifrost
+3. public Docker image: maximhq/bifrost:latest
+```
+
+This means another computer can run Windie without cloning Bifrost, as long as
+Node/npm or Docker is installed.
+
+When Windie starts Bifrost, provider keys come from a Windie `.env` file.
+Lookup order:
 
 ```text
 ~/.windie/.env
@@ -260,11 +271,14 @@ only variables loaded from a Windie `.env` file. Lookup order:
 ```
 
 Use `.env.example` as the non-secret template. Do not commit real provider keys.
+For `npx`, Windie also passes `PATH` and `HOME` so Node/npm can launch. These
+are process-launch variables, not provider keys.
 
-Detached Bifrost process logs are written to:
+Detached Bifrost process logs are written to one of:
 
 ```text
 ../bifrost/windie-gateway.log
+~/.windie/bifrost/windie-gateway.log
 ```
 
 Use this file to inspect gateway startup failures.

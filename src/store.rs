@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
@@ -69,25 +69,6 @@ pub struct ImagePayload<'a> {
 pub enum MessagePayload<'a> {
     Text(&'a str),
     Image(ImagePayload<'a>),
-}
-
-#[derive(Debug)]
-/// Messages plus timing details for benchmark-only load paths.
-///
-/// Normal runtime code should use `load_active_path` and `load_message_tree`.
-/// This type exists so `perf.rs` can identify whether row loading or
-/// part/image attachment is the expensive piece.
-pub struct MessageLoadProfile {
-    pub messages: Vec<Message>,
-    pub timings: MessageLoadTimings,
-}
-
-#[derive(Debug, Default)]
-/// Timing details for one message load operation.
-pub struct MessageLoadTimings {
-    pub active_message_lookup: Option<Duration>,
-    pub row_load: Duration,
-    pub part_load: Duration,
 }
 
 /// SQLite-backed persistence boundary for conversations, messages, and
@@ -476,75 +457,6 @@ impl Store {
         self.load_path_to_message(conversation_id, &message_id)
     }
 
-    /// Loads the active path with benchmark-only row and part timings.
-    ///
-    /// This mirrors `load_active_path`, but exposes timing data so performance
-    /// reports can distinguish active-message lookup, message row loading, and
-    /// ordered part/image attachment.
-    pub fn load_active_path_profile(
-        &self,
-        conversation_id: &ConversationId,
-    ) -> Result<MessageLoadProfile> {
-        let lookup_started = Instant::now();
-        let Some(message_id) = self.active_message_id(conversation_id)? else {
-            return Ok(MessageLoadProfile {
-                messages: Vec::new(),
-                timings: MessageLoadTimings {
-                    active_message_lookup: Some(lookup_started.elapsed()),
-                    row_load: Duration::ZERO,
-                    part_load: Duration::ZERO,
-                },
-            });
-        };
-        let active_message_lookup = lookup_started.elapsed();
-
-        let row_started = Instant::now();
-        let mut messages = self.load_path_to_message_rows(conversation_id, &message_id)?;
-        let row_load = row_started.elapsed();
-
-        let part_started = Instant::now();
-        self.attach_message_parts(&mut messages)
-            .context("failed to load active path parts")?;
-        let part_load = part_started.elapsed();
-
-        Ok(MessageLoadProfile {
-            messages,
-            timings: MessageLoadTimings {
-                active_message_lookup: Some(active_message_lookup),
-                row_load,
-                part_load,
-            },
-        })
-    }
-
-    /// Loads the full message tree with benchmark-only row and part timings.
-    ///
-    /// This mirrors `load_message_tree`, but exposes timing data so performance
-    /// reports can separate plain message row loading from ordered part/image
-    /// attachment.
-    pub fn load_message_tree_profile(
-        &self,
-        conversation_id: &ConversationId,
-    ) -> Result<MessageLoadProfile> {
-        let row_started = Instant::now();
-        let mut messages = self.load_message_rows(conversation_id)?;
-        let row_load = row_started.elapsed();
-
-        let part_started = Instant::now();
-        self.attach_message_parts(&mut messages)
-            .context("failed to load message tree parts")?;
-        let part_load = part_started.elapsed();
-
-        Ok(MessageLoadProfile {
-            messages,
-            timings: MessageLoadTimings {
-                active_message_lookup: None,
-                row_load,
-                part_load,
-            },
-        })
-    }
-
     /// Loads the root-to-message path for one message inside a conversation.
     pub fn load_path_to_message(
         &self,
@@ -559,7 +471,10 @@ impl Store {
     }
 
     /// Loads message rows for one conversation without attaching ordered parts.
-    fn load_message_rows(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+    ///
+    /// This is public so `perf.rs` can time row loading separately from
+    /// part/image attachment while keeping timing ownership outside the store.
+    pub fn load_message_rows(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         self.ensure_conversation_exists(conversation_id)?;
 
         let mut statement = self
@@ -582,7 +497,10 @@ impl Store {
     }
 
     /// Loads the root-to-message rows without attaching ordered parts.
-    fn load_path_to_message_rows(
+    ///
+    /// This is public so `perf.rs` can time active-path row loading separately
+    /// from active message lookup and part/image attachment.
+    pub fn load_path_to_message_rows(
         &self,
         conversation_id: &ConversationId,
         message_id: &MessageId,
@@ -694,7 +612,10 @@ impl Store {
     }
 
     /// Attaches ordered text/image parts to already-loaded message rows.
-    fn attach_message_parts(&self, messages: &mut [Message]) -> Result<()> {
+    ///
+    /// This is public so `perf.rs` can time part/image attachment separately
+    /// from row loading. Callers must pass messages loaded from this store.
+    pub fn attach_message_parts(&self, messages: &mut [Message]) -> Result<()> {
         let message_ids = messages
             .iter()
             .filter_map(|message| message.id.as_ref())

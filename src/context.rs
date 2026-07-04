@@ -3,11 +3,10 @@
 //! This module decides what conversation history the LLM sees. Full history
 //! stays in storage; compacted context can be built for model requests.
 
-use std::time::{Duration, Instant};
-
 use anyhow::Result;
 
 use crate::conversation::{ConversationId, Message, Role};
+use crate::store::Compaction;
 use crate::store::Store;
 
 const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
@@ -16,19 +15,14 @@ const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
 pub struct ContextBuilder;
 
 #[derive(Debug)]
-/// Model-facing context plus benchmark timing details.
-pub struct ContextBuildProfile {
-    pub messages: Vec<Message>,
-    pub timings: ContextBuildTimings,
-}
-
-#[derive(Debug, Default)]
-/// Timing details for model-facing context construction.
-pub struct ContextBuildTimings {
-    pub active_path_load: Duration,
-    pub system_prompt_load: Duration,
-    pub compaction_load: Duration,
-    pub flatten: Duration,
+/// Inputs needed to flatten model-facing context.
+///
+/// `perf.rs` can load these fields step by step and time each load without
+/// putting benchmark timing logic inside this module.
+pub struct ContextParts {
+    pub active_path: Vec<Message>,
+    pub system_prompt: Option<String>,
+    pub compaction: Option<Compaction>,
 }
 
 impl ContextBuilder {
@@ -39,71 +33,49 @@ impl ContextBuilder {
     /// active-path messages after the checkpoint. The full uncompressed tree
     /// remains in SQLite.
     pub fn build(store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
-        Ok(Self::build_profile(store, conversation_id)?.messages)
+        let parts = Self::load_parts(store, conversation_id)?;
+
+        Ok(Self::flatten(parts))
     }
 
-    /// Builds model-facing context and records benchmark timing details.
+    /// Loads the storage-backed pieces needed to build model-facing context.
     ///
-    /// This uses the same behavior as `build`, but exposes where the time went:
-    /// loading the active path, loading the conversation system prompt, checking
-    /// for compaction, and flattening/prepending synthetic system messages.
-    pub fn build_profile(
-        store: &Store,
-        conversation_id: &ConversationId,
-    ) -> Result<ContextBuildProfile> {
-        let active_path_started = Instant::now();
+    /// This helper has no benchmark timers. Benchmark code can call each store
+    /// method directly when it needs a lower-level timing breakdown.
+    pub fn load_parts(store: &Store, conversation_id: &ConversationId) -> Result<ContextParts> {
         let active_path = store.load_active_path(conversation_id)?;
-        let active_path_load = active_path_started.elapsed();
-
-        let system_prompt_started = Instant::now();
         let system_prompt = store.system_prompt(conversation_id)?;
-        let system_prompt_load = system_prompt_started.elapsed();
+        let compaction = store.latest_compaction(conversation_id)?;
 
-        let compaction_started = Instant::now();
-        let Some(compaction) = store.latest_compaction(conversation_id)? else {
-            let flatten_started = Instant::now();
-            let messages = with_system_prompt(system_prompt, active_path);
-            return Ok(ContextBuildProfile {
-                messages,
-                timings: ContextBuildTimings {
-                    active_path_load,
-                    system_prompt_load,
-                    compaction_load: compaction_started.elapsed(),
-                    flatten: flatten_started.elapsed(),
-                },
-            });
+        Ok(ContextParts {
+            active_path,
+            system_prompt,
+            compaction,
+        })
+    }
+
+    /// Flattens loaded context parts into the exact messages sent to the model.
+    pub fn flatten(parts: ContextParts) -> Vec<Message> {
+        let ContextParts {
+            active_path,
+            system_prompt,
+            compaction,
+        } = parts;
+
+        let Some(compaction) = compaction else {
+            return with_system_prompt(system_prompt, active_path);
         };
-        let compaction_load = compaction_started.elapsed();
-
-        let flatten_started = Instant::now();
         let Some(compaction_index) = active_path
             .iter()
             .position(|message| message.id.as_ref() == Some(&compaction.through_message_id))
         else {
-            let messages = with_system_prompt(system_prompt, active_path);
-            return Ok(ContextBuildProfile {
-                messages,
-                timings: ContextBuildTimings {
-                    active_path_load,
-                    system_prompt_load,
-                    compaction_load,
-                    flatten: flatten_started.elapsed(),
-                },
-            });
+            return with_system_prompt(system_prompt, active_path);
         };
 
         let mut messages = vec![compaction_message(&compaction.content)];
         messages.extend(active_path.into_iter().skip(compaction_index + 1));
 
-        Ok(ContextBuildProfile {
-            messages: with_system_prompt(system_prompt, messages),
-            timings: ContextBuildTimings {
-                active_path_load,
-                system_prompt_load,
-                compaction_load,
-                flatten: flatten_started.elapsed(),
-            },
-        })
+        with_system_prompt(system_prompt, messages)
     }
 }
 
