@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -19,6 +20,7 @@ use tokio::time::sleep;
 const DEV_BIFROST_DIR: &str = "bifrost";
 const DEV_BIFROST_BINARY: &str = "tmp/bifrost-http";
 const DEV_BIFROST_APP_DIR: &str = "data";
+const DEV_BIFROST_LOG_FILE: &str = "windie-gateway.log";
 const BIFROST_PORT: &str = "8080";
 const ENV_FILE_NAME: &str = ".env";
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,8 +71,10 @@ pub enum GatewayStop {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Filesystem paths needed to start the development Bifrost gateway.
 struct BifrostPaths {
+    dir: PathBuf,
     binary: PathBuf,
     app_dir: PathBuf,
+    log_file: PathBuf,
 }
 
 impl BifrostGateway {
@@ -169,17 +173,22 @@ impl BifrostGateway {
     fn start_process(&self) -> Result<()> {
         let paths = find_dev_bifrost_paths()?;
         let environment = load_bifrost_environment()?;
+        let stdout = gateway_log_file(&paths.log_file)?;
+        let stderr = stdout
+            .try_clone()
+            .with_context(|| format!("failed to open gateway log {}", paths.log_file.display()))?;
 
         Command::new(&paths.binary)
             .arg("-app-dir")
             .arg(&paths.app_dir)
             .arg("-port")
             .arg(BIFROST_PORT)
+            .current_dir(&paths.dir)
             .env_clear()
             .envs(environment)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .context("failed to start Bifrost")?;
 
@@ -288,8 +297,10 @@ fn find_dev_bifrost_paths_in(roots: impl IntoIterator<Item = PathBuf>) -> Option
     for root in roots {
         for bifrost_dir in dev_bifrost_dirs(&root) {
             let paths = BifrostPaths {
+                dir: bifrost_dir.clone(),
                 binary: bifrost_dir.join(DEV_BIFROST_BINARY),
                 app_dir: bifrost_dir.join(DEV_BIFROST_APP_DIR),
+                log_file: bifrost_dir.join(DEV_BIFROST_LOG_FILE),
             };
 
             if paths.binary.exists() {
@@ -328,6 +339,15 @@ fn dev_bifrost_dirs(root: &Path) -> [PathBuf; 2] {
             .map(|parent| parent.join(DEV_BIFROST_DIR))
             .unwrap_or_else(|| root.join(DEV_BIFROST_DIR)),
     ]
+}
+
+/// Opens the gateway log file used by detached Bifrost processes.
+fn gateway_log_file(path: &Path) -> Result<std::fs::File> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open gateway log {}", path.display()))
 }
 
 /// Loads the environment variables Windie explicitly gives to Bifrost.

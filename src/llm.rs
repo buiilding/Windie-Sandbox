@@ -1,16 +1,17 @@
 //! OpenAI-compatible streaming LLM client.
 //!
-//! This module owns HTTP requests to Bifrost's chat completions endpoint and
-//! parsing streamed response chunks.
+//! This module owns OpenAI-compatible request serialization, HTTP requests to
+//! Bifrost's chat completions endpoint, and streamed response parsing.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::conversation::{Message, ToolCall};
+use crate::conversation::{ImagePart, Message, MessagePart, Role, ToolCall};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the OpenAI-compatible provider adapter.
@@ -95,8 +96,55 @@ pub struct BifrostClient {
 /// JSON request body sent to `/chat/completions`.
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: &'a [Message],
+    messages: Vec<ChatMessage<'a>>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+/// OpenAI-compatible message payload sent to Bifrost.
+struct ChatMessage<'a> {
+    role: Role,
+    content: ChatMessageContent<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<&'a [ToolCall]>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+/// OpenAI-compatible content field: plain text or ordered multimodal parts.
+enum ChatMessageContent<'a> {
+    Text(&'a str),
+    Parts(Vec<ChatContentPart<'a>>),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+/// One OpenAI-compatible multimodal content part.
+enum ChatContentPart<'a> {
+    Text(ChatTextPart<'a>),
+    Image(ChatImagePart),
+}
+
+#[derive(Debug, Serialize)]
+/// OpenAI-compatible text content part.
+struct ChatTextPart<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    text: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+/// OpenAI-compatible image content part.
+struct ChatImagePart {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    image_url: ChatImageUrl,
+}
+
+#[derive(Debug, Serialize)]
+/// OpenAI-compatible image URL payload.
+struct ChatImageUrl {
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,7 +229,7 @@ impl BifrostClient {
     {
         let request = ChatRequest {
             model: self.model.as_str(),
-            messages,
+            messages: chat_messages(messages),
             stream: true,
         };
 
@@ -225,6 +273,63 @@ impl BifrostClient {
         }
 
         Ok(response)
+    }
+}
+
+/// Converts Windie's internal messages into the OpenAI-compatible request shape.
+fn chat_messages(messages: &[Message]) -> Vec<ChatMessage<'_>> {
+    messages.iter().map(ChatMessage::from_message).collect()
+}
+
+impl<'a> ChatMessage<'a> {
+    /// Builds one provider request message from the runtime message model.
+    fn from_message(message: &'a Message) -> Self {
+        let tool_calls = message
+            .metadata
+            .as_ref()
+            .filter(|_| message.role == Role::Assistant)
+            .map(|metadata| metadata.tool_calls.as_slice())
+            .filter(|tool_calls| !tool_calls.is_empty());
+
+        Self {
+            role: message.role,
+            content: chat_message_content(message),
+            tool_calls,
+        }
+    }
+}
+
+/// Converts one message body into plain text or ordered multimodal parts.
+fn chat_message_content(message: &Message) -> ChatMessageContent<'_> {
+    if message.parts.is_empty() {
+        return ChatMessageContent::Text(&message.content);
+    }
+
+    ChatMessageContent::Parts(chat_content_parts(&message.parts))
+}
+
+/// Converts stored text/image parts into OpenAI-compatible content parts.
+fn chat_content_parts(parts: &[MessagePart]) -> Vec<ChatContentPart<'_>> {
+    parts
+        .iter()
+        .map(|part| match part {
+            MessagePart::Text(text) => ChatContentPart::Text(ChatTextPart { kind: "text", text }),
+            MessagePart::Image(image) => ChatContentPart::Image(chat_image_part(image)),
+        })
+        .collect()
+}
+
+/// Encodes one persisted image as the data URL accepted by the chat request.
+fn chat_image_part(image: &ImagePart) -> ChatImagePart {
+    ChatImagePart {
+        kind: "image_url",
+        image_url: ChatImageUrl {
+            url: format!(
+                "data:{};base64,{}",
+                image.mime_type,
+                STANDARD.encode(&image.bytes)
+            ),
+        },
     }
 }
 
@@ -421,6 +526,9 @@ impl PartialToolCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::{
+        ImageAssetId, MessageId, MessageMetadata, ToolCallFunction, ToolCallId, ToolCallKind,
+    };
 
     #[test]
     fn base_url_removes_trailing_slash() {
@@ -446,6 +554,125 @@ mod tests {
         assert_eq!(
             llm.chat_endpoint(),
             "http://localhost:8080/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn serializes_text_message_for_chat_request() {
+        let messages = vec![Message {
+            id: Some(MessageId::new("message-id")),
+            parent_message_id: Some(MessageId::new("parent-id")),
+            role: Role::User,
+            content: "hello".to_string(),
+            parts: Vec::new(),
+            metadata: None,
+        }];
+        let request = ChatRequest {
+            model: "openai/gpt-4o-mini",
+            messages: chat_messages(&messages),
+            stream: true,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_assistant_tool_calls_for_chat_request() {
+        let messages = vec![Message {
+            id: Some(MessageId::new("message-id")),
+            parent_message_id: Some(MessageId::new("parent-id")),
+            role: Role::Assistant,
+            content: String::new(),
+            parts: Vec::new(),
+            metadata: Some(MessageMetadata {
+                tool_calls: vec![ToolCall {
+                    index: 0,
+                    id: ToolCallId::new("call-id"),
+                    kind: ToolCallKind::Function,
+                    function: ToolCallFunction {
+                        name: "run_shell".to_string(),
+                        arguments: r#"{"command":"ls"}"#.to_string(),
+                    },
+                }],
+            }),
+        }];
+        let request = ChatRequest {
+            model: "openai/gpt-4o-mini",
+            messages: chat_messages(&messages),
+            stream: true,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "messages": [{
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-id",
+                        "type": "function",
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": "{\"command\":\"ls\"}"
+                        }
+                    }]
+                }],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_user_image_parts_for_chat_request() {
+        let messages = vec![Message {
+            id: Some(MessageId::new("message-id")),
+            parent_message_id: None,
+            role: Role::User,
+            content: "what is this?".to_string(),
+            parts: vec![
+                MessagePart::Text("what is this?".to_string()),
+                MessagePart::Image(ImagePart {
+                    asset_id: ImageAssetId::new("image-id"),
+                    mime_type: "image/png".to_string(),
+                    bytes: vec![1, 2, 3],
+                }),
+            ],
+            metadata: None,
+        }];
+        let request = ChatRequest {
+            model: "openai/gpt-4o-mini",
+            messages: chat_messages(&messages),
+            stream: true,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQID"}}
+                    ]
+                }],
+                "stream": true
+            })
         );
     }
 

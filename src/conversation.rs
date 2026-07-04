@@ -4,8 +4,7 @@
 //! message roles, message parts, and messages. This file only models runtime
 //! data; it does not save, print, read input, or call the LLM.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Stable identifier for one persisted conversation.
@@ -269,9 +268,8 @@ impl Role {
 #[derive(Debug, Clone, Deserialize)]
 /// One conversation message in Windie's runtime model.
 ///
-/// Only `role` and `content` serialize to the LLM request by default. Assistant
-/// tool calls stored in typed metadata also serialize because OpenAI-compatible
-/// context needs them to continue tool-call conversations.
+/// This type stores Windie's internal message shape. Provider-specific request
+/// serialization belongs to the LLM boundary.
 pub struct Message {
     #[serde(skip)]
     pub id: Option<MessageId>,
@@ -285,180 +283,4 @@ pub struct Message {
     #[serde(skip)]
     #[allow(dead_code)]
     pub metadata: Option<MessageMetadata>,
-}
-
-impl Serialize for Message {
-    /// Serializes only model-facing fields, plus assistant tool calls when
-    /// stored in metadata.
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let tool_calls = self
-            .metadata
-            .as_ref()
-            .filter(|_| self.role == Role::Assistant)
-            .map(|metadata| metadata.tool_calls.as_slice())
-            .unwrap_or(&[]);
-
-        let mut state =
-            serializer.serialize_struct("Message", if tool_calls.is_empty() { 2 } else { 3 })?;
-        state.serialize_field("role", &self.role)?;
-        if self.parts.is_empty() {
-            state.serialize_field("content", &self.content)?;
-        } else {
-            state.serialize_field("content", &model_content_parts(&self.parts))?;
-        }
-        if !tool_calls.is_empty() {
-            state.serialize_field("tool_calls", tool_calls)?;
-        }
-        state.end()
-    }
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-/// One OpenAI-compatible content part emitted in chat requests.
-enum ModelContentPart<'a> {
-    Text(ModelTextPart<'a>),
-    Image(ModelImagePart),
-}
-
-#[derive(Serialize)]
-/// OpenAI-compatible text content part.
-struct ModelTextPart<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    text: &'a str,
-}
-
-#[derive(Serialize)]
-/// OpenAI-compatible image content part.
-struct ModelImagePart {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    image_url: ModelImageUrl,
-}
-
-#[derive(Serialize)]
-/// OpenAI-compatible image URL payload.
-struct ModelImageUrl {
-    url: String,
-}
-
-/// Converts stored message parts into OpenAI-compatible content parts.
-fn model_content_parts(parts: &[MessagePart]) -> Vec<ModelContentPart<'_>> {
-    parts
-        .iter()
-        .map(|part| match part {
-            MessagePart::Text(text) => ModelContentPart::Text(ModelTextPart { kind: "text", text }),
-            MessagePart::Image(image) => ModelContentPart::Image(ModelImagePart {
-                kind: "image_url",
-                image_url: ModelImageUrl {
-                    url: format!(
-                        "data:{};base64,{}",
-                        image.mime_type,
-                        STANDARD.encode(&image.bytes)
-                    ),
-                },
-            }),
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serializes_only_model_fields() {
-        let message = Message {
-            id: Some(MessageId::new("message-id")),
-            parent_message_id: Some(MessageId::new("parent-id")),
-            role: Role::User,
-            content: "hello".to_string(),
-            parts: Vec::new(),
-            metadata: None,
-        };
-
-        let value = serde_json::to_value(message).unwrap();
-
-        assert_eq!(
-            value,
-            serde_json::json!({"role": "user", "content": "hello"})
-        );
-    }
-
-    #[test]
-    fn serializes_assistant_tool_calls_from_metadata() {
-        let message = Message {
-            id: Some(MessageId::new("message-id")),
-            parent_message_id: Some(MessageId::new("parent-id")),
-            role: Role::Assistant,
-            content: String::new(),
-            parts: Vec::new(),
-            metadata: Some(MessageMetadata {
-                tool_calls: vec![ToolCall {
-                    index: 0,
-                    id: ToolCallId::new("call-id"),
-                    kind: ToolCallKind::Function,
-                    function: ToolCallFunction {
-                        name: "run_shell".to_string(),
-                        arguments: r#"{"command":"ls"}"#.to_string(),
-                    },
-                }],
-            }),
-        };
-
-        let value = serde_json::to_value(message).unwrap();
-
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "index": 0,
-                    "id": "call-id",
-                    "type": "function",
-                    "function": {
-                        "name": "run_shell",
-                        "arguments": "{\"command\":\"ls\"}"
-                    }
-                }]
-            })
-        );
-    }
-
-    #[test]
-    fn serializes_user_image_parts_for_model_context() {
-        let message = Message {
-            id: Some(MessageId::new("message-id")),
-            parent_message_id: None,
-            role: Role::User,
-            content: "what is this?".to_string(),
-            parts: vec![
-                MessagePart::Text("what is this?".to_string()),
-                MessagePart::Image(ImagePart {
-                    asset_id: ImageAssetId::new("image-id"),
-                    mime_type: "image/png".to_string(),
-                    bytes: vec![1, 2, 3],
-                }),
-            ],
-            metadata: None,
-        };
-
-        let value = serde_json::to_value(message).unwrap();
-
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "what is this?"},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQID"}}
-                ]
-            })
-        );
-    }
 }

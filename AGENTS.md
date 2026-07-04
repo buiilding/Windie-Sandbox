@@ -172,6 +172,7 @@ src/output_tests.rs  terminal output tests
 src/conversation.rs  message types and in-memory conversation state
 src/context.rs       model-facing context construction
 src/gateway.rs       Bifrost gateway availability and lifecycle
+src/image_input.rs   local image file loading
 src/llm.rs           Bifrost/OpenAI-compatible HTTP client
 src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
@@ -185,6 +186,7 @@ Keep boundaries strict:
 - Only `llm.rs` should know about HTTP details.
 - Only `cli.rs` should know about startup CLI argument handling.
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
+- Only `image_input.rs` should know about local image file loading.
 - Only `output.rs` should know about printing.
 - Only `conversation.rs` should own message roles and typed conversation/message identifiers.
 - Only `context.rs` should decide what history the model sees.

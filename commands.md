@@ -257,6 +257,14 @@ only variables loaded from a Windie `.env` file. Lookup order:
 
 Use `.env.example` as the non-secret template. Do not commit real provider keys.
 
+Detached Bifrost process logs are written to:
+
+```text
+../bifrost/windie-gateway.log
+```
+
+Use this file to inspect gateway startup failures.
+
 ```text
 windie gateway stop
 ```

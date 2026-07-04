@@ -8,6 +8,7 @@ mod cli;
 mod context;
 mod conversation;
 mod gateway;
+mod image_input;
 mod llm;
 mod output;
 mod perf;
@@ -15,12 +16,12 @@ mod runtime;
 mod store;
 
 use anyhow::{Context, Result};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::Command;
 use crate::conversation::{ConversationId, MessageId, Role};
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
+use crate::image_input::read_image_input;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
@@ -279,36 +280,6 @@ fn insert_message(
     output.inserted_message(&message_id);
 
     Ok(())
-}
-
-/// Image bytes and MIME type read from a local file before persistence.
-struct ImageInput {
-    mime_type: String,
-    bytes: Vec<u8>,
-}
-
-/// Reads a local image file for durable storage.
-fn read_image_input(path: &Path) -> Result<ImageInput> {
-    let mime_type = image_mime_type(path)
-        .with_context(|| format!("unsupported image type: {}", path.display()))?;
-    let bytes =
-        fs::read(path).with_context(|| format!("failed to read image: {}", path.display()))?;
-
-    Ok(ImageInput { mime_type, bytes })
-}
-
-/// Infers the small set of image MIME types Windie can send to Bifrost.
-fn image_mime_type(path: &Path) -> Option<String> {
-    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    let mime_type = match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => return None,
-    };
-
-    Some(mime_type.to_string())
 }
 
 /// Selects one message as the active runtime node.

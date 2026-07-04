@@ -798,6 +798,8 @@ impl Store {
                 params![content, conversation_id.as_str(), message_id.as_str()],
             )
             .context("failed to update message")?;
+        replace_text_parts_in_transaction(&transaction, message_id, content)
+            .context("failed to update message parts")?;
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message update")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
@@ -1526,6 +1528,83 @@ fn insert_image_part_in_transaction(
             ],
         )
         .context("failed to save image message part")?;
+
+    Ok(())
+}
+
+/// Replaces text parts when a message uses ordered model-facing parts.
+///
+/// Plain text-only messages have no `message_parts` rows, so their updated
+/// `messages.content` value is already the single source of truth. Multimodal
+/// messages keep image parts and refresh the leading text part to match the
+/// updated preview content.
+fn replace_text_parts_in_transaction(
+    transaction: &Transaction<'_>,
+    message_id: &MessageId,
+    content: &str,
+) -> Result<()> {
+    let part_count = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM message_parts WHERE message_id = ?1",
+            params![message_id.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .context("failed to count message parts")?;
+    if part_count == 0 {
+        return Ok(());
+    }
+
+    transaction
+        .execute(
+            "DELETE FROM message_parts WHERE message_id = ?1 AND kind = 'text'",
+            params![message_id.as_str()],
+        )
+        .context("failed to delete old text message parts")?;
+
+    let image_start_position = if content.is_empty() { 0 } else { 1 };
+    normalize_message_part_positions_in_transaction(transaction, message_id, image_start_position)
+        .context("failed to normalize message part positions")?;
+
+    if !content.is_empty() {
+        insert_text_part_in_transaction(transaction, message_id, 0, content)
+            .context("failed to save updated text message part")?;
+    }
+
+    Ok(())
+}
+
+/// Rewrites remaining message part positions into a dense ordered range.
+fn normalize_message_part_positions_in_transaction(
+    transaction: &Transaction<'_>,
+    message_id: &MessageId,
+    start_position: usize,
+) -> Result<()> {
+    let part_ids = {
+        let mut statement = transaction
+            .prepare(
+                "
+                SELECT id
+                FROM message_parts
+                WHERE message_id = ?1
+                ORDER BY position, rowid
+                ",
+            )
+            .context("failed to prepare message part position load")?;
+        statement
+            .query_map(params![message_id.as_str()], |row| row.get::<_, String>(0))
+            .context("failed to load message part positions")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read message part positions")?
+    };
+
+    for (index, part_id) in part_ids.iter().enumerate() {
+        transaction
+            .execute(
+                "UPDATE message_parts SET position = ?1 WHERE id = ?2",
+                params![(start_position + index) as i64, part_id],
+            )
+            .context("failed to update message part position")?;
+    }
 
     Ok(())
 }

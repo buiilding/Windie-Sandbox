@@ -443,6 +443,61 @@ fn saves_and_loads_image_message_parts() {
 }
 
 #[test]
+fn updates_image_message_text_part_with_content() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+
+    let message_id = store
+        .insert_user_message_with_image(
+            &conversation_id,
+            None,
+            "what is this?",
+            "image/png",
+            &[1, 2, 3],
+        )
+        .unwrap();
+
+    store
+        .replace_message(&conversation_id, &message_id, "describe this")
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(messages[0].content, "describe this");
+    assert_eq!(messages[0].parts.len(), 2);
+    assert!(matches!(&messages[0].parts[0], MessagePart::Text(text) if text == "describe this"));
+    assert!(matches!(&messages[0].parts[1], MessagePart::Image(image)
+        if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
+}
+
+#[test]
+fn updating_image_message_to_empty_text_removes_text_part() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+
+    let message_id = store
+        .insert_user_message_with_image(
+            &conversation_id,
+            None,
+            "what is this?",
+            "image/png",
+            &[1, 2, 3],
+        )
+        .unwrap();
+
+    store
+        .replace_message(&conversation_id, &message_id, "")
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(messages[0].content, "");
+    assert_eq!(messages[0].parts.len(), 1);
+    assert!(matches!(&messages[0].parts[0], MessagePart::Image(image)
+        if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
+}
+
+#[test]
 fn loads_messages_after_checkpoint() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.get_or_create_default_conversation().unwrap();
