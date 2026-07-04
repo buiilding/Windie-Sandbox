@@ -244,7 +244,7 @@ pub struct ImagePart {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-/// Message role accepted by the OpenAI-compatible chat request format.
+/// Windie's typed role for one conversation message.
 pub enum Role {
     System,
     User,
@@ -253,8 +253,8 @@ pub enum Role {
 }
 
 impl Role {
-    /// Returns the exact lowercase role string expected by Bifrost/OpenAI and
-    /// stored in SQLite.
+    /// Returns the exact lowercase role string stored in SQLite and used at
+    /// serialization boundaries.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::System => "system",
