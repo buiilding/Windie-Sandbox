@@ -71,8 +71,18 @@ if [ "$removed_message_output" != "no messages" ]; then
 fi
 HOME="$check_home" target/release/windie rm "$conversation_id" >/dev/null
 removed_conversation_output="$(HOME="$check_home" target/release/windie ls)"
-if [ "$removed_conversation_output" != "no conversations" ]; then
-    echo "expected rm conversation to remove conversation" >&2
+if printf '%s\n' "$removed_conversation_output" | grep -q "$conversation_id"; then
+    echo "expected rm conversation to remove original conversation" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$removed_conversation_output" | grep -q "$forked_conversation_id"; then
+    echo "expected rm conversation to leave forked conversation" >&2
+    exit 1
+fi
+HOME="$check_home" target/release/windie rm "$forked_conversation_id" >/dev/null
+removed_fork_output="$(HOME="$check_home" target/release/windie ls)"
+if [ "$removed_fork_output" != "no conversations" ]; then
+    echo "expected rm conversation to remove forked conversation" >&2
     exit 1
 fi
 set +e
