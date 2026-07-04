@@ -32,6 +32,11 @@ pub enum Command {
         conversation_id: ConversationId,
         tool_schema: ToolSchema,
     },
+    /// Print full read-only runtime state as JSON for developer inspection.
+    Inspect {
+        conversation_id: ConversationId,
+        model: Option<ModelName>,
+    },
     /// Run one benchmark mode. Conversation mode carries the target
     /// conversation ID; live mode does not.
     Bench {
@@ -53,7 +58,9 @@ pub enum Command {
     GatewayStop,
     Help,
     Invalid,
-    List,
+    List {
+        json: bool,
+    },
     New,
     Noop,
     Query {
@@ -126,7 +133,10 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
         [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
         [arg] if arg == "new" => Command::New,
-        [arg] if arg == "ls" => Command::List,
+        [arg] if arg == "ls" => Command::List { json: false },
+        [command, json_flag] if command == "ls" && json_flag == "--json" => {
+            Command::List { json: true }
+        }
         [command, conversation_id, message_id] if command == "activate" => Command::Activate {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             message_id: MessageId::new(message_id.as_str()),
@@ -136,6 +146,20 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         }
         [command, conversation_id] if command == "tree" => {
             Command::Tree(ConversationId::new(conversation_id.as_str()))
+        }
+        [command, conversation_id, json_flag] if command == "inspect" && json_flag == "--json" => {
+            Command::Inspect {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: None,
+            }
+        }
+        [command, conversation_id, json_flag, model_flag, model]
+            if command == "inspect" && json_flag == "--json" && model_flag == "--model" =>
+        {
+            Command::Inspect {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: Some(ModelName::new(model.as_str())),
+            }
         }
         [command, rest @ ..] if command == "insert" => parse_insert_command(rest),
         [command, rest @ ..] if command == "update" => parse_update_command(rest),
@@ -527,7 +551,15 @@ mod tests {
     fn reads_ls_command() {
         let command = command_from_args(["windie".to_string(), "ls".to_string()]);
 
-        assert!(matches!(command, Command::List));
+        assert!(matches!(command, Command::List { json: false }));
+    }
+
+    #[test]
+    fn reads_ls_json_command() {
+        let command =
+            command_from_args(["windie".to_string(), "ls".to_string(), "--json".to_string()]);
+
+        assert!(matches!(command, Command::List { json: true }));
     }
 
     #[test]
@@ -1010,6 +1042,56 @@ mod tests {
                 model: None,
             } if conversation_id.as_str() == "conversation-id"
         ));
+    }
+
+    #[test]
+    fn reads_inspect_json_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "inspect".to_string(),
+            "conversation-id".to_string(),
+            "--json".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Inspect {
+                conversation_id,
+                model: None,
+            } if conversation_id.as_str() == "conversation-id"
+        ));
+    }
+
+    #[test]
+    fn reads_inspect_json_with_model_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "inspect".to_string(),
+            "conversation-id".to_string(),
+            "--json".to_string(),
+            "--model".to_string(),
+            "anthropic/claude-3-5-haiku".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Inspect {
+                conversation_id,
+                model: Some(model),
+            } if conversation_id.as_str() == "conversation-id"
+                && model.as_str() == "anthropic/claude-3-5-haiku"
+        ));
+    }
+
+    #[test]
+    fn rejects_inspect_without_json() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "inspect".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]

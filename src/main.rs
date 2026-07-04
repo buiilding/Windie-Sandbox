@@ -19,11 +19,12 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 use crate::cli::{Command, InsertPart};
+use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{ConversationId, MessageId, Role, ToolSchema, ToolSchemaName};
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::read_image_input;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
-use crate::output::TerminalOutput;
+use crate::output::{InspectionReport, TerminalOutput};
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
 use crate::runtime::query_conversation;
 use crate::store::{ImagePayload, MessagePayload, Store};
@@ -66,11 +67,15 @@ async fn main() -> Result<()> {
             conversation_id,
             tool_schema,
         } => insert_tool_schema(conversation_id, &tool_schema),
+        Command::Inspect {
+            conversation_id,
+            model,
+        } => inspect_conversation(conversation_id, model),
         Command::Fork {
             conversation_id,
             message_id,
         } => fork_conversation(conversation_id, message_id),
-        Command::List => list_conversations(),
+        Command::List { json } => list_conversations(json),
         Command::New => new_conversation(),
         Command::Query {
             conversation_id,
@@ -207,14 +212,18 @@ fn new_conversation() -> Result<()> {
 }
 
 /// Lists persisted conversations without loading their full message history.
-fn list_conversations() -> Result<()> {
+fn list_conversations(json: bool) -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
     let conversations = store
         .list_conversations()
         .context("failed to list conversations")?;
 
-    output.conversations(&conversations);
+    if json {
+        output.conversations_json(&conversations)?;
+    } else {
+        output.conversations(&conversations);
+    }
 
     Ok(())
 }
@@ -246,6 +255,46 @@ fn show_tree(conversation_id: ConversationId) -> Result<()> {
     output.conversation_tree(&messages, active_message_id.as_ref());
 
     Ok(())
+}
+
+/// Loads full read-only runtime state and prints it as stable JSON.
+///
+/// This is the machine-facing inspection path for developer tools. It mirrors
+/// the data used by query execution without sending a provider request or
+/// mutating the conversation.
+fn inspect_conversation(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
+    let store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+    let effective_model = model.unwrap_or_else(model_name);
+    let active_message_id = store
+        .active_message_id(&conversation_id)
+        .context("failed to load active message")?;
+    let messages = store
+        .load_message_tree(&conversation_id)
+        .with_context(|| format!("failed to inspect conversation tree {conversation_id}"))?;
+    let tool_schemas = store
+        .load_tool_schemas(&conversation_id)
+        .context("failed to load tool schemas")?;
+    let context_parts = ContextBuilder::load_parts(&store, &conversation_id)
+        .context("failed to load model context parts")?;
+    let model_context = ContextBuilder::flatten(ContextParts {
+        active_path: context_parts.active_path.clone(),
+        system_prompt: context_parts.system_prompt.clone(),
+        compaction: context_parts.compaction.clone(),
+    });
+    let report = InspectionReport::new(
+        &conversation_id,
+        active_message_id.as_ref(),
+        effective_model.as_str(),
+        context_parts.system_prompt,
+        tool_schemas,
+        messages,
+        context_parts.active_path,
+        model_context,
+        context_parts.compaction,
+    );
+
+    output.inspection_report_json(&report)
 }
 
 /// Inserts one explicit message into a conversation.

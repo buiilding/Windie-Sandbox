@@ -59,12 +59,16 @@ scripts.
 
 ```text
 windie ls
+windie ls --json
 ```
 
 List all persisted conversation trees.
 
 Output includes each conversation tree ID and message count. If no conversation
 trees exist, it prints `no conversations`.
+
+`--json` prints a stable machine-readable object with a `conversations` array
+for developer tools.
 
 ```text
 windie show <conversation_id>
@@ -84,6 +88,23 @@ Show the full message tree for one conversation tree.
 
 Output includes all branches. Indentation shows parent/child structure. `*`
 marks the active message.
+
+```text
+windie inspect <conversation_id> --json
+windie inspect <conversation_id> --json --model <provider/model>
+```
+
+Print full read-only runtime state as JSON for developer tools and inspection.
+
+The output includes the conversation ID, active message ID, effective model,
+conversation-level system prompt, conversation-level tool schemas, full message
+tree, active path, exact model-facing context, and latest compaction checkpoint.
+Messages include IDs, parent IDs, role, content, ordered parts, and assistant
+metadata. Image parts include asset ID, MIME type, and byte count; raw image
+bytes are not printed.
+
+`--model` changes only the model value shown in this inspection output. Windie
+does not persist conversation or global model selection yet.
 
 ## Messages
 

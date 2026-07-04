@@ -8,12 +8,14 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
+    ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCall, ToolSchema,
+    ToolSchemaName,
 };
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
-use crate::store::ConversationInfo;
+use crate::store::{Compaction, ConversationInfo};
 
 /// Minimal output interface needed by runtime flows.
 ///
@@ -133,6 +135,15 @@ impl TerminalOutput {
         Ok(())
     }
 
+    /// Prints a full read-only runtime inspection report as stable JSON.
+    pub fn inspection_report_json(&self, report: &InspectionReport) -> Result<()> {
+        serde_json::to_writer_pretty(io::stdout(), report)
+            .context("failed to write inspection JSON")?;
+        println!();
+
+        Ok(())
+    }
+
     /// Prints a comparison between two persisted benchmark reports.
     pub fn performance_comparison(&self, comparison: &PerformanceComparison) {
         for line in performance_comparison_lines(comparison) {
@@ -245,6 +256,17 @@ impl TerminalOutput {
         }
     }
 
+    /// Prints the conversation list as stable JSON for developer tools.
+    pub fn conversations_json(&self, conversations: &[ConversationInfo]) -> Result<()> {
+        let report = ConversationListReport::new(conversations);
+
+        serde_json::to_writer_pretty(io::stdout(), &report)
+            .context("failed to write conversation list JSON")?;
+        println!();
+
+        Ok(())
+    }
+
     /// Prints message previews for one conversation.
     pub fn conversation_messages(&self, messages: &[Message]) {
         for line in message_lines(messages) {
@@ -296,6 +318,170 @@ impl TerminalOutput {
     }
 }
 
+#[derive(Debug, Serialize)]
+/// Machine-readable conversation list used by `windie ls --json`.
+struct ConversationListReport {
+    conversations: Vec<ConversationSummary>,
+}
+
+impl ConversationListReport {
+    /// Converts store list rows into the public JSON list shape.
+    fn new(conversations: &[ConversationInfo]) -> Self {
+        Self {
+            conversations: conversations
+                .iter()
+                .map(ConversationSummary::from_info)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+/// Serializable summary for one persisted conversation.
+struct ConversationSummary {
+    id: String,
+    title: Option<String>,
+    message_count: i64,
+}
+
+impl ConversationSummary {
+    /// Copies the public conversation-list fields into JSON-safe strings.
+    fn from_info(info: &ConversationInfo) -> Self {
+        Self {
+            id: info.id.as_str().to_string(),
+            title: info.title.clone(),
+            message_count: info.message_count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+/// Machine-readable snapshot of one conversation's current runtime state.
+///
+/// This is the DTO used by `windie inspect <conversation_id> --json`. It keeps
+/// terminal formatting separate from structured output, and it deliberately
+/// summarizes image bytes instead of dumping raw image data.
+pub struct InspectionReport {
+    conversation_id: String,
+    active_message_id: Option<String>,
+    model: String,
+    system_prompt: Option<String>,
+    tool_schemas: Vec<ToolSchema>,
+    messages: Vec<InspectionMessage>,
+    active_path: Vec<InspectionMessage>,
+    model_context: Vec<InspectionMessage>,
+    latest_compaction: Option<InspectionCompaction>,
+}
+
+impl InspectionReport {
+    /// Builds the serializable inspection report from loaded runtime data.
+    ///
+    /// The caller owns all store/context loading so this output boundary only
+    /// maps typed runtime values into the public JSON shape.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        conversation_id: &ConversationId,
+        active_message_id: Option<&MessageId>,
+        model: &str,
+        system_prompt: Option<String>,
+        tool_schemas: Vec<ToolSchema>,
+        messages: Vec<Message>,
+        active_path: Vec<Message>,
+        model_context: Vec<Message>,
+        latest_compaction: Option<Compaction>,
+    ) -> Self {
+        Self {
+            conversation_id: conversation_id.as_str().to_string(),
+            active_message_id: active_message_id.map(|id| id.as_str().to_string()),
+            model: model.to_string(),
+            system_prompt,
+            tool_schemas,
+            messages: inspection_messages(messages),
+            active_path: inspection_messages(active_path),
+            model_context: inspection_messages(model_context),
+            latest_compaction: latest_compaction.map(InspectionCompaction::from_compaction),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+/// Serializable message shape for inspection JSON.
+struct InspectionMessage {
+    id: Option<String>,
+    parent_message_id: Option<String>,
+    role: Role,
+    content: String,
+    parts: Vec<InspectionMessagePart>,
+    metadata: Option<MessageMetadata>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+/// Serializable message part that never includes raw image bytes.
+enum InspectionMessagePart {
+    Text {
+        text: String,
+    },
+    Image {
+        asset_id: String,
+        mime_type: String,
+        byte_count: usize,
+    },
+}
+
+#[derive(Debug, Serialize)]
+/// Serializable compaction checkpoint shape for inspection JSON.
+struct InspectionCompaction {
+    id: String,
+    conversation_id: String,
+    through_message_id: String,
+    content: String,
+    created_at: i64,
+}
+
+/// Converts loaded runtime messages into the public inspection message shape.
+fn inspection_messages(messages: Vec<Message>) -> Vec<InspectionMessage> {
+    messages
+        .into_iter()
+        .map(|message| InspectionMessage {
+            id: message.id.map(|id| id.as_str().to_string()),
+            parent_message_id: message.parent_message_id.map(|id| id.as_str().to_string()),
+            role: message.role,
+            content: message.content,
+            parts: inspection_message_parts(message.parts),
+            metadata: message.metadata,
+        })
+        .collect()
+}
+
+/// Converts typed message parts while preserving order and hiding image bytes.
+fn inspection_message_parts(parts: Vec<MessagePart>) -> Vec<InspectionMessagePart> {
+    parts
+        .into_iter()
+        .map(|part| match part {
+            MessagePart::Text(text) => InspectionMessagePart::Text { text },
+            MessagePart::Image(image) => InspectionMessagePart::Image {
+                asset_id: image.asset_id.as_str().to_string(),
+                mime_type: image.mime_type,
+                byte_count: image.bytes.len(),
+            },
+        })
+        .collect()
+}
+
+impl InspectionCompaction {
+    /// Converts a store compaction row into the public inspection shape.
+    fn from_compaction(compaction: Compaction) -> Self {
+        Self {
+            id: compaction.id.as_str().to_string(),
+            conversation_id: compaction.conversation_id.as_str().to_string(),
+            through_message_id: compaction.through_message_id.as_str().to_string(),
+            content: compaction.content,
+            created_at: compaction.created_at,
+        }
+    }
+}
+
 /// Shared line printer for help and invalid usage output.
 fn print_lines(lines: &[String]) {
     for line in lines {
@@ -312,9 +498,12 @@ fn help_lines() -> Vec<String> {
         "  windie",
         "  windie new",
         "  windie ls",
+        "  windie ls --json",
         "  windie activate <conversation_id> <message_id>",
         "  windie show <conversation_id>",
         "  windie tree <conversation_id>",
+        "  windie inspect <conversation_id> --json",
+        "  windie inspect <conversation_id> --json --model <provider/model>",
         "  windie insert <conversation_id> message --role user --text \"hello\"",
         "  windie insert <conversation_id> message --role user --text \"first\" --image <path> --text \"second\"",
         "  windie insert <conversation_id> toolschema --name <name> --description <text> --parameters <json>",
@@ -342,6 +531,7 @@ fn help_lines() -> Vec<String> {
         "  windie bench <conversation_id> measures active path, tree, and context build.",
         "  windie bench <conversation_id> --json writes a persistent benchmark artifact to stdout.",
         "  windie bench compare compares two JSON benchmark artifacts.",
+        "  windie inspect <conversation_id> --json prints full read-only runtime state.",
         "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie query requires the local Bifrost gateway to be running.",

@@ -1,11 +1,15 @@
 //! Tests for terminal output formatting.
 
 use super::*;
-use crate::conversation::{ConversationId, ImageAssetId, ImagePart, MessageId, MessagePart, Role};
+use crate::conversation::{
+    CompactionId, ConversationId, ImageAssetId, ImagePart, MessageId, MessageMetadata, MessagePart,
+    Role, ToolCall, ToolSchema, ToolSchemaName,
+};
 use crate::perf::{
     BenchmarkMode, DurationMetric, PerformanceComparison, PerformanceComparisonRow,
     PerformanceReport, PerformanceSummary,
 };
+use crate::store::Compaction;
 
 #[test]
 fn formats_empty_conversations() {
@@ -22,9 +26,14 @@ fn formats_help_lines() {
     assert!(lines.contains(&"Usage:".to_string()));
     assert!(lines.contains(&"  windie".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
+    assert!(lines.contains(&"  windie ls --json".to_string()));
     assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie show <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie tree <conversation_id>".to_string()));
+    assert!(lines.contains(&"  windie inspect <conversation_id> --json".to_string()));
+    assert!(lines.contains(
+        &"  windie inspect <conversation_id> --json --model <provider/model>".to_string()
+    ));
     assert!(lines.contains(
         &"  windie insert <conversation_id> message --role user --text \"hello\"".to_string()
     ));
@@ -114,6 +123,22 @@ fn formats_conversation_title() {
 }
 
 #[test]
+fn serializes_conversation_list_report() {
+    let conversations = vec![ConversationInfo {
+        id: ConversationId::new("chat-id"),
+        title: Some("work notes".to_string()),
+        message_count: 3,
+    }];
+
+    let report = ConversationListReport::new(&conversations);
+    let value = serde_json::to_value(report).unwrap();
+
+    assert_eq!(value["conversations"][0]["id"], "chat-id");
+    assert_eq!(value["conversations"][0]["title"], "work notes");
+    assert_eq!(value["conversations"][0]["message_count"], 3);
+}
+
+#[test]
 fn formats_empty_messages() {
     let lines = message_lines(&[]);
 
@@ -193,6 +218,115 @@ fn formats_image_message_preview() {
         lines,
         vec!["messages", "user  message-id  what is this? [image]"]
     );
+}
+
+#[test]
+fn serializes_inspection_report_with_runtime_state() {
+    let metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call-id",
+            "run_shell",
+            r#"{"command":"ls"}"#,
+        )],
+        refusal: Some("no".to_string()),
+        reasoning: Some("because".to_string()),
+        reasoning_details: Vec::new(),
+        audio: None,
+        annotations: Vec::new(),
+    };
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new("run_shell"),
+        description: "Run a shell command".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+    let report = InspectionReport::new(
+        &ConversationId::new("conversation-id"),
+        Some(&MessageId::new("assistant-id")),
+        "anthropic/claude-3-5-haiku",
+        Some("You are concise.".to_string()),
+        vec![tool_schema],
+        vec![
+            Message {
+                id: Some(MessageId::new("user-id")),
+                parent_message_id: None,
+                role: Role::User,
+                content: "look".to_string(),
+                parts: vec![
+                    MessagePart::Text("look".to_string()),
+                    MessagePart::Image(ImagePart {
+                        asset_id: ImageAssetId::new("image-id"),
+                        mime_type: "image/png".to_string(),
+                        bytes: vec![1, 2, 3, 4],
+                    }),
+                ],
+                metadata: None,
+            },
+            Message {
+                id: Some(MessageId::new("assistant-id")),
+                parent_message_id: Some(MessageId::new("user-id")),
+                role: Role::Assistant,
+                content: String::new(),
+                parts: Vec::new(),
+                metadata: Some(metadata),
+            },
+        ],
+        vec![Message {
+            id: Some(MessageId::new("user-id")),
+            parent_message_id: None,
+            role: Role::User,
+            content: "look".to_string(),
+            parts: Vec::new(),
+            metadata: None,
+        }],
+        vec![
+            Message {
+                id: None,
+                parent_message_id: None,
+                role: Role::System,
+                content: "You are concise.".to_string(),
+                parts: Vec::new(),
+                metadata: None,
+            },
+            Message {
+                id: Some(MessageId::new("user-id")),
+                parent_message_id: None,
+                role: Role::User,
+                content: "look".to_string(),
+                parts: Vec::new(),
+                metadata: None,
+            },
+        ],
+        Some(Compaction {
+            id: CompactionId::new("compaction-id"),
+            conversation_id: ConversationId::new("conversation-id"),
+            through_message_id: MessageId::new("user-id"),
+            content: "summary".to_string(),
+            created_at: 123,
+        }),
+    );
+
+    let value = serde_json::to_value(report).unwrap();
+
+    assert_eq!(value["conversation_id"], "conversation-id");
+    assert_eq!(value["active_message_id"], "assistant-id");
+    assert_eq!(value["model"], "anthropic/claude-3-5-haiku");
+    assert_eq!(value["system_prompt"], "You are concise.");
+    assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
+    assert_eq!(value["messages"][0]["parts"][0]["type"], "text");
+    assert_eq!(value["messages"][0]["parts"][1]["type"], "image");
+    assert_eq!(value["messages"][0]["parts"][1]["asset_id"], "image-id");
+    assert_eq!(value["messages"][0]["parts"][1]["mime_type"], "image/png");
+    assert_eq!(value["messages"][0]["parts"][1]["byte_count"], 4);
+    assert!(value["messages"][0]["parts"][1].get("bytes").is_none());
+    assert_eq!(
+        value["messages"][1]["metadata"]["tool_calls"][0]["id"],
+        "call-id"
+    );
+    assert_eq!(value["messages"][1]["metadata"]["refusal"], "no");
+    assert_eq!(value["messages"][1]["metadata"]["reasoning"], "because");
+    assert_eq!(value["active_path"][0]["id"], "user-id");
+    assert_eq!(value["model_context"][0]["role"], "system");
+    assert_eq!(value["latest_compaction"]["id"], "compaction-id");
 }
 
 #[test]
