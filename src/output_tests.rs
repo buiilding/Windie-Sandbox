@@ -289,13 +289,7 @@ fn formats_performance_report_lines() {
                 p95_us: 300,
                 max_us: 400,
             }),
-            active_path_load: None,
-            tree_load: None,
-            context_build: None,
-            conversation_list_load: None,
-            gateway_ready: None,
-            first_token: None,
-            full_response: None,
+            ..PerformanceSummary::default()
         },
     };
 

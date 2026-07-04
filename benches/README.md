@@ -3,6 +3,25 @@
 This directory stores benchmark artifacts that can be compared after code
 changes.
 
+Conversation benchmark reports include both top-level timings and lower-level
+breakdowns:
+
+```text
+active message lookup
+active path row load
+active path part/image load
+tree row load
+tree part/image load
+context active path load
+context system prompt load
+context compaction load
+context flatten
+```
+
+Use the lower-level metrics to locate regressions before optimizing. For
+example, if `tree part/image load` changes but `tree row load` is stable, the
+pressure is in ordered message parts or image bytes rather than tree traversal.
+
 ## 100 Messages
 
 `100-messages-baseline.json` is a local/free benchmark report for one linear

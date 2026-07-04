@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
@@ -69,6 +69,25 @@ pub struct ImagePayload<'a> {
 pub enum MessagePayload<'a> {
     Text(&'a str),
     Image(ImagePayload<'a>),
+}
+
+#[derive(Debug)]
+/// Messages plus timing details for benchmark-only load paths.
+///
+/// Normal runtime code should use `load_active_path` and `load_message_tree`.
+/// This type exists so `perf.rs` can identify whether row loading or
+/// part/image attachment is the expensive piece.
+pub struct MessageLoadProfile {
+    pub messages: Vec<Message>,
+    pub timings: MessageLoadTimings,
+}
+
+#[derive(Debug, Default)]
+/// Timing details for one message load operation.
+pub struct MessageLoadTimings {
+    pub active_message_lookup: Option<Duration>,
+    pub row_load: Duration,
+    pub part_load: Duration,
 }
 
 /// SQLite-backed persistence boundary for conversations, messages, and
@@ -335,25 +354,7 @@ impl Store {
 
     /// Loads all messages for one conversation in stable insertion order.
     pub fn load_messages(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
-        self.ensure_conversation_exists(conversation_id)?;
-
-        let mut statement = self
-            .connection
-            .prepare(
-                "
-                SELECT id, parent_message_id, role, content, metadata
-                FROM messages
-                WHERE conversation_id = ?1
-                ORDER BY created_at, rowid
-                ",
-            )
-            .context("failed to prepare message load")?;
-
-        let mut messages = statement
-            .query_map(params![conversation_id.as_str()], read_message_row)
-            .context("failed to load messages")?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read messages")?;
+        let mut messages = self.load_message_rows(conversation_id)?;
         self.attach_message_parts(&mut messages)
             .context("failed to load message parts")?;
 
@@ -475,8 +476,113 @@ impl Store {
         self.load_path_to_message(conversation_id, &message_id)
     }
 
+    /// Loads the active path with benchmark-only row and part timings.
+    ///
+    /// This mirrors `load_active_path`, but exposes timing data so performance
+    /// reports can distinguish active-message lookup, message row loading, and
+    /// ordered part/image attachment.
+    pub fn load_active_path_profile(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<MessageLoadProfile> {
+        let lookup_started = Instant::now();
+        let Some(message_id) = self.active_message_id(conversation_id)? else {
+            return Ok(MessageLoadProfile {
+                messages: Vec::new(),
+                timings: MessageLoadTimings {
+                    active_message_lookup: Some(lookup_started.elapsed()),
+                    row_load: Duration::ZERO,
+                    part_load: Duration::ZERO,
+                },
+            });
+        };
+        let active_message_lookup = lookup_started.elapsed();
+
+        let row_started = Instant::now();
+        let mut messages = self.load_path_to_message_rows(conversation_id, &message_id)?;
+        let row_load = row_started.elapsed();
+
+        let part_started = Instant::now();
+        self.attach_message_parts(&mut messages)
+            .context("failed to load active path parts")?;
+        let part_load = part_started.elapsed();
+
+        Ok(MessageLoadProfile {
+            messages,
+            timings: MessageLoadTimings {
+                active_message_lookup: Some(active_message_lookup),
+                row_load,
+                part_load,
+            },
+        })
+    }
+
+    /// Loads the full message tree with benchmark-only row and part timings.
+    ///
+    /// This mirrors `load_message_tree`, but exposes timing data so performance
+    /// reports can separate plain message row loading from ordered part/image
+    /// attachment.
+    pub fn load_message_tree_profile(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<MessageLoadProfile> {
+        let row_started = Instant::now();
+        let mut messages = self.load_message_rows(conversation_id)?;
+        let row_load = row_started.elapsed();
+
+        let part_started = Instant::now();
+        self.attach_message_parts(&mut messages)
+            .context("failed to load message tree parts")?;
+        let part_load = part_started.elapsed();
+
+        Ok(MessageLoadProfile {
+            messages,
+            timings: MessageLoadTimings {
+                active_message_lookup: None,
+                row_load,
+                part_load,
+            },
+        })
+    }
+
     /// Loads the root-to-message path for one message inside a conversation.
     pub fn load_path_to_message(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<Vec<Message>> {
+        let mut path = self.load_path_to_message_rows(conversation_id, message_id)?;
+        self.attach_message_parts(&mut path)
+            .context("failed to load active path parts")?;
+
+        Ok(path)
+    }
+
+    /// Loads message rows for one conversation without attaching ordered parts.
+    fn load_message_rows(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT id, parent_message_id, role, content, metadata
+                FROM messages
+                WHERE conversation_id = ?1
+                ORDER BY created_at, rowid
+                ",
+            )
+            .context("failed to prepare message load")?;
+
+        statement
+            .query_map(params![conversation_id.as_str()], read_message_row)
+            .context("failed to load messages")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read messages")
+    }
+
+    /// Loads the root-to-message rows without attaching ordered parts.
+    fn load_path_to_message_rows(
         &self,
         conversation_id: &ConversationId,
         message_id: &MessageId,
@@ -526,18 +632,14 @@ impl Store {
             )
             .context("failed to prepare active path load")?;
 
-        let mut path = statement
+        statement
             .query_map(
                 params![conversation_id.as_str(), message_id.as_str()],
                 read_message_row,
             )
             .context("failed to load active path")?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read active path")?;
-        self.attach_message_parts(&mut path)
-            .context("failed to load active path parts")?;
-
-        Ok(path)
+            .context("failed to read active path")
     }
 
     /// Loads messages after an optional checkpoint message in insertion order.

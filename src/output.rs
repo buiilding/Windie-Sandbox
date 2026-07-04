@@ -59,11 +59,38 @@ impl TerminalOutput {
         if let Some(duration) = baseline.conversation_load {
             println!("active path load: {}", format_duration(duration));
         }
+        if let Some(duration) = baseline.active_message_lookup {
+            println!("active message lookup: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.active_path_row_load {
+            println!("active path row load: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.active_path_part_load {
+            println!("active path part/image load: {}", format_duration(duration));
+        }
         if let Some(duration) = baseline.tree_load {
             println!("tree load: {}", format_duration(duration));
         }
+        if let Some(duration) = baseline.tree_row_load {
+            println!("tree row load: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.tree_part_load {
+            println!("tree part/image load: {}", format_duration(duration));
+        }
         if let Some(duration) = baseline.context_build {
             println!("context build: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.context_active_path_load {
+            println!("context active path load: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.context_system_prompt_load {
+            println!("context system prompt load: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.context_compaction_load {
+            println!("context compaction load: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.context_flatten {
+            println!("context flatten: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.list_load {
             println!("conversation list load: {}", format_duration(duration));
@@ -331,11 +358,56 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
         "active path load",
         report.summary.active_path_load.as_ref(),
     );
+    push_metric_lines(
+        &mut lines,
+        "active message lookup",
+        report.summary.active_message_lookup.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "active path row load",
+        report.summary.active_path_row_load.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "active path part/image load",
+        report.summary.active_path_part_load.as_ref(),
+    );
     push_metric_lines(&mut lines, "tree load", report.summary.tree_load.as_ref());
+    push_metric_lines(
+        &mut lines,
+        "tree row load",
+        report.summary.tree_row_load.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "tree part/image load",
+        report.summary.tree_part_load.as_ref(),
+    );
     push_metric_lines(
         &mut lines,
         "context build",
         report.summary.context_build.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "context active path load",
+        report.summary.context_active_path_load.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "context system prompt load",
+        report.summary.context_system_prompt_load.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "context compaction load",
+        report.summary.context_compaction_load.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "context flatten",
+        report.summary.context_flatten.as_ref(),
     );
     push_metric_lines(
         &mut lines,

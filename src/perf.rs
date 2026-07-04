@@ -76,8 +76,17 @@ pub struct PerformanceBaseline {
     pub conversation_id: Option<ConversationId>,
     pub store_open: Option<Duration>,
     pub conversation_load: Option<Duration>,
+    pub active_message_lookup: Option<Duration>,
+    pub active_path_row_load: Option<Duration>,
+    pub active_path_part_load: Option<Duration>,
     pub tree_load: Option<Duration>,
+    pub tree_row_load: Option<Duration>,
+    pub tree_part_load: Option<Duration>,
     pub context_build: Option<Duration>,
+    pub context_active_path_load: Option<Duration>,
+    pub context_system_prompt_load: Option<Duration>,
+    pub context_compaction_load: Option<Duration>,
+    pub context_flatten: Option<Duration>,
     pub list_load: Option<Duration>,
     pub loaded_messages: Option<usize>,
     pub tree_messages: Option<usize>,
@@ -104,12 +113,21 @@ pub struct PerformanceReport {
 }
 
 /// One serialized benchmark sample.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerformanceSample {
     pub store_open_us: Option<u64>,
     pub active_path_load_us: Option<u64>,
+    pub active_message_lookup_us: Option<u64>,
+    pub active_path_row_load_us: Option<u64>,
+    pub active_path_part_load_us: Option<u64>,
     pub tree_load_us: Option<u64>,
+    pub tree_row_load_us: Option<u64>,
+    pub tree_part_load_us: Option<u64>,
     pub context_build_us: Option<u64>,
+    pub context_active_path_load_us: Option<u64>,
+    pub context_system_prompt_load_us: Option<u64>,
+    pub context_compaction_load_us: Option<u64>,
+    pub context_flatten_us: Option<u64>,
     pub conversation_list_load_us: Option<u64>,
     pub active_path_messages: Option<usize>,
     pub tree_messages: Option<usize>,
@@ -121,12 +139,21 @@ pub struct PerformanceSample {
 }
 
 /// Aggregated duration metrics across all benchmark samples.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerformanceSummary {
     pub store_open: Option<DurationMetric>,
     pub active_path_load: Option<DurationMetric>,
+    pub active_message_lookup: Option<DurationMetric>,
+    pub active_path_row_load: Option<DurationMetric>,
+    pub active_path_part_load: Option<DurationMetric>,
     pub tree_load: Option<DurationMetric>,
+    pub tree_row_load: Option<DurationMetric>,
+    pub tree_part_load: Option<DurationMetric>,
     pub context_build: Option<DurationMetric>,
+    pub context_active_path_load: Option<DurationMetric>,
+    pub context_system_prompt_load: Option<DurationMetric>,
+    pub context_compaction_load: Option<DurationMetric>,
+    pub context_flatten: Option<DurationMetric>,
     pub conversation_list_load: Option<DurationMetric>,
     pub gateway_ready: Option<DurationMetric>,
     pub first_token: Option<DurationMetric>,
@@ -175,8 +202,17 @@ pub async fn run(
     let (
         store_open,
         conversation_load,
+        active_message_lookup,
+        active_path_row_load,
+        active_path_part_load,
         tree_load,
+        tree_row_load,
+        tree_part_load,
         context_build,
+        context_active_path_load,
+        context_system_prompt_load,
+        context_compaction_load,
+        context_flatten,
         list_load,
         loaded_messages,
         tree_messages,
@@ -195,6 +231,15 @@ pub async fn run(
                 None,
                 None,
                 None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
             )
         }
         BenchmarkMode::Conversation => {
@@ -206,22 +251,43 @@ pub async fn run(
                 .expect("conversation benchmark requires conversation id");
 
             let load_started = Instant::now();
-            let loaded_messages = store.load_active_path(conversation_id)?.len();
+            let active_path_profile = store.load_active_path_profile(conversation_id)?;
+            let active_message_lookup = active_path_profile.timings.active_message_lookup;
+            let active_path_row_load = active_path_profile.timings.row_load;
+            let active_path_part_load = active_path_profile.timings.part_load;
+            let loaded_messages = active_path_profile.messages.len();
             let conversation_load = load_started.elapsed();
 
             let tree_started = Instant::now();
-            let tree_messages = store.load_message_tree(conversation_id)?.len();
+            let tree_profile = store.load_message_tree_profile(conversation_id)?;
+            let tree_row_load = tree_profile.timings.row_load;
+            let tree_part_load = tree_profile.timings.part_load;
+            let tree_messages = tree_profile.messages.len();
             let tree_load = tree_started.elapsed();
 
             let context_started = Instant::now();
-            let _ = crate::context::ContextBuilder::build(&store, conversation_id)?;
+            let context_profile =
+                crate::context::ContextBuilder::build_profile(&store, conversation_id)?;
+            let context_active_path_load = context_profile.timings.active_path_load;
+            let context_system_prompt_load = context_profile.timings.system_prompt_load;
+            let context_compaction_load = context_profile.timings.compaction_load;
+            let context_flatten = context_profile.timings.flatten;
             let context_build = context_started.elapsed();
 
             (
                 Some(store_open),
                 Some(conversation_load),
+                active_message_lookup,
+                Some(active_path_row_load),
+                Some(active_path_part_load),
                 Some(tree_load),
+                Some(tree_row_load),
+                Some(tree_part_load),
                 Some(context_build),
+                Some(context_active_path_load),
+                Some(context_system_prompt_load),
+                Some(context_compaction_load),
+                Some(context_flatten),
                 None,
                 Some(loaded_messages),
                 Some(tree_messages),
@@ -242,13 +308,25 @@ pub async fn run(
                 None,
                 None,
                 None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
                 Some(list_load),
                 None,
                 None,
                 Some(listed_conversations),
             )
         }
-        BenchmarkMode::Live => (None, None, None, None, None, None, None, None),
+        BenchmarkMode::Live => (
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None,
+        ),
     };
 
     let (gateway_ready, first_token, full_response, response_bytes) = if mode == BenchmarkMode::Live
@@ -275,8 +353,17 @@ pub async fn run(
         conversation_id,
         store_open,
         conversation_load,
+        active_message_lookup,
+        active_path_row_load,
+        active_path_part_load,
         tree_load,
+        tree_row_load,
+        tree_part_load,
         context_build,
+        context_active_path_load,
+        context_system_prompt_load,
+        context_compaction_load,
+        context_flatten,
         list_load,
         loaded_messages,
         tree_messages,
@@ -384,8 +471,17 @@ impl PerformanceSample {
         Self {
             store_open_us: baseline.store_open.map(duration_micros),
             active_path_load_us: baseline.conversation_load.map(duration_micros),
+            active_message_lookup_us: baseline.active_message_lookup.map(duration_micros),
+            active_path_row_load_us: baseline.active_path_row_load.map(duration_micros),
+            active_path_part_load_us: baseline.active_path_part_load.map(duration_micros),
             tree_load_us: baseline.tree_load.map(duration_micros),
+            tree_row_load_us: baseline.tree_row_load.map(duration_micros),
+            tree_part_load_us: baseline.tree_part_load.map(duration_micros),
             context_build_us: baseline.context_build.map(duration_micros),
+            context_active_path_load_us: baseline.context_active_path_load.map(duration_micros),
+            context_system_prompt_load_us: baseline.context_system_prompt_load.map(duration_micros),
+            context_compaction_load_us: baseline.context_compaction_load.map(duration_micros),
+            context_flatten_us: baseline.context_flatten.map(duration_micros),
             conversation_list_load_us: baseline.list_load.map(duration_micros),
             active_path_messages: baseline.loaded_messages,
             tree_messages: baseline.tree_messages,
@@ -408,9 +504,50 @@ impl PerformanceSummary {
                     .iter()
                     .filter_map(|sample| sample.active_path_load_us),
             ),
+            active_message_lookup: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.active_message_lookup_us),
+            ),
+            active_path_row_load: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.active_path_row_load_us),
+            ),
+            active_path_part_load: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.active_path_part_load_us),
+            ),
             tree_load: duration_metric(samples.iter().filter_map(|sample| sample.tree_load_us)),
+            tree_row_load: duration_metric(
+                samples.iter().filter_map(|sample| sample.tree_row_load_us),
+            ),
+            tree_part_load: duration_metric(
+                samples.iter().filter_map(|sample| sample.tree_part_load_us),
+            ),
             context_build: duration_metric(
                 samples.iter().filter_map(|sample| sample.context_build_us),
+            ),
+            context_active_path_load: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.context_active_path_load_us),
+            ),
+            context_system_prompt_load: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.context_system_prompt_load_us),
+            ),
+            context_compaction_load: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.context_compaction_load_us),
+            ),
+            context_flatten: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.context_flatten_us),
             ),
             conversation_list_load: duration_metric(
                 samples
@@ -463,11 +600,56 @@ fn comparison_rows(
             &baseline.active_path_load,
             &current.active_path_load,
         ),
+        (
+            "active message lookup",
+            &baseline.active_message_lookup,
+            &current.active_message_lookup,
+        ),
+        (
+            "active path row load",
+            &baseline.active_path_row_load,
+            &current.active_path_row_load,
+        ),
+        (
+            "active path part/image load",
+            &baseline.active_path_part_load,
+            &current.active_path_part_load,
+        ),
         ("tree load", &baseline.tree_load, &current.tree_load),
+        (
+            "tree row load",
+            &baseline.tree_row_load,
+            &current.tree_row_load,
+        ),
+        (
+            "tree part/image load",
+            &baseline.tree_part_load,
+            &current.tree_part_load,
+        ),
         (
             "context build",
             &baseline.context_build,
             &current.context_build,
+        ),
+        (
+            "context active path load",
+            &baseline.context_active_path_load,
+            &current.context_active_path_load,
+        ),
+        (
+            "context system prompt load",
+            &baseline.context_system_prompt_load,
+            &current.context_system_prompt_load,
+        ),
+        (
+            "context compaction load",
+            &baseline.context_compaction_load,
+            &current.context_compaction_load,
+        ),
+        (
+            "context flatten",
+            &baseline.context_flatten,
+            &current.context_flatten,
         ),
         (
             "conversation list load",
@@ -534,19 +716,13 @@ mod tests {
             runs: 2,
             samples: vec![],
             summary: PerformanceSummary {
-                store_open: None,
                 active_path_load: Some(DurationMetric {
                     min_us: 100,
                     median_us: 100,
                     p95_us: 100,
                     max_us: 100,
                 }),
-                tree_load: None,
-                context_build: None,
-                conversation_list_load: None,
-                gateway_ready: None,
-                first_token: None,
-                full_response: None,
+                ..PerformanceSummary::default()
             },
         };
         let current = PerformanceReport {
@@ -591,6 +767,7 @@ mod tests {
                 first_token_us: None,
                 full_response_us: None,
                 response_bytes: None,
+                ..PerformanceSample::default()
             }],
             summary: PerformanceSummary {
                 store_open: Some(DurationMetric {
@@ -612,10 +789,7 @@ mod tests {
                     p95_us: 30,
                     max_us: 30,
                 }),
-                conversation_list_load: None,
-                gateway_ready: None,
-                first_token: None,
-                full_response: None,
+                ..PerformanceSummary::default()
             },
         };
         let current = PerformanceReport {
@@ -663,19 +837,13 @@ mod tests {
     #[test]
     fn compares_conversation_list_load() {
         let baseline = PerformanceSummary {
-            store_open: None,
-            active_path_load: None,
-            tree_load: None,
-            context_build: None,
             conversation_list_load: Some(DurationMetric {
                 min_us: 50,
                 median_us: 50,
                 p95_us: 50,
                 max_us: 50,
             }),
-            gateway_ready: None,
-            first_token: None,
-            full_response: None,
+            ..PerformanceSummary::default()
         };
         let current = PerformanceSummary {
             conversation_list_load: Some(DurationMetric {
