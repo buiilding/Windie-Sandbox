@@ -12,6 +12,12 @@ use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
 use crate::store::Store;
 
+/// Runs one query against one existing conversation.
+///
+/// Data flow:
+/// load current parent -> build model context -> stream LLM output -> save the
+/// assistant reply. The assistant message is only persisted after successful
+/// inference.
 pub(crate) async fn query_conversation<O, L>(
     output: &O,
     llm: &L,

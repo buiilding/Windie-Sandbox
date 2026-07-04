@@ -7,13 +7,18 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Stable identifier for one persisted conversation.
 pub struct ConversationId(String);
 
 impl ConversationId {
+    /// Wraps raw ID text so callers cannot accidentally pass a message ID where
+    /// a conversation ID is expected.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
+    /// Exposes the stored ID as plain text for SQLite, HTTP output, and CLI
+    /// printing boundaries.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -34,13 +39,17 @@ impl std::ops::Deref for ConversationId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Stable identifier for one persisted message.
 pub struct MessageId(String);
 
 impl MessageId {
+    /// Wraps raw ID text so message identity stays type-distinct from other IDs.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
+    /// Exposes the stored ID as plain text at persistence and display
+    /// boundaries.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -61,13 +70,18 @@ impl std::ops::Deref for MessageId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Stable identifier for a saved history compaction checkpoint.
 pub struct CompactionId(String);
 
 impl CompactionId {
+    /// Wraps raw ID text so compaction identity stays separate from messages and
+    /// conversations.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
+    /// Exposes the stored ID as plain text at persistence and display
+    /// boundaries.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -89,6 +103,7 @@ impl std::ops::Deref for CompactionId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Message role accepted by the OpenAI-compatible chat request format.
 pub enum Role {
     System,
     User,
@@ -97,6 +112,8 @@ pub enum Role {
 }
 
 impl Role {
+    /// Returns the exact lowercase role string expected by Bifrost/OpenAI and
+    /// stored in SQLite.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::System => "system",
@@ -108,6 +125,10 @@ impl Role {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// One conversation message in Windie's runtime model.
+///
+/// Only `role` and `content` serialize to the LLM request. Local identifiers,
+/// parent links, and metadata are persistence/runtime fields and are skipped.
 pub struct Message {
     #[serde(skip)]
     pub id: Option<MessageId>,

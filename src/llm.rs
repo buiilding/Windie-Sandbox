@@ -11,13 +11,16 @@ use serde::{Deserialize, Serialize};
 use crate::conversation::Message;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Base URL for the OpenAI-compatible provider adapter.
 pub struct BaseUrl(String);
 
 impl BaseUrl {
+    /// Stores the URL without a trailing slash so endpoint joining is stable.
     pub fn new(url: impl Into<String>) -> Self {
         Self(url.into().trim_end_matches('/').to_string())
     }
 
+    /// Returns the normalized URL text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -30,13 +33,17 @@ impl std::fmt::Display for BaseUrl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Provider-qualified model name passed through to Bifrost.
 pub struct ModelName(String);
 
 impl ModelName {
+    /// Wraps model text as a type so model arguments are not confused with
+    /// general strings.
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
 
+    /// Returns the exact model name sent to Bifrost.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -48,12 +55,17 @@ impl std::fmt::Display for ModelName {
     }
 }
 
+/// Minimal LLM interface needed by runtime query execution.
+///
+/// Tests use this trait to simulate success and failure without making network
+/// requests.
 pub(crate) trait RuntimeLlm {
     async fn stream<F>(&self, messages: &[Message], handle_delta: F) -> Result<String>
     where
         F: FnMut(&str) -> Result<()>;
 }
 
+/// HTTP client for Bifrost's OpenAI-compatible chat completions endpoint.
 pub struct BifrostClient {
     http: Client,
     base_url: BaseUrl,
@@ -61,6 +73,7 @@ pub struct BifrostClient {
 }
 
 #[derive(Debug, Serialize)]
+/// JSON request body sent to `/chat/completions`.
 struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [Message],
@@ -68,21 +81,25 @@ struct ChatRequest<'a> {
 }
 
 #[derive(Debug, Deserialize)]
+/// One streamed server-sent event payload from the provider adapter.
 struct ChatStreamChunk {
     choices: Vec<StreamChoice>,
 }
 
 #[derive(Debug, Deserialize)]
+/// One candidate choice inside a streamed chat chunk.
 struct StreamChoice {
     delta: StreamDelta,
 }
 
 #[derive(Debug, Deserialize)]
+/// Incremental assistant content inside a streamed choice.
 struct StreamDelta {
     content: Option<String>,
 }
 
 impl BifrostClient {
+    /// Creates a reusable HTTP client bound to one base URL and model.
     pub fn new(base_url: BaseUrl, model: ModelName) -> Self {
         Self {
             http: Client::new(),
@@ -91,10 +108,13 @@ impl BifrostClient {
         }
     }
 
+    /// Builds the chat completions endpoint from the normalized base URL.
     pub fn chat_endpoint(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
 
+    /// Sends the chat request, streams assistant deltas to the caller, and
+    /// returns the full assistant response.
     pub async fn stream<F>(&self, messages: &[Message], mut handle_delta: F) -> Result<String>
     where
         F: FnMut(&str) -> Result<()>,
@@ -127,6 +147,8 @@ impl BifrostClient {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("failed to read chat stream")?;
 
+            // Network chunks can split inside UTF-8 characters or SSE lines, so
+            // bytes are decoded separately from line parsing.
             byte_buffer.extend_from_slice(&chunk);
             append_valid_utf8(&mut byte_buffer, &mut buffer)?;
             process_stream_lines(&mut buffer, &mut answer, &mut handle_delta)?;
@@ -152,6 +174,8 @@ impl RuntimeLlm for BifrostClient {
     }
 }
 
+/// Moves all currently valid UTF-8 text from bytes into the text buffer while
+/// keeping an incomplete final character for the next network chunk.
 fn append_valid_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
     match std::str::from_utf8(byte_buffer) {
         Ok(text) => {
@@ -178,6 +202,8 @@ fn append_valid_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Res
     }
 }
 
+/// Flushes remaining UTF-8 bytes after the stream ends and rejects incomplete
+/// trailing characters.
 fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
     append_valid_utf8(byte_buffer, text_buffer)?;
 
@@ -188,6 +214,7 @@ fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()
     Ok(())
 }
 
+/// Processes every complete newline-delimited SSE line currently buffered.
 fn process_stream_lines<F>(
     buffer: &mut String,
     answer: &mut String,
@@ -205,6 +232,8 @@ where
     Ok(())
 }
 
+/// Processes one final stream line when the server closes without a trailing
+/// newline.
 fn process_final_stream_line<F>(
     buffer: &mut String,
     answer: &mut String,
@@ -221,6 +250,7 @@ where
     process_stream_line(line.trim_end_matches('\r'), answer, handle_delta)
 }
 
+/// Parses one SSE line and forwards assistant content deltas.
 fn process_stream_line<F>(line: &str, answer: &mut String, handle_delta: &mut F) -> Result<()>
 where
     F: FnMut(&str) -> Result<()>,

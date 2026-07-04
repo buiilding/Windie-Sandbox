@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::conversation::{CompactionId, ConversationId, Message, MessageId, Role};
 
+/// Decodes message roles from SQLite into the typed runtime role.
 impl FromSql for Role {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
         match value.as_str()? {
@@ -35,6 +36,7 @@ const DEFAULT_CONVERSATION_ID: &str = "default";
 const DATABASE_SCHEMA_VERSION: i32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Lightweight row used by conversation listing.
 pub struct ConversationInfo {
     pub id: ConversationId,
     pub title: Option<String>,
@@ -42,6 +44,7 @@ pub struct ConversationInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Saved summary of conversation history through a specific message.
 pub struct Compaction {
     pub id: CompactionId,
     pub conversation_id: ConversationId,
@@ -50,15 +53,20 @@ pub struct Compaction {
     pub created_at: i64,
 }
 
+/// SQLite-backed persistence boundary for conversations, messages, and
+/// compactions.
 pub struct Store {
     connection: Connection,
 }
 
 impl Store {
+    /// Opens the default user database at `~/.windie/windie.db`.
     pub fn open() -> Result<Self> {
         Self::open_at(default_database_path()?)
     }
 
+    /// Opens a database at a specific path, creating parent directories and
+    /// applying schema setup.
     pub fn open_at(path: impl AsRef<Path>) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
             fs::create_dir_all(parent).context("failed to create database directory")?;
@@ -74,6 +82,7 @@ impl Store {
     }
 
     #[cfg(test)]
+    /// Opens an in-memory database for isolated tests.
     pub(crate) fn open_memory() -> Result<Self> {
         let store = Self {
             connection: Connection::open_in_memory().context("failed to open memory database")?,
@@ -84,6 +93,10 @@ impl Store {
         Ok(store)
     }
 
+    /// Applies SQLite settings used by Windie.
+    ///
+    /// Foreign keys protect relationships, WAL improves normal local write
+    /// behavior, and busy timeout makes brief lock contention less fragile.
     fn configure(&self) -> Result<()> {
         self.connection
             .execute_batch(
@@ -97,6 +110,10 @@ impl Store {
             .context("failed to configure database")
     }
 
+    /// Creates or validates the current schema.
+    ///
+    /// Windie refuses to open databases from a newer schema version because this
+    /// binary may not understand their shape.
     pub fn migrate(&self) -> Result<()> {
         let existing_version = self.database_schema_version()?;
         if existing_version > DATABASE_SCHEMA_VERSION {
@@ -153,12 +170,14 @@ impl Store {
             .context("failed to set database schema version")
     }
 
+    /// Reads SQLite's schema version marker.
     fn database_schema_version(&self) -> Result<i32> {
         self.connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .context("failed to read database schema version")
     }
 
+    /// Creates an empty conversation with a generated ID.
     pub fn create_conversation(&self) -> Result<ConversationId> {
         let id = ConversationId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
@@ -177,6 +196,8 @@ impl Store {
     }
 
     #[cfg(test)]
+    /// Creates a deterministic conversation ID for tests that need predictable
+    /// setup.
     pub(crate) fn get_or_create_default_conversation(&self) -> Result<ConversationId> {
         let now = now_millis()?;
 
@@ -193,6 +214,7 @@ impl Store {
         Ok(ConversationId::new(DEFAULT_CONVERSATION_ID))
     }
 
+    /// Lists conversations with message counts without loading every message.
     pub fn list_conversations(&self) -> Result<Vec<ConversationInfo>> {
         let mut statement = self
             .connection
@@ -225,6 +247,7 @@ impl Store {
         Ok(conversations)
     }
 
+    /// Loads all messages for one conversation in stable chronological order.
     pub fn load_messages(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         self.ensure_conversation_exists(conversation_id)?;
 
@@ -249,6 +272,10 @@ impl Store {
         Ok(messages)
     }
 
+    /// Loads messages after an optional checkpoint message.
+    ///
+    /// This is used by context compaction: the model can receive a summary
+    /// through the checkpoint plus only the newer messages.
     pub fn load_messages_after(
         &self,
         conversation_id: &ConversationId,
@@ -292,6 +319,10 @@ impl Store {
         Ok(messages)
     }
 
+    /// Appends a new message and updates the conversation timestamp in one
+    /// transaction.
+    ///
+    /// If a parent message is provided, it must belong to the same conversation.
     pub fn append_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -349,6 +380,10 @@ impl Store {
         Ok(id)
     }
 
+    /// Replaces message content without deleting later messages.
+    ///
+    /// Existing compactions are cleared because changing earlier text can make
+    /// saved summaries incorrect.
     pub fn replace_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -381,6 +416,11 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes one message and reconnects its children to the deleted message's
+    /// parent.
+    ///
+    /// This preserves a simple chain instead of leaving child messages pointing
+    /// at a missing parent.
     pub fn remove_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -438,6 +478,9 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes all messages after a checkpoint message in one transaction.
+    ///
+    /// Compactions are cleared because the visible history changed.
     pub fn truncate_after_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -478,6 +521,11 @@ impl Store {
         Ok(())
     }
 
+    /// Creates a new conversation copied from the source conversation through a
+    /// checkpoint message.
+    ///
+    /// Messages receive new IDs in the fork so both conversations can diverge
+    /// independently after creation.
     pub fn fork_conversation_at_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -556,6 +604,7 @@ impl Store {
         Ok(forked_conversation_id)
     }
 
+    /// Deletes one conversation and all messages/compactions owned by it.
     pub fn remove_conversation(&mut self, conversation_id: &ConversationId) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
 
@@ -589,6 +638,7 @@ impl Store {
         Ok(())
     }
 
+    /// Loads the newest compaction checkpoint for one conversation.
     pub fn latest_compaction(
         &self,
         conversation_id: &ConversationId,
@@ -620,6 +670,9 @@ impl Store {
     }
 
     #[allow(dead_code)]
+    /// Saves a compaction summary through a message checkpoint.
+    ///
+    /// The checkpoint message must belong to the same conversation.
     pub fn save_compaction(
         &mut self,
         conversation_id: &ConversationId,
@@ -669,6 +722,10 @@ impl Store {
         Ok(id)
     }
 
+    /// Returns chronological position for a message inside a conversation.
+    ///
+    /// `rowid` breaks ties when multiple rows share the same millisecond
+    /// timestamp.
     fn message_position(
         &self,
         conversation_id: &ConversationId,
@@ -688,6 +745,7 @@ impl Store {
             .context("failed to load message position")
     }
 
+    /// Loads messages from the beginning through a chronological checkpoint.
     fn load_messages_through_position(
         &self,
         conversation_id: &ConversationId,
@@ -711,7 +769,10 @@ impl Store {
             .context("failed to prepare message load through checkpoint")?;
 
         let messages = statement
-            .query_map(params![conversation_id.as_str(), created_at, rowid], read_message_row)
+            .query_map(
+                params![conversation_id.as_str(), created_at, rowid],
+                read_message_row,
+            )
             .context("failed to load messages through checkpoint")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read messages through checkpoint")?;
@@ -719,6 +780,7 @@ impl Store {
         Ok(messages)
     }
 
+    /// Finds which conversation owns a message ID.
     fn message_conversation_id(&self, message_id: &MessageId) -> Result<Option<ConversationId>> {
         self.connection
             .query_row(
@@ -730,6 +792,8 @@ impl Store {
             .context("failed to load message conversation")
     }
 
+    /// Enforces the store boundary that message-scoped operations cannot cross
+    /// conversations.
     fn ensure_message_belongs_to_conversation(
         &self,
         conversation_id: &ConversationId,
@@ -748,6 +812,8 @@ impl Store {
         Ok(())
     }
 
+    /// Returns an error instead of silently treating missing conversations as
+    /// empty.
     fn ensure_conversation_exists(&self, conversation_id: &ConversationId) -> Result<()> {
         if !self.conversation_exists(conversation_id)? {
             return Err(anyhow!("conversation does not exist: {conversation_id}"));
@@ -756,6 +822,7 @@ impl Store {
         Ok(())
     }
 
+    /// Checks whether one conversation row exists.
     fn conversation_exists(&self, conversation_id: &ConversationId) -> Result<bool> {
         let exists = self
             .connection
@@ -772,12 +839,14 @@ impl Store {
     }
 }
 
+/// Builds the default user database path.
 fn default_database_path() -> Result<PathBuf> {
     let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
 
     Ok(PathBuf::from(home).join(".windie").join("windie.db"))
 }
 
+/// Converts one SQLite message row into the runtime message type.
 fn read_message_row(row: &Row<'_>) -> rusqlite::Result<Message> {
     Ok(Message {
         id: Some(MessageId::new(row.get::<_, String>(0)?)),
@@ -788,6 +857,8 @@ fn read_message_row(row: &Row<'_>) -> rusqlite::Result<Message> {
     })
 }
 
+/// Deletes all compaction checkpoints for a conversation inside an existing
+/// transaction.
 fn delete_compactions_for_conversation(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
@@ -800,6 +871,7 @@ fn delete_compactions_for_conversation(
     Ok(())
 }
 
+/// Updates conversation ordering metadata inside an existing transaction.
 fn touch_conversation_in_transaction(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
@@ -813,6 +885,7 @@ fn touch_conversation_in_transaction(
     Ok(())
 }
 
+/// Returns current Unix time in milliseconds for ordering persisted rows.
 fn now_millis() -> Result<i64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)

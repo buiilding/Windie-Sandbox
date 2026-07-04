@@ -16,6 +16,7 @@ use crate::store::Store;
 const BENCH_PROMPT: &str = "Reply with exactly: ok";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Benchmark mode selected by the CLI.
 pub enum BenchmarkMode {
     Conversation,
     Local,
@@ -23,6 +24,7 @@ pub enum BenchmarkMode {
 }
 
 impl BenchmarkMode {
+    /// Returns the mode label printed in benchmark output.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Conversation => "conversation",
@@ -31,11 +33,15 @@ impl BenchmarkMode {
         }
     }
 
+    /// Marks benchmark modes that may send a paid provider request.
     pub fn may_call_provider(self) -> bool {
         matches!(self, Self::Live)
     }
 }
 
+/// Timings collected by one benchmark run.
+///
+/// Fields are optional because each benchmark mode measures a different path.
 pub struct PerformanceBaseline {
     pub mode: BenchmarkMode,
     pub model: ModelName,
@@ -50,6 +56,10 @@ pub struct PerformanceBaseline {
     pub response_bytes: Option<usize>,
 }
 
+/// Runs the selected benchmark mode.
+///
+/// Local and conversation modes are free/local. Live mode requires Bifrost and
+/// sends a tiny real model request.
 pub async fn run(
     mode: BenchmarkMode,
     conversation_id: Option<ConversationId>,
@@ -123,6 +133,8 @@ pub async fn run(
     })
 }
 
+/// Sends the tiny live request and measures first-token and full-response
+/// latency.
 async fn run_live_request(
     base_url: &BaseUrl,
     model: &ModelName,

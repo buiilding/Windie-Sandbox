@@ -10,9 +10,15 @@ use crate::store::Store;
 
 const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
 
+/// Builds the exact message list sent to the model.
 pub struct ContextBuilder;
 
 impl ContextBuilder {
+    /// Loads full history unless a compaction checkpoint exists.
+    ///
+    /// With compaction, the model sees one synthetic system summary plus the
+    /// messages after the checkpoint. The full uncompressed history remains in
+    /// SQLite.
     pub fn build(store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         let Some(compaction) = store.latest_compaction(conversation_id)? else {
             return store.load_messages(conversation_id);
@@ -27,6 +33,7 @@ impl ContextBuilder {
     }
 }
 
+/// Converts a saved compaction into a system message for the model.
 fn compaction_message(content: &str) -> Message {
     Message {
         id: None,

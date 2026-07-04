@@ -12,27 +12,35 @@ use crate::conversation::{ConversationId, Message, MessageId};
 use crate::perf::PerformanceBaseline;
 use crate::store::ConversationInfo;
 
+/// Minimal output interface needed by runtime flows.
+///
+/// Tests can implement this trait without depending on terminal stdout.
 pub(crate) trait RuntimeOutput {
     fn start_assistant_message(&self);
     fn assistant_delta(&self, text: &str) -> Result<()>;
     fn end_assistant_message(&self);
 }
 
+/// Concrete stdout/stderr-free terminal printer for the CLI.
 pub struct TerminalOutput;
 
 impl TerminalOutput {
+    /// Prints the static command help.
     pub fn help(&self) {
         print_lines(&help_lines());
     }
 
+    /// Prints help prefixed by an invalid usage line.
     pub fn invalid_usage(&self) {
         print_lines(&invalid_usage_lines());
     }
 
+    /// Prints the current package version.
     pub fn version(&self) {
         println!("windie {}", env!("CARGO_PKG_VERSION"));
     }
 
+    /// Prints all fields measured by a performance baseline.
     pub fn performance_baseline(&self, baseline: &PerformanceBaseline) {
         println!("performance baseline");
         println!("mode: {}", baseline.mode.as_str());
@@ -69,38 +77,42 @@ impl TerminalOutput {
         }
     }
 
+    /// Prints the created conversation ID as machine-readable command output.
     pub fn created_conversation(&self, conversation_id: &ConversationId) {
         println!("{conversation_id}");
     }
 
+    /// Prints the appended message ID as machine-readable command output.
     pub fn appended_message(&self, message_id: &MessageId) {
         println!("{message_id}");
     }
 
+    /// Confirms that one message was updated.
     pub fn updated_message(&self, message_id: &MessageId) {
         println!("updated message {message_id}");
     }
 
+    /// Confirms that one conversation was removed.
     pub fn removed_conversation(&self, conversation_id: &ConversationId) {
         println!("removed conversation {conversation_id}");
     }
 
+    /// Confirms that one message was removed.
     pub fn removed_message(&self, message_id: &MessageId) {
         println!("removed message {message_id}");
     }
 
-    pub fn truncated_conversation(
-        &self,
-        conversation_id: &ConversationId,
-        message_id: &MessageId,
-    ) {
+    /// Confirms that messages after a checkpoint were removed.
+    pub fn truncated_conversation(&self, conversation_id: &ConversationId, message_id: &MessageId) {
         println!("truncated conversation {conversation_id} after message {message_id}");
     }
 
+    /// Prints the forked conversation ID as machine-readable command output.
     pub fn forked_conversation(&self, conversation_id: &ConversationId) {
         println!("{conversation_id}");
     }
 
+    /// Prints the local gateway readiness summary.
     pub fn status(&self, gateway_running: bool) {
         println!("status");
         println!(
@@ -113,38 +125,46 @@ impl TerminalOutput {
         );
     }
 
+    /// Prints gateway lifecycle results.
     pub fn gateway_started(&self) {
         println!("gateway: started");
     }
 
+    /// Prints gateway lifecycle results.
     pub fn gateway_already_running(&self) {
         println!("gateway: already running");
     }
 
+    /// Prints gateway lifecycle results.
     pub fn gateway_stopped(&self) {
         println!("gateway: stopped");
     }
 
+    /// Prints gateway lifecycle results.
     pub fn gateway_not_running(&self) {
         println!("gateway: not running");
     }
 
+    /// Prints the conversation list in the CLI format.
     pub fn conversations(&self, conversations: &[ConversationInfo]) {
         for line in conversation_lines(conversations) {
             println!("{line}");
         }
     }
 
+    /// Prints message previews for one conversation.
     pub fn conversation_messages(&self, messages: &[Message]) {
         for line in message_lines(messages) {
             println!("{line}");
         }
     }
 
+    /// Starts the assistant stream on a fresh visual line.
     pub fn start_assistant_message(&self) {
         println!();
     }
 
+    /// Prints one streamed assistant delta immediately.
     pub fn assistant_delta(&self, text: &str) -> Result<()> {
         print!("{text}");
         io::stdout()
@@ -152,17 +172,20 @@ impl TerminalOutput {
             .context("failed to flush assistant output")
     }
 
+    /// Ends the assistant stream with spacing before the process exits.
     pub fn end_assistant_message(&self) {
         println!("\n");
     }
 }
 
+/// Shared line printer for help and invalid usage output.
 fn print_lines(lines: &[String]) {
     for line in lines {
         println!("{line}");
     }
 }
 
+/// Builds help text as data so output tests can assert exact lines.
 fn help_lines() -> Vec<String> {
     vec![
         "windie",
@@ -205,6 +228,7 @@ fn help_lines() -> Vec<String> {
     .collect()
 }
 
+/// Builds invalid usage text from help so both outputs stay in sync.
 fn invalid_usage_lines() -> Vec<String> {
     let mut lines = vec!["invalid usage".to_string(), String::new()];
     lines.extend(help_lines());
@@ -225,6 +249,7 @@ impl RuntimeOutput for TerminalOutput {
     }
 }
 
+/// Humanizes a message count for the conversation list.
 fn message_count(count: i64) -> String {
     if count == 1 {
         "1 message".to_string()
@@ -233,6 +258,7 @@ fn message_count(count: i64) -> String {
     }
 }
 
+/// Converts conversation summaries into stable CLI lines.
 fn conversation_lines(conversations: &[ConversationInfo]) -> Vec<String> {
     if conversations.is_empty() {
         return vec!["no conversations".to_string()];
@@ -257,6 +283,7 @@ fn conversation_lines(conversations: &[ConversationInfo]) -> Vec<String> {
     lines
 }
 
+/// Converts stored messages into stable one-line previews.
 fn message_lines(messages: &[Message]) -> Vec<String> {
     if messages.is_empty() {
         return vec!["no messages".to_string()];
@@ -281,6 +308,7 @@ fn message_lines(messages: &[Message]) -> Vec<String> {
     lines
 }
 
+/// Normalizes message text into a compact, Unicode-safe preview.
 fn message_preview(content: &str) -> String {
     let preview = content.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -292,6 +320,7 @@ fn message_preview(content: &str) -> String {
     format!("{truncated}...")
 }
 
+/// Formats durations for human scanning in benchmark output.
 fn format_duration(duration: std::time::Duration) -> String {
     if duration.as_secs() > 0 {
         format!("{:.2}s", duration.as_secs_f64())

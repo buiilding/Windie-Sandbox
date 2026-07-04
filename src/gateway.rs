@@ -23,13 +23,16 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Base URL for the local Bifrost gateway health endpoint.
 pub struct GatewayUrl(String);
 
 impl GatewayUrl {
+    /// Stores the URL without a trailing slash so endpoint joining is stable.
     pub fn new(url: impl Into<String>) -> Self {
         Self(url.into().trim_end_matches('/').to_string())
     }
 
+    /// Returns the normalized gateway URL text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -41,30 +44,35 @@ impl std::fmt::Display for GatewayUrl {
     }
 }
 
+/// Local Bifrost gateway lifecycle and readiness client.
 pub struct BifrostGateway {
     http: Client,
     url: GatewayUrl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Result of an explicit gateway start request.
 pub enum GatewayStart {
     AlreadyRunning,
     Started,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Result of an explicit gateway stop request.
 pub enum GatewayStop {
     NotRunning,
     Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Filesystem paths needed to start the development Bifrost gateway.
 struct BifrostPaths {
     binary: PathBuf,
     app_dir: PathBuf,
 }
 
 impl BifrostGateway {
+    /// Creates a gateway client for a specific local gateway URL.
     pub fn new(url: GatewayUrl) -> Self {
         Self {
             http: Client::new(),
@@ -72,6 +80,7 @@ impl BifrostGateway {
         }
     }
 
+    /// Starts Bifrost only when the health endpoint is not already available.
     pub async fn start(&self) -> Result<GatewayStart> {
         if self.is_running().await {
             return Ok(GatewayStart::AlreadyRunning);
@@ -83,6 +92,7 @@ impl BifrostGateway {
         Ok(GatewayStart::Started)
     }
 
+    /// Stops Bifrost processes listening on Windie's configured gateway port.
     pub async fn stop(&self) -> Result<GatewayStop> {
         if !self.is_running().await {
             return Ok(GatewayStop::NotRunning);
@@ -110,6 +120,8 @@ impl BifrostGateway {
         Ok(GatewayStop::Stopped)
     }
 
+    /// Requires Bifrost to already be running for commands that should not
+    /// cause hidden gateway startup.
     pub async fn require_running(&self) -> Result<()> {
         if self.is_running().await {
             return Ok(());
@@ -120,10 +132,14 @@ impl BifrostGateway {
         ))
     }
 
+    /// Returns whether the gateway health endpoint currently responds
+    /// successfully.
     pub async fn is_running(&self) -> bool {
         self.health_check().await.is_ok()
     }
 
+    /// Calls the gateway health endpoint and treats non-2xx responses as not
+    /// healthy.
     async fn health_check(&self) -> Result<()> {
         let health_url = format!("{}/health", self.url);
         let response = self
@@ -142,6 +158,8 @@ impl BifrostGateway {
         Ok(())
     }
 
+    /// Spawns the local development Bifrost binary with the known app dir and
+    /// port.
     fn start_process(&self) -> Result<()> {
         let paths = find_dev_bifrost_paths()?;
 
@@ -159,6 +177,7 @@ impl BifrostGateway {
         Ok(())
     }
 
+    /// Polls the health endpoint until startup succeeds or times out.
     async fn wait_until_running(&self) -> Result<()> {
         let mut waited = Duration::ZERO;
 
@@ -177,6 +196,7 @@ impl BifrostGateway {
         ))
     }
 
+    /// Polls the health endpoint until shutdown succeeds or times out.
     async fn wait_until_stopped(&self) -> Result<()> {
         let mut waited = Duration::ZERO;
 
@@ -196,6 +216,8 @@ impl BifrostGateway {
     }
 }
 
+/// Finds Bifrost process IDs listening on a port and filters out unrelated
+/// processes that may also be reported by `lsof`.
 fn bifrost_process_ids_on_port(port: &str) -> Result<Vec<u32>> {
     let output = Command::new("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
@@ -217,6 +239,7 @@ fn bifrost_process_ids_on_port(port: &str) -> Result<Vec<u32>> {
     Ok(process_ids.into_iter().collect())
 }
 
+/// Parses numeric process IDs from `lsof -t` output.
 fn parse_process_ids(output: &str) -> Vec<u32> {
     output
         .lines()
@@ -224,6 +247,7 @@ fn parse_process_ids(output: &str) -> Vec<u32> {
         .collect()
 }
 
+/// Reads the full command line for one process ID.
 fn process_command(process_id: u32) -> Result<String> {
     let output = Command::new("ps")
         .args(["-p", &process_id.to_string(), "-o", "command="])
@@ -237,10 +261,12 @@ fn process_command(process_id: u32) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Identifies whether a process command line belongs to Bifrost.
 fn is_bifrost_command(command: &str) -> bool {
     command.contains("bifrost-http")
 }
 
+/// Finds the development Bifrost binary relative to common workspace roots.
 fn find_dev_bifrost_paths() -> Result<BifrostPaths> {
     let roots = dev_bifrost_search_roots();
     find_dev_bifrost_paths_in(roots).ok_or_else(|| {
@@ -248,6 +274,7 @@ fn find_dev_bifrost_paths() -> Result<BifrostPaths> {
     })
 }
 
+/// Searches candidate roots for the development Bifrost layout.
 fn find_dev_bifrost_paths_in(roots: impl IntoIterator<Item = PathBuf>) -> Option<BifrostPaths> {
     for root in roots {
         for bifrost_dir in dev_bifrost_dirs(&root) {
@@ -265,6 +292,7 @@ fn find_dev_bifrost_paths_in(roots: impl IntoIterator<Item = PathBuf>) -> Option
     None
 }
 
+/// Builds the list of roots used to discover the sibling/local Bifrost checkout.
 fn dev_bifrost_search_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
@@ -282,6 +310,8 @@ fn dev_bifrost_search_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// Returns both supported Bifrost locations for a root: inside the root and next
+/// to it.
 fn dev_bifrost_dirs(root: &Path) -> [PathBuf; 2] {
     [
         root.join(DEV_BIFROST_DIR),

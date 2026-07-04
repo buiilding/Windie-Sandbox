@@ -10,16 +10,24 @@ use crate::conversation::{ConversationId, MessageId, Role};
 use crate::llm::ModelName;
 use crate::perf::BenchmarkMode;
 
+/// Parsed startup action for one `windie` process.
+///
+/// This is the CLI boundary's typed contract. Downstream code should match on
+/// this enum instead of inspecting raw argv strings.
 pub enum Command {
+    /// Add one message to a conversation without model inference.
     Append {
         conversation_id: ConversationId,
         role: Role,
         text: String,
     },
+    /// Run one benchmark mode. Conversation mode carries the target
+    /// conversation ID; local and live modes do not.
     Bench {
         mode: BenchmarkMode,
         conversation_id: Option<ConversationId>,
     },
+    /// Copy a conversation from the beginning through one checkpoint message.
     Fork {
         conversation_id: ConversationId,
         message_id: MessageId,
@@ -54,10 +62,15 @@ pub enum Command {
     Version,
 }
 
+/// Reads process argv and returns the parsed command for this invocation.
 pub fn read() -> Command {
     command_from_args(env::args())
 }
 
+/// Converts raw CLI tokens into one typed command.
+///
+/// This parser is intentionally small and explicit. Unsupported shapes return
+/// `Command::Invalid` so `main` can show usage and exit with code 2.
 fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     let mut args = args.into_iter();
     let _program = args.next();
@@ -140,6 +153,8 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     }
 }
 
+/// Converts CLI role text into the typed role accepted by the conversation
+/// model.
 fn parse_role(role: &str) -> Option<Role> {
     match role {
         "system" => Some(Role::System),

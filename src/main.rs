@@ -30,6 +30,8 @@ const GATEWAY_URL: &str = "http://localhost:8080";
 const MODEL: &str = "openai/gpt-4o-mini";
 const INVALID_USAGE_EXIT_CODE: i32 = 2;
 
+/// Process entrypoint. It only dispatches the parsed command to the matching
+/// command handler.
 #[tokio::main]
 async fn main() -> Result<()> {
     match cli::read() {
@@ -77,6 +79,7 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Prints the generated CLI help text.
 fn print_help() -> Result<()> {
     let output = TerminalOutput;
     output.help();
@@ -84,12 +87,15 @@ fn print_help() -> Result<()> {
     Ok(())
 }
 
+/// Prints usage and exits with code 2, the conventional CLI code for bad
+/// command usage.
 fn invalid_usage() -> Result<()> {
     let output = TerminalOutput;
     output.invalid_usage();
     std::process::exit(INVALID_USAGE_EXIT_CODE);
 }
 
+/// Prints the package version embedded by Cargo.
 fn print_version() -> Result<()> {
     let output = TerminalOutput;
     output.version();
@@ -97,6 +103,8 @@ fn print_version() -> Result<()> {
     Ok(())
 }
 
+/// Runs one benchmark mode and sends the measured baseline to the output
+/// boundary.
 async fn benchmark(mode: BenchmarkMode, conversation_id: Option<ConversationId>) -> Result<()> {
     let output = TerminalOutput;
     let baseline = perf::run(
@@ -114,6 +122,7 @@ async fn benchmark(mode: BenchmarkMode, conversation_id: Option<ConversationId>)
     Ok(())
 }
 
+/// Creates an empty persisted conversation and prints only its ID.
 fn new_conversation() -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -126,6 +135,7 @@ fn new_conversation() -> Result<()> {
     Ok(())
 }
 
+/// Lists persisted conversations without loading their full message history.
 fn list_conversations() -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -138,6 +148,7 @@ fn list_conversations() -> Result<()> {
     Ok(())
 }
 
+/// Loads and prints the messages for one conversation.
 fn show_conversation(conversation_id: ConversationId) -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -150,6 +161,10 @@ fn show_conversation(conversation_id: ConversationId) -> Result<()> {
     Ok(())
 }
 
+/// Appends one explicit message to a conversation.
+///
+/// The parent is set to the current last message so the store keeps a simple
+/// message chain for future editing/forking behavior.
 fn append_message(conversation_id: ConversationId, role: Role, text: &str) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -173,6 +188,7 @@ fn append_message(conversation_id: ConversationId, role: Role, text: &str) -> Re
     Ok(())
 }
 
+/// Replaces one message's text without querying the model.
 fn update_message(
     conversation_id: ConversationId,
     message_id: MessageId,
@@ -189,6 +205,7 @@ fn update_message(
     Ok(())
 }
 
+/// Deletes one conversation and all persisted data owned by it.
 fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -201,6 +218,7 @@ fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
     Ok(())
 }
 
+/// Deletes one message while preserving the remaining conversation chain.
 fn remove_message(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -213,6 +231,7 @@ fn remove_message(conversation_id: ConversationId, message_id: MessageId) -> Res
     Ok(())
 }
 
+/// Removes all messages after a checkpoint message inside one conversation.
 fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -225,6 +244,7 @@ fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId)
     Ok(())
 }
 
+/// Creates a new conversation copied through one checkpoint message.
 fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -237,6 +257,10 @@ fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> 
     Ok(())
 }
 
+/// Runs one model response for an existing conversation.
+///
+/// This is the CLI handler only. The reusable runtime flow lives in
+/// `runtime::query_conversation`.
 async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -254,6 +278,7 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
     Ok(())
 }
 
+/// Prints current local runtime readiness.
 async fn status() -> Result<()> {
     let output = TerminalOutput;
     let gateway = BifrostGateway::new(gateway_url());
@@ -263,6 +288,7 @@ async fn status() -> Result<()> {
     Ok(())
 }
 
+/// Starts the local Bifrost gateway when it is not already running.
 async fn start_gateway() -> Result<()> {
     let output = TerminalOutput;
     let gateway = BifrostGateway::new(gateway_url());
@@ -276,6 +302,7 @@ async fn start_gateway() -> Result<()> {
     Ok(())
 }
 
+/// Stops the local Bifrost gateway process owned by the configured port.
 async fn stop_gateway() -> Result<()> {
     let output = TerminalOutput;
     let gateway = BifrostGateway::new(gateway_url());
@@ -289,14 +316,17 @@ async fn stop_gateway() -> Result<()> {
     Ok(())
 }
 
+/// Centralizes the gateway health base URL.
 fn gateway_url() -> GatewayUrl {
     GatewayUrl::new(GATEWAY_URL)
 }
 
+/// Centralizes the OpenAI-compatible API base URL.
 fn base_url() -> BaseUrl {
     BaseUrl::new(BASE_URL)
 }
 
+/// Centralizes the default model while config is intentionally not in scope.
 fn model_name() -> ModelName {
     ModelName::new(MODEL)
 }
