@@ -1,0 +1,1 @@
+The gateway is running, and Windie serializes role: tool messages only with tool_call_id if metadata has that link. CLI insertion cannot create that metadata directly, so exact “tool output without tool call but still linked” may need a real tool flow first or direct DB surgery. 

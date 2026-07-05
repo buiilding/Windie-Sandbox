@@ -56,12 +56,16 @@ export default function Composer() {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
                 e.preventDefault();
                 submit();
               }
             }}
-            placeholder="query the runtime. cmd/ctrl + enter to send."
+            placeholder="query the runtime. enter to send, shift + enter for newline."
             rows={2}
             className="w-full bg-transparent outline-none resize-none font-mono text-[13px] leading-relaxed placeholder:text-muted-foreground/60"
           />
