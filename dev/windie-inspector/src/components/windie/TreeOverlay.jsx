@@ -10,12 +10,23 @@ import { toast } from "sonner";
  */
 function layoutTree(conv) {
   const nodes = conv.nodes;
-  const rootId = conv.rootId;
-  // BFS depths
+  const rootIds =
+    conv.rootIds?.length
+      ? conv.rootIds
+      : Object.values(nodes)
+          .filter((node) => node.parentId === null)
+          .map((node) => node.id);
+  if (!rootIds.length) {
+    return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 200, NODE_H: 62 };
+  }
+
+  // BFS depths across every root in the conversation forest.
   const depthOf = {};
   const order = [];
-  const queue = [rootId];
-  depthOf[rootId] = 0;
+  const queue = [...rootIds];
+  rootIds.forEach((rootId) => {
+    depthOf[rootId] = 0;
+  });
   while (queue.length) {
     const id = queue.shift();
     order.push(id);
@@ -38,7 +49,7 @@ function layoutTree(conv) {
   const H_GAP = 40;
   const V_GAP = 28;
   const positions = {};
-  const maxRow = Math.max(...Object.values(byDepth).map((r) => r.length));
+  const maxRow = Math.max(...Object.values(byDepth).map((r) => r.length), 1);
   Object.entries(byDepth).forEach(([d, ids]) => {
     ids.forEach((id, i) => {
       positions[id] = {
@@ -50,7 +61,7 @@ function layoutTree(conv) {
   });
   const edges = [];
   Object.values(nodes).forEach((n) => {
-    if (n.parentId) edges.push({ from: n.parentId, to: n.id });
+    if (n.parentId && nodes[n.parentId]) edges.push({ from: n.parentId, to: n.id });
   });
   const width = Math.max(
     900,
@@ -228,7 +239,6 @@ export default function TreeOverlay() {
                   removeMessage(activeConv.id, selectedNodeId);
                   toast.message("removed");
                 }}
-                isRoot={selectedNodeId === activeConv.rootId}
               />
             ) : (
               <div className="text-muted-foreground font-mono">select a node</div>
@@ -240,7 +250,7 @@ export default function TreeOverlay() {
   );
 }
 
-function TreeNodeDetail({ node, onPath, onSetPath, onFork, onTruncate, onRemove, isRoot }) {
+function TreeNodeDetail({ node, onPath, onSetPath, onFork, onTruncate, onRemove }) {
   const token = ROLE_TOKENS[node.message.role];
   const text = node.message.parts.find((p) => p.type === "text")?.text || "";
   return (
@@ -294,9 +304,8 @@ function TreeNodeDetail({ node, onPath, onSetPath, onFork, onTruncate, onRemove,
         </button>
         <button
           data-testid="tree-detail-action-remove"
-          disabled={isRoot}
           onClick={onRemove}
-          className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))] disabled:opacity-40 disabled:cursor-not-allowed"
+          className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]"
         >
           <Trash2 className="size-3" strokeWidth={1.75} /> remove
         </button>

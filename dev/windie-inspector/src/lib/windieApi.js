@@ -91,9 +91,12 @@ export function conversationFromInspection(report, fallback) {
   const activePath = (report.active_path || [])
     .map((message) => message.id)
     .filter((id) => id && nodes[id]);
+  const rootIds = Object.values(nodes)
+    .filter((node) => node.parentId === null)
+    .map((node) => node.id);
   const rootId =
     activePath[0] ||
-    Object.values(nodes).find((node) => node.parentId === null)?.id ||
+    rootIds[0] ||
     null;
 
   return {
@@ -103,6 +106,7 @@ export function conversationFromInspection(report, fallback) {
     model: report.model,
     systemPrompt: report.system_prompt || "",
     rootId,
+    rootIds,
     nodes,
     activePath,
     updatedAt: new Date().toISOString(),

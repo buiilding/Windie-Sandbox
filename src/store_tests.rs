@@ -21,6 +21,28 @@ fn index_exists(store: &Store, index_name: &str) -> bool {
         .unwrap()
 }
 
+fn message_parent<'a>(messages: &'a [Message], message_id: &MessageId) -> Option<&'a MessageId> {
+    messages
+        .iter()
+        .find(|message| message.id.as_ref() == Some(message_id))
+        .and_then(|message| message.parent_message_id.as_ref())
+}
+
+fn message_ids(messages: &[Message]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| message.id.as_ref())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn image_asset_count(store: &Store) -> i64 {
+    store
+        .connection
+        .query_row("SELECT COUNT(*) FROM image_assets", [], |row| row.get(0))
+        .unwrap()
+}
+
 #[test]
 fn creates_default_conversation() {
     let store = Store::open_memory().unwrap();
@@ -862,7 +884,7 @@ fn rejects_updating_message_in_missing_conversation() {
 }
 
 #[test]
-fn deletes_message_subtree() {
+fn remove_message_splices_middle_node_from_chain() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let first_id = store
@@ -896,9 +918,301 @@ fn deletes_message_subtree() {
     let active_message_id = store.active_message_id(&conversation_id).unwrap();
     let compaction = store.latest_compaction(&conversation_id).unwrap();
 
-    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        message_ids(&messages),
+        vec![first_id.to_string(), third_id.to_string()]
+    );
     assert_eq!(messages[0].id.as_deref(), Some(first_id.as_str()));
+    assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
+    assert_eq!(active_message_id.as_deref(), Some(third_id.as_str()));
+    assert!(compaction.is_none());
+}
+
+#[test]
+fn remove_message_splices_branch_point() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let third_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+    let fourth_id = store
+        .insert_message(&conversation_id, Some(&second_id), Role::User, "four", None)
+        .unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 3);
+    assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
+    assert_eq!(message_parent(&messages, &fourth_id), Some(&first_id));
+    assert_eq!(active_message_id.as_deref(), Some(fourth_id.as_str()));
+}
+
+#[test]
+fn remove_message_deletes_leaf_only() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+
+    assert_eq!(message_ids(&messages), vec![first_id.to_string()]);
     assert_eq!(active_message_id.as_deref(), Some(first_id.as_str()));
+}
+
+#[test]
+fn remove_root_with_one_child_promotes_child_to_root() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+
+    store.remove_message(&conversation_id, &first_id).unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(message_ids(&messages), vec![second_id.to_string()]);
+    assert!(message_parent(&messages, &second_id).is_none());
+}
+
+#[test]
+fn remove_root_with_multiple_children_promotes_children_to_roots() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let third_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "three",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &first_id)
+        .unwrap();
+
+    store.remove_message(&conversation_id, &first_id).unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+
+    assert_eq!(
+        message_ids(&messages),
+        vec![second_id.to_string(), third_id.to_string()]
+    );
+    assert!(message_parent(&messages, &second_id).is_none());
+    assert!(message_parent(&messages, &third_id).is_none());
+    assert_eq!(active_message_id.as_deref(), Some(second_id.as_str()));
+}
+
+#[test]
+fn remove_active_middle_node_moves_active_to_parent() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    store
+        .insert_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &second_id)
+        .unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+
+    assert_eq!(active_message_id.as_deref(), Some(first_id.as_str()));
+}
+
+#[test]
+fn remove_ancestor_keeps_descendant_active() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let third_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+    let active_path = store.load_active_path(&conversation_id).unwrap();
+
+    assert_eq!(active_message_id.as_deref(), Some(third_id.as_str()));
+    assert_eq!(
+        message_ids(&active_path),
+        vec![first_id.to_string(), third_id.to_string()]
+    );
+}
+
+#[test]
+fn remove_message_keeps_unrelated_active() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let third_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "three",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &third_id)
+        .unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+
+    assert_eq!(active_message_id.as_deref(), Some(third_id.as_str()));
+}
+
+#[test]
+fn remove_message_clears_compactions_and_deletes_orphan_image_assets() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_user_message_with_parts(
+            &conversation_id,
+            None,
+            "image",
+            &[
+                MessagePayload::Text("image"),
+                MessagePayload::Image(ImagePayload {
+                    mime_type: "image/png",
+                    bytes: &[1, 2, 3],
+                }),
+            ],
+        )
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    store
+        .save_compaction(&conversation_id, &second_id, "summary")
+        .unwrap();
+
+    assert_eq!(image_asset_count(&store), 1);
+
+    store.remove_message(&conversation_id, &first_id).unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    let compaction = store.latest_compaction(&conversation_id).unwrap();
+
+    assert_eq!(message_ids(&messages), vec![second_id.to_string()]);
+    assert!(message_parent(&messages, &second_id).is_none());
+    assert_eq!(image_asset_count(&store), 0);
     assert!(compaction.is_none());
 }
 
@@ -920,6 +1234,245 @@ fn rejects_deleting_message_from_another_conversation() {
             .to_string()
             .contains("message does not belong to conversation")
     );
+}
+
+#[test]
+fn remove_assistant_tool_call_deletes_tool_pair_and_preserves_later_descendant() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let assistant_metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call_123",
+            "run_shell",
+            r#"{"command":"ls"}"#,
+        )],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "",
+            Some(&assistant_metadata),
+        )
+        .unwrap();
+    let tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_123")),
+        ..Default::default()
+    };
+    let tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&assistant_id),
+            Role::Tool,
+            "{}",
+            Some(&tool_metadata),
+        )
+        .unwrap();
+    let final_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&tool_id),
+            Role::Assistant,
+            "done",
+            None,
+        )
+        .unwrap();
+
+    store
+        .remove_message(&conversation_id, &assistant_id)
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+
+    assert_eq!(
+        message_ids(&messages),
+        vec![first_id.to_string(), final_id.to_string()]
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&assistant_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&tool_id))
+    );
+    assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
+    assert_eq!(active_message_id.as_deref(), Some(final_id.as_str()));
+}
+
+#[test]
+fn remove_tool_output_deletes_tool_pair_and_preserves_later_descendant() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let assistant_metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call_123",
+            "run_shell",
+            r#"{"command":"ls"}"#,
+        )],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "",
+            Some(&assistant_metadata),
+        )
+        .unwrap();
+    let tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_123")),
+        ..Default::default()
+    };
+    let tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&assistant_id),
+            Role::Tool,
+            "{}",
+            Some(&tool_metadata),
+        )
+        .unwrap();
+    let final_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&tool_id),
+            Role::Assistant,
+            "done",
+            None,
+        )
+        .unwrap();
+
+    store.remove_message(&conversation_id, &tool_id).unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(
+        message_ids(&messages),
+        vec![first_id.to_string(), final_id.to_string()]
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&assistant_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&tool_id))
+    );
+    assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
+}
+
+#[test]
+fn remove_pending_assistant_tool_call_without_result_uses_normal_splice() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let assistant_metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call_123",
+            "run_shell",
+            r#"{"command":"ls"}"#,
+        )],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "",
+            Some(&assistant_metadata),
+        )
+        .unwrap();
+    let final_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&assistant_id),
+            Role::Assistant,
+            "next",
+            None,
+        )
+        .unwrap();
+
+    store
+        .remove_message(&conversation_id, &assistant_id)
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(
+        message_ids(&messages),
+        vec![first_id.to_string(), final_id.to_string()]
+    );
+    assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
+}
+
+#[test]
+fn remove_multi_tool_call_assistant_rejects() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let metadata = MessageMetadata {
+        tool_calls: vec![
+            ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#),
+            ToolCall::function("call_2", "run_shell", r#"{"command":"pwd"}"#),
+        ],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(&conversation_id, None, Role::Assistant, "", Some(&metadata))
+        .unwrap();
+
+    let error = store
+        .remove_message(&conversation_id, &assistant_id)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("multiple tool calls"));
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 1);
+}
+
+#[test]
+fn remove_role_tool_without_matching_assistant_parent_rejects() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_123")),
+        ..Default::default()
+    };
+    let tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Tool,
+            "{}",
+            Some(&tool_metadata),
+        )
+        .unwrap();
+
+    let error = store
+        .remove_message(&conversation_id, &tool_id)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("parent is not an assistant"));
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 2);
 }
 
 #[test]

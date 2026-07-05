@@ -325,8 +325,7 @@ export default function InspectorPanel() {
                     removeMessage(activeConv.id, selectedNode.id);
                     toast.message("message removed");
                   }}
-                  disabled={selectedNode.id === activeConv.rootId}
-                  className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))] disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]"
                 >
                   <Trash2 className="size-3" strokeWidth={1.75} /> remove
                 </button>

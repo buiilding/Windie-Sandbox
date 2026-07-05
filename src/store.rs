@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
-    MessagePart, Role, ToolSchema, ToolSchemaName,
+    MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
 
 /// Decodes message roles from SQLite into the typed runtime role.
@@ -55,6 +55,27 @@ pub struct Compaction {
     pub through_message_id: MessageId,
     pub content: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+/// Minimal persisted message facts used to mutate tree links.
+///
+/// Full message loading attaches message parts and content for runtime use. Tree
+/// mutation only needs identity, parent links, role, metadata, and stable
+/// insertion order, so this row keeps delete planning small and explicit.
+struct MessageTreeRow {
+    id: MessageId,
+    parent_message_id: Option<MessageId>,
+    role: Role,
+    metadata: Option<MessageMetadata>,
+}
+
+#[derive(Debug, Clone)]
+/// Concrete splice operation computed before the delete transaction starts.
+struct MessageRemovalPlan {
+    deleted_message_ids: HashSet<String>,
+    splice_parent_message_id: Option<MessageId>,
+    promoted_child_ids: Vec<MessageId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1037,10 +1058,13 @@ impl Store {
         Ok(())
     }
 
-    /// Deletes one message and all descendants below it.
+    /// Removes one message from the tree while preserving later descendants.
     ///
-    /// If the active message is inside the deleted subtree, active moves to the
-    /// deleted message's parent.
+    /// This is a splice delete: direct children of the removed message are
+    /// reparented to the removed message's parent. Descendants below those
+    /// children keep their existing parents. If the removed message is a
+    /// tool-call assistant or tool-result node, the matching pair is deleted
+    /// together so model context cannot contain a dangling tool call/result.
     pub fn remove_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -1049,30 +1073,21 @@ impl Store {
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
-        let parent_message_id = self
-            .connection
-            .query_row(
-                "
-                SELECT parent_message_id
-                FROM messages
-                WHERE conversation_id = ?1 AND id = ?2
-                ",
-                params![conversation_id.as_str(), message_id.as_str()],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .context("failed to load message parent")?;
-        let subtree_ids = self
-            .descendant_message_ids(conversation_id, message_id, true)
-            .context("failed to load message subtree")?;
+        let removal_plan = self.message_removal_plan(conversation_id, message_id)?;
         let active_message_id = self.active_message_id(conversation_id)?;
-        let next_active_message_id = if active_message_id
-            .as_ref()
-            .is_some_and(|active_message_id| subtree_ids.contains(active_message_id.as_str()))
-        {
-            parent_message_id.as_deref().map(MessageId::new)
-        } else {
-            active_message_id
-        };
+        let next_active_message_id =
+            if active_message_id.as_ref().is_some_and(|active_message_id| {
+                removal_plan
+                    .deleted_message_ids
+                    .contains(active_message_id.as_str())
+            }) {
+                removal_plan
+                    .splice_parent_message_id
+                    .clone()
+                    .or_else(|| removal_plan.promoted_child_ids.first().cloned())
+            } else {
+                active_message_id
+            };
         let now = now_millis()?;
         let transaction = self
             .connection
@@ -1087,24 +1102,43 @@ impl Store {
             next_active_message_id.as_ref(),
         )
         .context("failed to update active message after delete")?;
-        transaction
-            .execute(
-                "
-                WITH RECURSIVE subtree(id) AS (
-                    SELECT ?2
-                    UNION ALL
-                    SELECT messages.id
-                    FROM messages
-                    JOIN subtree ON messages.parent_message_id = subtree.id
-                    WHERE messages.conversation_id = ?1
+        for child_id in &removal_plan.promoted_child_ids {
+            transaction
+                .execute(
+                    "
+                    UPDATE messages
+                    SET parent_message_id = ?1
+                    WHERE conversation_id = ?2 AND id = ?3
+                    ",
+                    params![
+                        removal_plan
+                            .splice_parent_message_id
+                            .as_ref()
+                            .map(MessageId::as_str),
+                        conversation_id.as_str(),
+                        child_id.as_str()
+                    ],
                 )
-                DELETE FROM messages
-                WHERE conversation_id = ?1
-                  AND id IN (SELECT id FROM subtree)
-                ",
-                params![conversation_id.as_str(), message_id.as_str()],
-            )
-            .context("failed to delete message subtree")?;
+                .context("failed to reparent message child during splice delete")?;
+        }
+
+        let placeholders = std::iter::repeat("?")
+            .take(removal_plan.deleted_message_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "
+            DELETE FROM messages
+            WHERE conversation_id = ?
+              AND id IN ({placeholders})
+            "
+        );
+        let mut delete_params = Vec::with_capacity(removal_plan.deleted_message_ids.len() + 1);
+        delete_params.push(conversation_id.as_str().to_string());
+        delete_params.extend(removal_plan.deleted_message_ids.iter().cloned());
+        transaction
+            .execute(&sql, params_from_iter(delete_params))
+            .context("failed to delete spliced message")?;
         delete_orphan_image_assets_in_transaction(&transaction)
             .context("failed to delete orphan image assets")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
@@ -1114,6 +1148,100 @@ impl Store {
             .context("failed to commit message delete")?;
 
         Ok(())
+    }
+
+    /// Computes the exact message IDs and child promotions for splice delete.
+    ///
+    /// The plan is intentionally built before the transaction because all
+    /// validation happens against the current tree shape. The transaction then
+    /// applies only the already-decided link updates and deletes.
+    fn message_removal_plan(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<MessageRemovalPlan> {
+        let target = self
+            .load_message_tree_row(conversation_id, message_id)
+            .context("failed to load target message")?;
+
+        let (splice_parent_message_id, deleted_message_ids) = match target.role {
+            Role::Assistant if assistant_tool_calls(&target).len() > 1 => {
+                return Err(anyhow!(
+                    "cannot remove assistant message with multiple tool calls until tool calls are editable as separate nodes"
+                ));
+            }
+            Role::Assistant if assistant_tool_calls(&target).len() == 1 => {
+                let tool_call_id = assistant_tool_calls(&target)[0].clone();
+                let tool_result = self
+                    .load_tool_result_for_call(conversation_id, &tool_call_id)
+                    .context("failed to load matching tool result")?;
+                if let Some(tool_result) = tool_result {
+                    if tool_result.parent_message_id.as_ref() != Some(&target.id) {
+                        return Err(anyhow!(
+                            "cannot remove assistant tool-call message because matching tool result is not its child"
+                        ));
+                    }
+                    (
+                        target.parent_message_id.clone(),
+                        HashSet::from([target.id.as_str().to_string(), tool_result.id.to_string()]),
+                    )
+                } else {
+                    (
+                        target.parent_message_id.clone(),
+                        HashSet::from([target.id.as_str().to_string()]),
+                    )
+                }
+            }
+            Role::Tool => {
+                let tool_call_id = target
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.tool_call_id.as_ref())
+                    .ok_or_else(|| {
+                        anyhow!("cannot remove role: tool message without a tool_call_id")
+                    })?;
+                let parent_message_id = target.parent_message_id.as_ref().ok_or_else(|| {
+                    anyhow!("cannot remove role: tool message without an assistant parent")
+                })?;
+                let parent = self
+                    .load_message_tree_row(conversation_id, parent_message_id)
+                    .context("failed to load role: tool parent")?;
+                if parent.role != Role::Assistant {
+                    return Err(anyhow!(
+                        "cannot remove role: tool message because its parent is not an assistant tool-call message"
+                    ));
+                }
+
+                let parent_tool_calls = assistant_tool_calls(&parent);
+                if parent_tool_calls.len() != 1 || parent_tool_calls.first() != Some(tool_call_id) {
+                    return Err(anyhow!(
+                        "cannot remove role: tool message because it does not match exactly one parent assistant tool call"
+                    ));
+                }
+
+                (
+                    parent.parent_message_id.clone(),
+                    HashSet::from([
+                        parent.id.as_str().to_string(),
+                        target.id.as_str().to_string(),
+                    ]),
+                )
+            }
+            _ => (
+                target.parent_message_id.clone(),
+                HashSet::from([target.id.as_str().to_string()]),
+            ),
+        };
+
+        let promoted_child_ids = self
+            .direct_child_ids_for_removed_messages(conversation_id, &deleted_message_ids)
+            .context("failed to load promoted message children")?;
+
+        Ok(MessageRemovalPlan {
+            deleted_message_ids,
+            splice_parent_message_id,
+            promoted_child_ids,
+        })
     }
 
     /// Deletes descendant messages below a checkpoint message in one transaction.
@@ -1444,6 +1572,120 @@ impl Store {
             .context("failed to load message position")
     }
 
+    /// Loads one message row with the fields needed for tree mutation.
+    fn load_message_tree_row(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<MessageTreeRow> {
+        self.connection
+            .query_row(
+                "
+                SELECT id, parent_message_id, role, metadata
+                FROM messages
+                WHERE conversation_id = ?1 AND id = ?2
+                ",
+                params![conversation_id.as_str(), message_id.as_str()],
+                read_message_tree_row,
+            )
+            .optional()
+            .context("failed to load message tree row")?
+            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))
+    }
+
+    /// Finds the role: tool message for a provider tool-call ID.
+    ///
+    /// Tool-call IDs are provider-provided values. Windie expects one stored
+    /// result per call in the active path, but this validation scans the
+    /// conversation tree so splice delete cannot leave an obvious dangling
+    /// result anywhere in the tree.
+    fn load_tool_result_for_call(
+        &self,
+        conversation_id: &ConversationId,
+        tool_call_id: &ToolCallId,
+    ) -> Result<Option<MessageTreeRow>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT id, parent_message_id, role, metadata
+                FROM messages
+                WHERE conversation_id = ?1
+                  AND role = 'tool'
+                ORDER BY created_at, rowid
+                ",
+            )
+            .context("failed to prepare tool result load")?;
+        let tool_results = statement
+            .query_map(params![conversation_id.as_str()], read_message_tree_row)
+            .context("failed to load tool result rows")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read tool result rows")?;
+        let matching_results = tool_results
+            .into_iter()
+            .filter(|message| {
+                message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.tool_call_id.as_ref())
+                    == Some(tool_call_id)
+            })
+            .collect::<Vec<_>>();
+
+        match matching_results.as_slice() {
+            [] => Ok(None),
+            [message] => Ok(Some(message.clone())),
+            _ => Err(anyhow!(
+                "cannot remove assistant tool-call message because multiple matching tool results exist"
+            )),
+        }
+    }
+
+    /// Loads direct children of removed messages that must be promoted.
+    ///
+    /// Children are returned in stable insertion order. Children that are also
+    /// being deleted, such as the tool-result child in a tool pair, are skipped.
+    fn direct_child_ids_for_removed_messages(
+        &self,
+        conversation_id: &ConversationId,
+        deleted_message_ids: &HashSet<String>,
+    ) -> Result<Vec<MessageId>> {
+        let placeholders = std::iter::repeat("?")
+            .take(deleted_message_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "
+            SELECT id
+            FROM messages
+            WHERE conversation_id = ?
+              AND parent_message_id IN ({placeholders})
+            ORDER BY created_at, rowid
+            "
+        );
+        let mut query_params = Vec::with_capacity(deleted_message_ids.len() + 1);
+        query_params.push(conversation_id.as_str().to_string());
+        query_params.extend(deleted_message_ids.iter().cloned());
+
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .context("failed to prepare direct child load")?;
+        let child_ids = statement
+            .query_map(params_from_iter(query_params), |row| {
+                row.get::<_, String>(0)
+            })
+            .context("failed to load direct children")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read direct children")?
+            .into_iter()
+            .filter(|child_id| !deleted_message_ids.contains(child_id))
+            .map(MessageId::new)
+            .collect();
+
+        Ok(child_ids)
+    }
+
     /// Loads descendant message IDs below one message in the conversation tree.
     fn descendant_message_ids(
         &self,
@@ -1641,6 +1883,33 @@ fn read_message_row(row: &Row<'_>) -> rusqlite::Result<Message> {
         parts: Vec::new(),
         metadata: decode_message_metadata(metadata_json)?,
     })
+}
+
+/// Converts one SQLite message row into a lightweight tree mutation row.
+fn read_message_tree_row(row: &Row<'_>) -> rusqlite::Result<MessageTreeRow> {
+    let metadata_json = row.get::<_, Option<String>>(3)?;
+
+    Ok(MessageTreeRow {
+        id: MessageId::new(row.get::<_, String>(0)?),
+        parent_message_id: row.get::<_, Option<String>>(1)?.map(MessageId::new),
+        role: row.get(2)?,
+        metadata: decode_message_metadata(metadata_json)?,
+    })
+}
+
+/// Returns assistant tool-call IDs from message metadata.
+fn assistant_tool_calls(message: &MessageTreeRow) -> Vec<ToolCallId> {
+    message
+        .metadata
+        .as_ref()
+        .map(|metadata| {
+            metadata
+                .tool_calls
+                .iter()
+                .map(|tool_call| tool_call.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Converts one SQLite tool schema row into the runtime tool schema type.

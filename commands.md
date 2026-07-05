@@ -295,7 +295,10 @@ windie rm <conversation_id> message <message_id>
 
 Remove one message from a conversation tree.
 
-This deletes that message and its descendant subtree.
+This splices the selected message out of the tree. Direct children are
+reparented to the removed message's parent, and deeper descendants keep their
+existing parents. If the removed message is a root, its direct children become
+root messages. Use `truncate` when you want to delete descendants.
 
 ```text
 windie truncate <conversation_id> <message_id>
