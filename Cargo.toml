@@ -16,3 +16,6 @@ sha2 = "0.10"
 tower-http = { version = "0.6", features = ["cors"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

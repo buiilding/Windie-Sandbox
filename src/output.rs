@@ -6,16 +6,17 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCall, ToolSchema,
-    ToolSchemaName,
+    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchema, ToolSchemaName,
 };
+use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
-use crate::store::{Compaction, ConversationInfo};
+use crate::store::ConversationInfo;
 use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
 
 /// Minimal output interface needed by runtime flows.
@@ -45,6 +46,12 @@ impl TerminalOutput {
     /// Prints the current package version.
     pub fn version(&self) {
         println!("windie {}", env!("CARGO_PKG_VERSION"));
+    }
+
+    /// Prints the local API address and generated access token at startup.
+    pub fn api_started(&self, address: &SocketAddr, api_token: &str) {
+        println!("windie api listening on http://{address}");
+        println!("windie api token: {api_token}");
     }
 
     /// Prints all fields measured by a performance baseline.
@@ -406,133 +413,6 @@ impl ConversationSummary {
             id: info.id.as_str().to_string(),
             title: info.title.clone(),
             message_count: info.message_count,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-/// Machine-readable snapshot of one conversation's current runtime state.
-///
-/// This is the DTO used by `windie inspect <conversation_id> --json`. It keeps
-/// terminal formatting separate from structured output, and it deliberately
-/// summarizes image bytes instead of dumping raw image data.
-pub struct InspectionReport {
-    conversation_id: String,
-    active_message_id: Option<String>,
-    model: String,
-    system_prompt: Option<String>,
-    tool_schemas: Vec<ToolSchema>,
-    messages: Vec<InspectionMessage>,
-    active_path: Vec<InspectionMessage>,
-    model_context: Vec<InspectionMessage>,
-    latest_compaction: Option<InspectionCompaction>,
-}
-
-impl InspectionReport {
-    /// Builds the serializable inspection report from loaded runtime data.
-    ///
-    /// The caller owns all store/context loading so this output boundary only
-    /// maps typed runtime values into the public JSON shape.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        conversation_id: &ConversationId,
-        active_message_id: Option<&MessageId>,
-        model: &str,
-        system_prompt: Option<String>,
-        tool_schemas: Vec<ToolSchema>,
-        messages: Vec<Message>,
-        active_path: Vec<Message>,
-        model_context: Vec<Message>,
-        latest_compaction: Option<Compaction>,
-    ) -> Self {
-        Self {
-            conversation_id: conversation_id.as_str().to_string(),
-            active_message_id: active_message_id.map(|id| id.as_str().to_string()),
-            model: model.to_string(),
-            system_prompt,
-            tool_schemas,
-            messages: inspection_messages(messages),
-            active_path: inspection_messages(active_path),
-            model_context: inspection_messages(model_context),
-            latest_compaction: latest_compaction.map(InspectionCompaction::from_compaction),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-/// Serializable message shape for inspection JSON.
-struct InspectionMessage {
-    id: Option<String>,
-    parent_message_id: Option<String>,
-    role: Role,
-    content: String,
-    parts: Vec<InspectionMessagePart>,
-    metadata: Option<MessageMetadata>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-/// Serializable message part that never includes raw image bytes.
-enum InspectionMessagePart {
-    Text {
-        text: String,
-    },
-    Image {
-        asset_id: String,
-        mime_type: String,
-        byte_count: usize,
-    },
-}
-
-#[derive(Debug, Serialize)]
-/// Serializable compaction checkpoint shape for inspection JSON.
-struct InspectionCompaction {
-    id: String,
-    conversation_id: String,
-    through_message_id: String,
-    content: String,
-    created_at: i64,
-}
-
-/// Converts loaded runtime messages into the public inspection message shape.
-fn inspection_messages(messages: Vec<Message>) -> Vec<InspectionMessage> {
-    messages
-        .into_iter()
-        .map(|message| InspectionMessage {
-            id: message.id.map(|id| id.as_str().to_string()),
-            parent_message_id: message.parent_message_id.map(|id| id.as_str().to_string()),
-            role: message.role,
-            content: message.content,
-            parts: inspection_message_parts(message.parts),
-            metadata: message.metadata,
-        })
-        .collect()
-}
-
-/// Converts typed message parts while preserving order and hiding image bytes.
-fn inspection_message_parts(parts: Vec<MessagePart>) -> Vec<InspectionMessagePart> {
-    parts
-        .into_iter()
-        .map(|part| match part {
-            MessagePart::Text(text) => InspectionMessagePart::Text { text },
-            MessagePart::Image(image) => InspectionMessagePart::Image {
-                asset_id: image.asset_id.as_str().to_string(),
-                mime_type: image.mime_type,
-                byte_count: image.bytes.len(),
-            },
-        })
-        .collect()
-}
-
-impl InspectionCompaction {
-    /// Converts a store compaction row into the public inspection shape.
-    fn from_compaction(compaction: Compaction) -> Self {
-        Self {
-            id: compaction.id.as_str().to_string(),
-            conversation_id: compaction.conversation_id.as_str().to_string(),
-            through_message_id: compaction.through_message_id.as_str().to_string(),
-            content: compaction.content,
-            created_at: compaction.created_at,
         }
     }
 }

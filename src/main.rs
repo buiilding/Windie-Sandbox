@@ -11,6 +11,7 @@ mod conversation;
 mod gateway;
 mod image_input;
 mod llm;
+mod operation;
 mod output;
 mod perf;
 mod policy;
@@ -25,19 +26,16 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use crate::cli::{Command, InsertPart};
-use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{
     ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
-use crate::image_input::read_image_input;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
-use crate::output::{InspectionReport, TerminalOutput};
+use crate::operation::MessageInputPart;
+use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
-use crate::runtime::{
-    approve_tool_call, deny_tool_call, pending_tool_approvals, query_conversation_once,
-};
-use crate::store::{ImagePayload, MessagePayload, Store};
+use crate::runtime::query_conversation_once;
+use crate::store::Store;
 use crate::tool_catalog::available_tool_schemas;
 
 const BASE_URL: &str = "http://localhost:8080/v1";
@@ -230,9 +228,8 @@ fn compare_benchmarks(baseline_path: PathBuf, current_path: PathBuf) -> Result<(
 fn new_conversation() -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let conversation_id = store
-        .create_conversation()
-        .context("failed to create conversation")?;
+    let conversation_id =
+        operation::create_conversation(&store).context("failed to create conversation")?;
 
     output.created_conversation(&conversation_id);
 
@@ -243,9 +240,8 @@ fn new_conversation() -> Result<()> {
 fn list_conversations(json: bool) -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let conversations = store
-        .list_conversations()
-        .context("failed to list conversations")?;
+    let conversations =
+        operation::list_conversations(&store).context("failed to list conversations")?;
 
     if json {
         output.conversations_json(&conversations)?;
@@ -260,8 +256,7 @@ fn list_conversations(json: bool) -> Result<()> {
 fn show_conversation(conversation_id: ConversationId) -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let messages = store
-        .load_active_path(&conversation_id)
+    let messages = operation::active_path(&store, &conversation_id)
         .with_context(|| format!("failed to show conversation {conversation_id}"))?;
 
     output.conversation_messages(&messages);
@@ -273,14 +268,10 @@ fn show_conversation(conversation_id: ConversationId) -> Result<()> {
 fn show_tree(conversation_id: ConversationId) -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let messages = store
-        .load_message_tree(&conversation_id)
+    let tree = operation::conversation_tree(&store, &conversation_id)
         .with_context(|| format!("failed to show conversation tree {conversation_id}"))?;
-    let active_message_id = store
-        .active_message_id(&conversation_id)
-        .context("failed to load active message")?;
 
-    output.conversation_tree(&messages, active_message_id.as_ref());
+    output.conversation_tree(&tree.messages, tree.active_message_id.as_ref());
 
     Ok(())
 }
@@ -294,33 +285,7 @@ fn inspect_conversation(conversation_id: ConversationId, model: Option<ModelName
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
     let effective_model = model.unwrap_or_else(model_name);
-    let active_message_id = store
-        .active_message_id(&conversation_id)
-        .context("failed to load active message")?;
-    let messages = store
-        .load_message_tree(&conversation_id)
-        .with_context(|| format!("failed to inspect conversation tree {conversation_id}"))?;
-    let tool_schemas = store
-        .load_tool_schemas(&conversation_id)
-        .context("failed to load tool schemas")?;
-    let context_parts = ContextBuilder::load_parts(&store, &conversation_id)
-        .context("failed to load model context parts")?;
-    let model_context = ContextBuilder::flatten(ContextParts {
-        active_path: context_parts.active_path.clone(),
-        system_prompt: context_parts.system_prompt.clone(),
-        compaction: context_parts.compaction.clone(),
-    });
-    let report = InspectionReport::new(
-        &conversation_id,
-        active_message_id.as_ref(),
-        effective_model.as_str(),
-        context_parts.system_prompt,
-        tool_schemas,
-        messages,
-        context_parts.active_path,
-        model_context,
-        context_parts.compaction,
-    );
+    let report = operation::inspect_conversation(&store, &conversation_id, &effective_model)?;
 
     output.inspection_report_json(&report)
 }
@@ -342,82 +307,23 @@ fn list_tools() -> Result<()> {
 fn insert_message(conversation_id: ConversationId, role: Role, parts: &[InsertPart]) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let parent_message_id = store
-        .active_message_id(&conversation_id)
-        .context("failed to load active message")?;
-    let has_image = parts
-        .iter()
-        .any(|part| matches!(part, InsertPart::Image(_)));
-    let has_multiple_parts = parts.len() > 1;
-    let content = insert_content(parts);
-    let message_id = if has_image || has_multiple_parts {
-        if role != Role::User {
-            anyhow::bail!("multi-part input is only supported for user messages");
-        }
-
-        let loaded_parts = parts
-            .iter()
-            .map(load_insert_part)
-            .collect::<Result<Vec<_>>>()?;
-        let payloads = loaded_parts
-            .iter()
-            .map(|part| match part {
-                LoadedInsertPart::Text(text) => MessagePayload::Text(text),
-                LoadedInsertPart::Image(image) => MessagePayload::Image(ImagePayload {
-                    mime_type: &image.mime_type,
-                    bytes: &image.bytes,
-                }),
-            })
-            .collect::<Vec<_>>();
-        store
-            .insert_user_message_with_parts(
-                &conversation_id,
-                parent_message_id.as_ref(),
-                &content,
-                &payloads,
-            )
-            .context("failed to insert multi-part message")?
-    } else {
-        store
-            .insert_message(
-                &conversation_id,
-                parent_message_id.as_ref(),
-                role,
-                &content,
-                None,
-            )
-            .context("failed to insert message")?
-    };
+    let input_parts = message_input_parts(parts);
+    let message_id = operation::insert_message(&mut store, &conversation_id, role, &input_parts)?;
 
     output.inserted_message(&message_id);
 
     Ok(())
 }
 
-/// Loaded version of one ordered insert part.
-enum LoadedInsertPart {
-    Text(String),
-    Image(crate::image_input::ImageInput),
-}
-
-/// Reads file-backed insert parts while preserving text parts as provided.
-fn load_insert_part(part: &InsertPart) -> Result<LoadedInsertPart> {
-    match part {
-        InsertPart::Text(text) => Ok(LoadedInsertPart::Text(text.clone())),
-        InsertPart::Image(path) => read_image_input(path).map(LoadedInsertPart::Image),
-    }
-}
-
-/// Builds the plain text preview stored in the message row.
-fn insert_content(parts: &[InsertPart]) -> String {
+/// Converts parsed CLI insert parts into the shared operation input shape.
+fn message_input_parts(parts: &[InsertPart]) -> Vec<MessageInputPart> {
     parts
         .iter()
-        .filter_map(|part| match part {
-            InsertPart::Text(text) => Some(text.as_str()),
-            InsertPart::Image(_) => None,
+        .map(|part| match part {
+            InsertPart::Text(text) => MessageInputPart::Text(text.clone()),
+            InsertPart::Image(path) => MessageInputPart::Image(path.clone()),
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
 /// Selects one message as the active runtime node.
@@ -425,9 +331,7 @@ fn activate_message(conversation_id: ConversationId, message_id: MessageId) -> R
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .set_active_message(&conversation_id, &message_id)
-        .context("failed to activate message")?;
+    operation::activate_message(&mut store, &conversation_id, &message_id)?;
     output.activated_message(&message_id);
 
     Ok(())
@@ -442,9 +346,7 @@ fn update_message(
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .replace_message(&conversation_id, &message_id, text)
-        .context("failed to update message")?;
+    operation::update_message(&mut store, &conversation_id, &message_id, text)?;
     output.updated_message(&message_id);
 
     Ok(())
@@ -455,9 +357,7 @@ fn set_system_prompt(conversation_id: ConversationId, text: &str) -> Result<()> 
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .set_system_prompt(&conversation_id, text)
-        .context("failed to set system prompt")?;
+    operation::set_system_prompt(&mut store, &conversation_id, text)?;
     output.set_system_prompt(&conversation_id);
 
     Ok(())
@@ -468,9 +368,7 @@ fn remove_system_prompt(conversation_id: ConversationId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .remove_system_prompt(&conversation_id)
-        .context("failed to remove system prompt")?;
+    operation::remove_system_prompt(&mut store, &conversation_id)?;
     output.removed_system_prompt(&conversation_id);
 
     Ok(())
@@ -481,9 +379,7 @@ fn insert_tool_schema(conversation_id: ConversationId, tool_schema: &ToolSchema)
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .insert_tool_schema(&conversation_id, tool_schema)
-        .context("failed to insert tool schema")?;
+    operation::insert_tool_schema(&mut store, &conversation_id, tool_schema)?;
     output.inserted_tool_schema(&tool_schema.name);
 
     Ok(())
@@ -498,9 +394,7 @@ fn update_tool_schema(
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .update_tool_schema(&conversation_id, &current_name, tool_schema)
-        .context("failed to update tool schema")?;
+    operation::update_tool_schema(&mut store, &conversation_id, &current_name, tool_schema)?;
     output.updated_tool_schema(&tool_schema.name);
 
     Ok(())
@@ -511,9 +405,7 @@ fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> 
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .remove_tool_schema(&conversation_id, &name)
-        .context("failed to remove tool schema")?;
+    operation::remove_tool_schema(&mut store, &conversation_id, &name)?;
     output.removed_tool_schema(&name);
 
     Ok(())
@@ -523,8 +415,7 @@ fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> 
 fn list_approvals(conversation_id: ConversationId) -> Result<()> {
     let store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let approvals = pending_tool_approvals(&store, &conversation_id)
-        .context("failed to load pending approvals")?;
+    let approvals = operation::list_tool_approvals(&store, &conversation_id)?;
 
     output.tool_approvals(&approvals);
 
@@ -535,9 +426,7 @@ fn list_approvals(conversation_id: ConversationId) -> Result<()> {
 async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let result = approve_tool_call(&mut store, &conversation_id, &tool_call_id)
-        .await
-        .context("failed to approve tool call")?;
+    let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await?;
 
     output.tool_execution_result(&result);
 
@@ -548,8 +437,7 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
 fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let result = deny_tool_call(&mut store, &conversation_id, &tool_call_id)
-        .context("failed to deny tool call")?;
+    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
 
     output.tool_execution_result(&result);
 
@@ -561,9 +449,7 @@ fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .remove_conversation(&conversation_id)
-        .context("failed to remove conversation")?;
+    operation::remove_conversation(&mut store, &conversation_id)?;
     output.removed_conversation(&conversation_id);
 
     Ok(())
@@ -574,9 +460,7 @@ fn remove_message(conversation_id: ConversationId, message_id: MessageId) -> Res
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .remove_message(&conversation_id, &message_id)
-        .context("failed to remove message")?;
+    operation::remove_message(&mut store, &conversation_id, &message_id)?;
     output.removed_message(&message_id);
 
     Ok(())
@@ -587,9 +471,7 @@ fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId)
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
 
-    store
-        .truncate_after_message(&conversation_id, &message_id)
-        .context("failed to truncate conversation")?;
+    operation::truncate_conversation(&mut store, &conversation_id, &message_id)?;
     output.truncated_conversation(&conversation_id, &message_id);
 
     Ok(())
@@ -599,9 +481,8 @@ fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId)
 fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
-    let forked_conversation_id = store
-        .fork_conversation_at_message(&conversation_id, &message_id)
-        .context("failed to fork conversation")?;
+    let forked_conversation_id =
+        operation::fork_conversation(&mut store, &conversation_id, &message_id)?;
 
     output.forked_conversation(&forked_conversation_id);
 

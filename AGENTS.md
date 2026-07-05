@@ -169,9 +169,9 @@ Not in scope yet:
 - Memory systems beyond persisted conversation messages and future compaction checkpoints.
 - Killing Bifrost automatically on Windie exit.
 
-The CLI should be boring, explicit, and composable. Future TUI, desktop, browser, voice,
-and wakeup clients should call the same runtime and store primitives that the
-CLI uses.
+The CLI should be boring, explicit, and composable. Future TUI, desktop,
+browser, voice, SDK, background worker, plugin, and wakeup clients should
+converge through the same shared operation/runtime path to the same primitives.
 
 The `dev/windie-inspector` frontend is a localhost developer client for testing
 and inspecting runtime primitives. It may call the API, render runtime state,
@@ -187,6 +187,7 @@ The code should stay split by concrete responsibilities:
 src/main.rs          wires components together
 src/api.rs           localhost developer API server
 src/cli.rs           startup CLI arguments
+src/operation.rs     shared CLI/API operation orchestration
 src/output.rs        terminal and JSON output only
 src/output_tests.rs  terminal output tests
 src/policy.rs        tool execution policy and approval boundary
@@ -212,6 +213,9 @@ Keep boundaries strict:
 - Only `llm.rs` should know about provider HTTP request details.
 - Only `api.rs` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
 - Only `cli.rs` should know about startup CLI argument handling.
+- Only `operation.rs` should own shared CLI/API orchestration over store/runtime
+  primitives. It should not parse argv, map HTTP, format terminal output,
+  execute shell commands, or know provider HTTP details.
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
 - Only `image_input.rs` should know about local image file loading.
 - Only `output.rs` should know about terminal and JSON output formatting.
@@ -291,3 +295,25 @@ local/free smoke check and should not call Bifrost or a model provider.
 
 Benchmark behavior must keep side effects explicit. Document concrete benchmark
 commands in `commands.md`.
+
+## Commit Workflow
+
+When making commits in this repository, do not call `git commit` directly. Use
+the project commit wrapper instead:
+
+```bash
+scripts/commit-with-bench.sh -m "commit message"
+```
+
+The wrapper should run local provider-free benchmarks, compare them with the
+local baseline, append the comparison to the commit message, and then create the
+commit.
+
+When pushing commits, use the project push wrapper instead of `git push`:
+
+```bash
+scripts/push-with-bench.sh
+```
+
+The push wrapper promotes the successful current benchmark to the local
+baseline after `git push` succeeds, then removes the current report.

@@ -1,3 +1,4 @@
 /target/
+.windie/perf/
 Clipboard.md
 .env

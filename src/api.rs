@@ -22,19 +22,16 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
-use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCall, ToolCallId,
     ToolSchema, ToolSchemaName,
 };
 use crate::gateway::BifrostGateway;
-use crate::image_input::read_image_input;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
-use crate::output::{InspectionReport, RuntimeOutput};
-use crate::runtime::{
-    approve_tool_call, deny_tool_call, pending_tool_approvals, query_conversation_once,
-};
-use crate::store::{ConversationInfo, ImagePayload, MessagePayload, Store};
+use crate::operation::{self, InspectionReport, MessageInputPart};
+use crate::output::{RuntimeOutput, TerminalOutput};
+use crate::runtime::query_conversation_once;
+use crate::store::{ConversationInfo, Store};
 use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
 use crate::tool_catalog::available_tool_schemas;
 
@@ -54,13 +51,14 @@ pub async fn serve(
         base_url: base_url.to_string(),
         model: model.to_string(),
         api_token,
+        store_path: None,
     };
     let listener = TcpListener::bind(address)
         .await
         .with_context(|| format!("failed to bind API server at {address}"))?;
 
-    println!("windie api listening on http://{address}");
-    println!("windie api token: {}", state.api_token);
+    let output = TerminalOutput;
+    output.api_started(&address, &state.api_token);
     axum::serve(listener, router(state))
         .await
         .context("api server failed")
@@ -68,8 +66,8 @@ pub async fn serve(
 
 /// Builds the route table for the local API surface.
 ///
-/// Each handler opens the SQLite store directly and calls the same primitive
-/// methods used by the CLI. The router only owns HTTP mapping.
+/// Handlers translate HTTP requests into shared operations and map returned
+/// values into JSON responses. The router only owns HTTP mapping.
 fn router(state: ApiState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin([
@@ -153,6 +151,17 @@ struct ApiState {
     base_url: String,
     model: String,
     api_token: String,
+    store_path: Option<PathBuf>,
+}
+
+/// Opens the production store, or a test-scoped store when route tests inject
+/// one through `ApiState`.
+fn open_store(state: &ApiState) -> Result<Store> {
+    match state.store_path.as_ref() {
+        Some(path) => Store::open_at(path),
+        None => Store::open(),
+    }
+    .context("failed to open store")
 }
 
 #[derive(Debug, Serialize)]
@@ -331,10 +340,9 @@ impl From<ConversationInfo> for ConversationSummary {
 }
 
 /// Lists persisted conversations without loading their message trees.
-async fn list_conversations() -> ApiResult<ConversationListResponse> {
-    let store = Store::open().context("failed to open store")?;
-    let conversations = store
-        .list_conversations()
+async fn list_conversations(State(state): State<ApiState>) -> ApiResult<ConversationListResponse> {
+    let store = open_store(&state)?;
+    let conversations = operation::list_conversations(&store)
         .context("failed to list conversations")?
         .into_iter()
         .map(ConversationSummary::from)
@@ -350,11 +358,10 @@ struct ConversationIdResponse {
 }
 
 /// Creates a new empty conversation.
-async fn create_conversation() -> ApiResult<ConversationIdResponse> {
-    let store = Store::open().context("failed to open store")?;
-    let conversation_id = store
-        .create_conversation()
-        .context("failed to create conversation")?;
+async fn create_conversation(State(state): State<ApiState>) -> ApiResult<ConversationIdResponse> {
+    let store = open_store(&state)?;
+    let conversation_id =
+        operation::create_conversation(&store).context("failed to create conversation")?;
 
     Ok(Json(ConversationIdResponse {
         conversation_id: conversation_id.as_str().to_string(),
@@ -369,7 +376,8 @@ async fn inspect_conversation(
 ) -> ApiResult<InspectionReport> {
     let conversation_id = ConversationId::new(conversation_id);
     let model = query.model.clone().unwrap_or_else(|| state.model.clone());
-    let report = build_inspection_report(&conversation_id, &model)?;
+    let store = open_store(&state)?;
+    let report = operation::inspect_conversation(&store, &conversation_id, &ModelName::new(model))?;
 
     Ok(Json(report))
 }
@@ -378,42 +386,6 @@ async fn inspect_conversation(
 /// Optional query parameters for inspection.
 struct InspectQuery {
     model: Option<String>,
-}
-
-/// Builds the same inspection report used by the CLI JSON output.
-fn build_inspection_report(
-    conversation_id: &ConversationId,
-    model: &str,
-) -> Result<InspectionReport> {
-    let store = Store::open().context("failed to open store")?;
-    let active_message_id = store
-        .active_message_id(conversation_id)
-        .context("failed to load active message")?;
-    let messages = store
-        .load_message_tree(conversation_id)
-        .with_context(|| format!("failed to inspect conversation tree {conversation_id}"))?;
-    let tool_schemas = store
-        .load_tool_schemas(conversation_id)
-        .context("failed to load tool schemas")?;
-    let context_parts = ContextBuilder::load_parts(&store, conversation_id)
-        .context("failed to load model context parts")?;
-    let model_context = ContextBuilder::flatten(ContextParts {
-        active_path: context_parts.active_path.clone(),
-        system_prompt: context_parts.system_prompt.clone(),
-        compaction: context_parts.compaction.clone(),
-    });
-
-    Ok(InspectionReport::new(
-        conversation_id,
-        active_message_id.as_ref(),
-        model,
-        context_parts.system_prompt,
-        tool_schemas,
-        messages,
-        context_parts.active_path,
-        model_context,
-        context_parts.compaction,
-    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -430,16 +402,15 @@ struct ActiveMessageResponse {
 
 /// Selects the active message for a conversation.
 async fn activate_message(
+    State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<MessageIdRequest>,
 ) -> ApiResult<ActiveMessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(request.message_id);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .set_active_message(&conversation_id, &message_id)
-        .context("failed to activate message")?;
+    operation::activate_message(&mut store, &conversation_id, &message_id)?;
 
     Ok(Json(ActiveMessageResponse {
         active_message_id: message_id.as_str().to_string(),
@@ -471,70 +442,25 @@ struct MessageIdResponse {
 
 /// Inserts one message under the current active message.
 async fn insert_message(
+    State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<InsertMessageRequest>,
 ) -> ApiResult<MessageIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = Store::open().context("failed to open store")?;
-    let parent_message_id = store
-        .active_message_id(&conversation_id)
-        .context("failed to load active message")?;
     let parts = normalize_insert_parts(request.text, request.parts)?;
-    let has_image = parts
-        .iter()
-        .any(|part| matches!(part, LoadedInsertPart::Image(_)));
-    let content = insert_content(&parts);
-    let message_id = if has_image || parts.len() > 1 {
-        if request.role != Role::User {
-            return Err(anyhow!("multi-part input is only supported for user messages").into());
-        }
-        let payloads = parts
-            .iter()
-            .map(|part| match part {
-                LoadedInsertPart::Text(text) => MessagePayload::Text(text.as_str()),
-                LoadedInsertPart::Image(image) => MessagePayload::Image(ImagePayload {
-                    mime_type: image.mime_type.as_str(),
-                    bytes: image.bytes.as_slice(),
-                }),
-            })
-            .collect::<Vec<_>>();
-
-        store
-            .insert_user_message_with_parts(
-                &conversation_id,
-                parent_message_id.as_ref(),
-                &content,
-                &payloads,
-            )
-            .context("failed to insert multi-part message")?
-    } else {
-        store
-            .insert_message(
-                &conversation_id,
-                parent_message_id.as_ref(),
-                request.role,
-                &content,
-                None,
-            )
-            .context("failed to insert message")?
-    };
+    let mut store = open_store(&state)?;
+    let message_id = operation::insert_message(&mut store, &conversation_id, request.role, &parts)?;
 
     Ok(Json(MessageIdResponse {
         message_id: message_id.as_str().to_string(),
     }))
 }
 
-/// Loaded API message part ready to become store payloads.
-enum LoadedInsertPart {
-    Text(String),
-    Image(crate::image_input::ImageInput),
-}
-
 /// Converts request text and part fields into one ordered part list.
 fn normalize_insert_parts(
     text: Option<String>,
     parts: Vec<InsertMessagePart>,
-) -> Result<Vec<LoadedInsertPart>> {
+) -> Result<Vec<MessageInputPart>> {
     let parts = if parts.is_empty() {
         text.map(|text| vec![InsertMessagePart::Text { text }])
             .unwrap_or_default()
@@ -546,36 +472,22 @@ fn normalize_insert_parts(
         return Err(anyhow!("message requires text or parts"));
     }
 
-    let loaded = parts
+    let normalized = parts
         .into_iter()
         .map(|part| match part {
-            InsertMessagePart::Text { text } => Ok(LoadedInsertPart::Text(text)),
-            InsertMessagePart::Image { path } => {
-                read_image_input(&path).map(LoadedInsertPart::Image)
-            }
+            InsertMessagePart::Text { text } => Ok(MessageInputPart::Text(text)),
+            InsertMessagePart::Image { path } => Ok(MessageInputPart::Image(path)),
         })
         .collect::<Result<Vec<_>>>()?;
 
-    if loaded
+    if normalized
         .iter()
-        .all(|part| matches!(part, LoadedInsertPart::Text(text) if text.is_empty()))
+        .all(|part| matches!(part, MessageInputPart::Text(text) if text.is_empty()))
     {
         return Err(anyhow!("message requires non-empty text or an image"));
     }
 
-    Ok(loaded)
-}
-
-/// Builds the plain text preview for one stored message.
-fn insert_content(parts: &[LoadedInsertPart]) -> String {
-    parts
-        .iter()
-        .filter_map(|part| match part {
-            LoadedInsertPart::Text(text) => Some(text.as_str()),
-            LoadedInsertPart::Image(_) => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    Ok(normalized)
 }
 
 #[derive(Debug, Deserialize)]
@@ -586,16 +498,15 @@ struct UpdateMessageRequest {
 
 /// Replaces one message's text content.
 async fn update_message(
+    State(state): State<ApiState>,
     Path((conversation_id, message_id)): Path<(String, String)>,
     Json(request): Json<UpdateMessageRequest>,
 ) -> ApiResult<MessageIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(message_id);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .replace_message(&conversation_id, &message_id, &request.text)
-        .context("failed to update message")?;
+    operation::update_message(&mut store, &conversation_id, &message_id, &request.text)?;
 
     Ok(Json(MessageIdResponse {
         message_id: message_id.as_str().to_string(),
@@ -604,15 +515,14 @@ async fn update_message(
 
 /// Removes one message and its descendants.
 async fn remove_message(
+    State(state): State<ApiState>,
     Path((conversation_id, message_id)): Path<(String, String)>,
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(message_id);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .remove_message(&conversation_id, &message_id)
-        .context("failed to remove message")?;
+    operation::remove_message(&mut store, &conversation_id, &message_id)?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -624,13 +534,14 @@ struct DeletedResponse {
 }
 
 /// Removes one conversation and all owned persisted data.
-async fn remove_conversation(Path(conversation_id): Path<String>) -> ApiResult<DeletedResponse> {
+async fn remove_conversation(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .remove_conversation(&conversation_id)
-        .context("failed to remove conversation")?;
+    operation::remove_conversation(&mut store, &conversation_id)?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -649,15 +560,14 @@ struct SystemPromptResponse {
 
 /// Sets or clears the conversation-level system prompt.
 async fn set_system_prompt(
+    State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<SystemPromptRequest>,
 ) -> ApiResult<SystemPromptResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .set_system_prompt(&conversation_id, &request.text)
-        .context("failed to set system prompt")?;
+    operation::set_system_prompt(&mut store, &conversation_id, &request.text)?;
 
     Ok(Json(SystemPromptResponse {
         system_prompt: store.system_prompt(&conversation_id)?,
@@ -666,14 +576,13 @@ async fn set_system_prompt(
 
 /// Removes the conversation-level system prompt.
 async fn remove_system_prompt(
+    State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
 ) -> ApiResult<SystemPromptResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .remove_system_prompt(&conversation_id)
-        .context("failed to remove system prompt")?;
+    operation::remove_system_prompt(&mut store, &conversation_id)?;
 
     Ok(Json(SystemPromptResponse {
         system_prompt: None,
@@ -707,16 +616,15 @@ struct ToolSchemaResponse {
 
 /// Inserts one conversation-level tool schema.
 async fn insert_tool_schema(
+    State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<ToolSchemaRequest>,
 ) -> ApiResult<ToolSchemaResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_schema = request.into_tool_schema();
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .insert_tool_schema(&conversation_id, &tool_schema)
-        .context("failed to insert tool schema")?;
+    operation::insert_tool_schema(&mut store, &conversation_id, &tool_schema)?;
 
     Ok(Json(ToolSchemaResponse {
         name: tool_schema.name.as_str().to_string(),
@@ -725,17 +633,16 @@ async fn insert_tool_schema(
 
 /// Updates one conversation-level tool schema.
 async fn update_tool_schema(
+    State(state): State<ApiState>,
     Path((conversation_id, name)): Path<(String, String)>,
     Json(request): Json<ToolSchemaRequest>,
 ) -> ApiResult<ToolSchemaResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let current_name = ToolSchemaName::new(name);
     let tool_schema = request.into_tool_schema();
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .update_tool_schema(&conversation_id, &current_name, &tool_schema)
-        .context("failed to update tool schema")?;
+    operation::update_tool_schema(&mut store, &conversation_id, &current_name, &tool_schema)?;
 
     Ok(Json(ToolSchemaResponse {
         name: tool_schema.name.as_str().to_string(),
@@ -744,31 +651,29 @@ async fn update_tool_schema(
 
 /// Removes one conversation-level tool schema.
 async fn remove_tool_schema(
+    State(state): State<ApiState>,
     Path((conversation_id, name)): Path<(String, String)>,
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let name = ToolSchemaName::new(name);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .remove_tool_schema(&conversation_id, &name)
-        .context("failed to remove tool schema")?;
+    operation::remove_tool_schema(&mut store, &conversation_id, &name)?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
 
 /// Deletes descendants after one checkpoint message.
 async fn truncate_conversation(
+    State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<MessageIdRequest>,
 ) -> ApiResult<ActiveMessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(request.message_id);
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = open_store(&state)?;
 
-    store
-        .truncate_after_message(&conversation_id, &message_id)
-        .context("failed to truncate conversation")?;
+    operation::truncate_conversation(&mut store, &conversation_id, &message_id)?;
 
     Ok(Json(ActiveMessageResponse {
         active_message_id: store
@@ -780,15 +685,15 @@ async fn truncate_conversation(
 
 /// Creates a new conversation copied through a checkpoint message.
 async fn fork_conversation(
+    State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<MessageIdRequest>,
 ) -> ApiResult<ConversationIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(request.message_id);
-    let mut store = Store::open().context("failed to open store")?;
-    let forked_conversation_id = store
-        .fork_conversation_at_message(&conversation_id, &message_id)
-        .context("failed to fork conversation")?;
+    let mut store = open_store(&state)?;
+    let forked_conversation_id =
+        operation::fork_conversation(&mut store, &conversation_id, &message_id)?;
 
     Ok(Json(ConversationIdResponse {
         conversation_id: forked_conversation_id.as_str().to_string(),
@@ -824,11 +729,13 @@ impl From<ToolApprovalRequest> for ApprovalResponse {
 }
 
 /// Lists unresolved tool calls waiting for approval.
-async fn list_approvals(Path(conversation_id): Path<String>) -> ApiResult<ApprovalListResponse> {
+async fn list_approvals(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+) -> ApiResult<ApprovalListResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let store = Store::open().context("failed to open store")?;
-    let approvals = pending_tool_approvals(&store, &conversation_id)
-        .context("failed to load pending approvals")?
+    let store = open_store(&state)?;
+    let approvals = operation::list_tool_approvals(&store, &conversation_id)?
         .into_iter()
         .map(ApprovalResponse::from)
         .collect();
@@ -858,27 +765,26 @@ impl From<ToolExecutionResult> for ToolResultResponse {
 
 /// Executes one approved pending tool call.
 async fn approve_tool(
+    State(state): State<ApiState>,
     Path((conversation_id, tool_call_id)): Path<(String, String)>,
 ) -> ApiResult<ToolResultResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = Store::open().context("failed to open store")?;
-    let result = approve_tool_call(&mut store, &conversation_id, &tool_call_id)
-        .await
-        .context("failed to approve tool call")?;
+    let mut store = open_store(&state)?;
+    let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await?;
 
     Ok(Json(ToolResultResponse::from(result)))
 }
 
 /// Stores a rejected result for one pending tool call.
 async fn deny_tool(
+    State(state): State<ApiState>,
     Path((conversation_id, tool_call_id)): Path<(String, String)>,
 ) -> ApiResult<ToolResultResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = Store::open().context("failed to open store")?;
-    let result = deny_tool_call(&mut store, &conversation_id, &tool_call_id)
-        .context("failed to deny tool call")?;
+    let mut store = open_store(&state)?;
+    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
 
     Ok(Json(ToolResultResponse::from(result)))
 }
@@ -896,14 +802,14 @@ async fn query(
     Json(request): Json<QueryRequest>,
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let gateway = BifrostGateway::new(crate::gateway::GatewayUrl::new(state.gateway_url));
+    let gateway = BifrostGateway::new(crate::gateway::GatewayUrl::new(state.gateway_url.clone()));
     gateway
         .require_running()
         .await
         .context("failed to prepare Bifrost gateway")?;
-    let model = request.model.unwrap_or(state.model);
-    let llm = BifrostClient::new(BaseUrl::new(state.base_url), ModelName::new(model));
-    let mut store = Store::open().context("failed to open store")?;
+    let model = request.model.unwrap_or_else(|| state.model.clone());
+    let llm = BifrostClient::new(BaseUrl::new(state.base_url.clone()), ModelName::new(model));
+    let mut store = open_store(&state)?;
     let message = query_conversation_once(&ApiOutput, &llm, &mut store, &conversation_id)
         .await
         .context("failed to query conversation")?;
@@ -980,5 +886,306 @@ impl MessagePartResponse {
                 byte_count: image.bytes.len(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request as HttpRequest;
+    use serde_json::json;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::ServiceExt;
+
+    static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[tokio::test]
+    async fn health_does_not_require_token() {
+        let app = test_app(temp_database_path());
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::GET)
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn protected_routes_reject_missing_or_invalid_token() {
+        let app = test_app(temp_database_path());
+        let missing = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::GET)
+                    .uri("/api/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let invalid = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::GET)
+                    .uri("/api/conversations")
+                    .header(API_TOKEN_HEADER, "wrong-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn routes_share_operations_for_conversation_inspection_flow() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+
+        let listed = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::GET, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(listed["conversations"].as_array().unwrap().len(), 1);
+
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::POST,
+                    &format!("/api/conversations/{conversation_id}/messages"),
+                    Some(json!({"role":"user","text":"hello from api"})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::PATCH,
+                    &format!("/api/conversations/{conversation_id}/system-prompt"),
+                    Some(json!({"text":"Use short answers."})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::POST,
+                    &format!("/api/conversations/{conversation_id}/tool-schemas"),
+                    Some(json!({
+                        "name":"run_shell",
+                        "description":"Run a command",
+                        "parameters":{"type":"object"}
+                    })),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        let inspected = response_json(
+            app.oneshot(authed_request(
+                Method::GET,
+                &format!("/api/conversations/{conversation_id}?model=openai/test"),
+                None,
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+
+        assert_eq!(inspected["system_prompt"], "Use short answers.");
+        assert_eq!(inspected["messages"][0]["content"], "hello from api");
+        assert_eq!(inspected["active_path"][0]["content"], "hello from api");
+        assert_eq!(inspected["model_context"][0]["role"], "system");
+        assert_eq!(inspected["tool_schemas"][0]["name"], "run_shell");
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn update_remove_and_schema_routes_share_operations() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+        let inserted = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::POST,
+                    &format!("/api/conversations/{conversation_id}/messages"),
+                    Some(json!({"role":"user","text":"before"})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let message_id = inserted["message_id"].as_str().unwrap();
+
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::PATCH,
+                    &format!("/api/conversations/{conversation_id}/messages/{message_id}"),
+                    Some(json!({"text":"after"})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::POST,
+                    &format!("/api/conversations/{conversation_id}/tool-schemas"),
+                    Some(json!({
+                        "name":"first_tool",
+                        "description":"First",
+                        "parameters":{"type":"object"}
+                    })),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::PATCH,
+                    &format!("/api/conversations/{conversation_id}/tool-schemas/first_tool"),
+                    Some(json!({
+                        "name":"second_tool",
+                        "description":"Second",
+                        "parameters":{"type":"object","properties":{}}
+                    })),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::DELETE,
+                    &format!("/api/conversations/{conversation_id}/tool-schemas/second_tool"),
+                    None,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::DELETE,
+                    &format!("/api/conversations/{conversation_id}/messages/{message_id}"),
+                    None,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::DELETE,
+                    &format!("/api/conversations/{conversation_id}"),
+                    None,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        let listed = response_json(
+            app.oneshot(authed_request(Method::GET, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(listed["conversations"].as_array().unwrap().is_empty());
+        let _ = fs::remove_file(db_path);
+    }
+
+    fn test_app(store_path: PathBuf) -> Router {
+        router(ApiState {
+            gateway_url: "http://localhost:8080".to_string(),
+            base_url: "http://localhost:8080/v1".to_string(),
+            model: "openai/test".to_string(),
+            api_token: "test-token".to_string(),
+            store_path: Some(store_path),
+        })
+    }
+
+    fn authed_request(method: Method, uri: &str, body: Option<Value>) -> HttpRequest<Body> {
+        let mut builder = HttpRequest::builder()
+            .method(method)
+            .uri(uri)
+            .header(API_TOKEN_HEADER, "test-token");
+
+        let body = match body {
+            Some(value) => {
+                builder = builder.header(CONTENT_TYPE, "application/json");
+                Body::from(serde_json::to_vec(&value).unwrap())
+            }
+            None => Body::empty(),
+        };
+
+        builder.body(body).unwrap()
+    }
+
+    async fn response_json(response: Response) -> Value {
+        assert!(
+            response.status().is_success(),
+            "unexpected response status: {}",
+            response.status()
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn temp_database_path() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let counter = TEMP_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        std::env::temp_dir().join(format!(
+            "windie-api-{}-{nanos}-{counter}.db",
+            std::process::id()
+        ))
     }
 }

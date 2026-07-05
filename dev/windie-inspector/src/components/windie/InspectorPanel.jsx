@@ -87,19 +87,10 @@ export default function InspectorPanel() {
     if (!activeConv) return null;
     return {
       model: modelOverride || activeConv.model,
-      system: activeConv.systemPrompt,
-      messages: activeConv.activePath
-        .map((id) => activeConv.nodes[id])
-        .filter((n) => n && n.message.role !== "system")
-        .map((n) => ({
-          role: n.message.role,
-          content: n.message.parts.map((p) =>
-            p.type === "text" ? p.text : `[image: ${p.alt || "attachment"}]`
-          ),
-        })),
-      tools: toolSchemas.map((t) => t.name),
-      token_budget: 8192,
-      hash: `w:${activeConv.id}:${activeConv.activePath.length}`,
+      system_prompt: activeConv.systemPrompt || null,
+      messages: activeConv.modelContext || [],
+      tools: toolSchemas,
+      latest_compaction: activeConv.latestCompaction || null,
     };
   }, [activeConv, modelOverride, toolSchemas]);
 
@@ -253,10 +244,8 @@ export default function InspectorPanel() {
             </pre>
           ) : (
             <div className="font-mono text-[11px] text-muted-foreground">
-              hash{" "}
-              <span className="text-foreground">{runtimeRequestPreview?.hash}</span> · budget{" "}
-              {runtimeRequestPreview?.token_budget}tok · {runtimeRequestPreview?.messages.length}{" "}
-              msgs · {runtimeRequestPreview?.tools.length} tools
+              {runtimeRequestPreview?.messages.length} msgs · {runtimeRequestPreview?.tools.length}{" "}
+              tools · api context
             </div>
           )}
         </Section>

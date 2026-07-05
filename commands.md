@@ -495,3 +495,22 @@ Run a tiny live provider benchmark. Requires the local Bifrost gateway and sends
 a real provider request, so it may cost money.
 
 Use this only when you intentionally want to measure the provider path.
+
+## Commit Benchmark Workflow
+
+```text
+scripts/commit-with-bench.sh -m "commit message"
+```
+
+Build the release binary, run the local/free stress benchmark, compare
+`.windie/perf/current.json` with `.windie/perf/baseline.json`, append the
+comparison to the commit message, then run `git commit`. If no local baseline
+exists, the script creates one first. Set `WINDIE_BENCH_RUNS=<n>` to change the
+default repeated run count.
+
+```text
+scripts/push-with-bench.sh
+```
+
+Run `git push`. After a successful push, promote `.windie/perf/current.json` to
+`.windie/perf/baseline.json` and remove the current report.
