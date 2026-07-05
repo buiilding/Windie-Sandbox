@@ -1,0 +1,169 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    font-family:
+        "IBM Plex Sans",
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "ss01", "ss02", "cv01";
+}
+
+code,
+.font-mono {
+    font-family:
+        "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        monospace;
+}
+
+@layer base {
+    :root {
+        --background: 0 0% 100%;
+        --foreground: 240 10% 4%;
+        --surface: 240 5% 96%;
+        --surface-hover: 240 5% 90%;
+        --card: 0 0% 100%;
+        --card-foreground: 240 10% 4%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 240 10% 4%;
+        --primary: 240 10% 4%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 240 5% 96%;
+        --secondary-foreground: 240 10% 4%;
+        --muted: 240 5% 96%;
+        --muted-foreground: 240 4% 45%;
+        --accent: 38 92% 50%;
+        --accent-foreground: 240 10% 4%;
+        --tool-call: 217 91% 55%;
+        --refusal: 0 84% 60%;
+        --reasoning: 271 76% 53%;
+        --annotation: 173 58% 39%;
+        --audio: 189 94% 43%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 240 6% 90%;
+        --input: 240 6% 90%;
+        --ring: 240 10% 4%;
+        --radius: 0.125rem;
+    }
+
+    .dark {
+        --background: 240 10% 4%;
+        --foreground: 0 0% 98%;
+        --surface: 240 6% 8%;
+        --surface-hover: 240 5% 12%;
+        --card: 240 10% 4%;
+        --card-foreground: 0 0% 98%;
+        --popover: 240 10% 4%;
+        --popover-foreground: 0 0% 98%;
+        --primary: 0 0% 98%;
+        --primary-foreground: 240 10% 4%;
+        --secondary: 240 5% 12%;
+        --secondary-foreground: 0 0% 98%;
+        --muted: 240 5% 12%;
+        --muted-foreground: 240 5% 65%;
+        --accent: 38 92% 55%;
+        --accent-foreground: 240 10% 4%;
+        --tool-call: 213 94% 68%;
+        --refusal: 0 84% 68%;
+        --reasoning: 271 81% 66%;
+        --annotation: 173 58% 55%;
+        --audio: 189 94% 60%;
+        --destructive: 0 63% 40%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 240 5% 16%;
+        --input: 240 5% 16%;
+        --ring: 240 5% 84%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+    ::selection {
+        background: hsl(var(--accent) / 0.35);
+        color: hsl(var(--foreground));
+    }
+}
+
+/* Dense scrollbar */
+.windie-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+.windie-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+.windie-scroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 0;
+}
+.windie-scroll::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Blinking caret for streaming state */
+@keyframes windie-blink {
+    0%,
+    49% {
+        opacity: 1;
+    }
+    50%,
+    100% {
+        opacity: 0;
+    }
+}
+.windie-caret {
+    display: inline-block;
+    width: 7px;
+    height: 14px;
+    background: currentColor;
+    vertical-align: text-bottom;
+    margin-left: 2px;
+    animation: windie-blink 1s steps(1) infinite;
+}
+
+/* Grid background lines */
+.windie-grid-bg {
+    background-image:
+        linear-gradient(
+            to right,
+            hsl(var(--border) / 0.35) 1px,
+            transparent 1px
+        ),
+        linear-gradient(
+            to bottom,
+            hsl(var(--border) / 0.35) 1px,
+            transparent 1px
+        );
+    background-size: 32px 32px;
+}
+
+/* No focus outline flash; we use ring via tailwind */
+*:focus {
+    outline: none;
+}
+
+@layer base {
+    [data-debug-wrapper="true"] {
+        display: contents !important;
+    }
+}

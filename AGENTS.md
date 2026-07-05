@@ -114,7 +114,8 @@ Allowed in the current scope:
 
 - Rust CLI binary.
 - Localhost-only Rust API server for developer test harnesses.
-- Localhost developer frontend for testing runtime primitives through the API.
+- Localhost developer frontend under `dev/` for testing runtime primitives
+  through the API.
 - Hardcoded default endpoint/model while the foundation is still forming.
 - Explicit primitive CLI commands.
 - Streaming assistant output.
@@ -172,9 +173,9 @@ The CLI should be boring, explicit, and composable. Future TUI, desktop, browser
 and wakeup clients should call the same runtime and store primitives that the
 CLI uses.
 
-The `windie-inspector` frontend is a localhost developer client for testing and
-inspecting runtime primitives. It may call the API, render runtime state, and
-exercise explicit store/runtime operations. It must not own provider logic,
+The `dev/windie-inspector` frontend is a localhost developer client for testing
+and inspecting runtime primitives. It may call the API, render runtime state,
+and exercise explicit store/runtime operations. It must not own provider logic,
 persistence, model context construction, runtime state transitions, tool
 execution, or permission policy.
 

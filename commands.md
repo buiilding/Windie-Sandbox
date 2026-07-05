@@ -55,14 +55,15 @@ windie api
 Start the localhost developer API server at `http://127.0.0.1:8787`.
 
 The server prints a per-process API token at startup. Browser clients must send
-that token in the `X-Windie-Api-Token` header. The localhost inspector can store
-the token by opening it with `?windie_token=<printed token>`.
+that token in the `X-Windie-Api-Token` header. The localhost inspector at
+`dev/windie-inspector` can store the token by opening it with
+`?windie_token=<printed token>`.
 
 The API is a JSON test harness over Windie's existing runtime and store
-primitives. It is intended for local tools such as `windie-inspector` to test
-conversation trees, active path selection, message mutation, system prompts,
-tool schemas, gateway lifecycle, and one-shot queries without shelling out for
-each operation.
+primitives. It is intended for local tools such as `dev/windie-inspector` to
+test conversation trees, active path selection, message mutation, system
+prompts, tool schemas, gateway lifecycle, and one-shot queries without shelling
+out for each operation.
 
 Initial routes:
 
