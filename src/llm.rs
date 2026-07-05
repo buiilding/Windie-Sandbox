@@ -116,6 +116,8 @@ struct ChatMessage<'a> {
     role: crate::conversation::Role,
     content: ChatMessageContent<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<&'a [ToolCall]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     refusal: Option<&'a str>,
@@ -343,6 +345,12 @@ impl<'a> ChatMessage<'a> {
             .filter(|_| message.role == crate::conversation::Role::Assistant)
             .map(|metadata| metadata.tool_calls.as_slice())
             .filter(|tool_calls| !tool_calls.is_empty());
+        let tool_call_id = message
+            .metadata
+            .as_ref()
+            .filter(|_| message.role == crate::conversation::Role::Tool)
+            .and_then(|metadata| metadata.tool_call_id.as_ref())
+            .map(|id| id.as_str());
         let metadata = message
             .metadata
             .as_ref()
@@ -351,6 +359,7 @@ impl<'a> ChatMessage<'a> {
         Self {
             role: message.role,
             content: chat_message_content(message),
+            tool_call_id,
             tool_calls,
             refusal: metadata.and_then(|metadata| metadata.refusal.as_deref()),
             reasoning: metadata.and_then(|metadata| metadata.reasoning.as_deref()),
@@ -844,6 +853,40 @@ mod tests {
                         {"type": "text", "text": "what is this?"},
                         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQID"}}
                     ]
+                }],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_tool_message_call_id_for_chat_request() {
+        let messages = vec![Message {
+            id: Some(MessageId::new("message-id")),
+            parent_message_id: Some(MessageId::new("parent-id")),
+            role: Role::Tool,
+            content: r#"{"stdout":"ok"}"#.to_string(),
+            parts: Vec::new(),
+            metadata: Some(MessageMetadata {
+                tool_call_id: Some(ToolCallId::new("call-id")),
+                ..Default::default()
+            }),
+        }];
+        let request = ChatRequest {
+            model: "openai/gpt-4o-mini",
+            messages: chat_messages(&messages),
+            tools: None,
+            stream: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "messages": [{
+                    "role": "tool",
+                    "content": "{\"stdout\":\"ok\"}",
+                    "tool_call_id": "call-id"
                 }],
                 "stream": true
             })

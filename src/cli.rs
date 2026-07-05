@@ -7,7 +7,9 @@
 use std::env;
 use std::path::PathBuf;
 
-use crate::conversation::{ConversationId, MessageId, Role, ToolSchema, ToolSchemaName};
+use crate::conversation::{
+    ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
+};
 use crate::llm::ModelName;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
 
@@ -16,10 +18,21 @@ use crate::perf::{BenchmarkMode, BenchmarkOptions};
 /// This is the CLI boundary's typed contract. Downstream code should match on
 /// this enum instead of inspecting raw argv strings.
 pub enum Command {
+    /// Start the localhost developer API server.
+    Api,
     /// Select one message as the active runtime node for a conversation.
     Activate {
         conversation_id: ConversationId,
         message_id: MessageId,
+    },
+    /// List tool calls that are waiting for explicit approval.
+    Approvals {
+        conversation_id: ConversationId,
+    },
+    /// Execute one approved tool call.
+    ApproveTool {
+        conversation_id: ConversationId,
+        tool_call_id: ToolCallId,
     },
     /// Insert one message into a conversation without model inference.
     InsertMessage {
@@ -37,6 +50,8 @@ pub enum Command {
         conversation_id: ConversationId,
         model: Option<ModelName>,
     },
+    /// List built-in tool schemas that can be attached to conversations.
+    Tools,
     /// Run one benchmark mode. Conversation mode carries the target
     /// conversation ID; live mode does not.
     Bench {
@@ -76,6 +91,10 @@ pub enum Command {
     RemoveToolSchema {
         conversation_id: ConversationId,
         name: ToolSchemaName,
+    },
+    DenyTool {
+        conversation_id: ConversationId,
+        tool_call_id: ToolCallId,
     },
     Show(ConversationId),
     Status,
@@ -130,6 +149,19 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [] => Command::Noop,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
+        [arg] if arg == "api" => Command::Api,
+        [arg] if arg == "tools" => Command::Tools,
+        [command, conversation_id] if command == "approvals" => Command::Approvals {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+        },
+        [command, conversation_id, tool_call_id] if command == "approve" => Command::ApproveTool {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
+        },
+        [command, conversation_id, tool_call_id] if command == "deny" => Command::DenyTool {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
+        },
         [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
         [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
         [arg] if arg == "new" => Command::New,
@@ -494,6 +526,70 @@ mod tests {
         let command = command_from_args(["windie".to_string(), "-V".to_string()]);
 
         assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn reads_api_command() {
+        let command = command_from_args(["windie".to_string(), "api".to_string()]);
+
+        assert!(matches!(command, Command::Api));
+    }
+
+    #[test]
+    fn reads_tools_command() {
+        let command = command_from_args(["windie".to_string(), "tools".to_string()]);
+
+        assert!(matches!(command, Command::Tools));
+    }
+
+    #[test]
+    fn reads_approvals_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "approvals".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Approvals { conversation_id } if conversation_id.as_str() == "conversation-id"
+        ));
+    }
+
+    #[test]
+    fn reads_approve_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "approve".to_string(),
+            "conversation-id".to_string(),
+            "call-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::ApproveTool {
+                conversation_id,
+                tool_call_id,
+            } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+        ));
+    }
+
+    #[test]
+    fn reads_deny_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "deny".to_string(),
+            "conversation-id".to_string(),
+            "call-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::DenyTool {
+                conversation_id,
+                tool_call_id,
+            } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+        ));
     }
 
     #[test]

@@ -25,6 +25,7 @@ fn formats_help_lines() {
     assert_eq!(lines[0], "windie");
     assert!(lines.contains(&"Usage:".to_string()));
     assert!(lines.contains(&"  windie".to_string()));
+    assert!(lines.contains(&"  windie tools".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
     assert!(lines.contains(&"  windie ls --json".to_string()));
     assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));
@@ -71,6 +72,26 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie bench compare <baseline.json> <current.json>".to_string()));
     assert!(lines.contains(&"  windie bench live".to_string()));
     assert!(lines.contains(&"Options:".to_string()));
+}
+
+#[test]
+fn formats_available_tool_schemas() {
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new("run_shell"),
+        description: "Run a shell command".to_string(),
+        parameters: serde_json::json!({"type": "object"}),
+    };
+
+    let lines = available_tool_schema_lines(&[tool_schema]);
+
+    assert_eq!(lines, vec!["tools", "run_shell  Run a shell command"]);
+}
+
+#[test]
+fn formats_empty_available_tool_schemas() {
+    let lines = available_tool_schema_lines(&[]);
+
+    assert_eq!(lines, vec!["no tools"]);
 }
 
 #[test]
@@ -233,6 +254,7 @@ fn serializes_inspection_report_with_runtime_state() {
         reasoning_details: Vec::new(),
         audio: None,
         annotations: Vec::new(),
+        ..Default::default()
     };
     let tool_schema = ToolSchema {
         name: ToolSchemaName::new("run_shell"),

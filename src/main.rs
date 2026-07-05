@@ -4,6 +4,7 @@
 //! small and avoid owning business logic, persistence, HTTP, or terminal
 //! formatting details.
 
+mod api;
 mod cli;
 mod context;
 mod conversation;
@@ -12,25 +13,36 @@ mod image_input;
 mod llm;
 mod output;
 mod perf;
+mod policy;
 mod runtime;
+mod shell;
 mod store;
+mod tool;
+mod tool_catalog;
 
 use anyhow::{Context, Result};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use crate::cli::{Command, InsertPart};
 use crate::context::{ContextBuilder, ContextParts};
-use crate::conversation::{ConversationId, MessageId, Role, ToolSchema, ToolSchemaName};
+use crate::conversation::{
+    ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
+};
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::read_image_input;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::output::{InspectionReport, TerminalOutput};
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
-use crate::runtime::query_conversation;
+use crate::runtime::{
+    approve_tool_call, deny_tool_call, pending_tool_approvals, query_conversation_once,
+};
 use crate::store::{ImagePayload, MessagePayload, Store};
+use crate::tool_catalog::available_tool_schemas;
 
 const BASE_URL: &str = "http://localhost:8080/v1";
 const GATEWAY_URL: &str = "http://localhost:8080";
+const API_ADDRESS: &str = "127.0.0.1:8787";
 const MODEL: &str = "openai/gpt-4o-mini";
 const INVALID_USAGE_EXIT_CODE: i32 = 2;
 
@@ -39,11 +51,17 @@ const INVALID_USAGE_EXIT_CODE: i32 = 2;
 #[tokio::main]
 async fn main() -> Result<()> {
     match cli::read() {
+        Command::Api => api().await,
         Command::Noop => Ok(()),
         Command::Activate {
             conversation_id,
             message_id,
         } => activate_message(conversation_id, message_id),
+        Command::Approvals { conversation_id } => list_approvals(conversation_id),
+        Command::ApproveTool {
+            conversation_id,
+            tool_call_id,
+        } => approve_tool(conversation_id, tool_call_id).await,
         Command::Help => print_help(),
         Command::Invalid => invalid_usage(),
         Command::Version => print_version(),
@@ -71,6 +89,7 @@ async fn main() -> Result<()> {
             conversation_id,
             model,
         } => inspect_conversation(conversation_id, model),
+        Command::Tools => list_tools(),
         Command::Fork {
             conversation_id,
             message_id,
@@ -91,6 +110,10 @@ async fn main() -> Result<()> {
             conversation_id,
             name,
         } => remove_tool_schema(conversation_id, name),
+        Command::DenyTool {
+            conversation_id,
+            tool_call_id,
+        } => deny_tool(conversation_id, tool_call_id),
         Command::Show(conversation_id) => show_conversation(conversation_id),
         Command::Status => status().await,
         Command::SetSystemPrompt {
@@ -113,6 +136,11 @@ async fn main() -> Result<()> {
             tool_schema,
         } => update_tool_schema(conversation_id, current_name, &tool_schema),
     }
+}
+
+/// Starts Windie's local developer API server.
+async fn api() -> Result<()> {
+    api::serve(api_address(), GATEWAY_URL, BASE_URL, MODEL).await
 }
 
 /// Prints the generated CLI help text.
@@ -295,6 +323,16 @@ fn inspect_conversation(conversation_id: ConversationId, model: Option<ModelName
     );
 
     output.inspection_report_json(&report)
+}
+
+/// Lists Windie's built-in tool schemas without mutating any conversation.
+fn list_tools() -> Result<()> {
+    let output = TerminalOutput;
+    let tool_schemas = available_tool_schemas();
+
+    output.available_tool_schemas(&tool_schemas);
+
+    Ok(())
 }
 
 /// Inserts one explicit message into a conversation.
@@ -481,6 +519,43 @@ fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> 
     Ok(())
 }
 
+/// Lists pending tool calls that require explicit user approval.
+fn list_approvals(conversation_id: ConversationId) -> Result<()> {
+    let store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+    let approvals = pending_tool_approvals(&store, &conversation_id)
+        .context("failed to load pending approvals")?;
+
+    output.tool_approvals(&approvals);
+
+    Ok(())
+}
+
+/// Executes one approved tool call and stores its tool-result message.
+async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+    let result = approve_tool_call(&mut store, &conversation_id, &tool_call_id)
+        .await
+        .context("failed to approve tool call")?;
+
+    output.tool_execution_result(&result);
+
+    Ok(())
+}
+
+/// Stores a rejected tool-result message for one pending tool call.
+fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
+    let mut store = Store::open().context("failed to open store")?;
+    let output = TerminalOutput;
+    let result = deny_tool_call(&mut store, &conversation_id, &tool_call_id)
+        .context("failed to deny tool call")?;
+
+    output.tool_execution_result(&result);
+
+    Ok(())
+}
+
 /// Deletes one conversation and all persisted data owned by it.
 fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
@@ -535,8 +610,10 @@ fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> 
 
 /// Runs one model response for an existing conversation.
 ///
-/// This is the CLI handler only. The reusable runtime flow lives in
-/// `runtime::query_conversation`.
+/// This is intentionally one runtime turn. If the assistant requests a tool,
+/// the CLI prints the stored tool call and exits; users then compose the next
+/// steps with `windie approvals`, `windie approve` or `windie deny`, and another
+/// `windie query`.
 async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
     let mut store = Store::open().context("failed to open store")?;
     let output = TerminalOutput;
@@ -547,7 +624,7 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
         .context("failed to prepare Bifrost gateway")?;
     let llm = BifrostClient::new(base_url(), model.unwrap_or_else(model_name));
 
-    query_conversation(&output, &llm, &mut store, &conversation_id)
+    query_conversation_once(&output, &llm, &mut store, &conversation_id)
         .await
         .context("failed to query conversation")?;
 
@@ -605,4 +682,11 @@ fn base_url() -> BaseUrl {
 /// Centralizes the default model while config is intentionally not in scope.
 fn model_name() -> ModelName {
     ModelName::new(MODEL)
+}
+
+/// Centralizes the local developer API bind address.
+fn api_address() -> SocketAddr {
+    API_ADDRESS
+        .parse()
+        .expect("hardcoded API address must be valid")
 }

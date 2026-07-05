@@ -674,6 +674,9 @@ impl Store {
     ///
     /// This is public so `perf.rs` can time active-path row loading separately
     /// from active message lookup and part/image attachment.
+    /// The recursive step starts from the one-row `path` table and uses
+    /// `CROSS JOIN` to keep SQLite on primary-key parent lookups even before a
+    /// fresh database has planner statistics.
     pub fn load_path_to_message_rows(
         &self,
         conversation_id: &ConversationId,
@@ -713,8 +716,8 @@ impl Store {
                         messages.content,
                         messages.metadata,
                         path.depth + 1
-                    FROM messages
-                    JOIN path ON messages.id = path.parent_message_id
+                    FROM path
+                    CROSS JOIN messages ON messages.id = path.parent_message_id
                     WHERE messages.conversation_id = ?1
                 )
                 SELECT id, parent_message_id, role, content, metadata

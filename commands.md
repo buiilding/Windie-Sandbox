@@ -46,6 +46,67 @@ Show version.
 
 Use this to print the package version compiled into the binary.
 
+## Developer API
+
+```text
+windie api
+```
+
+Start the localhost developer API server at `http://127.0.0.1:8787`.
+
+The server prints a per-process API token at startup. Browser clients must send
+that token in the `X-Windie-Api-Token` header. The localhost inspector can store
+the token by opening it with `?windie_token=<printed token>`.
+
+The API is a JSON test harness over Windie's existing runtime and store
+primitives. It is intended for local tools such as `windie-inspector` to test
+conversation trees, active path selection, message mutation, system prompts,
+tool schemas, gateway lifecycle, and one-shot queries without shelling out for
+each operation.
+
+Initial routes:
+
+```text
+GET    /api/health
+GET    /api/status
+GET    /api/tools
+POST   /api/gateway/start
+POST   /api/gateway/stop
+GET    /api/conversations
+POST   /api/conversations
+GET    /api/conversations/{conversation_id}
+DELETE /api/conversations/{conversation_id}
+GET    /api/conversations/{conversation_id}/approvals
+POST   /api/conversations/{conversation_id}/approvals/{tool_call_id}/approve
+POST   /api/conversations/{conversation_id}/approvals/{tool_call_id}/deny
+POST   /api/conversations/{conversation_id}/activate
+POST   /api/conversations/{conversation_id}/messages
+PATCH  /api/conversations/{conversation_id}/messages/{message_id}
+DELETE /api/conversations/{conversation_id}/messages/{message_id}
+PATCH  /api/conversations/{conversation_id}/system-prompt
+DELETE /api/conversations/{conversation_id}/system-prompt
+POST   /api/conversations/{conversation_id}/tool-schemas
+PATCH  /api/conversations/{conversation_id}/tool-schemas/{name}
+DELETE /api/conversations/{conversation_id}/tool-schemas/{name}
+POST   /api/conversations/{conversation_id}/truncate
+POST   /api/conversations/{conversation_id}/fork
+POST   /api/conversations/{conversation_id}/query
+```
+
+## Built-in Tools
+
+```text
+windie tools
+```
+
+List Windie's built-in tool schemas.
+
+This is a catalog, not a permission grant. A client can show these schemas to
+the user, then explicitly attach one to a conversation with `windie insert
+<conversation_id> toolschema ...` or `POST
+/api/conversations/{conversation_id}/tool-schemas`. Only conversation-level
+schemas are sent to Bifrost during `query`.
+
 ## Conversations
 
 ```text
@@ -262,8 +323,44 @@ windie query <conversation_id>
 Run one model response from the active path and insert the assistant message.
 Requires the local Bifrost gateway to already be running.
 
-If the model returns tool calls, Windie stores those tool calls on the assistant
-message and prints a tool-call summary. Windie does not execute tools yet.
+If the model returns a tool call, Windie stores the assistant tool-call metadata
+and stops. Tool execution is an explicit separate primitive.
+
+The composable tool flow is:
+
+```text
+windie query <conversation_id>
+windie approvals <conversation_id>
+windie approve <conversation_id> <tool_call_id>
+windie query <conversation_id>
+```
+
+Use `windie deny <conversation_id> <tool_call_id>` instead of `approve` to store
+a rejected tool result.
+
+```text
+windie approvals <conversation_id>
+```
+
+List unresolved active-path model-requested tool calls that require explicit
+user approval. Approvals are derived from persisted messages on the active path:
+an assistant tool call is pending when no active-path `role: tool` message has a
+matching tool-call ID.
+
+```text
+windie approve <conversation_id> <tool_call_id>
+```
+
+Execute one pending approved tool call and store the result as a `role: tool`
+message. For now, only `run_shell` has a real executor.
+
+```text
+windie deny <conversation_id> <tool_call_id>
+```
+
+Store a rejected `role: tool` result for one pending tool call without executing
+it. Run `windie query <conversation_id>` again after approving or denying to let
+the model continue from the tool result.
 
 ```text
 windie query <conversation_id> --model <provider/model>
@@ -356,8 +453,8 @@ windie bench <conversation_id>
 ```
 
 Run local/free performance baseline for one conversation tree. Measures active
-path load, full tree load, and model-facing context build. Does not start
-Bifrost and does not send a provider request.
+path load, full tree load, tool schema load, and model-facing context build.
+Does not start Bifrost and does not send a provider request.
 
 ```text
 windie bench <conversation_id> --runs 100

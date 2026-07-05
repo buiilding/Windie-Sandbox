@@ -1,7 +1,7 @@
 //! Core conversation data.
 //!
 //! Defines typed conversation IDs, message IDs, image asset IDs, compaction IDs,
-//! tool schema names, message roles, message parts, assistant metadata, and
+//! tool schema names, message roles, message parts, message metadata, and
 //! messages. This file only models runtime data; it does not save, print, read
 //! input, or call the LLM.
 
@@ -352,11 +352,15 @@ pub struct AssistantCitation {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-/// Metadata stored on assistant messages outside normal visible text.
+/// Metadata stored on messages outside normal visible text.
 ///
-/// Each field is a separate assistant output lane so future UIs can render
+/// Assistant fields stay in separate output lanes so future UIs can render
 /// text, tool calls, reasoning, refusals, audio, and citations separately.
+/// `tool_call_id` is used by `role: tool` messages to link a tool result back
+/// to the assistant tool call that requested it.
 pub struct MessageMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<ToolCallId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -372,9 +376,10 @@ pub struct MessageMetadata {
 }
 
 impl MessageMetadata {
-    /// Returns whether the assistant message has any metadata lane populated.
+    /// Returns whether the message has any metadata lane populated.
     pub fn is_empty(&self) -> bool {
-        self.tool_calls.is_empty()
+        self.tool_call_id.is_none()
+            && self.tool_calls.is_empty()
             && self.refusal.is_none()
             && self.reasoning.is_none()
             && self.reasoning_details.is_empty()

@@ -30,6 +30,28 @@ if [ "$set_prompt_output" != "set systemprompt $conversation_id" ]; then
 fi
 HOME="$check_home" target/release/windie insert "$conversation_id" toolschema --name run_shell --description "Run a shell command" --parameters '{"type":"object"}' >/dev/null
 message_id="$(HOME="$check_home" target/release/windie insert "$conversation_id" message --role user --text hello)"
+list_json_output="$(HOME="$check_home" target/release/windie ls --json)"
+if ! printf '%s\n' "$list_json_output" | grep -q "\"id\": \"$conversation_id\""; then
+    echo "expected ls --json to include conversation id" >&2
+    exit 1
+fi
+inspect_json_output="$(HOME="$check_home" target/release/windie inspect "$conversation_id" --json)"
+if ! printf '%s\n' "$inspect_json_output" | grep -q "\"conversation_id\": \"$conversation_id\""; then
+    echo "expected inspect --json to include conversation id" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$inspect_json_output" | grep -q '"tool_schemas": \['; then
+    echo "expected inspect --json to include tool schemas" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$inspect_json_output" | grep -q '"active_path": \['; then
+    echo "expected inspect --json to include active path" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$inspect_json_output" | grep -q '"model_context": \['; then
+    echo "expected inspect --json to include model context" >&2
+    exit 1
+fi
 bench_conversation_output="$(HOME="$check_home" target/release/windie bench "$conversation_id")"
 if ! printf '%s\n' "$bench_conversation_output" | grep -q "mode: conversation"; then
     echo "expected conversation benchmark to print conversation mode" >&2

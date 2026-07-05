@@ -16,6 +16,7 @@ use crate::conversation::{
 };
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::store::{Compaction, ConversationInfo};
+use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
 
 /// Minimal output interface needed by runtime flows.
 ///
@@ -249,6 +250,13 @@ impl TerminalOutput {
         println!("gateway: not running");
     }
 
+    /// Prints built-in tool schemas that can be attached to conversations.
+    pub fn available_tool_schemas(&self, tool_schemas: &[ToolSchema]) {
+        for line in available_tool_schema_lines(tool_schemas) {
+            println!("{line}");
+        }
+    }
+
     /// Prints the conversation list in the CLI format.
     pub fn conversations(&self, conversations: &[ConversationInfo]) {
         for line in conversation_lines(conversations) {
@@ -315,6 +323,53 @@ impl TerminalOutput {
             );
         }
         println!();
+    }
+
+    /// Prints pending tool approvals in a compact inspectable format.
+    pub fn tool_approvals(&self, approvals: &[ToolApprovalRequest]) {
+        if approvals.is_empty() {
+            println!("no pending approvals");
+            return;
+        }
+
+        println!("pending approvals");
+        for approval in approvals {
+            println!(
+                "{}  {}  {}  {}",
+                approval.tool_call.id,
+                approval.tool_call.name(),
+                approval.reason,
+                text_preview(approval.tool_call.arguments())
+            );
+        }
+    }
+
+    /// Prints one completed tool execution result summary.
+    pub fn tool_execution_result(&self, result: &ToolExecutionResult) {
+        println!(
+            "tool result  {}  {}  {}",
+            result.tool_call_id,
+            result.tool_name,
+            if result.success { "success" } else { "error" }
+        );
+    }
+}
+
+impl RuntimeOutput for TerminalOutput {
+    fn start_assistant_message(&self) {
+        TerminalOutput::start_assistant_message(self);
+    }
+
+    fn assistant_delta(&self, text: &str) -> Result<()> {
+        TerminalOutput::assistant_delta(self, text)
+    }
+
+    fn end_assistant_message(&self) {
+        TerminalOutput::end_assistant_message(self);
+    }
+
+    fn assistant_tool_calls(&self, tool_calls: &[ToolCall]) {
+        TerminalOutput::assistant_tool_calls(self, tool_calls);
     }
 }
 
@@ -496,6 +551,8 @@ fn help_lines() -> Vec<String> {
         "",
         "Usage:",
         "  windie",
+        "  windie api",
+        "  windie tools",
         "  windie new",
         "  windie ls",
         "  windie ls --json",
@@ -504,6 +561,9 @@ fn help_lines() -> Vec<String> {
         "  windie tree <conversation_id>",
         "  windie inspect <conversation_id> --json",
         "  windie inspect <conversation_id> --json --model <provider/model>",
+        "  windie approvals <conversation_id>",
+        "  windie approve <conversation_id> <tool_call_id>",
+        "  windie deny <conversation_id> <tool_call_id>",
         "  windie insert <conversation_id> message --role user --text \"hello\"",
         "  windie insert <conversation_id> message --role user --text \"first\" --image <path> --text \"second\"",
         "  windie insert <conversation_id> toolschema --name <name> --description <text> --parameters <json>",
@@ -528,7 +588,9 @@ fn help_lines() -> Vec<String> {
         "",
         "Notes:",
         "  windie exits successfully without runtime action.",
-        "  windie bench <conversation_id> measures active path, tree, and context build.",
+        "  windie api starts the localhost developer API server.",
+        "  windie tools lists built-in tool schemas available to attach to conversations.",
+        "  windie bench <conversation_id> measures active path, tree, tool schema load, and context build.",
         "  windie bench <conversation_id> --json writes a persistent benchmark artifact to stdout.",
         "  windie bench compare compares two JSON benchmark artifacts.",
         "  windie inspect <conversation_id> --json prints full read-only runtime state.",
@@ -536,6 +598,9 @@ fn help_lines() -> Vec<String> {
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie query requires the local Bifrost gateway to be running.",
         "  windie query --model passes the model name to Bifrost for one request.",
+        "  windie approvals lists unresolved tool calls that require user approval.",
+        "  windie approve executes one pending tool call and stores its tool result.",
+        "  windie deny stores a rejected tool result for one pending tool call.",
         "  windie set <conversation_id> systemprompt sets or replaces the conversation system prompt.",
         "  windie insert <conversation_id> toolschema adds a model-facing tool definition.",
         "  windie bench live sends a real provider request and may cost money.",
@@ -547,6 +612,22 @@ fn help_lines() -> Vec<String> {
     .into_iter()
     .map(str::to_string)
     .collect()
+}
+
+/// Converts the built-in tool catalog into compact CLI lines.
+fn available_tool_schema_lines(tool_schemas: &[ToolSchema]) -> Vec<String> {
+    if tool_schemas.is_empty() {
+        return vec!["no tools".to_string()];
+    }
+
+    let mut lines = vec!["tools".to_string()];
+    lines.extend(
+        tool_schemas
+            .iter()
+            .map(|schema| format!("{}  {}", schema.name, schema.description)),
+    );
+
+    lines
 }
 
 /// Converts a repeated benchmark report into stable human-readable lines.
@@ -698,24 +779,6 @@ fn invalid_usage_lines() -> Vec<String> {
     let mut lines = vec!["invalid usage".to_string(), String::new()];
     lines.extend(help_lines());
     lines
-}
-
-impl RuntimeOutput for TerminalOutput {
-    fn start_assistant_message(&self) {
-        TerminalOutput::start_assistant_message(self);
-    }
-
-    fn assistant_delta(&self, text: &str) -> Result<()> {
-        TerminalOutput::assistant_delta(self, text)
-    }
-
-    fn end_assistant_message(&self) {
-        TerminalOutput::end_assistant_message(self);
-    }
-
-    fn assistant_tool_calls(&self, tool_calls: &[ToolCall]) {
-        TerminalOutput::assistant_tool_calls(self, tool_calls);
-    }
 }
 
 /// Humanizes a message count for the conversation list.

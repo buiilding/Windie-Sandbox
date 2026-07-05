@@ -17,7 +17,8 @@ inspectable, and hackable.
 The whole codebase should reflect this file.
 
 The current goal is to
-build the cleanest minimal local AI runtime primitives:
+build the cleanest minimal local AI runtime primitives and a localhost
+developer API harness for testing those primitives:
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
@@ -106,11 +107,14 @@ secret value should stay in Windie's explicit `.env` provider-key file.
 
 ## Current Scope
 
-Build only the foundational local CLI runtime primitives.
+Build only the foundational local CLI runtime primitives and the localhost
+developer API needed to test them.
 
 Allowed in the current scope:
 
 - Rust CLI binary.
+- Localhost-only Rust API server for developer test harnesses.
+- Localhost developer frontend for testing runtime primitives through the API.
 - Hardcoded default endpoint/model while the foundation is still forming.
 - Explicit primitive CLI commands.
 - Streaming assistant output.
@@ -122,12 +126,17 @@ Allowed in the current scope:
 - Conversation-level system prompt primitive.
 - Conversation truncate and fork primitives.
 - Active path selection and full conversation tree inspection.
+- Read-only JSON inspection for developer tools.
+- JSON API access to the same explicit runtime/store primitives as the CLI.
 - One-shot conversation query primitive.
 - Per-query model override with Bifrost-qualified model names.
-- Tool-call receiving and persistence without tool execution.
+- Tool-call receiving and persistence.
 - Conversation-level tool schema persistence and model request serialization.
 - Typed assistant metadata lanes for tool calls, reasoning, refusal, audio, and
   annotations.
+- Windie-native `run_shell` tool execution with explicit approval.
+- Tool result persistence as `role: tool` messages linked to provider tool-call
+  IDs.
 - Model-facing context construction.
 - Future-ready compaction storage.
 - Basic local performance baselines, repeated benchmark runs, and JSON
@@ -145,15 +154,13 @@ Not in scope yet:
 
 - TUI.
 - Desktop UI.
-- Browser UI.
+- Production browser UI.
 - Voice UI.
 - Agentic tool use.
-- Shell command execution.
 - Browser use.
 - Computer use.
-- Approval flows.
 - Plugin systems.
-- Web dashboard.
+- Production web dashboard.
 - General config files beyond the explicit Bifrost `.env` provider-key file.
 - Persisted conversation/global model selection.
 - Slash commands.
@@ -165,15 +172,24 @@ The CLI should be boring, explicit, and composable. Future TUI, desktop, browser
 and wakeup clients should call the same runtime and store primitives that the
 CLI uses.
 
+The `windie-inspector` frontend is a localhost developer client for testing and
+inspecting runtime primitives. It may call the API, render runtime state, and
+exercise explicit store/runtime operations. It must not own provider logic,
+persistence, model context construction, runtime state transitions, tool
+execution, or permission policy.
+
 ## Architecture
 
 The code should stay split by concrete responsibilities:
 
 ```text
 src/main.rs          wires components together
+src/api.rs           localhost developer API server
 src/cli.rs           startup CLI arguments
-src/output.rs        terminal output only
+src/output.rs        terminal and JSON output only
 src/output_tests.rs  terminal output tests
+src/policy.rs        tool execution policy and approval boundary
+src/policy_tests.rs  tool execution policy tests
 src/conversation.rs  message types, tool schema types, and assistant metadata types
 src/context.rs       model-facing context construction
 src/gateway.rs       Bifrost gateway availability and lifecycle
@@ -182,24 +198,36 @@ src/llm.rs           Bifrost/OpenAI-compatible HTTP client
 src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
+src/shell.rs         built-in run_shell executor
+src/shell_tests.rs   built-in run_shell executor tests
+src/tool_catalog.rs  built-in tool schema catalog
 src/store.rs         SQLite persistence
 src/store_tests.rs   SQLite persistence tests
+src/tool.rs          tool execution result types
 ```
 
 Keep boundaries strict:
 
-- Only `llm.rs` should know about HTTP details.
+- Only `llm.rs` should know about provider HTTP request details.
+- Only `api.rs` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
 - Only `cli.rs` should know about startup CLI argument handling.
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
 - Only `image_input.rs` should know about local image file loading.
-- Only `output.rs` should know about printing.
+- Only `output.rs` should know about terminal and JSON output formatting.
+- Only `policy.rs` should decide whether tool execution is allowed, denied, or
+  requires approval.
 - Only `conversation.rs` should own message roles, typed conversation/message
   identifiers, tool schema types, and assistant metadata types.
 - Only `context.rs` should decide what history the model sees.
 - Only `perf.rs` should own benchmark timing logic.
 - Only `runtime.rs` should coordinate query-like runtime flows.
+- Only `shell.rs` should execute local shell commands.
+- Only `tool_catalog.rs` should own built-in tool schemas that clients may
+  attach to conversations.
 - Only `store.rs` should own persisted message history, tool schemas, and know
   about SQLite tables and queries.
+- Only `tool.rs` should own tool execution result data shared across runtime,
+  output, and executors.
 - `main.rs` should stay small and only wire components together.
 
 ## Teaching Requirement
