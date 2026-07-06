@@ -278,7 +278,7 @@ struct ToolCatalogResponse {
 /// Lists provider tools clients may attach to conversations.
 async fn list_tools() -> ApiResult<ToolCatalogResponse> {
     Ok(Json(ToolCatalogResponse {
-        tools: operation::available_tools(),
+        tools: operation::available_tools()?,
     }))
 }
 
@@ -287,7 +287,7 @@ async fn list_provider_tools(Path(provider_id): Path<String>) -> ApiResult<ToolC
     let provider_id = ToolProviderId::new(provider_id);
 
     Ok(Json(ToolCatalogResponse {
-        tools: operation::available_provider_tools(&provider_id),
+        tools: operation::available_provider_tools(&provider_id)?,
     }))
 }
 

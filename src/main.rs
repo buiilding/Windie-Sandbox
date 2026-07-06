@@ -12,6 +12,7 @@ mod error;
 mod gateway;
 mod image_input;
 mod llm;
+mod mcp;
 mod operation;
 mod output;
 mod perf;
@@ -298,7 +299,7 @@ fn list_tools(provider_id: Option<ToolProviderId>) -> Result<()> {
     let tools = provider_id
         .as_ref()
         .map(operation::available_provider_tools)
-        .unwrap_or_else(operation::available_tools);
+        .unwrap_or_else(operation::available_tools)?;
 
     output.available_tools(&tools);
 

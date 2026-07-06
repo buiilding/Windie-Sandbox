@@ -354,12 +354,12 @@ pub fn remove_system_prompt(store: &mut Store, conversation_id: &ConversationId)
 }
 
 /// Lists provider tools that can be attached to conversations.
-pub fn available_tools() -> Vec<ToolDefinition> {
+pub fn available_tools() -> Result<Vec<ToolDefinition>> {
     ToolProviderRegistry::new().list_available_tools()
 }
 
 /// Lists provider tools for one provider ID.
-pub fn available_provider_tools(provider_id: &ToolProviderId) -> Vec<ToolDefinition> {
+pub fn available_provider_tools(provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
     ToolProviderRegistry::new().list_provider_tools(provider_id)
 }
 
@@ -371,7 +371,7 @@ pub fn attach_tool(
     tool_name: &ProviderToolName,
 ) -> Result<ToolSchemaName> {
     let registry = ToolProviderRegistry::new();
-    let definition = registry.find_tool(provider_id, tool_name).ok_or_else(|| {
+    let definition = registry.find_tool(provider_id, tool_name)?.ok_or_else(|| {
         error::not_found(format!("tool does not exist: {provider_id}/{tool_name}"))
     })?;
     let attached_tool = definition.attached_tool();
@@ -683,7 +683,14 @@ mod tests {
     fn attaches_available_provider_tool() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store).unwrap();
-        let tools = available_tools();
+        let registry = ToolProviderRegistry::new();
+        let run_shell = registry
+            .find_tool(
+                &ToolProviderId::new("windie"),
+                &ProviderToolName::new("run_shell"),
+            )
+            .unwrap()
+            .unwrap();
 
         let schema_name = attach_tool(
             &mut store,
@@ -694,7 +701,7 @@ mod tests {
         .unwrap();
         let attached_tools = store.load_attached_tools(&conversation_id).unwrap();
 
-        assert!(tools.iter().any(|tool| tool.schema_name == schema_name));
+        assert_eq!(run_shell.schema_name, schema_name);
         assert_eq!(schema_name.as_str(), "run_shell");
         assert_eq!(attached_tools.len(), 1);
         assert_eq!(attached_tools[0].provider.provider_id.as_str(), "windie");

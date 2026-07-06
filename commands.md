@@ -110,12 +110,28 @@ This is a catalog, not a permission grant. Provider availability does not grant
 model access and does not authorize execution. A client can show these tools to
 the user, then explicitly attach one to a conversation.
 
+Windie currently includes two approved providers:
+
+```text
+windie       built-in provider for run_shell
+cua-driver   MCP provider launched with `cua-driver mcp`
+```
+
+Windie does not install CUA. `cua-driver` must already be installed and
+available on `PATH`. If it is missing, provider listing or execution returns the
+raw process-start error.
+
 ```text
 windie attach <conversation_id> tool windie run_shell
+windie attach <conversation_id> tool cua-driver click
 ```
 
 Attach one provider tool to a conversation. Attached tools are the schemas sent
 to Bifrost during `query`; approval is still required before execution.
+
+MCP provider tools use provider-prefixed model-facing names. For example,
+attaching CUA's `click` tool stores and sends the schema as
+`cua_driver__click`, while Windie still executes provider tool `click`.
 
 ```text
 windie detach <conversation_id> tool run_shell

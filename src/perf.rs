@@ -1268,6 +1268,7 @@ fn attach_run_shell_tool(store: &mut Store, conversation_id: &ConversationId) ->
             &ToolProviderId::new("windie"),
             &ProviderToolName::new("run_shell"),
         )
+        .context("failed to load built-in provider tools")?
         .ok_or_else(|| anyhow::anyhow!("run_shell provider tool is not registered"))?;
 
     store.insert_attached_tool(conversation_id, &definition.attached_tool())

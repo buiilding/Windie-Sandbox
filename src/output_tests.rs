@@ -10,7 +10,7 @@ use crate::perf::{
     PerformanceReport, PerformanceSummary,
 };
 use crate::store::Compaction;
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool_provider::BuiltInToolProvider;
 
 #[test]
 fn formats_empty_conversations() {
@@ -78,7 +78,7 @@ fn formats_help_lines() {
 
 #[test]
 fn formats_available_tool_schemas() {
-    let tools = ToolProviderRegistry::new().list_available_tools();
+    let tools = BuiltInToolProvider.list_tools();
     let lines = available_tool_lines(&tools);
 
     assert_eq!(

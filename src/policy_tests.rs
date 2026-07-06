@@ -17,6 +17,7 @@ fn attached_run_shell_requires_approval() {
             &crate::tool::ProviderToolName::new("run_shell"),
         )
         .unwrap()
+        .unwrap()
         .attached_tool();
 
     let decision = policy.decide(&tool_call, Some(&attached_tool), true);

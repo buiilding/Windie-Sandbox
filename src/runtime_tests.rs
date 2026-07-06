@@ -946,6 +946,7 @@ fn attach_run_shell_schema(store: &mut Store, conversation_id: &ConversationId) 
             &crate::tool::ProviderToolName::new("run_shell"),
         )
         .unwrap()
+        .unwrap()
         .attached_tool();
 
     store

@@ -200,6 +200,7 @@ src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
 src/llm.rs           Bifrost/OpenAI-compatible HTTP client
+src/mcp.rs           MCP stdio JSON-RPC client
 src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
@@ -214,6 +215,7 @@ src/store_tests.rs   SQLite persistence tests
 Keep boundaries strict:
 
 - Only `llm.rs` should know about provider HTTP request details.
+- Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
 - Only `api.rs` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
 - Only `cli.rs` should know about startup CLI argument handling.
 - Only `operation.rs` should own shared CLI/API orchestration over store/runtime
