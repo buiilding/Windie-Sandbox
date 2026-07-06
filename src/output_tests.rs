@@ -28,6 +28,7 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie".to_string()));
     assert!(lines.contains(&"  windie tools".to_string()));
     assert!(lines.contains(&"  windie models".to_string()));
+    assert!(lines.contains(&"  windie models --chat".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
     assert!(lines.contains(&"  windie ls --json".to_string()));
     assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));

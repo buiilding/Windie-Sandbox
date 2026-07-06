@@ -1,10 +1,10 @@
 import { createContext, useContext, useMemo, useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import {
-  MODELS,
   apiRequest,
   conversationFromInspection,
   conversationSummaryFromApi,
+  listChatModels,
   toolCatalogFromApi,
 } from "@/lib/windieApi";
 
@@ -24,6 +24,9 @@ export function WindieProvider({ children }) {
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [approvals, setApprovals] = useState([]);
   const [availableToolSchemas, setAvailableToolSchemas] = useState([]);
+  const [models, setModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(null);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -49,6 +52,22 @@ export function WindieProvider({ children }) {
     const body = await apiRequest("/api/status");
     setGatewayRunning(Boolean(body.gateway_running));
     return body.gateway_running;
+  }, []);
+
+  const refreshModels = useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      const nextModels = await listChatModels();
+      setModels(nextModels);
+      setModelsError(null);
+      return nextModels;
+    } catch (error) {
+      setModels([]);
+      setModelsError(error.message);
+      throw error;
+    } finally {
+      setModelsLoading(false);
+    }
   }, []);
 
   const refreshAvailableTools = useCallback(async () => {
@@ -103,6 +122,10 @@ export function WindieProvider({ children }) {
   useEffect(() => {
     refreshGateway().catch((error) => setApiError(error.message));
   }, [refreshGateway]);
+
+  useEffect(() => {
+    refreshModels().catch(() => {});
+  }, [refreshModels]);
 
   useEffect(() => {
     refreshAvailableTools().catch((error) => setApiError(error.message));
@@ -347,11 +370,12 @@ export function WindieProvider({ children }) {
         async () => {
           const result = await apiRequest("/api/gateway/start", { method: "POST" });
           await refreshGateway();
+          await refreshModels().catch(() => {});
           return result;
         },
         { reload: false }
       ),
-    [refreshGateway, runMutation]
+    [refreshGateway, refreshModels, runMutation]
   );
 
   const stopGateway = useCallback(
@@ -360,11 +384,12 @@ export function WindieProvider({ children }) {
         async () => {
           const result = await apiRequest("/api/gateway/stop", { method: "POST" });
           await refreshGateway();
+          await refreshModels().catch(() => {});
           return result;
         },
         { reload: false }
       ),
-    [refreshGateway, runMutation]
+    [refreshGateway, refreshModels, runMutation]
   );
 
   const approveToolCall = useCallback(
@@ -399,7 +424,9 @@ export function WindieProvider({ children }) {
     streaming,
     modelOverride,
     searchQuery,
-    models: MODELS,
+    models,
+    modelsLoading,
+    modelsError,
     toolSchemas: activeConv?.toolSchemas || [],
     availableToolSchemas,
     apiError,
@@ -412,6 +439,7 @@ export function WindieProvider({ children }) {
     setContextPreviewOpen,
     setModelOverride,
     setSearchQuery,
+    refreshModels,
     createConversation,
     renameConversation,
     deleteConversation,

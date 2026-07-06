@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -28,7 +28,7 @@ use crate::conversation::{
 };
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
-use crate::llm::ModelName;
+use crate::llm::{BaseUrl, ModelInfo, ModelName};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::store::{ConversationInfo, Store};
@@ -81,6 +81,7 @@ fn router(state: ApiState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/status", get(status))
+        .route("/api/models", get(list_models))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))
         .route("/api/gateway/start", post(start_gateway))
@@ -303,6 +304,47 @@ async fn status(
 ) -> ApiResult<StatusResponse> {
     Ok(Json(StatusResponse {
         gateway_running: operation::gateway_status(GatewayUrl::new(state.gateway_url)).await,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+/// Optional filters accepted by the model list endpoint.
+struct ModelsQuery {
+    chat: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+/// Models returned by the configured local Bifrost gateway.
+struct ModelListResponse {
+    models: Vec<ModelResponse>,
+}
+
+#[derive(Debug, Serialize)]
+/// One provider-qualified model id available through Bifrost.
+struct ModelResponse {
+    id: String,
+}
+
+impl From<ModelInfo> for ModelResponse {
+    fn from(model: ModelInfo) -> Self {
+        Self { id: model.id }
+    }
+}
+
+/// Lists models reported by the running gateway for API clients.
+async fn list_models(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Query(query): Query<ModelsQuery>,
+) -> ApiResult<ModelListResponse> {
+    let models = operation::list_models(
+        GatewayUrl::new(state.gateway_url),
+        BaseUrl::new(state.base_url),
+        query.chat.unwrap_or(false),
+    )
+    .await?;
+
+    Ok(Json(ModelListResponse {
+        models: models.into_iter().map(ModelResponse::from).collect(),
     }))
 }
 
@@ -1364,6 +1406,26 @@ mod tests {
                 &format!("/api/conversations/{conversation_id}/query"),
                 Some(json!({"model":"openai/test"})),
             ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json_body(response).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body["error"],
+            "Bifrost is not running. Start it with: windie gateway start"
+        );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn model_list_route_returns_gateway_error_when_gateway_is_offline() {
+        let db_path = temp_database_path();
+        let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
+
+        let response = app
+            .oneshot(authed_request(Method::GET, "/api/models?chat=true", None))
             .await
             .unwrap();
         let status = response.status();

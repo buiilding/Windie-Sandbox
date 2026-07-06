@@ -1,5 +1,6 @@
 const API_BASE = process.env.REACT_APP_WINDIE_API_URL || "http://127.0.0.1:8787";
 const API_TOKEN_STORAGE_KEY = "windie_api_token";
+export const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
 function apiToken() {
   const params = new URLSearchParams(window.location.search);
@@ -15,13 +16,6 @@ function apiToken() {
     ""
   );
 }
-
-export const MODELS = [
-  { id: "openai/gpt-4o-mini", label: "openai/gpt-4o-mini", family: "cloud" },
-  { id: "anthropic/claude-3-5-sonnet", label: "anthropic/claude-3-5-sonnet", family: "cloud" },
-  { id: "ollama/llama3.1", label: "ollama/llama3.1", family: "local" },
-  { id: "openrouter/openai/gpt-4o-mini", label: "openrouter/openai/gpt-4o-mini", family: "cloud" },
-];
 
 export async function apiRequest(path, options = {}) {
   const token = apiToken();
@@ -49,11 +43,19 @@ export async function apiRequest(path, options = {}) {
   return body;
 }
 
+export async function listChatModels() {
+  const body = await apiRequest("/api/models?chat=true");
+  return (body.models || []).map((model) => ({
+    id: model.id,
+    label: model.id,
+  }));
+}
+
 export function conversationSummaryFromApi(summary) {
   return {
     id: summary.id,
     name: summary.title || `conversation ${summary.id.slice(0, 8)}`,
-    model: MODELS[0].id,
+    model: DEFAULT_MODEL,
     systemPrompt: "",
     rootId: null,
     nodes: {},

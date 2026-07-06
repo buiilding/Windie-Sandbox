@@ -20,7 +20,9 @@ use crate::conversation::{
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::{ImageInput, read_image_input};
-use crate::llm::{self, BaseUrl, BifrostClient, ModelInfo, ModelName, RuntimeLlm};
+use crate::llm::{
+    self, BaseUrl, BifrostClient, ModelInfo, ModelName, ModelRequestType, RuntimeLlm,
+};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
     approve_tool_call, deny_tool_call, pending_tool_approvals,
@@ -206,9 +208,15 @@ pub async fn require_gateway_running(gateway_url: GatewayUrl) -> Result<()> {
 /// This operation is intentionally read-only. It does not start, stop, restart,
 /// or reconfigure Bifrost; users restart the gateway explicitly after changing
 /// `.env`.
-pub async fn list_models(gateway_url: GatewayUrl, base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
+pub async fn list_models(
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+    chat_only: bool,
+) -> Result<Vec<ModelInfo>> {
     require_gateway_running(gateway_url).await?;
-    llm::list_models(base_url).await
+    let request_type = chat_only.then_some(ModelRequestType::ChatCompletion);
+
+    llm::list_models(base_url, request_type).await
 }
 
 /// Loads the active path shown by the CLI and inspector.

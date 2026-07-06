@@ -68,6 +68,21 @@ pub struct ModelInfo {
     pub id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Bifrost request-type filter for model listing.
+pub enum ModelRequestType {
+    ChatCompletion,
+}
+
+impl ModelRequestType {
+    /// Returns the request type text understood by Bifrost.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletion => "chat_completion",
+        }
+    }
+}
+
 /// Minimal LLM interface needed by runtime query execution.
 ///
 /// Tests use this trait to simulate success and failure without making network
@@ -354,9 +369,16 @@ fn models_endpoint(base_url: &BaseUrl) -> String {
 /// Provider detection and model discovery are owned by Bifrost. Windie only
 /// reads the current gateway state exposed through the OpenAI-compatible
 /// `/models` endpoint.
-pub async fn list_models(base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
-    let response = Client::new()
-        .get(models_endpoint(&base_url))
+pub async fn list_models(
+    base_url: BaseUrl,
+    request_type: Option<ModelRequestType>,
+) -> Result<Vec<ModelInfo>> {
+    let mut request = Client::new().get(models_endpoint(&base_url));
+    if let Some(request_type) = request_type {
+        request = request.query(&[("request_type", request_type.as_str())]);
+    }
+
+    let response = request
         .send()
         .await
         .context("failed to send model list request")?;
