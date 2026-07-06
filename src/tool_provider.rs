@@ -20,12 +20,6 @@ use crate::tool::{
 
 const WINDIE_PROVIDER_ID: &str = "windie";
 const RUN_SHELL_TOOL_NAME: &str = "run_shell";
-const CUA_DRIVER_PROVIDER_ID: &str = "cua-driver";
-const CUA_DRIVER_SCHEMA_PREFIX: &str = "cua_driver";
-const CUA_DRIVER_COMMAND: McpCommand = McpCommand {
-    program: "cua-driver",
-    args: &["mcp"],
-};
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -135,7 +129,11 @@ impl Default for ToolProviderRegistry {
     fn default() -> Self {
         Self {
             built_in: BuiltInToolProvider,
-            mcp_providers: vec![McpToolProvider::cua_driver()],
+            mcp_providers: APPROVED_MCP_PROVIDERS
+                .iter()
+                .copied()
+                .map(McpToolProvider::new)
+                .collect(),
         }
     }
 }
@@ -208,6 +206,34 @@ fn run_shell_tool_definition() -> ToolDefinition {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+/// Static definition for one code-approved MCP provider.
+///
+/// This is intentionally data, not runtime state. Adding a future approved MCP
+/// provider should add one entry to `APPROVED_MCP_PROVIDERS` while
+/// keeping `McpToolProvider` generic.
+struct McpProviderDefinition {
+    provider_id: &'static str,
+    schema_prefix: &'static str,
+    display_name: &'static str,
+    command: McpCommand,
+}
+
+/// MCP providers Windie is willing to start and execute.
+///
+/// This is a code-owned allowlist, not user configuration. Provider
+/// availability still does not grant model access; conversations must attach
+/// individual tools before their schemas are sent to the model.
+const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[McpProviderDefinition {
+    provider_id: "cua-driver",
+    schema_prefix: "cua_driver",
+    display_name: "CUA Driver",
+    command: McpCommand {
+        program: "cua-driver",
+        args: &["mcp"],
+    },
+}];
+
 #[derive(Debug, Clone)]
 /// Provider for an approved MCP stdio server.
 pub struct McpToolProvider {
@@ -218,19 +244,19 @@ pub struct McpToolProvider {
 }
 
 impl McpToolProvider {
+    /// Builds a runtime provider from a code-approved provider definition.
+    fn new(definition: McpProviderDefinition) -> Self {
+        Self {
+            provider_id: ToolProviderId::new(definition.provider_id),
+            schema_prefix: definition.schema_prefix,
+            display_name: definition.display_name,
+            command: definition.command,
+        }
+    }
+
     /// Returns the stable provider ID used by attachments and dispatch.
     fn id(&self) -> &ToolProviderId {
         &self.provider_id
-    }
-
-    /// Builds the approved CUA driver MCP provider.
-    pub fn cua_driver() -> Self {
-        Self {
-            provider_id: ToolProviderId::new(CUA_DRIVER_PROVIDER_ID),
-            schema_prefix: CUA_DRIVER_SCHEMA_PREFIX,
-            display_name: "CUA Driver",
-            command: CUA_DRIVER_COMMAND,
-        }
     }
 
     /// Lists tools from the MCP server and maps them into Windie definitions.
@@ -331,6 +357,15 @@ fn mcp_schema_name(schema_prefix: &str, tool_name: &str) -> String {
 mod tests {
     use super::*;
 
+    fn approved_cua_provider() -> McpToolProvider {
+        let definition = APPROVED_MCP_PROVIDERS
+            .iter()
+            .copied()
+            .find(|definition| definition.provider_id == "cua-driver")
+            .unwrap();
+        McpToolProvider::new(definition)
+    }
+
     #[test]
     fn mcp_schema_names_are_provider_prefixed() {
         assert_eq!(mcp_schema_name("cua_driver", "click"), "cua_driver__click");
@@ -342,7 +377,7 @@ mod tests {
 
     #[test]
     fn cua_mcp_tools_map_to_provider_backed_definitions() {
-        let provider = McpToolProvider::cua_driver();
+        let provider = approved_cua_provider();
         let definition = provider.definition_from_mcp_tool(McpTool {
             name: "click".to_string(),
             description: "Click somewhere".to_string(),
@@ -405,15 +440,15 @@ mod tests {
     fn unavailable_mcp_provider_does_not_hide_builtin_tools() {
         let registry = ToolProviderRegistry {
             built_in: BuiltInToolProvider,
-            mcp_providers: vec![McpToolProvider {
-                provider_id: ToolProviderId::new("missing-mcp"),
+            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                provider_id: "missing-mcp",
                 schema_prefix: "missing_mcp",
                 display_name: "Missing MCP",
                 command: McpCommand {
                     program: "windie-missing-mcp-provider",
                     args: &[],
                 },
-            }],
+            })],
         };
 
         let tools = registry.list_available_tools().unwrap();
