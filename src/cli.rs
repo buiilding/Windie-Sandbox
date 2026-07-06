@@ -85,6 +85,8 @@ pub enum Command {
     List {
         json: bool,
     },
+    /// List models reported by the running Bifrost gateway.
+    Models,
     New,
     Noop,
     Query {
@@ -165,6 +167,7 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
         [arg] if arg == "api" => Command::Api,
         [arg] if arg == "tools" => Command::Tools { provider_id: None },
+        [arg] if arg == "models" => Command::Models,
         [command, provider_id] if command == "tools" => Command::Tools {
             provider_id: Some(ToolProviderId::new(provider_id.as_str())),
         },
@@ -578,6 +581,13 @@ mod tests {
         let command = command_from_args(["windie".to_string(), "tools".to_string()]);
 
         assert!(matches!(command, Command::Tools { provider_id: None }));
+    }
+
+    #[test]
+    fn reads_models_command() {
+        let command = command_from_args(["windie".to_string(), "models".to_string()]);
+
+        assert!(matches!(command, Command::Models));
     }
 
     #[test]

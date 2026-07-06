@@ -98,6 +98,7 @@ async fn main() -> Result<()> {
             message_id,
         } => fork_conversation(conversation_id, message_id),
         Command::List { json } => list_conversations(json),
+        Command::Models => list_models().await,
         Command::New => new_conversation(),
         Command::Query {
             conversation_id,
@@ -516,6 +517,16 @@ fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> 
         operation::fork_conversation(&mut store, &conversation_id, &message_id)?;
 
     output.forked_conversation(&forked_conversation_id);
+
+    Ok(())
+}
+
+/// Lists models exposed by the currently running Bifrost gateway.
+async fn list_models() -> Result<()> {
+    let output = TerminalOutput;
+    let models = operation::list_models(gateway_url(), base_url()).await?;
+
+    output.models(&models);
 
     Ok(())
 }

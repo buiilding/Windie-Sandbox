@@ -27,6 +27,7 @@ fn formats_help_lines() {
     assert!(lines.contains(&"Usage:".to_string()));
     assert!(lines.contains(&"  windie".to_string()));
     assert!(lines.contains(&"  windie tools".to_string()));
+    assert!(lines.contains(&"  windie models".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
     assert!(lines.contains(&"  windie ls --json".to_string()));
     assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));
@@ -94,6 +95,34 @@ fn formats_empty_available_tool_schemas() {
     let lines = available_tool_lines(&[]);
 
     assert_eq!(lines, vec!["no tools"]);
+}
+
+#[test]
+fn formats_models() {
+    let lines = model_lines(&[
+        ModelInfo {
+            id: "openai/gpt-4o-mini".to_string(),
+        },
+        ModelInfo {
+            id: "anthropic/claude-sonnet-4-5".to_string(),
+        },
+    ]);
+
+    assert_eq!(
+        lines,
+        vec![
+            "models",
+            "anthropic/claude-sonnet-4-5",
+            "openai/gpt-4o-mini"
+        ]
+    );
+}
+
+#[test]
+fn formats_empty_models() {
+    let lines = model_lines(&[]);
+
+    assert_eq!(lines, vec!["no models"]);
 }
 
 #[test]

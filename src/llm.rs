@@ -1,7 +1,8 @@
 //! OpenAI-compatible streaming LLM client.
 //!
 //! This module owns OpenAI-compatible request serialization, HTTP requests to
-//! Bifrost's chat completions endpoint, and streamed response parsing.
+//! Bifrost's chat completions and model-list endpoints, and streamed response
+//! parsing.
 
 use std::collections::BTreeMap;
 
@@ -61,6 +62,12 @@ impl std::fmt::Display for ModelName {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// One model returned by Bifrost's OpenAI-compatible `/models` endpoint.
+pub struct ModelInfo {
+    pub id: String,
+}
+
 /// Minimal LLM interface needed by runtime query execution.
 ///
 /// Tests use this trait to simulate success and failure without making network
@@ -108,6 +115,12 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ChatTool<'a>>>,
     stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+/// OpenAI-compatible model list response returned by Bifrost.
+struct ModelsResponse {
+    data: Vec<ModelInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -329,6 +342,37 @@ impl BifrostClient {
 
         Ok(response)
     }
+}
+
+/// Builds the model-list endpoint from the normalized base URL.
+fn models_endpoint(base_url: &BaseUrl) -> String {
+    format!("{base_url}/models")
+}
+
+/// Lists models known to the running Bifrost gateway.
+///
+/// Provider detection and model discovery are owned by Bifrost. Windie only
+/// reads the current gateway state exposed through the OpenAI-compatible
+/// `/models` endpoint.
+pub async fn list_models(base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
+    let response = Client::new()
+        .get(models_endpoint(&base_url))
+        .send()
+        .await
+        .context("failed to send model list request")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!("model list request failed with {status}: {body}"));
+    }
+
+    let response = response
+        .json::<ModelsResponse>()
+        .await
+        .context("failed to parse model list response")?;
+
+    Ok(response.data)
 }
 
 /// Converts Windie's internal messages into the OpenAI-compatible request shape.
@@ -733,6 +777,40 @@ mod tests {
         assert_eq!(
             llm.chat_endpoint(),
             "http://localhost:8080/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn builds_models_endpoint_from_base_url() {
+        let base_url = BaseUrl::new("http://localhost:8080/v1/");
+
+        assert_eq!(
+            models_endpoint(&base_url),
+            "http://localhost:8080/v1/models"
+        );
+    }
+
+    #[test]
+    fn deserializes_model_list_response() {
+        let response: ModelsResponse = serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "openai/gpt-4o-mini", "object": "model"},
+                {"id": "anthropic/claude-sonnet-4-5", "object": "model"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response.data,
+            vec![
+                ModelInfo {
+                    id: "openai/gpt-4o-mini".to_string()
+                },
+                ModelInfo {
+                    id: "anthropic/claude-sonnet-4-5".to_string()
+                }
+            ]
         );
     }
 

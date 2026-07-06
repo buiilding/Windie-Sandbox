@@ -14,6 +14,7 @@ use serde::Serialize;
 use crate::conversation::{
     ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
 };
+use crate::llm::ModelInfo;
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::store::ConversationInfo;
@@ -371,6 +372,11 @@ impl TerminalOutput {
         println!("gateway: not running");
     }
 
+    /// Prints models currently reported by the running Bifrost gateway.
+    pub fn models(&self, models: &[ModelInfo]) {
+        print_lines(&model_lines(models));
+    }
+
     /// Prints provider tools that can be attached to conversations.
     pub fn available_tools(&self, tools: &[ToolDefinition]) {
         for line in available_tool_lines(tools) {
@@ -547,6 +553,7 @@ fn help_lines() -> Vec<String> {
         "  windie",
         "  windie api",
         "  windie tools",
+        "  windie models",
         "  windie new",
         "  windie ls",
         "  windie ls --json",
@@ -587,6 +594,7 @@ fn help_lines() -> Vec<String> {
         "  windie exits successfully without runtime action.",
         "  windie api starts the localhost developer API server.",
         "  windie tools lists provider tools available to attach to conversations.",
+        "  windie models lists models from the currently running Bifrost gateway.",
         "  windie bench <conversation_id> measures active path, tree, tool schema load, and context build.",
         "  windie bench runtime measures provider-free runtime and write-path primitives.",
         "  windie bench <conversation_id> --json writes a persistent benchmark artifact to stdout.",
@@ -594,6 +602,7 @@ fn help_lines() -> Vec<String> {
         "  windie inspect <conversation_id> --json prints full read-only runtime state.",
         "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
         "  windie gateway stop stops the local Bifrost gateway.",
+        "  windie models requires the local Bifrost gateway to be running.",
         "  windie query requires the local Bifrost gateway to be running.",
         "  windie query --model passes the model name to Bifrost for one request.",
         "  windie approvals lists pending tool calls that require user approval.",
@@ -627,6 +636,24 @@ fn available_tool_lines(tools: &[ToolDefinition]) -> Vec<String> {
             tool.provider.provider_id, tool.provider.tool_name, tool.schema_name, tool.description
         )
     }));
+
+    lines
+}
+
+/// Converts Bifrost model metadata into stable CLI lines.
+fn model_lines(models: &[ModelInfo]) -> Vec<String> {
+    if models.is_empty() {
+        return vec!["no models".to_string()];
+    }
+
+    let mut ids = models
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+
+    let mut lines = vec!["models".to_string()];
+    lines.extend(ids.into_iter().map(str::to_string));
 
     lines
 }

@@ -422,6 +422,24 @@ windie query <conversation_id> --model ollama/llama3.2
 ## Runtime Status
 
 ```text
+windie models
+```
+
+List models currently reported by the running Bifrost gateway.
+
+Requires the local Bifrost gateway to already be running. This command is
+read-only: it does not start, stop, restart, or reconfigure Bifrost.
+
+After changing Windie's `.env`, restart the gateway explicitly before listing
+models again:
+
+```text
+windie gateway stop
+windie gateway start
+windie models
+```
+
+```text
 windie status
 ```
 
