@@ -817,7 +817,7 @@ async fn query(
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
-    operation::validate_query_availability(&store, &conversation_id)?;
+    operation::prepare_query_turn(&mut store, &conversation_id)?;
     operation::require_gateway_running(GatewayUrl::new(state.gateway_url.clone())).await?;
     let model = request.model.unwrap_or_else(|| state.model.clone());
     let llm = BifrostClient::new(BaseUrl::new(state.base_url.clone()), ModelName::new(model));
@@ -993,6 +993,38 @@ mod tests {
 
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn insert_tool_role_message_returns_raw_error() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+
+        let response = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/messages"),
+                Some(json!({"role":"tool","text":"tool output"})),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json_body(response).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "role: tool messages must be created through approve or deny"
+        );
         let _ = fs::remove_file(db_path);
     }
 

@@ -53,7 +53,7 @@ branch_chain() {
     index=1
     while [ "$index" -le "$count" ]; do
         case $((index % 3)) in
-            0) role="tool" ;;
+            0) role="assistant" ;;
             1) role="user" ;;
             *) role="assistant" ;;
         esac
@@ -86,7 +86,7 @@ while [ "$i" -le 100 ]; do
                 0) role="assistant" ;;
                 1) role="user" ;;
                 2) role="assistant" ;;
-                *) role="tool" ;;
+                *) role="user" ;;
             esac
             message_id="$(insert_text "$role" "main $role message $i")"
             ;;

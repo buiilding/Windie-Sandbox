@@ -490,7 +490,7 @@ fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> 
 async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
-    operation::validate_query_availability(&store, &conversation_id)?;
+    operation::prepare_query_turn(&mut store, &conversation_id)?;
     operation::require_gateway_running(gateway_url()).await?;
     let llm = BifrostClient::new(base_url(), model.unwrap_or_else(model_name));
 

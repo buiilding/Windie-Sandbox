@@ -188,18 +188,16 @@ The role must currently be one of:
 ```text
 user
 assistant
-tool
 ```
 
-`tool` currently means a tool output message. It is not a tool call schema or a
-request to execute a tool.
+Tool output messages are created only by `windie approve` or `windie deny`
+because they must carry the provider tool-call ID they answer.
 
 Examples:
 
 ```text
 windie insert <conversation_id> message --role user --text "hello"
 windie insert <conversation_id> message --role assistant --text "hello back"
-windie insert <conversation_id> message --role tool --text "tool output"
 ```
 
 The command prints the new message ID.
@@ -350,6 +348,10 @@ windie query <conversation_id>
 
 Use `windie deny <conversation_id> <tool_call_id>` instead of `approve` to store
 a rejected tool result.
+
+If policy denies a requested tool, such as an unknown tool name, Windie records a
+failed `role: tool` result automatically during the query turn. It does not show
+that call as an approval because there is no user decision to make.
 
 ```text
 windie approvals <conversation_id>

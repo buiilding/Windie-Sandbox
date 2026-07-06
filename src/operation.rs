@@ -24,8 +24,8 @@ use crate::llm::{ModelName, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
     approve_tool_call, deny_tool_call, pending_tool_approvals,
+    prepare_query_turn as runtime_prepare_query_turn,
     query_conversation_once as runtime_query_conversation_once,
-    validate_query_availability as runtime_validate_query_availability,
 };
 use crate::store::{Compaction, ConversationInfo, ImagePayload, MessagePayload, Store};
 use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
@@ -256,6 +256,12 @@ pub fn insert_message(
 ) -> Result<MessageId> {
     validate_insert_parts(parts)?;
 
+    if role == Role::Tool {
+        return Err(error::invalid_request(
+            "role: tool messages must be created through approve or deny",
+        ));
+    }
+
     let parent_message_id = store.active_message_id(conversation_id)?;
     let has_image = parts
         .iter()
@@ -403,16 +409,17 @@ pub fn list_tool_approvals(
     pending_tool_approvals(store, conversation_id)
 }
 
-/// Validates that a query can be sent without producing malformed tool context.
-pub fn validate_query_availability(store: &Store, conversation_id: &ConversationId) -> Result<()> {
-    runtime_validate_query_availability(store, conversation_id)
+/// Records policy-denied tool results, then validates that query can proceed.
+pub fn prepare_query_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
+    runtime_prepare_query_turn(store, conversation_id)
 }
 
 /// Runs one explicit model query turn for a conversation.
 ///
 /// This operation is the shared CLI/API entrypoint for query-like work. It does
-/// not loop through tool calls; callers compose approval, denial, and later
-/// query turns as separate explicit operations.
+/// not prepare the active path and does not loop through tool calls; callers
+/// compose `prepare_query_turn`, approval, denial, and later query turns as
+/// separate explicit operations.
 pub async fn query_conversation_once<O, L>(
     output: &O,
     llm: &L,
@@ -519,6 +526,25 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id.as_ref(), Some(&message_id));
         assert_eq!(messages[0].content, "hello");
+    }
+
+    #[test]
+    fn rejects_direct_tool_message_insert() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store).unwrap();
+
+        let error = insert_message(
+            &mut store,
+            &conversation_id,
+            Role::Tool,
+            &[MessageInputPart::Text("tool output".to_string())],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "role: tool messages must be created through approve or deny"
+        );
     }
 
     #[test]

@@ -134,6 +134,55 @@ impl RuntimeLlm for ToolCallLlm {
     }
 }
 
+struct UnknownToolCallLlm;
+
+impl RuntimeLlm for UnknownToolCallLlm {
+    async fn stream<F>(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _handle_delta: F,
+    ) -> Result<AssistantResponse>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        Ok(AssistantResponse {
+            content: String::new(),
+            metadata: MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_unknown", "unknown_tool", "{}")],
+                ..Default::default()
+            },
+            finish_reason: Some(FinishReason::ToolCalls),
+        })
+    }
+}
+
+struct UnknownThenShellToolCallLlm;
+
+impl RuntimeLlm for UnknownThenShellToolCallLlm {
+    async fn stream<F>(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _handle_delta: F,
+    ) -> Result<AssistantResponse>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        Ok(AssistantResponse {
+            content: String::new(),
+            metadata: MessageMetadata {
+                tool_calls: vec![
+                    ToolCall::function("call_unknown", "unknown_tool", "{}"),
+                    ToolCall::function("call_shell", "run_shell", r#"{"command":"printf ok"}"#),
+                ],
+                ..Default::default()
+            },
+            finish_reason: Some(FinishReason::ToolCalls),
+        })
+    }
+}
+
 struct ToolThenReplyLlm {
     calls: Mutex<usize>,
     second_turn_messages: Mutex<Vec<Message>>,
@@ -370,7 +419,108 @@ async fn query_conversation_once_saves_tool_calls_without_executing() {
 }
 
 #[tokio::test]
-async fn pending_tool_approvals_lists_unresolved_shell_calls() {
+async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "use a tool", None)
+        .unwrap();
+
+    query_conversation_once(
+        &NoopOutput,
+        &UnknownToolCallLlm,
+        &mut store,
+        &conversation_id,
+    )
+    .await
+    .unwrap();
+    let messages = store.load_active_path(&conversation_id).unwrap();
+    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1].role, Role::Assistant);
+    assert_eq!(messages[2].role, Role::Tool);
+    assert!(messages[2].content.contains("unknown tool: unknown_tool"));
+    assert_eq!(
+        messages[2]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.tool_call_id.as_ref())
+            .map(ToolCallId::as_str),
+        Some("call_unknown")
+    );
+    assert!(approvals.is_empty());
+    validate_query_availability(&store, &conversation_id).unwrap();
+}
+
+#[tokio::test]
+async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "use tools", None)
+        .unwrap();
+
+    query_conversation_once(
+        &NoopOutput,
+        &UnknownThenShellToolCallLlm,
+        &mut store,
+        &conversation_id,
+    )
+    .await
+    .unwrap();
+    let messages = store.load_active_path(&conversation_id).unwrap();
+    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[2].role, Role::Tool);
+    assert!(messages[2].content.contains("unknown tool: unknown_tool"));
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].tool_call.id.as_str(), "call_shell");
+}
+
+#[tokio::test]
+async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_query() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use a tool", None)
+        .unwrap();
+    store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_unknown", "unknown_tool", "{}")],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let llm = CapturingLlm::new();
+
+    prepare_query_turn(&mut store, &conversation_id).unwrap();
+    query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
+        .await
+        .unwrap();
+    let captured = llm.messages.lock().unwrap();
+
+    assert_eq!(captured.len(), 3);
+    assert_eq!(captured[2].role, Role::Tool);
+    assert!(captured[2].content.contains("unknown tool: unknown_tool"));
+    assert_eq!(
+        captured[2]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.tool_call_id.as_ref())
+            .map(ToolCallId::as_str),
+        Some("call_unknown")
+    );
+}
+
+#[tokio::test]
+async fn pending_tool_approvals_lists_pending_shell_calls() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let user_id = store
@@ -631,25 +781,11 @@ async fn query_rejects_until_all_tool_calls_have_results() {
     let (_assistant_id, first_call_id, _second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
-    let first_error = query_conversation_once(
-        &NoopOutput,
-        &ReplyLlm::new("should not run"),
-        &mut store,
-        &conversation_id,
-    )
-    .await
-    .unwrap_err();
+    let first_error = prepare_query_turn(&mut store, &conversation_id).unwrap_err();
     approve_tool_call(&mut store, &conversation_id, &first_call_id)
         .await
         .unwrap();
-    let second_error = query_conversation_once(
-        &NoopOutput,
-        &ReplyLlm::new("should not run"),
-        &mut store,
-        &conversation_id,
-    )
-    .await
-    .unwrap_err();
+    let second_error = prepare_query_turn(&mut store, &conversation_id).unwrap_err();
 
     assert_eq!(
         first_error.to_string(),

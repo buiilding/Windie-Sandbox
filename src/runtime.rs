@@ -22,10 +22,13 @@ use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
 
 /// Runs one assistant inference turn and persists the assistant message.
 ///
-/// This is intentionally one model request. If the assistant returns tool-call
-/// metadata, Windie stores that assistant message and stops. Callers compose the
-/// next steps explicitly with `pending_tool_approvals`, `approve_tool_call` or
-/// `deny_tool_call`, and then another call to this function.
+/// This is intentionally one model request. Callers must run
+/// `prepare_query_turn` first so pending tool work cannot produce malformed
+/// provider context. If the assistant returns tool-call metadata, Windie stores
+/// that assistant message, records failed results for policy-denied calls, and
+/// stops before any approval-required tool execution. Callers compose approval
+/// steps explicitly with `pending_tool_approvals`, `approve_tool_call` or
+/// `deny_tool_call`, and then another prepared query turn.
 pub(crate) async fn query_conversation_once<O, L>(
     output: &O,
     llm: &L,
@@ -36,8 +39,6 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    validate_query_availability(store, conversation_id)?;
-
     let parent_message_id = store.active_message_id(conversation_id)?;
     let model_messages = ContextBuilder::build(store, conversation_id)?;
     let tool_schemas = store.load_tool_schemas(conversation_id)?;
@@ -63,6 +64,7 @@ where
         &assistant_response.content,
         metadata.as_ref(),
     )?;
+    store_policy_denied_tool_results(store, conversation_id)?;
 
     Ok(Message {
         id: Some(assistant_message_id),
@@ -72,6 +74,19 @@ where
         parts: Vec::new(),
         metadata,
     })
+}
+
+/// Prepares the active path for a model query.
+///
+/// Policy-denied tool calls have no user decision to wait for, so Windie records
+/// failed tool results for them before checking whether any approval-required
+/// calls still block the query.
+pub(crate) fn prepare_query_turn(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+) -> Result<()> {
+    store_policy_denied_tool_results(store, conversation_id)?;
+    validate_query_availability(store, conversation_id)
 }
 
 /// Rejects model queries while the active path is waiting for tool results.
@@ -126,6 +141,40 @@ pub(crate) fn pending_tool_approvals(
     }
 
     Ok(Vec::new())
+}
+
+/// Stores failed tool results for pending calls that policy refuses to run.
+///
+/// Policy denial is not a user decision, but the model-facing protocol still
+/// requires a `role: tool` result before the next assistant turn. This helper
+/// advances through denied calls in metadata order and stops at the first call
+/// that needs explicit approval.
+fn store_policy_denied_tool_results(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+) -> Result<()> {
+    let policy = ToolPolicy;
+
+    loop {
+        let messages = store.load_active_path(conversation_id)?;
+        let Some(execution) = active_tool_execution(&messages) else {
+            return Ok(());
+        };
+        let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
+            return Ok(());
+        };
+
+        let PolicyDecision::Deny { reason } = policy.decide(&tool_call) else {
+            return Ok(());
+        };
+        let result = ToolExecutionResult::failure(tool_call.id.clone(), tool_call.name(), reason);
+        store_tool_result(
+            store,
+            conversation_id,
+            &execution.result_parent_message_id,
+            &result,
+        )?;
+    }
 }
 
 /// One pending tool call plus the message that should parent its result.
