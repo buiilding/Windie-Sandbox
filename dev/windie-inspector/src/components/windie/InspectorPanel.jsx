@@ -69,7 +69,9 @@ export default function InspectorPanel() {
     modelOverride,
     availableToolSchemas,
     addToolSchema,
+    addToolSchemas,
     removeToolSchema,
+    removeToolSchemas,
   } = useWindie();
   const [editingSys, setEditingSys] = useState(false);
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
@@ -83,6 +85,10 @@ export default function InspectorPanel() {
   const attachedToolNames = useMemo(
     () => new Set(toolSchemas.map((schema) => schema.name)),
     [toolSchemas]
+  );
+  const groupedToolSchemas = useMemo(
+    () => groupToolSchemasByProvider(availableToolSchemas),
+    [availableToolSchemas]
   );
 
   const runtimeRequestPreview = useMemo(() => {
@@ -427,50 +433,114 @@ export default function InspectorPanel() {
         >
           <div className="space-y-2">
             {availableToolSchemas.length > 0 ? (
-              <div className="space-y-1">
-                {availableToolSchemas.map((schema) => {
-                  const attached = attachedToolNames.has(schema.name);
+              <div className="space-y-2">
+                {groupedToolSchemas.map((group) => {
+                  const unattachedTools = group.tools.filter(
+                    (schema) => !attachedToolNames.has(schema.name)
+                  );
+                  const attachedTools = group.tools.filter((schema) =>
+                    attachedToolNames.has(schema.name)
+                  );
 
                   return (
-                    <div
-                      key={schema.name}
-                      className="w-full min-h-8 px-2 py-1.5 flex items-center justify-between gap-2 border border-border"
-                    >
-                      <span className="min-w-0">
-                        <span className="block font-mono text-[11px] text-[hsl(var(--tool-call))]">
-                          {schema.name}
-                        </span>
-                        <span className="block text-[10px] text-muted-foreground leading-snug">
-                          {schema.description}
-                        </span>
-                      </span>
-                      {attached ? (
-                        <button
-                          type="button"
-                          data-testid={`tool-catalog-remove-${schema.name}`}
-                          onClick={() => {
-                            removeToolSchema(activeConv.id, schema.name);
-                            toast.message("tool schema removed", { description: schema.name });
-                          }}
-                          className="size-7 grid place-items-center shrink-0 border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover"
-                          aria-label={`Remove ${schema.name}`}
-                        >
-                          <Trash2 className="size-3" strokeWidth={1.75} />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          data-testid={`tool-catalog-add-${schema.name}`}
-                          onClick={() => {
-                            addToolSchema(activeConv.id, schema);
-                            toast.message("tool schema added", { description: schema.name });
-                          }}
-                          className="size-7 grid place-items-center shrink-0 border border-border hover:bg-surface-hover"
-                          aria-label={`Add ${schema.name}`}
-                        >
-                          <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
-                        </button>
-                      )}
+                    <div key={group.providerId} className="border border-border">
+                      <div className="min-h-8 px-2 py-1.5 flex items-center justify-between gap-2 bg-surface/40 border-b border-border">
+                        <div className="min-w-0">
+                          <div className="font-mono text-[10px] uppercase tracking-widest text-foreground">
+                            {providerLabel(group.providerId)}
+                          </div>
+                          <div className="font-mono text-[10px] text-muted-foreground">
+                            {group.tools.length} tool{group.tools.length === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {unattachedTools.length > 0 && (
+                            <button
+                              type="button"
+                              data-testid={`tool-provider-add-${group.providerId}`}
+                              onClick={() => {
+                                addToolSchemas(activeConv.id, unattachedTools);
+                                toast.message("tool provider added", {
+                                  description: providerLabel(group.providerId),
+                                });
+                              }}
+                              className="size-7 grid place-items-center border border-border hover:bg-surface-hover"
+                              aria-label={`Add ${providerLabel(group.providerId)} tools`}
+                            >
+                              <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
+                            </button>
+                          )}
+                          {attachedTools.length > 0 && (
+                            <button
+                              type="button"
+                              data-testid={`tool-provider-remove-${group.providerId}`}
+                              onClick={() => {
+                                removeToolSchemas(
+                                  activeConv.id,
+                                  attachedTools.map((schema) => schema.name)
+                                );
+                                toast.message("tool provider removed", {
+                                  description: providerLabel(group.providerId),
+                                });
+                              }}
+                              className="size-7 grid place-items-center border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover"
+                              aria-label={`Remove ${providerLabel(group.providerId)} tools`}
+                            >
+                              <Trash2 className="size-3" strokeWidth={1.75} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="divide-y divide-border">
+                        {group.tools.map((schema) => {
+                          const attached = attachedToolNames.has(schema.name);
+                          const displayName = schema.providerToolName || schema.name;
+
+                          return (
+                            <div
+                              key={schema.name}
+                              className="w-full min-h-8 pl-4 pr-2 py-1.5 flex items-center justify-between gap-2"
+                            >
+                              <span className="min-w-0">
+                                <span className="block font-mono text-[11px] text-[hsl(var(--tool-call))]">
+                                  {displayName}
+                                </span>
+                                <span className="block text-[10px] text-muted-foreground leading-snug">
+                                  {schema.description}
+                                </span>
+                              </span>
+                              {attached ? (
+                                <button
+                                  type="button"
+                                  data-testid={`tool-catalog-remove-${schema.name}`}
+                                  onClick={() => {
+                                    removeToolSchema(activeConv.id, schema.name);
+                                    toast.message("tool schema removed", { description: schema.name });
+                                  }}
+                                  className="size-7 grid place-items-center shrink-0 border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover"
+                                  aria-label={`Remove ${schema.name}`}
+                                >
+                                  <Trash2 className="size-3" strokeWidth={1.75} />
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  data-testid={`tool-catalog-add-${schema.name}`}
+                                  onClick={() => {
+                                    addToolSchema(activeConv.id, schema);
+                                    toast.message("tool schema added", { description: schema.name });
+                                  }}
+                                  className="size-7 grid place-items-center shrink-0 border border-border hover:bg-surface-hover"
+                                  aria-label={`Add ${schema.name}`}
+                                >
+                                  <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   );
                 })}
@@ -485,6 +555,30 @@ export default function InspectorPanel() {
       </div>
     </aside>
   );
+}
+
+function providerLabel(providerId) {
+  if (providerId === "windie") return "Windie";
+  if (providerId === "cua-driver") return "CUA Driver";
+  return providerId || "Unknown Provider";
+}
+
+function groupToolSchemasByProvider(toolSchemas) {
+  const groups = [];
+  const groupByProvider = new Map();
+
+  for (const schema of toolSchemas) {
+    const providerId = schema.providerId || "unknown";
+    let group = groupByProvider.get(providerId);
+    if (!group) {
+      group = { providerId, tools: [] };
+      groupByProvider.set(providerId, group);
+      groups.push(group);
+    }
+    group.tools.push(schema);
+  }
+
+  return groups;
 }
 
 function formatArguments(value) {

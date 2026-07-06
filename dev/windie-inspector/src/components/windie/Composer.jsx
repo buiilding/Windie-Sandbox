@@ -155,7 +155,7 @@ export default function Composer() {
                       }}
                       className="w-full text-left px-2.5 py-1.5 text-xs font-mono hover:bg-surface-hover flex items-center justify-between"
                     >
-                      <span>inherit conv default</span>
+                      <span>default</span>
                       <span className="ml-3 min-w-0 truncate text-muted-foreground">{activeConv?.model}</span>
                     </button>
                     <div className="border-t border-border" />

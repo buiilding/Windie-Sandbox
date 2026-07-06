@@ -228,6 +228,22 @@ export function WindieProvider({ children }) {
     [runMutation]
   );
 
+  const addToolSchemas = useCallback(
+    (convId, toolSchemas) =>
+      runMutation(async () => {
+        for (const toolSchema of toolSchemas) {
+          await apiRequest(`/api/conversations/${convId}/tools`, {
+            method: "POST",
+            body: JSON.stringify({
+              provider_id: toolSchema.providerId,
+              tool_name: toolSchema.providerToolName,
+            }),
+          });
+        }
+      }),
+    [runMutation]
+  );
+
   const removeToolSchema = useCallback(
     (convId, name) =>
       runMutation(() =>
@@ -235,6 +251,18 @@ export function WindieProvider({ children }) {
           method: "DELETE",
         })
       ),
+    [runMutation]
+  );
+
+  const removeToolSchemas = useCallback(
+    (convId, names) =>
+      runMutation(async () => {
+        for (const name of names) {
+          await apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(name)}`, {
+            method: "DELETE",
+          });
+        }
+      }),
     [runMutation]
   );
 
@@ -445,7 +473,9 @@ export function WindieProvider({ children }) {
     deleteConversation,
     setSystemPrompt,
     addToolSchema,
+    addToolSchemas,
     removeToolSchema,
+    removeToolSchemas,
     setActivePath,
     setActivePathToLeaf,
     truncateAfter,
