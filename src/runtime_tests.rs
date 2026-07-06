@@ -348,6 +348,7 @@ async fn query_conversation_passes_tool_schemas_to_llm() {
 async fn query_approve_query_composes_shell_tool_flow() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    attach_run_shell_schema(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
@@ -400,6 +401,7 @@ async fn query_approve_query_composes_shell_tool_flow() {
 async fn query_conversation_once_saves_tool_calls_without_executing() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    attach_run_shell_schema(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
@@ -422,6 +424,7 @@ async fn query_conversation_once_saves_tool_calls_without_executing() {
 async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
     store
         .insert_message(&conversation_id, None, Role::User, "use a tool", None)
         .unwrap();
@@ -454,9 +457,77 @@ async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
 }
 
 #[tokio::test]
+async fn detached_shell_tool_call_is_auto_denied() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "list files", None)
+        .unwrap();
+
+    query_conversation_once(&NoopOutput, &ToolCallLlm, &mut store, &conversation_id)
+        .await
+        .unwrap();
+    let messages = store.load_active_path(&conversation_id).unwrap();
+    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[2].role, Role::Tool);
+    assert!(
+        messages[2]
+            .content
+            .contains("Tool is not attached: run_shell")
+    );
+    assert!(approvals.is_empty());
+    validate_query_availability(&store, &conversation_id).unwrap();
+}
+
+#[test]
+fn removed_shell_schema_makes_existing_pending_call_policy_denied() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    attach_run_shell_schema(&mut store, &conversation_id);
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "list files", None)
+        .unwrap();
+    store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function(
+                    "call_123",
+                    "run_shell",
+                    r#"{"command":"ls"}"#,
+                )],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    store
+        .remove_tool_schema(&conversation_id, &ToolSchemaName::new("run_shell"))
+        .unwrap();
+
+    prepare_query_turn(&mut store, &conversation_id).unwrap();
+    let messages = store.load_active_path(&conversation_id).unwrap();
+    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+
+    assert_eq!(messages[2].role, Role::Tool);
+    assert!(
+        messages[2]
+            .content
+            .contains("Tool is not attached: run_shell")
+    );
+    assert!(approvals.is_empty());
+}
+
+#[tokio::test]
 async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
+    attach_run_shell_schema(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "use tools", None)
         .unwrap();
@@ -483,6 +554,7 @@ async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() 
 async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_query() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "use a tool", None)
         .unwrap();
@@ -523,6 +595,7 @@ async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_que
 async fn pending_tool_approvals_lists_pending_shell_calls() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    attach_run_shell_schema(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
@@ -548,7 +621,7 @@ async fn pending_tool_approvals_lists_pending_shell_calls() {
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].tool_call.id.as_str(), "call_123");
     assert_eq!(approvals[0].tool_call.name(), "run_shell");
-    assert_eq!(approvals[0].reason, "shell command requires approval");
+    assert_eq!(approvals[0].reason, "shell tool requires approval");
 }
 
 #[tokio::test]
@@ -605,6 +678,7 @@ async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
 async fn approve_tool_call_executes_shell_and_stores_tool_result() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    attach_run_shell_schema(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
@@ -839,6 +913,7 @@ fn insert_multi_tool_call_assistant(
     store: &mut Store,
     conversation_id: &ConversationId,
 ) -> (MessageId, ToolCallId, ToolCallId) {
+    attach_run_shell_schema(store, conversation_id);
     let user_id = store
         .insert_message(conversation_id, None, Role::User, "run commands", None)
         .unwrap();
@@ -861,4 +936,20 @@ fn insert_multi_tool_call_assistant(
         .unwrap();
 
     (assistant_id, first_call_id, second_call_id)
+}
+
+fn attach_run_shell_schema(store: &mut Store, conversation_id: &ConversationId) {
+    attach_tool_schema(store, conversation_id, "run_shell");
+}
+
+fn attach_tool_schema(store: &mut Store, conversation_id: &ConversationId, name: &str) {
+    let tool_schema = ToolSchema {
+        name: ToolSchemaName::new(name),
+        description: format!("{name} test tool"),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+
+    store
+        .insert_tool_schema(conversation_id, &tool_schema)
+        .unwrap();
 }

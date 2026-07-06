@@ -202,6 +202,16 @@ export function WindieProvider({ children }) {
     [runMutation]
   );
 
+  const removeToolSchema = useCallback(
+    (convId, name) =>
+      runMutation(() =>
+        apiRequest(`/api/conversations/${convId}/tool-schemas/${encodeURIComponent(name)}`, {
+          method: "DELETE",
+        })
+      ),
+    [runMutation]
+  );
+
   const setActivePathToLeaf = useCallback(
     (convId, leafId) =>
       runMutation(() =>
@@ -404,6 +414,7 @@ export function WindieProvider({ children }) {
     deleteConversation,
     setSystemPrompt,
     addToolSchema,
+    removeToolSchema,
     setActivePath,
     setActivePathToLeaf,
     truncateAfter,

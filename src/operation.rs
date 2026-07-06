@@ -705,6 +705,12 @@ mod tests {
     async fn approve_tool_persists_tool_result() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store).unwrap();
+        let tool_schema = ToolSchema {
+            name: ToolSchemaName::new("run_shell"),
+            description: "Run a shell command".to_string(),
+            parameters: serde_json::json!({"type":"object"}),
+        };
+        insert_tool_schema(&mut store, &conversation_id, &tool_schema).unwrap();
         let user_id = store
             .insert_message(&conversation_id, None, Role::User, "run command", None)
             .unwrap();

@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use crate::context::ContextBuilder;
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId,
+    ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId, ToolSchemaName,
 };
 use crate::error;
 use crate::llm::RuntimeLlm;
@@ -133,8 +133,9 @@ pub(crate) fn pending_tool_approvals(
         return Ok(Vec::new());
     };
     let policy = ToolPolicy;
+    let attached_tool_names = load_attached_tool_names(store, conversation_id)?;
 
-    if let PolicyDecision::Ask { reason } = policy.decide(&tool_call) {
+    if let PolicyDecision::Ask { reason } = policy.decide(&tool_call, &attached_tool_names) {
         return Ok(vec![ToolApprovalRequest {
             assistant_message_id: execution.assistant_message_id,
             tool_call,
@@ -156,6 +157,7 @@ fn store_policy_denied_tool_results(
     conversation_id: &ConversationId,
 ) -> Result<()> {
     let policy = ToolPolicy;
+    let attached_tool_names = load_attached_tool_names(store, conversation_id)?;
 
     loop {
         let messages = store.load_active_path(conversation_id)?;
@@ -166,7 +168,8 @@ fn store_policy_denied_tool_results(
             return Ok(());
         };
 
-        let PolicyDecision::Deny { reason } = policy.decide(&tool_call) else {
+        let PolicyDecision::Deny { reason } = policy.decide(&tool_call, &attached_tool_names)
+        else {
             return Ok(());
         };
         let result = ToolExecutionResult::failure(tool_call.id.clone(), tool_call.name(), reason);
@@ -272,8 +275,9 @@ pub(crate) async fn approve_tool_call(
 ) -> Result<ToolExecutionResult> {
     let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
     let policy = ToolPolicy;
+    let attached_tool_names = load_attached_tool_names(store, conversation_id)?;
     let shell = ShellExecutor::default();
-    let result = match policy.decide(&pending.tool_call) {
+    let result = match policy.decide(&pending.tool_call, &attached_tool_names) {
         PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
             pending.tool_call.id.clone(),
             pending.tool_call.name(),
@@ -354,6 +358,18 @@ fn find_pending_tool_call(
         result_parent_message_id: execution.result_parent_message_id,
         tool_call: next_tool_call,
     })
+}
+
+/// Loads the conversation-level tool names used by execution policy.
+fn load_attached_tool_names(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<HashSet<ToolSchemaName>> {
+    Ok(store
+        .load_tool_schemas(conversation_id)?
+        .into_iter()
+        .map(|schema| schema.name)
+        .collect())
 }
 
 /// Saves one tool execution result as a `role: tool` child message.

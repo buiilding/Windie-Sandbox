@@ -69,6 +69,7 @@ export default function InspectorPanel() {
     modelOverride,
     availableToolSchemas,
     addToolSchema,
+    removeToolSchema,
   } = useWindie();
   const [editingSys, setEditingSys] = useState(false);
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
@@ -79,8 +80,9 @@ export default function InspectorPanel() {
 
   const selectedNode = selectedNodeId ? activeConv?.nodes[selectedNodeId] : null;
   const onActivePath = selectedNode && activeConv.activePath.includes(selectedNodeId);
-  const attachableToolSchemas = availableToolSchemas.filter(
-    (schema) => !toolSchemas.some((attached) => attached.name === schema.name)
+  const attachedToolNames = useMemo(
+    () => new Set(toolSchemas.map((schema) => schema.name)),
+    [toolSchemas]
   );
 
   const runtimeRequestPreview = useMemo(() => {
@@ -419,59 +421,65 @@ export default function InspectorPanel() {
 
         {/* Tool schemas */}
         <Section
-          title={`tool schemas · ${toolSchemas.length}`}
+          title={`tool schemas · ${availableToolSchemas.length}`}
           testId="inspector-section-tools"
-          defaultOpen={false}
+          defaultOpen={true}
         >
           <div className="space-y-2">
-            {attachableToolSchemas.length > 0 && (
+            {availableToolSchemas.length > 0 ? (
               <div className="space-y-1">
-                {attachableToolSchemas.map((schema) => (
-                  <button
-                    key={schema.name}
-                    data-testid={`tool-catalog-add-${schema.name}`}
-                    onClick={() => {
-                      addToolSchema(activeConv.id, schema);
-                      toast.message("tool schema added", { description: schema.name });
-                    }}
-                    className="w-full min-h-8 px-2 py-1.5 flex items-center justify-between gap-2 border border-border hover:bg-surface-hover text-left"
-                  >
-                    <span className="min-w-0">
-                      <span className="block font-mono text-[11px] text-[hsl(var(--tool-call))]">
-                        {schema.name}
+                {availableToolSchemas.map((schema) => {
+                  const attached = attachedToolNames.has(schema.name);
+
+                  return (
+                    <div
+                      key={schema.name}
+                      className="w-full min-h-8 px-2 py-1.5 flex items-center justify-between gap-2 border border-border"
+                    >
+                      <span className="min-w-0">
+                        <span className="block font-mono text-[11px] text-[hsl(var(--tool-call))]">
+                          {schema.name}
+                        </span>
+                        <span className="block text-[10px] text-muted-foreground leading-snug">
+                          {schema.description}
+                        </span>
                       </span>
-                      <span className="block text-[10px] text-muted-foreground leading-snug">
-                        {schema.description}
-                      </span>
-                    </span>
-                    <Plus className="size-3 shrink-0 text-muted-foreground" strokeWidth={1.75} />
-                  </button>
-                ))}
+                      {attached ? (
+                        <button
+                          type="button"
+                          data-testid={`tool-catalog-remove-${schema.name}`}
+                          onClick={() => {
+                            removeToolSchema(activeConv.id, schema.name);
+                            toast.message("tool schema removed", { description: schema.name });
+                          }}
+                          className="size-7 grid place-items-center shrink-0 border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover"
+                          aria-label={`Remove ${schema.name}`}
+                        >
+                          <Trash2 className="size-3" strokeWidth={1.75} />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid={`tool-catalog-add-${schema.name}`}
+                          onClick={() => {
+                            addToolSchema(activeConv.id, schema);
+                            toast.message("tool schema added", { description: schema.name });
+                          }}
+                          className="size-7 grid place-items-center shrink-0 border border-border hover:bg-surface-hover"
+                          aria-label={`Add ${schema.name}`}
+                        >
+                          <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            )}
-            {toolSchemas.length === 0 && attachableToolSchemas.length === 0 && (
+            ) : (
               <div className="font-mono text-[11px] text-muted-foreground">
                 no tool schemas
               </div>
             )}
-            {toolSchemas.map((t) => (
-              <div key={t.name} className="border border-border">
-                <div className="px-2 py-1 border-b border-border flex items-center justify-between">
-                  <span className="font-mono text-[11px] text-[hsl(var(--tool-call))]">
-                    {t.name}
-                  </span>
-                  <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                    read-only
-                  </span>
-                </div>
-                <div className="px-2 py-1 text-[11px] text-muted-foreground leading-relaxed">
-                  {t.description}
-                </div>
-                <pre className="px-2 pb-2 font-mono text-[10px] text-muted-foreground overflow-x-auto whitespace-pre-wrap">
-                  {JSON.stringify(t.parameters, null, 2)}
-                </pre>
-              </div>
-            ))}
           </div>
         </Section>
       </div>
