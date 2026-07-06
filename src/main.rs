@@ -8,6 +8,7 @@ mod api;
 mod cli;
 mod context;
 mod conversation;
+mod error;
 mod gateway;
 mod image_input;
 mod llm;
@@ -21,7 +22,7 @@ mod store;
 mod tool;
 mod tool_catalog;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -29,12 +30,11 @@ use crate::cli::{Command, InsertPart};
 use crate::conversation::{
     ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
-use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
+use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::operation::MessageInputPart;
 use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
-use crate::runtime::query_conversation_once;
 use crate::store::Store;
 use crate::tool_catalog::available_tool_schemas;
 
@@ -182,8 +182,7 @@ async fn benchmark(
             base_url(),
             model_name(),
         )
-        .await
-        .context("failed to run performance baseline")?;
+        .await?;
 
         output.performance_baseline(&baseline);
 
@@ -198,8 +197,7 @@ async fn benchmark(
         model_name(),
         options.runs,
     )
-    .await
-    .context("failed to run performance report")?;
+    .await?;
 
     if options.json {
         output.performance_report_json(&report)?;
@@ -213,10 +211,8 @@ async fn benchmark(
 /// Reads two JSON benchmark artifacts and prints their median differences.
 fn compare_benchmarks(baseline_path: PathBuf, current_path: PathBuf) -> Result<()> {
     let output = TerminalOutput;
-    let baseline =
-        perf::read_report(&baseline_path).context("failed to read baseline benchmark report")?;
-    let current =
-        perf::read_report(&current_path).context("failed to read current benchmark report")?;
+    let baseline = perf::read_report(&baseline_path)?;
+    let current = perf::read_report(&current_path)?;
     let comparison = perf::compare_reports(&baseline, &current);
 
     output.performance_comparison(&comparison);
@@ -226,10 +222,9 @@ fn compare_benchmarks(baseline_path: PathBuf, current_path: PathBuf) -> Result<(
 
 /// Creates an empty persisted conversation and prints only its ID.
 fn new_conversation() -> Result<()> {
-    let store = Store::open().context("failed to open store")?;
+    let store = Store::open()?;
     let output = TerminalOutput;
-    let conversation_id =
-        operation::create_conversation(&store).context("failed to create conversation")?;
+    let conversation_id = operation::create_conversation(&store)?;
 
     output.created_conversation(&conversation_id);
 
@@ -238,10 +233,9 @@ fn new_conversation() -> Result<()> {
 
 /// Lists persisted conversations without loading their full message history.
 fn list_conversations(json: bool) -> Result<()> {
-    let store = Store::open().context("failed to open store")?;
+    let store = Store::open()?;
     let output = TerminalOutput;
-    let conversations =
-        operation::list_conversations(&store).context("failed to list conversations")?;
+    let conversations = operation::list_conversations(&store)?;
 
     if json {
         output.conversations_json(&conversations)?;
@@ -254,10 +248,9 @@ fn list_conversations(json: bool) -> Result<()> {
 
 /// Loads and prints the active path for one conversation.
 fn show_conversation(conversation_id: ConversationId) -> Result<()> {
-    let store = Store::open().context("failed to open store")?;
+    let store = Store::open()?;
     let output = TerminalOutput;
-    let messages = operation::active_path(&store, &conversation_id)
-        .with_context(|| format!("failed to show conversation {conversation_id}"))?;
+    let messages = operation::active_path(&store, &conversation_id)?;
 
     output.conversation_messages(&messages);
 
@@ -266,10 +259,9 @@ fn show_conversation(conversation_id: ConversationId) -> Result<()> {
 
 /// Loads and prints the full message tree for one conversation.
 fn show_tree(conversation_id: ConversationId) -> Result<()> {
-    let store = Store::open().context("failed to open store")?;
+    let store = Store::open()?;
     let output = TerminalOutput;
-    let tree = operation::conversation_tree(&store, &conversation_id)
-        .with_context(|| format!("failed to show conversation tree {conversation_id}"))?;
+    let tree = operation::conversation_tree(&store, &conversation_id)?;
 
     output.conversation_tree(&tree.messages, tree.active_message_id.as_ref());
 
@@ -282,7 +274,7 @@ fn show_tree(conversation_id: ConversationId) -> Result<()> {
 /// the data used by query execution without sending a provider request or
 /// mutating the conversation.
 fn inspect_conversation(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
-    let store = Store::open().context("failed to open store")?;
+    let store = Store::open()?;
     let output = TerminalOutput;
     let effective_model = model.unwrap_or_else(model_name);
     let report = operation::inspect_conversation(&store, &conversation_id, &effective_model)?;
@@ -305,7 +297,7 @@ fn list_tools() -> Result<()> {
 /// The parent is set to the active message so the store keeps a tree and the
 /// runtime continues from the selected path.
 fn insert_message(conversation_id: ConversationId, role: Role, parts: &[InsertPart]) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
     let input_parts = message_input_parts(parts);
     let message_id = operation::insert_message(&mut store, &conversation_id, role, &input_parts)?;
@@ -328,7 +320,7 @@ fn message_input_parts(parts: &[InsertPart]) -> Vec<MessageInputPart> {
 
 /// Selects one message as the active runtime node.
 fn activate_message(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::activate_message(&mut store, &conversation_id, &message_id)?;
@@ -343,7 +335,7 @@ fn update_message(
     message_id: MessageId,
     text: &str,
 ) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::update_message(&mut store, &conversation_id, &message_id, text)?;
@@ -354,7 +346,7 @@ fn update_message(
 
 /// Sets or replaces the conversation-level system prompt.
 fn set_system_prompt(conversation_id: ConversationId, text: &str) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::set_system_prompt(&mut store, &conversation_id, text)?;
@@ -365,7 +357,7 @@ fn set_system_prompt(conversation_id: ConversationId, text: &str) -> Result<()> 
 
 /// Clears the conversation-level system prompt.
 fn remove_system_prompt(conversation_id: ConversationId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::remove_system_prompt(&mut store, &conversation_id)?;
@@ -376,7 +368,7 @@ fn remove_system_prompt(conversation_id: ConversationId) -> Result<()> {
 
 /// Inserts one conversation-level tool schema.
 fn insert_tool_schema(conversation_id: ConversationId, tool_schema: &ToolSchema) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::insert_tool_schema(&mut store, &conversation_id, tool_schema)?;
@@ -391,7 +383,7 @@ fn update_tool_schema(
     current_name: ToolSchemaName,
     tool_schema: &ToolSchema,
 ) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::update_tool_schema(&mut store, &conversation_id, &current_name, tool_schema)?;
@@ -402,7 +394,7 @@ fn update_tool_schema(
 
 /// Removes one conversation-level tool schema.
 fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::remove_tool_schema(&mut store, &conversation_id, &name)?;
@@ -413,7 +405,7 @@ fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> 
 
 /// Lists pending tool calls that require explicit user approval.
 fn list_approvals(conversation_id: ConversationId) -> Result<()> {
-    let store = Store::open().context("failed to open store")?;
+    let store = Store::open()?;
     let output = TerminalOutput;
     let approvals = operation::list_tool_approvals(&store, &conversation_id)?;
 
@@ -424,7 +416,7 @@ fn list_approvals(conversation_id: ConversationId) -> Result<()> {
 
 /// Executes one approved tool call and stores its tool-result message.
 async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
     let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await?;
 
@@ -435,7 +427,7 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
 
 /// Stores a rejected tool-result message for one pending tool call.
 fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
     let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
 
@@ -446,7 +438,7 @@ fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Resul
 
 /// Deletes one conversation and all persisted data owned by it.
 fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::remove_conversation(&mut store, &conversation_id)?;
@@ -457,7 +449,7 @@ fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
 
 /// Deletes one message while preserving the remaining conversation chain.
 fn remove_message(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::remove_message(&mut store, &conversation_id, &message_id)?;
@@ -468,7 +460,7 @@ fn remove_message(conversation_id: ConversationId, message_id: MessageId) -> Res
 
 /// Prunes descendant messages after a checkpoint message inside one conversation.
 fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
 
     operation::truncate_conversation(&mut store, &conversation_id, &message_id)?;
@@ -479,7 +471,7 @@ fn truncate_conversation(conversation_id: ConversationId, message_id: MessageId)
 
 /// Creates a new conversation copied through one checkpoint message.
 fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
     let forked_conversation_id =
         operation::fork_conversation(&mut store, &conversation_id, &message_id)?;
@@ -496,18 +488,13 @@ fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> 
 /// steps with `windie approvals`, `windie approve` or `windie deny`, and another
 /// `windie query`.
 async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
-    let mut store = Store::open().context("failed to open store")?;
+    let mut store = Store::open()?;
     let output = TerminalOutput;
-    let gateway = BifrostGateway::new(gateway_url());
-    gateway
-        .require_running()
-        .await
-        .context("failed to prepare Bifrost gateway")?;
+    operation::validate_query_availability(&store, &conversation_id)?;
+    operation::require_gateway_running(gateway_url()).await?;
     let llm = BifrostClient::new(base_url(), model.unwrap_or_else(model_name));
 
-    query_conversation_once(&output, &llm, &mut store, &conversation_id)
-        .await
-        .context("failed to query conversation")?;
+    operation::query_conversation_once(&output, &llm, &mut store, &conversation_id).await?;
 
     Ok(())
 }
@@ -515,9 +502,8 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
 /// Prints current local runtime readiness.
 async fn status() -> Result<()> {
     let output = TerminalOutput;
-    let gateway = BifrostGateway::new(gateway_url());
 
-    output.status(gateway.is_running().await);
+    output.status(operation::gateway_status(gateway_url()).await);
 
     Ok(())
 }
@@ -525,12 +511,11 @@ async fn status() -> Result<()> {
 /// Starts the local Bifrost gateway when it is not already running.
 async fn start_gateway() -> Result<()> {
     let output = TerminalOutput;
-    let gateway = BifrostGateway::new(gateway_url());
-    let status = gateway.start().await.context("failed to start gateway")?;
+    let status = operation::start_gateway(gateway_url()).await?;
 
     match status {
-        GatewayStart::AlreadyRunning => output.gateway_already_running(),
-        GatewayStart::Started => output.gateway_started(),
+        crate::gateway::GatewayStart::AlreadyRunning => output.gateway_already_running(),
+        crate::gateway::GatewayStart::Started => output.gateway_started(),
     }
 
     Ok(())
@@ -539,12 +524,11 @@ async fn start_gateway() -> Result<()> {
 /// Stops the local Bifrost gateway process owned by the configured port.
 async fn stop_gateway() -> Result<()> {
     let output = TerminalOutput;
-    let gateway = BifrostGateway::new(gateway_url());
-    let status = gateway.stop().await.context("failed to stop gateway")?;
+    let status = operation::stop_gateway(gateway_url()).await?;
 
     match status {
-        GatewayStop::NotRunning => output.gateway_not_running(),
-        GatewayStop::Stopped => output.gateway_stopped(),
+        crate::gateway::GatewayStop::NotRunning => output.gateway_not_running(),
+        crate::gateway::GatewayStop::Stopped => output.gateway_stopped(),
     }
 
     Ok(())

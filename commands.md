@@ -298,7 +298,16 @@ Remove one message from a conversation tree.
 This splices the selected message out of the tree. Direct children are
 reparented to the removed message's parent, and deeper descendants keep their
 existing parents. If the removed message is a root, its direct children become
-root messages. Use `truncate` when you want to delete descendants.
+root messages.
+
+Tool-call messages are removed as a group. If the selected message is an
+assistant message with tool-call metadata, Windie also removes the linear
+`role: tool` result chain below that assistant. If the selected message is one
+of those tool-output messages, Windie removes the parent assistant tool-call
+message and every result in the chain. Surviving descendants are spliced to the
+assistant's parent.
+
+Use `truncate` when you want to delete descendants.
 
 ```text
 windie truncate <conversation_id> <message_id>
@@ -346,7 +355,7 @@ a rejected tool result.
 windie approvals <conversation_id>
 ```
 
-List unresolved active-path model-requested tool calls that require explicit
+List pending active-path model-requested tool calls that require explicit
 user approval. Approvals are derived from persisted messages on the active path:
 an assistant tool call is pending when no active-path `role: tool` message has a
 matching tool-call ID.

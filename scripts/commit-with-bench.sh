@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 usage() {
     cat >&2 <<'USAGE'
-usage: scripts/commit-with-bench.sh -m "commit message" [git commit options]
+usage: scripts/commit-with-bench.sh -m "subject" -m "description" [git commit options]
        scripts/commit-with-bench.sh -F message-file [git commit options]
 
 Runs a local provider-free benchmark, appends the comparison to the commit
@@ -97,6 +97,62 @@ if [ "${#messages[@]}" -eq 0 ] && [ -z "$input_message_file" ]; then
     exit 2
 fi
 
+has_text() {
+    [[ "$1" =~ [^[:space:]] ]]
+}
+
+print_description_requirement() {
+    cat >&2 <<'MESSAGE'
+provide an explicit description of that commit. The description should state
+what changed, why it changed, and which behavior or code boundary the commit
+affects.
+MESSAGE
+}
+
+message_file_has_body() {
+    awk '
+        /^[[:space:]]*$/ { next }
+        seen_subject == 0 { seen_subject = 1; next }
+        { seen_body = 1 }
+        END { exit seen_body ? 0 : 1 }
+    ' "$1"
+}
+
+if [ "${#messages[@]}" -gt 0 ]; then
+    if ! has_text "${messages[0]}"; then
+        echo "commit message requires a non-empty subject" >&2
+        exit 2
+    fi
+
+    has_body=0
+    if [ "${#messages[@]}" -gt 1 ]; then
+        for message in "${messages[@]:1}"; do
+            if has_text "$message"; then
+                has_body=1
+                break
+            fi
+        done
+    fi
+
+    if [ "$has_body" -eq 0 ]; then
+        echo "commit message requires an explicit body description" >&2
+        print_description_requirement
+        echo 'use: scripts/commit-with-bench.sh -m "subject" -m "description"' >&2
+        exit 2
+    fi
+else
+    if [ ! -f "$input_message_file" ]; then
+        echo "commit message file does not exist: $input_message_file" >&2
+        exit 2
+    fi
+
+    if ! message_file_has_body "$input_message_file"; then
+        echo "commit message file requires a subject and explicit body description" >&2
+        print_description_requirement
+        exit 2
+    fi
+fi
+
 run_provider_free_benchmark() {
     output_path="$1"
     bench_home="$(mktemp -d)"
@@ -154,7 +210,7 @@ if [ "${WINDIE_COMMIT_WITH_BENCH_DRY_RUN:-0}" = "1" ]; then
 fi
 
 if [ "${#commit_args[@]}" -gt 0 ]; then
-    git commit "${commit_args[@]}" -F "$message_file"
+    WINDIE_COMMIT_WITH_BENCH=1 git commit "${commit_args[@]}" -F "$message_file"
 else
-    git commit -F "$message_file"
+    WINDIE_COMMIT_WITH_BENCH=1 git commit -F "$message_file"
 fi

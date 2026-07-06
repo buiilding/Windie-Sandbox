@@ -9,10 +9,11 @@ use serde::Serialize;
 use crate::conversation::{MessageId, ToolCall, ToolCallId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-/// One unresolved model-requested tool call that requires user approval.
+/// One pending model-requested tool call that requires user approval.
 ///
-/// The assistant message ID is the parent used when Windie later stores the
-/// `role: tool` result for this call.
+/// The assistant message ID identifies the assistant turn that requested the
+/// call. Runtime decides the exact parent for the later `role: tool` result so
+/// multi-tool results can stay on one linear active path.
 pub struct ToolApprovalRequest {
     pub assistant_message_id: MessageId,
     pub tool_call: ToolCall,

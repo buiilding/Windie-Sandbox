@@ -19,6 +19,7 @@ use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
     MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
+use crate::error;
 
 /// Decodes message roles from SQLite into the typed runtime role.
 impl FromSql for Role {
@@ -71,8 +72,8 @@ struct MessageTreeRow {
 }
 
 #[derive(Debug, Clone)]
-/// Concrete splice operation computed before the delete transaction starts.
-struct MessageRemovalPlan {
+/// Concrete splice delete operation computed before the transaction starts.
+struct MessageSpliceDelete {
     deleted_message_ids: HashSet<String>,
     splice_parent_message_id: Option<MessageId>,
     promoted_child_ids: Vec<MessageId>,
@@ -777,7 +778,11 @@ impl Store {
 
         let (created_at, rowid) = self
             .message_position(conversation_id, message_id)?
-            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))?;
+            .ok_or_else(|| {
+                error::not_found(format!(
+                    "message does not exist in conversation: {message_id}"
+                ))
+            })?;
 
         let mut statement = self
             .connection
@@ -947,7 +952,9 @@ impl Store {
         parts: &[MessagePayload<'_>],
     ) -> Result<MessageId> {
         if parts.is_empty() {
-            return Err(anyhow!("message parts require at least one part"));
+            return Err(error::invalid_request(
+                "message parts require at least one part",
+            ));
         }
 
         let id = MessageId::new(Uuid::new_v4().to_string());
@@ -1063,8 +1070,15 @@ impl Store {
     /// This is a splice delete: direct children of the removed message are
     /// reparented to the removed message's parent. Descendants below those
     /// children keep their existing parents. If the removed message is a
-    /// tool-call assistant or tool-result node, the matching pair is deleted
-    /// together so model context cannot contain a dangling tool call/result.
+    /// tool-call assistant or tool-result node, the assistant tool-call group is
+    /// deleted together so model context cannot contain dangling tool calls or
+    /// dangling tool results.
+    ///
+    /// A tool-call group is one assistant message with tool-call metadata plus
+    /// the linear `role: tool` result chain below it. Deleting either the
+    /// assistant tool-call message or any tool-output message in that chain
+    /// deletes the whole group, then splices surviving descendants to the
+    /// assistant's parent.
     pub fn remove_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -1073,18 +1087,18 @@ impl Store {
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
-        let removal_plan = self.message_removal_plan(conversation_id, message_id)?;
+        let splice_delete = self.message_splice_delete(conversation_id, message_id)?;
         let active_message_id = self.active_message_id(conversation_id)?;
         let next_active_message_id =
             if active_message_id.as_ref().is_some_and(|active_message_id| {
-                removal_plan
+                splice_delete
                     .deleted_message_ids
                     .contains(active_message_id.as_str())
             }) {
-                removal_plan
+                splice_delete
                     .splice_parent_message_id
                     .clone()
-                    .or_else(|| removal_plan.promoted_child_ids.first().cloned())
+                    .or_else(|| splice_delete.promoted_child_ids.first().cloned())
             } else {
                 active_message_id
             };
@@ -1102,7 +1116,7 @@ impl Store {
             next_active_message_id.as_ref(),
         )
         .context("failed to update active message after delete")?;
-        for child_id in &removal_plan.promoted_child_ids {
+        for child_id in &splice_delete.promoted_child_ids {
             transaction
                 .execute(
                     "
@@ -1111,7 +1125,7 @@ impl Store {
                     WHERE conversation_id = ?2 AND id = ?3
                     ",
                     params![
-                        removal_plan
+                        splice_delete
                             .splice_parent_message_id
                             .as_ref()
                             .map(MessageId::as_str),
@@ -1123,7 +1137,7 @@ impl Store {
         }
 
         let placeholders = std::iter::repeat("?")
-            .take(removal_plan.deleted_message_ids.len())
+            .take(splice_delete.deleted_message_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
@@ -1133,9 +1147,9 @@ impl Store {
               AND id IN ({placeholders})
             "
         );
-        let mut delete_params = Vec::with_capacity(removal_plan.deleted_message_ids.len() + 1);
+        let mut delete_params = Vec::with_capacity(splice_delete.deleted_message_ids.len() + 1);
         delete_params.push(conversation_id.as_str().to_string());
-        delete_params.extend(removal_plan.deleted_message_ids.iter().cloned());
+        delete_params.extend(splice_delete.deleted_message_ids.iter().cloned());
         transaction
             .execute(&sql, params_from_iter(delete_params))
             .context("failed to delete spliced message")?;
@@ -1152,45 +1166,23 @@ impl Store {
 
     /// Computes the exact message IDs and child promotions for splice delete.
     ///
-    /// The plan is intentionally built before the transaction because all
-    /// validation happens against the current tree shape. The transaction then
-    /// applies only the already-decided link updates and deletes.
-    fn message_removal_plan(
+    /// This is intentionally built before the transaction because all validation
+    /// happens against the current tree shape. The transaction then applies only
+    /// the already-decided link updates and deletes.
+    fn message_splice_delete(
         &self,
         conversation_id: &ConversationId,
         message_id: &MessageId,
-    ) -> Result<MessageRemovalPlan> {
+    ) -> Result<MessageSpliceDelete> {
         let target = self
             .load_message_tree_row(conversation_id, message_id)
             .context("failed to load target message")?;
 
         let (splice_parent_message_id, deleted_message_ids) = match target.role {
-            Role::Assistant if assistant_tool_calls(&target).len() > 1 => {
-                return Err(anyhow!(
-                    "cannot remove assistant message with multiple tool calls until tool calls are editable as separate nodes"
-                ));
-            }
-            Role::Assistant if assistant_tool_calls(&target).len() == 1 => {
-                let tool_call_id = assistant_tool_calls(&target)[0].clone();
-                let tool_result = self
-                    .load_tool_result_for_call(conversation_id, &tool_call_id)
-                    .context("failed to load matching tool result")?;
-                if let Some(tool_result) = tool_result {
-                    if tool_result.parent_message_id.as_ref() != Some(&target.id) {
-                        return Err(anyhow!(
-                            "cannot remove assistant tool-call message because matching tool result is not its child"
-                        ));
-                    }
-                    (
-                        target.parent_message_id.clone(),
-                        HashSet::from([target.id.as_str().to_string(), tool_result.id.to_string()]),
-                    )
-                } else {
-                    (
-                        target.parent_message_id.clone(),
-                        HashSet::from([target.id.as_str().to_string()]),
-                    )
-                }
+            Role::Assistant if !assistant_tool_calls(&target).is_empty() => {
+                let deleted_message_ids =
+                    self.assistant_tool_group_message_ids(conversation_id, &target)?;
+                (target.parent_message_id.clone(), deleted_message_ids)
             }
             Role::Tool => {
                 let tool_call_id = target
@@ -1198,33 +1190,22 @@ impl Store {
                     .as_ref()
                     .and_then(|metadata| metadata.tool_call_id.as_ref())
                     .ok_or_else(|| {
-                        anyhow!("cannot remove role: tool message without a tool_call_id")
+                        error::invalid_request(
+                            "cannot remove role: tool message without a tool_call_id",
+                        )
                     })?;
-                let parent_message_id = target.parent_message_id.as_ref().ok_or_else(|| {
-                    anyhow!("cannot remove role: tool message without an assistant parent")
-                })?;
-                let parent = self
-                    .load_message_tree_row(conversation_id, parent_message_id)
-                    .context("failed to load role: tool parent")?;
-                if parent.role != Role::Assistant {
-                    return Err(anyhow!(
-                        "cannot remove role: tool message because its parent is not an assistant tool-call message"
-                    ));
-                }
+                let assistant = self.assistant_tool_group_owner(conversation_id, &target)?;
 
-                let parent_tool_calls = assistant_tool_calls(&parent);
-                if parent_tool_calls.len() != 1 || parent_tool_calls.first() != Some(tool_call_id) {
-                    return Err(anyhow!(
-                        "cannot remove role: tool message because it does not match exactly one parent assistant tool call"
+                let parent_tool_calls = assistant_tool_calls(&assistant);
+                if !parent_tool_calls.contains(tool_call_id) {
+                    return Err(error::invalid_request(
+                        "cannot remove role: tool message because it does not match a parent assistant tool call",
                     ));
                 }
 
                 (
-                    parent.parent_message_id.clone(),
-                    HashSet::from([
-                        parent.id.as_str().to_string(),
-                        target.id.as_str().to_string(),
-                    ]),
+                    assistant.parent_message_id.clone(),
+                    self.assistant_tool_group_message_ids(conversation_id, &assistant)?,
                 )
             }
             _ => (
@@ -1237,7 +1218,7 @@ impl Store {
             .direct_child_ids_for_removed_messages(conversation_id, &deleted_message_ids)
             .context("failed to load promoted message children")?;
 
-        Ok(MessageRemovalPlan {
+        Ok(MessageSpliceDelete {
             deleted_message_ids,
             splice_parent_message_id,
             promoted_child_ids,
@@ -1590,20 +1571,80 @@ impl Store {
             )
             .optional()
             .context("failed to load message tree row")?
-            .ok_or_else(|| anyhow!("message does not exist in conversation: {message_id}"))
+            .ok_or_else(|| {
+                error::not_found(format!(
+                    "message does not exist in conversation: {message_id}"
+                ))
+            })
     }
 
-    /// Finds the role: tool message for a provider tool-call ID.
+    /// Finds the assistant that owns a role:tool result chain.
     ///
-    /// Tool-call IDs are provider-provided values. Windie expects one stored
-    /// result per call in the active path, but this validation scans the
-    /// conversation tree so splice delete cannot leave an obvious dangling
-    /// result anywhere in the tree.
-    fn load_tool_result_for_call(
+    /// Tool results are stored linearly: assistant tool-call message, first
+    /// result, second result, and so on. Starting from any result in that chain,
+    /// walking through `role: tool` parents must eventually reach the assistant
+    /// tool-call message.
+    fn assistant_tool_group_owner(
         &self,
         conversation_id: &ConversationId,
-        tool_call_id: &ToolCallId,
-    ) -> Result<Option<MessageTreeRow>> {
+        tool_result: &MessageTreeRow,
+    ) -> Result<MessageTreeRow> {
+        let mut parent_message_id = tool_result.parent_message_id.clone().ok_or_else(|| {
+            error::invalid_request("cannot remove role: tool message without an assistant parent")
+        })?;
+
+        loop {
+            let parent = self.load_message_tree_row(conversation_id, &parent_message_id)?;
+            match parent.role {
+                Role::Assistant if !assistant_tool_calls(&parent).is_empty() => return Ok(parent),
+                Role::Tool => {
+                    parent_message_id = parent.parent_message_id.clone().ok_or_else(|| {
+                        error::invalid_request(
+                            "cannot remove role: tool message without an assistant parent",
+                        )
+                    })?;
+                }
+                _ => {
+                    return Err(error::invalid_request(
+                        "cannot remove role: tool message because its parent is not an assistant tool-call message",
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Returns the assistant tool-call group deleted as one model-context unit.
+    ///
+    /// The assistant message owns the tool-call metadata. The persisted tree
+    /// relationship is the group boundary: the linear `role: tool` chain below
+    /// that assistant is treated as output for the assistant's tool calls and is
+    /// deleted with it. Deleting any tool-output message in that chain therefore
+    /// removes the parent assistant call and every result in the chain.
+    fn assistant_tool_group_message_ids(
+        &self,
+        conversation_id: &ConversationId,
+        assistant: &MessageTreeRow,
+    ) -> Result<HashSet<String>> {
+        let mut deleted_message_ids = HashSet::from([assistant.id.as_str().to_string()]);
+        let mut stack = vec![assistant.id.clone()];
+
+        while let Some(parent_id) = stack.pop() {
+            for tool_result in self.direct_tool_result_children(conversation_id, &parent_id)? {
+                if deleted_message_ids.insert(tool_result.id.as_str().to_string()) {
+                    stack.push(tool_result.id);
+                }
+            }
+        }
+
+        Ok(deleted_message_ids)
+    }
+
+    /// Loads immediate role:tool children while walking a linear tool-result chain.
+    fn direct_tool_result_children(
+        &self,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+    ) -> Result<Vec<MessageTreeRow>> {
         let mut statement = self
             .connection
             .prepare(
@@ -1612,33 +1653,19 @@ impl Store {
                 FROM messages
                 WHERE conversation_id = ?1
                   AND role = 'tool'
+                  AND parent_message_id = ?2
                 ORDER BY created_at, rowid
                 ",
             )
-            .context("failed to prepare tool result load")?;
-        let tool_results = statement
-            .query_map(params![conversation_id.as_str()], read_message_tree_row)
-            .context("failed to load tool result rows")?
+            .context("failed to prepare assistant tool group load")?;
+        statement
+            .query_map(
+                params![conversation_id.as_str(), parent_message_id.as_str()],
+                read_message_tree_row,
+            )
+            .context("failed to load assistant tool group rows")?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read tool result rows")?;
-        let matching_results = tool_results
-            .into_iter()
-            .filter(|message| {
-                message
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.tool_call_id.as_ref())
-                    == Some(tool_call_id)
-            })
-            .collect::<Vec<_>>();
-
-        match matching_results.as_slice() {
-            [] => Ok(None),
-            [message] => Ok(Some(message.clone())),
-            _ => Err(anyhow!(
-                "cannot remove assistant tool-call message because multiple matching tool results exist"
-            )),
-        }
+            .context("failed to read assistant tool group rows")
     }
 
     /// Loads direct children of removed messages that must be promoted.
@@ -1755,12 +1782,12 @@ impl Store {
     ) -> Result<()> {
         let message_conversation_id = self
             .message_conversation_id(message_id)?
-            .ok_or_else(|| anyhow!("message does not exist: {message_id}"))?;
+            .ok_or_else(|| error::not_found(format!("message does not exist: {message_id}")))?;
 
         if message_conversation_id != *conversation_id {
-            return Err(anyhow!(
+            return Err(error::invalid_request(format!(
                 "message does not belong to conversation: {message_id}"
-            ));
+            )));
         }
 
         Ok(())
@@ -1770,7 +1797,9 @@ impl Store {
     /// empty.
     fn ensure_conversation_exists(&self, conversation_id: &ConversationId) -> Result<()> {
         if !self.conversation_exists(conversation_id)? {
-            return Err(anyhow!("conversation does not exist: {conversation_id}"));
+            return Err(error::not_found(format!(
+                "conversation does not exist: {conversation_id}"
+            )));
         }
 
         Ok(())
@@ -1799,7 +1828,9 @@ impl Store {
             .is_some();
 
         if !exists {
-            return Err(anyhow!("tool schema does not exist: {name}"));
+            return Err(error::not_found(format!(
+                "tool schema does not exist: {name}"
+            )));
         }
 
         Ok(())
@@ -1971,7 +2002,9 @@ fn decode_message_metadata(metadata: Option<String>) -> rusqlite::Result<Option<
 /// Serializes a tool's JSON schema parameters for SQLite storage.
 fn encode_tool_parameters(parameters: &serde_json::Value) -> Result<String> {
     if !parameters.is_object() {
-        return Err(anyhow!("tool schema parameters must be a JSON object"));
+        return Err(error::invalid_request(
+            "tool schema parameters must be a JSON object",
+        ));
     }
 
     serde_json::to_string(parameters).context("failed to serialize tool schema parameters")
@@ -1980,12 +2013,14 @@ fn encode_tool_parameters(parameters: &serde_json::Value) -> Result<String> {
 /// Validates the tool schema contract before storing it.
 fn validate_tool_schema(tool_schema: &ToolSchema) -> Result<()> {
     if !tool_schema.name.is_valid() {
-        return Err(anyhow!(
-            "tool schema name must be 1-64 characters using letters, numbers, '_', or '-'"
+        return Err(error::invalid_request(
+            "tool schema name must be 1-64 characters using letters, numbers, '_', or '-'",
         ));
     }
     if !tool_schema.has_valid_description() {
-        return Err(anyhow!("tool schema description must not be empty"));
+        return Err(error::invalid_request(
+            "tool schema description must not be empty",
+        ));
     }
 
     Ok(())

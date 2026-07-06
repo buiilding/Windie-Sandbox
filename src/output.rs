@@ -478,7 +478,7 @@ fn help_lines() -> Vec<String> {
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie query requires the local Bifrost gateway to be running.",
         "  windie query --model passes the model name to Bifrost for one request.",
-        "  windie approvals lists unresolved tool calls that require user approval.",
+        "  windie approvals lists pending tool calls that require user approval.",
         "  windie approve executes one pending tool call and stores its tool result.",
         "  windie deny stores a rejected tool result for one pending tool call.",
         "  windie set <conversation_id> systemprompt sets or replaces the conversation system prompt.",

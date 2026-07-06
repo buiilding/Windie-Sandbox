@@ -194,6 +194,7 @@ src/policy.rs        tool execution policy and approval boundary
 src/policy_tests.rs  tool execution policy tests
 src/conversation.rs  message types, tool schema types, and assistant metadata types
 src/context.rs       model-facing context construction
+src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
 src/llm.rs           Bifrost/OpenAI-compatible HTTP client
@@ -205,7 +206,7 @@ src/shell_tests.rs   built-in run_shell executor tests
 src/tool_catalog.rs  built-in tool schema catalog
 src/store.rs         SQLite persistence
 src/store_tests.rs   SQLite persistence tests
-src/tool.rs          tool execution result types
+src/tool.rs          tool approval request and execution result types
 ```
 
 Keep boundaries strict:
@@ -224,6 +225,8 @@ Keep boundaries strict:
 - Only `conversation.rs` should own message roles, typed conversation/message
   identifiers, tool schema types, and assistant metadata types.
 - Only `context.rs` should decide what history the model sees.
+- Only `error.rs` should own typed Windie error categories used across client
+  protocol boundaries.
 - Only `perf.rs` should own benchmark timing logic.
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `shell.rs` should execute local shell commands.
@@ -231,8 +234,8 @@ Keep boundaries strict:
   attach to conversations.
 - Only `store.rs` should own persisted message history, tool schemas, and know
   about SQLite tables and queries.
-- Only `tool.rs` should own tool execution result data shared across runtime,
-  output, and executors.
+- Only `tool.rs` should own tool approval request and execution result data
+  shared across runtime, output, and executors.
 - `main.rs` should stay small and only wire components together.
 
 ## Teaching Requirement
@@ -248,10 +251,6 @@ For each meaningful code change, include:
 - how data flows through the changed code
 - what behavior changed for the user, if any
 - what tests or checks were run
-
-For each commit made, provide an explicit description of that commit. The
-description should state what changed, why it changed, and which behavior or
-code boundary the commit affects.
 
 Keep the explanation direct and concrete. Prefer teaching the real code in front
 of us over abstract software-engineering vocabulary. The goal is that the user
@@ -302,12 +301,30 @@ When making commits in this repository, do not call `git commit` directly. Use
 the project commit wrapper instead:
 
 ```bash
-scripts/commit-with-bench.sh -m "commit message"
+scripts/commit-with-bench.sh \
+  -m "commit subject" \
+  -m "what changed, why it changed, and which boundary it affects"
 ```
 
-The wrapper should run local provider-free benchmarks, compare them with the
-local baseline, append the comparison to the commit message, and then create the
-commit.
+Use repeated `-m` flags or `-F` because every commit requires an explicit body:
+
+```bash
+scripts/commit-with-bench.sh \
+  -m "commit subject" \
+  -m "what changed, why it changed, and which boundary it affects"
+
+scripts/commit-with-bench.sh -F commit-message.txt
+```
+
+Install the repository hooks before making commits or pushes:
+
+```bash
+scripts/install-git-hooks.sh
+```
+
+The installed hooks reject direct `git commit` and direct `git push`. The
+commit and push wrappers set narrow environment markers for their internal Git
+calls, so normal project workflow must go through the wrappers.
 
 When pushing commits, use the project push wrapper instead of `git push`:
 

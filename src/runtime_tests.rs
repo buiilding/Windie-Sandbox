@@ -530,6 +530,158 @@ fn deny_tool_call_stores_rejected_tool_result() {
 }
 
 #[tokio::test]
+async fn multi_tool_approvals_resolve_in_metadata_order() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let (_assistant_id, _first_call, _second_call) =
+        insert_multi_tool_call_assistant(&mut store, &conversation_id);
+
+    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].tool_call.id.as_str(), "call_1");
+}
+
+#[tokio::test]
+async fn multi_tool_approvals_store_results_as_linear_chain() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let (assistant_id, first_call_id, second_call_id) =
+        insert_multi_tool_call_assistant(&mut store, &conversation_id);
+
+    approve_tool_call(&mut store, &conversation_id, &first_call_id)
+        .await
+        .unwrap();
+    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].tool_call.id.as_str(), "call_2");
+
+    approve_tool_call(&mut store, &conversation_id, &second_call_id)
+        .await
+        .unwrap();
+    let llm = CapturingLlm::new();
+    let final_message = query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
+        .await
+        .unwrap();
+    let messages = store.load_active_path(&conversation_id).unwrap();
+    let captured = llm.messages.lock().unwrap();
+
+    assert_eq!(messages.len(), 5);
+    assert_eq!(messages[1].id.as_ref(), Some(&assistant_id));
+    assert_eq!(messages[2].role, Role::Tool);
+    assert_eq!(
+        messages[2].parent_message_id.as_deref(),
+        Some(assistant_id.as_str())
+    );
+    assert_eq!(
+        messages[2]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.tool_call_id.as_ref())
+            .map(ToolCallId::as_str),
+        Some("call_1")
+    );
+    assert_eq!(messages[3].role, Role::Tool);
+    assert_eq!(
+        messages[3].parent_message_id.as_deref(),
+        messages[2].id.as_deref()
+    );
+    assert_eq!(
+        messages[3]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.tool_call_id.as_ref())
+            .map(ToolCallId::as_str),
+        Some("call_2")
+    );
+    assert_eq!(
+        final_message.parent_message_id.as_deref(),
+        messages[3].id.as_deref()
+    );
+    assert_eq!(
+        captured
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        vec![Role::User, Role::Assistant, Role::Tool, Role::Tool]
+    );
+}
+
+#[tokio::test]
+async fn approving_later_tool_call_before_previous_call_rejects() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let (_assistant_id, _first_call_id, second_call_id) =
+        insert_multi_tool_call_assistant(&mut store, &conversation_id);
+
+    let error = approve_tool_call(&mut store, &conversation_id, &second_call_id)
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "tool call must be resolved after previous tool call: call_1"
+    );
+}
+
+#[tokio::test]
+async fn query_rejects_until_all_tool_calls_have_results() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let (_assistant_id, first_call_id, _second_call_id) =
+        insert_multi_tool_call_assistant(&mut store, &conversation_id);
+
+    let first_error = query_conversation_once(
+        &NoopOutput,
+        &ReplyLlm::new("should not run"),
+        &mut store,
+        &conversation_id,
+    )
+    .await
+    .unwrap_err();
+    approve_tool_call(&mut store, &conversation_id, &first_call_id)
+        .await
+        .unwrap();
+    let second_error = query_conversation_once(
+        &NoopOutput,
+        &ReplyLlm::new("should not run"),
+        &mut store,
+        &conversation_id,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        first_error.to_string(),
+        "tool call requires result before query: call_1"
+    );
+    assert_eq!(
+        second_error.to_string(),
+        "tool call requires result before query: call_2"
+    );
+}
+
+#[test]
+fn denying_multi_tool_call_uses_linear_chain_parent() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let (_assistant_id, first_call_id, second_call_id) =
+        insert_multi_tool_call_assistant(&mut store, &conversation_id);
+
+    deny_tool_call(&mut store, &conversation_id, &first_call_id).unwrap();
+    deny_tool_call(&mut store, &conversation_id, &second_call_id).unwrap();
+    let messages = store.load_active_path(&conversation_id).unwrap();
+
+    assert_eq!(messages[2].role, Role::Tool);
+    assert_eq!(messages[3].role, Role::Tool);
+    assert_eq!(
+        messages[3].parent_message_id.as_deref(),
+        messages[2].id.as_deref()
+    );
+    assert!(messages[3].content.contains("tool call rejected by user"));
+}
+
+#[tokio::test]
 async fn query_conversation_reports_llm_failure() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
@@ -538,6 +690,33 @@ async fn query_conversation_reports_llm_failure() {
         .await
         .unwrap_err();
 
-    assert_eq!(error.to_string(), "failed to stream assistant response");
-    assert!(error.chain().any(|item| item.to_string() == "llm failed"));
+    assert_eq!(error.to_string(), "llm failed");
+}
+
+fn insert_multi_tool_call_assistant(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+) -> (MessageId, ToolCallId, ToolCallId) {
+    let user_id = store
+        .insert_message(conversation_id, None, Role::User, "run commands", None)
+        .unwrap();
+    let first_call_id = ToolCallId::new("call_1");
+    let second_call_id = ToolCallId::new("call_2");
+    let assistant_id = store
+        .insert_message(
+            conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![
+                    ToolCall::function("call_1", "run_shell", r#"{"command":"printf first"}"#),
+                    ToolCall::function("call_2", "run_shell", r#"{"command":"printf second"}"#),
+                ],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+    (assistant_id, first_call_id, second_call_id)
 }

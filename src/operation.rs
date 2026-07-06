@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
 
 use crate::context::{ContextBuilder, ContextParts};
 use serde::Serialize;
@@ -17,9 +17,16 @@ use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCallId, ToolSchema,
     ToolSchemaName,
 };
+use crate::error;
+use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::{ImageInput, read_image_input};
-use crate::llm::ModelName;
-use crate::runtime::{approve_tool_call, deny_tool_call, pending_tool_approvals};
+use crate::llm::{ModelName, RuntimeLlm};
+use crate::output::RuntimeOutput;
+use crate::runtime::{
+    approve_tool_call, deny_tool_call, pending_tool_approvals,
+    query_conversation_once as runtime_query_conversation_once,
+    validate_query_availability as runtime_validate_query_availability,
+};
 use crate::store::{Compaction, ConversationInfo, ImagePayload, MessagePayload, Store};
 use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
 
@@ -172,11 +179,29 @@ pub fn list_conversations(store: &Store) -> Result<Vec<ConversationInfo>> {
     store.list_conversations()
 }
 
+/// Returns whether the configured local Bifrost gateway is running.
+pub async fn gateway_status(gateway_url: GatewayUrl) -> bool {
+    BifrostGateway::new(gateway_url).is_running().await
+}
+
+/// Starts the configured local Bifrost gateway if it is not already running.
+pub async fn start_gateway(gateway_url: GatewayUrl) -> Result<GatewayStart> {
+    BifrostGateway::new(gateway_url).start().await
+}
+
+/// Stops the configured local Bifrost gateway when Windie can identify it.
+pub async fn stop_gateway(gateway_url: GatewayUrl) -> Result<GatewayStop> {
+    BifrostGateway::new(gateway_url).stop().await
+}
+
+/// Requires the configured local Bifrost gateway to be reachable.
+pub async fn require_gateway_running(gateway_url: GatewayUrl) -> Result<()> {
+    BifrostGateway::new(gateway_url).require_running().await
+}
+
 /// Loads the active path shown by the CLI and inspector.
 pub fn active_path(store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
-    store
-        .load_active_path(conversation_id)
-        .with_context(|| format!("failed to load active path for conversation {conversation_id}"))
+    store.load_active_path(conversation_id)
 }
 
 /// Loads the full tree and active message pointer for inspection.
@@ -184,12 +209,8 @@ pub fn conversation_tree(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<ConversationTree> {
-    let messages = store
-        .load_message_tree(conversation_id)
-        .with_context(|| format!("failed to load conversation tree {conversation_id}"))?;
-    let active_message_id = store
-        .active_message_id(conversation_id)
-        .context("failed to load active message")?;
+    let messages = store.load_message_tree(conversation_id)?;
+    let active_message_id = store.active_message_id(conversation_id)?;
 
     Ok(ConversationTree {
         messages,
@@ -203,17 +224,10 @@ pub fn inspect_conversation(
     conversation_id: &ConversationId,
     model: &ModelName,
 ) -> Result<InspectionReport> {
-    let active_message_id = store
-        .active_message_id(conversation_id)
-        .context("failed to load active message")?;
-    let messages = store
-        .load_message_tree(conversation_id)
-        .with_context(|| format!("failed to inspect conversation tree {conversation_id}"))?;
-    let tool_schemas = store
-        .load_tool_schemas(conversation_id)
-        .context("failed to load tool schemas")?;
-    let context_parts = ContextBuilder::load_parts(store, conversation_id)
-        .context("failed to load model context parts")?;
+    let active_message_id = store.active_message_id(conversation_id)?;
+    let messages = store.load_message_tree(conversation_id)?;
+    let tool_schemas = store.load_tool_schemas(conversation_id)?;
+    let context_parts = ContextBuilder::load_parts(store, conversation_id)?;
     let model_context = ContextBuilder::flatten(ContextParts {
         active_path: context_parts.active_path.clone(),
         system_prompt: context_parts.system_prompt.clone(),
@@ -242,9 +256,7 @@ pub fn insert_message(
 ) -> Result<MessageId> {
     validate_insert_parts(parts)?;
 
-    let parent_message_id = store
-        .active_message_id(conversation_id)
-        .context("failed to load active message")?;
+    let parent_message_id = store.active_message_id(conversation_id)?;
     let has_image = parts
         .iter()
         .any(|part| matches!(part, MessageInputPart::Image(_)));
@@ -253,8 +265,8 @@ pub fn insert_message(
 
     if has_image || has_multiple_parts {
         if role != Role::User {
-            return Err(anyhow!(
-                "multi-part input is only supported for user messages"
+            return Err(error::invalid_request(
+                "multi-part input is only supported for user messages",
             ));
         }
 
@@ -273,25 +285,21 @@ pub fn insert_message(
             })
             .collect::<Vec<_>>();
 
-        return store
-            .insert_user_message_with_parts(
-                conversation_id,
-                parent_message_id.as_ref(),
-                &content,
-                &payloads,
-            )
-            .context("failed to insert multi-part message");
-    }
-
-    store
-        .insert_message(
+        return store.insert_user_message_with_parts(
             conversation_id,
             parent_message_id.as_ref(),
-            role,
             &content,
-            None,
-        )
-        .context("failed to insert message")
+            &payloads,
+        );
+    }
+
+    store.insert_message(
+        conversation_id,
+        parent_message_id.as_ref(),
+        role,
+        &content,
+        None,
+    )
 }
 
 /// Selects one message as the active runtime node.
@@ -300,9 +308,7 @@ pub fn activate_message(
     conversation_id: &ConversationId,
     message_id: &MessageId,
 ) -> Result<()> {
-    store
-        .set_active_message(conversation_id, message_id)
-        .context("failed to activate message")
+    store.set_active_message(conversation_id, message_id)
 }
 
 /// Replaces visible message text without changing metadata.
@@ -312,9 +318,7 @@ pub fn update_message(
     message_id: &MessageId,
     text: &str,
 ) -> Result<()> {
-    store
-        .replace_message(conversation_id, message_id, text)
-        .context("failed to update message")
+    store.replace_message(conversation_id, message_id, text)
 }
 
 /// Sets or replaces the conversation-level system prompt.
@@ -323,16 +327,12 @@ pub fn set_system_prompt(
     conversation_id: &ConversationId,
     text: &str,
 ) -> Result<()> {
-    store
-        .set_system_prompt(conversation_id, text)
-        .context("failed to set system prompt")
+    store.set_system_prompt(conversation_id, text)
 }
 
 /// Removes the conversation-level system prompt.
 pub fn remove_system_prompt(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    store
-        .remove_system_prompt(conversation_id)
-        .context("failed to remove system prompt")
+    store.remove_system_prompt(conversation_id)
 }
 
 /// Inserts one conversation-level tool schema.
@@ -341,9 +341,7 @@ pub fn insert_tool_schema(
     conversation_id: &ConversationId,
     tool_schema: &ToolSchema,
 ) -> Result<()> {
-    store
-        .insert_tool_schema(conversation_id, tool_schema)
-        .context("failed to insert tool schema")
+    store.insert_tool_schema(conversation_id, tool_schema)
 }
 
 /// Updates one conversation-level tool schema.
@@ -353,9 +351,7 @@ pub fn update_tool_schema(
     current_name: &ToolSchemaName,
     tool_schema: &ToolSchema,
 ) -> Result<()> {
-    store
-        .update_tool_schema(conversation_id, current_name, tool_schema)
-        .context("failed to update tool schema")
+    store.update_tool_schema(conversation_id, current_name, tool_schema)
 }
 
 /// Removes one conversation-level tool schema.
@@ -364,16 +360,12 @@ pub fn remove_tool_schema(
     conversation_id: &ConversationId,
     name: &ToolSchemaName,
 ) -> Result<()> {
-    store
-        .remove_tool_schema(conversation_id, name)
-        .context("failed to remove tool schema")
+    store.remove_tool_schema(conversation_id, name)
 }
 
 /// Deletes one conversation and all data owned by it.
 pub fn remove_conversation(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    store
-        .remove_conversation(conversation_id)
-        .context("failed to remove conversation")
+    store.remove_conversation(conversation_id)
 }
 
 /// Removes one message according to the store's current tree-removal policy.
@@ -382,9 +374,7 @@ pub fn remove_message(
     conversation_id: &ConversationId,
     message_id: &MessageId,
 ) -> Result<()> {
-    store
-        .remove_message(conversation_id, message_id)
-        .context("failed to remove message")
+    store.remove_message(conversation_id, message_id)
 }
 
 /// Prunes descendant messages after one checkpoint message.
@@ -393,9 +383,7 @@ pub fn truncate_conversation(
     conversation_id: &ConversationId,
     message_id: &MessageId,
 ) -> Result<()> {
-    store
-        .truncate_after_message(conversation_id, message_id)
-        .context("failed to truncate conversation")
+    store.truncate_after_message(conversation_id, message_id)
 }
 
 /// Copies a conversation through one checkpoint into a new conversation.
@@ -404,17 +392,38 @@ pub fn fork_conversation(
     conversation_id: &ConversationId,
     message_id: &MessageId,
 ) -> Result<ConversationId> {
-    store
-        .fork_conversation_at_message(conversation_id, message_id)
-        .context("failed to fork conversation")
+    store.fork_conversation_at_message(conversation_id, message_id)
 }
 
-/// Lists unresolved active-path tool calls that need user approval.
+/// Lists pending active-path tool calls that need user approval.
 pub fn list_tool_approvals(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Vec<ToolApprovalRequest>> {
-    pending_tool_approvals(store, conversation_id).context("failed to load pending approvals")
+    pending_tool_approvals(store, conversation_id)
+}
+
+/// Validates that a query can be sent without producing malformed tool context.
+pub fn validate_query_availability(store: &Store, conversation_id: &ConversationId) -> Result<()> {
+    runtime_validate_query_availability(store, conversation_id)
+}
+
+/// Runs one explicit model query turn for a conversation.
+///
+/// This operation is the shared CLI/API entrypoint for query-like work. It does
+/// not loop through tool calls; callers compose approval, denial, and later
+/// query turns as separate explicit operations.
+pub async fn query_conversation_once<O, L>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+{
+    runtime_query_conversation_once(output, llm, store, conversation_id).await
 }
 
 /// Executes one approved pending tool call and persists its result.
@@ -423,9 +432,7 @@ pub async fn approve_tool(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    approve_tool_call(store, conversation_id, tool_call_id)
-        .await
-        .context("failed to approve tool call")
+    approve_tool_call(store, conversation_id, tool_call_id).await
 }
 
 /// Persists a rejected result for one pending tool call.
@@ -434,7 +441,7 @@ pub fn deny_tool(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    deny_tool_call(store, conversation_id, tool_call_id).context("failed to deny tool call")
+    deny_tool_call(store, conversation_id, tool_call_id)
 }
 
 /// Loaded version of one insert part.
@@ -454,10 +461,12 @@ fn load_insert_part(part: &MessageInputPart) -> Result<LoadedInsertPart> {
 /// Validates that an insert carries at least one meaningful user input.
 fn validate_insert_parts(parts: &[MessageInputPart]) -> Result<()> {
     if parts.is_empty() {
-        return Err(anyhow!("message requires text or parts"));
+        return Err(error::invalid_request("message requires text or parts"));
     }
     if parts.iter().all(empty_text_part) {
-        return Err(anyhow!("message requires non-empty text or an image"));
+        return Err(error::invalid_request(
+            "message requires non-empty text or an image",
+        ));
     }
 
     Ok(())

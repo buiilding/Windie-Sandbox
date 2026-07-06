@@ -1309,6 +1309,107 @@ fn remove_assistant_tool_call_deletes_tool_pair_and_preserves_later_descendant()
 }
 
 #[test]
+fn remove_assistant_tool_call_ignores_same_tool_call_id_on_other_branch() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let assistant_metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "call_123",
+            "run_shell",
+            r#"{"command":"ls"}"#,
+        )],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "",
+            Some(&assistant_metadata),
+        )
+        .unwrap();
+    let tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_123")),
+        ..Default::default()
+    };
+    let tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&assistant_id),
+            Role::Tool,
+            "{}",
+            Some(&tool_metadata),
+        )
+        .unwrap();
+    let other_root_id = store
+        .insert_message(&conversation_id, None, Role::User, "other", None)
+        .unwrap();
+    let other_assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&other_root_id),
+            Role::Assistant,
+            "",
+            Some(&assistant_metadata),
+        )
+        .unwrap();
+    let other_tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&other_assistant_id),
+            Role::Tool,
+            "{}",
+            Some(&tool_metadata),
+        )
+        .unwrap();
+    let final_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&tool_id),
+            Role::Assistant,
+            "done",
+            None,
+        )
+        .unwrap();
+
+    store
+        .remove_message(&conversation_id, &assistant_id)
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&assistant_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&tool_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.id.as_ref() == Some(&other_assistant_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.id.as_ref() == Some(&other_tool_id))
+    );
+    assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
+    assert_eq!(
+        message_parent(&messages, &other_tool_id),
+        Some(&other_assistant_id)
+    );
+}
+
+#[test]
 fn remove_tool_output_deletes_tool_pair_and_preserves_later_descendant() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
@@ -1424,9 +1525,12 @@ fn remove_pending_assistant_tool_call_without_result_uses_normal_splice() {
 }
 
 #[test]
-fn remove_multi_tool_call_assistant_rejects() {
+fn remove_multi_tool_call_assistant_deletes_tool_group() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
     let metadata = MessageMetadata {
         tool_calls: vec![
             ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#),
@@ -1435,15 +1539,248 @@ fn remove_multi_tool_call_assistant_rejects() {
         ..Default::default()
     };
     let assistant_id = store
-        .insert_message(&conversation_id, None, Role::Assistant, "", Some(&metadata))
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "",
+            Some(&metadata),
+        )
+        .unwrap();
+    let first_tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_1")),
+        ..Default::default()
+    };
+    let first_tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&assistant_id),
+            Role::Tool,
+            "{}",
+            Some(&first_tool_metadata),
+        )
+        .unwrap();
+    let second_tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_2")),
+        ..Default::default()
+    };
+    let second_tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_tool_id),
+            Role::Tool,
+            "{}",
+            Some(&second_tool_metadata),
+        )
+        .unwrap();
+    let final_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_tool_id),
+            Role::Assistant,
+            "done",
+            None,
+        )
         .unwrap();
 
-    let error = store
+    store
         .remove_message(&conversation_id, &assistant_id)
-        .unwrap_err();
+        .unwrap();
 
-    assert!(error.to_string().contains("multiple tool calls"));
-    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 1);
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(
+        message_ids(&messages),
+        vec![first_id.to_string(), final_id.to_string()]
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&assistant_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&first_tool_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&second_tool_id))
+    );
+    assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
+}
+
+#[test]
+fn remove_multi_tool_output_deletes_whole_tool_group() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let metadata = MessageMetadata {
+        tool_calls: vec![
+            ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#),
+            ToolCall::function("call_2", "run_shell", r#"{"command":"pwd"}"#),
+        ],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "",
+            Some(&metadata),
+        )
+        .unwrap();
+    let first_tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_1")),
+        ..Default::default()
+    };
+    let first_tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&assistant_id),
+            Role::Tool,
+            "{}",
+            Some(&first_tool_metadata),
+        )
+        .unwrap();
+    let second_tool_metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_2")),
+        ..Default::default()
+    };
+    let second_tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_tool_id),
+            Role::Tool,
+            "{}",
+            Some(&second_tool_metadata),
+        )
+        .unwrap();
+    let final_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_tool_id),
+            Role::Assistant,
+            "done",
+            None,
+        )
+        .unwrap();
+
+    store
+        .remove_message(&conversation_id, &first_tool_id)
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(
+        message_ids(&messages),
+        vec![first_id.to_string(), final_id.to_string()]
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&assistant_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&first_tool_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&second_tool_id))
+    );
+    assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
+}
+
+#[test]
+fn remove_second_multi_tool_output_deletes_whole_tool_group() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let metadata = MessageMetadata {
+        tool_calls: vec![
+            ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#),
+            ToolCall::function("call_2", "run_shell", r#"{"command":"pwd"}"#),
+        ],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "",
+            Some(&metadata),
+        )
+        .unwrap();
+    let first_tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&assistant_id),
+            Role::Tool,
+            "{}",
+            Some(&MessageMetadata {
+                tool_call_id: Some(ToolCallId::new("call_1")),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let second_tool_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_tool_id),
+            Role::Tool,
+            "{}",
+            Some(&MessageMetadata {
+                tool_call_id: Some(ToolCallId::new("call_2")),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let final_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_tool_id),
+            Role::Assistant,
+            "done",
+            None,
+        )
+        .unwrap();
+
+    store
+        .remove_message(&conversation_id, &second_tool_id)
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(
+        message_ids(&messages),
+        vec![first_id.to_string(), final_id.to_string()]
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&assistant_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&first_tool_id))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.id.as_ref() != Some(&second_tool_id))
+    );
+    assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
 }
 
 #[test]

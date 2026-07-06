@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${WINDIE_PUSH_WITH_BENCH:-0}" = "1" ]; then
+    exit 0
+fi
+
+cat >&2 <<'MESSAGE'
+direct git push is disabled in this repository.
+
+Use:
+  scripts/push-with-bench.sh
+
+The wrapper pushes through git and promotes the successful current benchmark
+report to the local baseline.
+MESSAGE
+
+exit 1

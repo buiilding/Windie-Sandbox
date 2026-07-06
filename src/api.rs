@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use axum::extract::{Path, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
@@ -26,11 +26,11 @@ use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCall, ToolCallId,
     ToolSchema, ToolSchemaName,
 };
-use crate::gateway::BifrostGateway;
+use crate::error::{self, WindieErrorKind};
+use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
-use crate::runtime::query_conversation_once;
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
 use crate::tool_catalog::available_tool_schemas;
@@ -161,13 +161,13 @@ fn open_store(state: &ApiState) -> Result<Store> {
         Some(path) => Store::open_at(path),
         None => Store::open(),
     }
-    .context("failed to open store")
 }
 
 #[derive(Debug, Serialize)]
 /// Stable error response returned by failed API operations.
 struct ErrorResponse {
     error: String,
+    causes: Vec<String>,
 }
 
 /// Error wrapper that maps Windie failures into JSON HTTP responses.
@@ -175,19 +175,22 @@ struct ApiError(anyhow::Error);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let message = self.0.to_string();
-        let status = if message.contains("does not exist") {
-            StatusCode::NOT_FOUND
-        } else if message.contains("invalid")
-            || message.contains("requires")
-            || message.contains("missing")
-        {
-            StatusCode::BAD_REQUEST
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
+        let causes = error_causes(&self.0);
+        let message = raw_error_message(&self.0);
+        let status = match error::kind_from_error(&self.0) {
+            Some(WindieErrorKind::NotFound) => StatusCode::NOT_FOUND,
+            Some(WindieErrorKind::InvalidRequest) => StatusCode::BAD_REQUEST,
+            None => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
-        (status, Json(ErrorResponse { error: message })).into_response()
+        (
+            status,
+            Json(ErrorResponse {
+                error: message,
+                causes,
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -198,6 +201,20 @@ impl From<anyhow::Error> for ApiError {
 }
 
 type ApiResult<T> = std::result::Result<Json<T>, ApiError>;
+
+/// Returns the root cause text that clients should display first.
+fn raw_error_message(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .last()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| error.to_string())
+}
+
+/// Returns the full context chain from outer boundary to root cause.
+fn error_causes(error: &anyhow::Error) -> Vec<String> {
+    error.chain().map(ToString::to_string).collect()
+}
 
 /// Requires the current local API token before executing non-health requests.
 ///
@@ -222,6 +239,7 @@ async fn require_api_token(
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
                 error: "missing or invalid Windie API token".to_string(),
+                causes: vec!["missing or invalid Windie API token".to_string()],
             }),
         )
             .into_response();
@@ -264,10 +282,8 @@ struct StatusResponse {
 async fn status(
     axum::extract::State(state): axum::extract::State<ApiState>,
 ) -> ApiResult<StatusResponse> {
-    let gateway = BifrostGateway::new(crate::gateway::GatewayUrl::new(state.gateway_url));
-
     Ok(Json(StatusResponse {
-        gateway_running: gateway.is_running().await,
+        gateway_running: operation::gateway_status(GatewayUrl::new(state.gateway_url)).await,
     }))
 }
 
@@ -283,8 +299,7 @@ enum GatewayStartResponse {
 async fn start_gateway(
     axum::extract::State(state): axum::extract::State<ApiState>,
 ) -> ApiResult<GatewayStartResponse> {
-    let gateway = BifrostGateway::new(crate::gateway::GatewayUrl::new(state.gateway_url));
-    let status = gateway.start().await.context("failed to start gateway")?;
+    let status = operation::start_gateway(GatewayUrl::new(state.gateway_url)).await?;
     let response = match status {
         crate::gateway::GatewayStart::AlreadyRunning => GatewayStartResponse::AlreadyRunning,
         crate::gateway::GatewayStart::Started => GatewayStartResponse::Started,
@@ -305,8 +320,7 @@ enum GatewayStopResponse {
 async fn stop_gateway(
     axum::extract::State(state): axum::extract::State<ApiState>,
 ) -> ApiResult<GatewayStopResponse> {
-    let gateway = BifrostGateway::new(crate::gateway::GatewayUrl::new(state.gateway_url));
-    let status = gateway.stop().await.context("failed to stop gateway")?;
+    let status = operation::stop_gateway(GatewayUrl::new(state.gateway_url)).await?;
     let response = match status {
         crate::gateway::GatewayStop::NotRunning => GatewayStopResponse::NotRunning,
         crate::gateway::GatewayStop::Stopped => GatewayStopResponse::Stopped,
@@ -342,8 +356,7 @@ impl From<ConversationInfo> for ConversationSummary {
 /// Lists persisted conversations without loading their message trees.
 async fn list_conversations(State(state): State<ApiState>) -> ApiResult<ConversationListResponse> {
     let store = open_store(&state)?;
-    let conversations = operation::list_conversations(&store)
-        .context("failed to list conversations")?
+    let conversations = operation::list_conversations(&store)?
         .into_iter()
         .map(ConversationSummary::from)
         .collect();
@@ -360,8 +373,7 @@ struct ConversationIdResponse {
 /// Creates a new empty conversation.
 async fn create_conversation(State(state): State<ApiState>) -> ApiResult<ConversationIdResponse> {
     let store = open_store(&state)?;
-    let conversation_id =
-        operation::create_conversation(&store).context("failed to create conversation")?;
+    let conversation_id = operation::create_conversation(&store)?;
 
     Ok(Json(ConversationIdResponse {
         conversation_id: conversation_id.as_str().to_string(),
@@ -469,7 +481,7 @@ fn normalize_insert_parts(
     };
 
     if parts.is_empty() {
-        return Err(anyhow!("message requires text or parts"));
+        return Err(error::invalid_request("message requires text or parts"));
     }
 
     let normalized = parts
@@ -484,7 +496,9 @@ fn normalize_insert_parts(
         .iter()
         .all(|part| matches!(part, MessageInputPart::Text(text) if text.is_empty()))
     {
-        return Err(anyhow!("message requires non-empty text or an image"));
+        return Err(error::invalid_request(
+            "message requires non-empty text or an image",
+        ));
     }
 
     Ok(normalized)
@@ -513,7 +527,7 @@ async fn update_message(
     }))
 }
 
-/// Removes one message and its descendants.
+/// Splices one message out of the conversation tree.
 async fn remove_message(
     State(state): State<ApiState>,
     Path((conversation_id, message_id)): Path<(String, String)>,
@@ -728,7 +742,7 @@ impl From<ToolApprovalRequest> for ApprovalResponse {
     }
 }
 
-/// Lists unresolved tool calls waiting for approval.
+/// Lists pending tool calls waiting for approval.
 async fn list_approvals(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
@@ -802,17 +816,13 @@ async fn query(
     Json(request): Json<QueryRequest>,
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let gateway = BifrostGateway::new(crate::gateway::GatewayUrl::new(state.gateway_url.clone()));
-    gateway
-        .require_running()
-        .await
-        .context("failed to prepare Bifrost gateway")?;
+    let mut store = open_store(&state)?;
+    operation::validate_query_availability(&store, &conversation_id)?;
+    operation::require_gateway_running(GatewayUrl::new(state.gateway_url.clone())).await?;
     let model = request.model.unwrap_or_else(|| state.model.clone());
     let llm = BifrostClient::new(BaseUrl::new(state.base_url.clone()), ModelName::new(model));
-    let mut store = open_store(&state)?;
-    let message = query_conversation_once(&ApiOutput, &llm, &mut store, &conversation_id)
-        .await
-        .context("failed to query conversation")?;
+    let message =
+        operation::query_conversation_once(&ApiOutput, &llm, &mut store, &conversation_id).await?;
 
     Ok(Json(MessageResponse::from_message(message)))
 }
@@ -948,6 +958,42 @@ mod tests {
 
         assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn typed_windie_errors_map_to_http_status_codes() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let missing = app
+            .clone()
+            .oneshot(authed_request(
+                Method::GET,
+                "/api/conversations/missing",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+        let invalid = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/messages"),
+                Some(json!({"role":"user","text":""})),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let _ = fs::remove_file(db_path);
     }
 
     #[tokio::test]
@@ -1139,6 +1185,104 @@ mod tests {
         let _ = fs::remove_file(db_path);
     }
 
+    #[tokio::test]
+    async fn remove_message_returns_raw_delete_policy_error() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let mut store = Store::open_at(&db_path).unwrap();
+        let conversation_id = store.create_conversation().unwrap();
+        let parent_id = store
+            .insert_message(&conversation_id, None, Role::User, "one", None)
+            .unwrap();
+        let metadata = MessageMetadata {
+            tool_call_id: Some(ToolCallId::new("call_1")),
+            ..Default::default()
+        };
+        let message_id = store
+            .insert_message(
+                &conversation_id,
+                Some(&parent_id),
+                Role::Tool,
+                "{}",
+                Some(&metadata),
+            )
+            .unwrap();
+        drop(store);
+
+        let response = app
+            .oneshot(authed_request(
+                Method::DELETE,
+                &format!("/api/conversations/{conversation_id}/messages/{message_id}"),
+                None,
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "cannot remove role: tool message because its parent is not an assistant tool-call message"
+        );
+        assert_eq!(
+            body["causes"].as_array().unwrap().last().unwrap(),
+            "cannot remove role: tool message because its parent is not an assistant tool-call message"
+        );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn approve_later_multi_tool_call_returns_raw_order_error() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let conversation_id = insert_multi_tool_call_assistant(&db_path);
+
+        let response = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/approvals/call_2/approve"),
+                None,
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json_body(response).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "tool call must be resolved after previous tool call: call_1"
+        );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn query_with_unresolved_tool_call_returns_raw_error_before_gateway_check() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let conversation_id = insert_multi_tool_call_assistant(&db_path);
+
+        let response = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/query"),
+                Some(json!({"model":"openai/test"})),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json_body(response).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "tool call requires result before query: call_1"
+        );
+        let _ = fs::remove_file(db_path);
+    }
+
     fn test_app(store_path: PathBuf) -> Router {
         router(ApiState {
             gateway_url: "http://localhost:8080".to_string(),
@@ -1172,8 +1316,37 @@ mod tests {
             "unexpected response status: {}",
             response.status()
         );
+        response_json_body(response).await
+    }
+
+    async fn response_json_body(response: Response) -> Value {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn insert_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
+        let mut store = Store::open_at(db_path).unwrap();
+        let conversation_id = store.create_conversation().unwrap();
+        let user_id = store
+            .insert_message(&conversation_id, None, Role::User, "run commands", None)
+            .unwrap();
+        store
+            .insert_message(
+                &conversation_id,
+                Some(&user_id),
+                Role::Assistant,
+                "",
+                Some(&MessageMetadata {
+                    tool_calls: vec![
+                        ToolCall::function("call_1", "run_shell", r#"{"command":"printf first"}"#),
+                        ToolCall::function("call_2", "run_shell", r#"{"command":"printf second"}"#),
+                    ],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        conversation_id
     }
 
     fn temp_database_path() -> PathBuf {

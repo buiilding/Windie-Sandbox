@@ -3,5 +3,5 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-git push "$@"
+WINDIE_PUSH_WITH_BENCH=1 git push "$@"
 scripts/promote-bench-baseline.sh

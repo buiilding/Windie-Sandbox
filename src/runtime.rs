@@ -6,10 +6,13 @@
 
 use std::collections::HashSet;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
 
 use crate::context::ContextBuilder;
-use crate::conversation::{ConversationId, Message, MessageId, MessageMetadata, Role, ToolCallId};
+use crate::conversation::{
+    ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId,
+};
+use crate::error;
 use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
 use crate::policy::{PolicyDecision, ToolPolicy};
@@ -33,22 +36,18 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    let parent_message_id = store
-        .active_message_id(conversation_id)
-        .context("failed to load active message")?;
-    let model_messages =
-        ContextBuilder::build(store, conversation_id).context("failed to build model context")?;
-    let tool_schemas = store
-        .load_tool_schemas(conversation_id)
-        .context("failed to load tool schemas")?;
+    validate_query_availability(store, conversation_id)?;
+
+    let parent_message_id = store.active_message_id(conversation_id)?;
+    let model_messages = ContextBuilder::build(store, conversation_id)?;
+    let tool_schemas = store.load_tool_schemas(conversation_id)?;
 
     output.start_assistant_message();
     let assistant_response = llm
         .stream(&model_messages, &tool_schemas, |text| {
             output.assistant_delta(text)
         })
-        .await
-        .context("failed to stream assistant response")?;
+        .await?;
     output.end_assistant_message();
     output.assistant_tool_calls(&assistant_response.metadata.tool_calls);
 
@@ -57,15 +56,13 @@ where
     } else {
         Some(assistant_response.metadata)
     };
-    let assistant_message_id = store
-        .insert_message(
-            conversation_id,
-            parent_message_id.as_ref(),
-            Role::Assistant,
-            &assistant_response.content,
-            metadata.as_ref(),
-        )
-        .context("failed to save assistant message")?;
+    let assistant_message_id = store.insert_message(
+        conversation_id,
+        parent_message_id.as_ref(),
+        Role::Assistant,
+        &assistant_response.content,
+        metadata.as_ref(),
+    )?;
 
     Ok(Message {
         id: Some(assistant_message_id),
@@ -77,48 +74,143 @@ where
     })
 }
 
-/// Lists unresolved active-path tool calls that require explicit user approval.
+/// Rejects model queries while the active path is waiting for tool results.
 ///
-/// A tool call is unresolved when an assistant message requested it and no
-/// active-path `role: tool` message references the same tool-call ID. Runtime
-/// queries only see the active path, so approvals use the same boundary.
+/// OpenAI-compatible tool calls require the assistant tool-call message to be
+/// followed by every requested `role: tool` result before the next assistant
+/// turn. Windie's model context is the active path, so this check keeps that
+/// path valid before any provider request is sent.
+pub(crate) fn validate_query_availability(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<()> {
+    let messages = store.load_active_path(conversation_id)?;
+    let Some(execution) = active_tool_execution(&messages) else {
+        return Ok(());
+    };
+    let Some(tool_call) = execution.next_pending_tool_call() else {
+        return Ok(());
+    };
+
+    Err(error::invalid_request(format!(
+        "tool call requires result before query: {}",
+        tool_call.id
+    )))
+}
+
+/// Lists the next pending active-path tool call requiring approval.
+///
+/// Windie exposes only the next pending tool call in assistant metadata
+/// order. This preserves the linear active path shape that the model sees:
+/// assistant tool-call message, first tool result, second tool result, and so
+/// on.
 pub(crate) fn pending_tool_approvals(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Vec<ToolApprovalRequest>> {
-    let messages = store
-        .load_active_path(conversation_id)
-        .context("failed to load active path for approvals")?;
-    let resolved_tool_call_ids = resolved_tool_call_ids(&messages);
+    let messages = store.load_active_path(conversation_id)?;
+    let Some(execution) = active_tool_execution(&messages) else {
+        return Ok(Vec::new());
+    };
+    let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
+        return Ok(Vec::new());
+    };
     let policy = ToolPolicy;
-    let mut approvals = Vec::new();
 
-    for message in messages {
-        if message.role != Role::Assistant {
-            continue;
+    if let PolicyDecision::Ask { reason } = policy.decide(&tool_call) {
+        return Ok(vec![ToolApprovalRequest {
+            assistant_message_id: execution.assistant_message_id,
+            tool_call,
+            reason,
+        }]);
+    }
+
+    Ok(Vec::new())
+}
+
+/// One pending tool call plus the message that should parent its result.
+struct PendingToolCall {
+    result_parent_message_id: MessageId,
+    tool_call: ToolCall,
+}
+
+/// Active-path state for the latest assistant tool execution.
+struct ActiveToolExecution {
+    assistant_message_id: MessageId,
+    result_parent_message_id: MessageId,
+    requested_tool_calls: Vec<ToolCall>,
+    resolved_tool_call_ids: HashSet<String>,
+}
+
+impl ActiveToolExecution {
+    /// Returns the first requested tool call that has no active-path result.
+    fn next_pending_tool_call(&self) -> Option<&ToolCall> {
+        self.requested_tool_calls
+            .iter()
+            .find(|tool_call| !self.resolved_tool_call_ids.contains(tool_call.id.as_str()))
+    }
+
+    /// Returns whether this assistant requested the given provider tool-call ID.
+    fn has_requested_tool_call(&self, tool_call_id: &ToolCallId) -> bool {
+        self.requested_tool_calls
+            .iter()
+            .any(|tool_call| &tool_call.id == tool_call_id)
+    }
+
+    /// Returns whether the given provider tool-call ID already has a result.
+    fn has_tool_result(&self, tool_call_id: &ToolCallId) -> bool {
+        self.resolved_tool_call_ids.contains(tool_call_id.as_str())
+    }
+}
+
+/// Finds the latest assistant tool execution on the active path.
+///
+/// Only contiguous `role: tool` messages after that assistant are treated as
+/// results for that execution. If all calls have results, callers may safely
+/// query the model again and append the next assistant message.
+fn active_tool_execution(messages: &[Message]) -> Option<ActiveToolExecution> {
+    let (assistant_index, assistant) = messages.iter().enumerate().rev().find(|(_, message)| {
+        message.role == Role::Assistant
+            && message
+                .metadata
+                .as_ref()
+                .is_some_and(|metadata| !metadata.tool_calls.is_empty())
+    })?;
+    let assistant_message_id = assistant.id.as_ref()?.clone();
+    let requested_tool_calls = assistant.metadata.as_ref()?.tool_calls.clone();
+    let requested_tool_call_ids = requested_tool_calls
+        .iter()
+        .map(|tool_call| tool_call.id.as_str().to_string())
+        .collect::<HashSet<_>>();
+    let mut result_parent_message_id = assistant_message_id.clone();
+    let mut resolved_tool_call_ids = HashSet::new();
+
+    for message in &messages[assistant_index + 1..] {
+        if message.role != Role::Tool {
+            break;
         }
-        let Some(assistant_message_id) = message.id else {
+        let Some(message_id) = message.id.as_ref() else {
             continue;
         };
-        let Some(metadata) = message.metadata else {
+        let Some(tool_call_id) = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.tool_call_id.as_ref())
+        else {
             continue;
         };
-
-        for tool_call in metadata.tool_calls {
-            if resolved_tool_call_ids.contains(tool_call.id.as_str()) {
-                continue;
-            }
-            if let PolicyDecision::Ask { reason } = policy.decide(&tool_call) {
-                approvals.push(ToolApprovalRequest {
-                    assistant_message_id: assistant_message_id.clone(),
-                    tool_call,
-                    reason,
-                });
-            }
+        if requested_tool_call_ids.contains(tool_call_id.as_str()) {
+            resolved_tool_call_ids.insert(tool_call_id.as_str().to_string());
+            result_parent_message_id = message_id.clone();
         }
     }
 
-    Ok(approvals)
+    Some(ActiveToolExecution {
+        assistant_message_id,
+        result_parent_message_id,
+        requested_tool_calls,
+        resolved_tool_call_ids,
+    })
 }
 
 /// Executes one approved pending tool call and stores its result.
@@ -127,7 +219,7 @@ pub(crate) async fn approve_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    let pending = find_unresolved_tool_call(store, conversation_id, tool_call_id)?;
+    let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
     let policy = ToolPolicy;
     let shell = ShellExecutor::default();
     let result = match policy.decide(&pending.tool_call) {
@@ -142,7 +234,7 @@ pub(crate) async fn approve_tool_call(
     store_tool_result(
         store,
         conversation_id,
-        &pending.assistant_message_id,
+        &pending.result_parent_message_id,
         &result,
     )?;
 
@@ -155,7 +247,7 @@ pub(crate) fn deny_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    let pending = find_unresolved_tool_call(store, conversation_id, tool_call_id)?;
+    let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
     let result = ToolExecutionResult::failure(
         pending.tool_call.id.clone(),
         pending.tool_call.name(),
@@ -165,56 +257,52 @@ pub(crate) fn deny_tool_call(
     store_tool_result(
         store,
         conversation_id,
-        &pending.assistant_message_id,
+        &pending.result_parent_message_id,
         &result,
     )?;
 
     Ok(result)
 }
 
-/// Finds one unresolved tool call by provider tool-call ID.
-fn find_unresolved_tool_call(
+/// Finds one pending tool call by provider tool-call ID.
+fn find_pending_tool_call(
     store: &Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
-) -> Result<ToolApprovalRequest> {
-    let messages = store
-        .load_active_path(conversation_id)
-        .context("failed to load active path for tool approval")?;
-    let resolved_tool_call_ids = resolved_tool_call_ids(&messages);
-    if resolved_tool_call_ids.contains(tool_call_id.as_str()) {
-        return Err(anyhow!("tool call already has a result: {tool_call_id}"));
+) -> Result<PendingToolCall> {
+    let messages = store.load_active_path(conversation_id)?;
+    let Some(execution) = active_tool_execution(&messages) else {
+        return Err(error::not_found(format!(
+            "pending tool call does not exist: {tool_call_id}"
+        )));
+    };
+    if execution.has_tool_result(tool_call_id) {
+        return Err(error::invalid_request(format!(
+            "tool call already has a result: {tool_call_id}"
+        )));
     }
-    let policy = ToolPolicy;
-
-    for message in messages {
-        if message.role != Role::Assistant {
-            continue;
+    let Some(next_tool_call) = execution.next_pending_tool_call().cloned() else {
+        return Err(error::not_found(format!(
+            "pending tool call does not exist: {tool_call_id}"
+        )));
+    };
+    if next_tool_call.id != *tool_call_id {
+        if execution.has_requested_tool_call(tool_call_id) {
+            return Err(error::invalid_request(format!(
+                "tool call must be resolved after previous tool call: {}",
+                next_tool_call.id
+            )));
         }
-        let Some(assistant_message_id) = message.id else {
-            continue;
-        };
-        let Some(metadata) = message.metadata else {
-            continue;
-        };
 
-        for tool_call in metadata.tool_calls {
-            if &tool_call.id != tool_call_id {
-                continue;
-            }
-            let reason = match policy.decide(&tool_call) {
-                PolicyDecision::Ask { reason } | PolicyDecision::Deny { reason } => reason,
-            };
-
-            return Ok(ToolApprovalRequest {
-                assistant_message_id,
-                tool_call,
-                reason,
-            });
-        }
+        return Err(error::not_found(format!(
+            "pending tool call does not exist: {tool_call_id}"
+        )));
     }
 
-    Err(anyhow!("pending tool call does not exist: {tool_call_id}"))
+    Ok(PendingToolCall {
+        result_parent_message_id: execution.result_parent_message_id,
+        tool_call: next_tool_call,
+    })
 }
 
 /// Saves one tool execution result as a `role: tool` child message.
@@ -229,26 +317,13 @@ fn store_tool_result(
         ..Default::default()
     };
 
-    store
-        .insert_message(
-            conversation_id,
-            Some(parent_message_id),
-            Role::Tool,
-            &result.content,
-            Some(&metadata),
-        )
-        .context("failed to save tool result")
-}
-
-/// Collects tool-call IDs that already have stored tool result messages.
-fn resolved_tool_call_ids(messages: &[Message]) -> HashSet<String> {
-    messages
-        .iter()
-        .filter(|message| message.role == Role::Tool)
-        .filter_map(|message| message.metadata.as_ref())
-        .filter_map(|metadata| metadata.tool_call_id.as_ref())
-        .map(|id| id.as_str().to_string())
-        .collect()
+    store.insert_message(
+        conversation_id,
+        Some(parent_message_id),
+        Role::Tool,
+        &result.content,
+        Some(&metadata),
+    )
 }
 
 #[allow(dead_code)]
