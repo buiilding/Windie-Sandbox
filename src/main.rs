@@ -31,7 +31,7 @@ use crate::conversation::{
     ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
 use crate::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, BifrostClient, ModelName};
+use crate::llm::{BaseUrl, ModelName};
 use crate::operation::MessageInputPart;
 use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
@@ -490,11 +490,16 @@ fn fork_conversation(conversation_id: ConversationId, message_id: MessageId) -> 
 async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
-    operation::prepare_query_turn(&mut store, &conversation_id)?;
-    operation::require_gateway_running(gateway_url()).await?;
-    let llm = BifrostClient::new(base_url(), model.unwrap_or_else(model_name));
 
-    operation::query_conversation_once(&output, &llm, &mut store, &conversation_id).await?;
+    operation::query_conversation(
+        &output,
+        &mut store,
+        &conversation_id,
+        gateway_url(),
+        base_url(),
+        model.unwrap_or_else(model_name),
+    )
+    .await?;
 
     Ok(())
 }

@@ -28,7 +28,7 @@ use crate::conversation::{
 };
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, BifrostClient, ModelName};
+use crate::llm::ModelName;
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::store::{ConversationInfo, Store};
@@ -817,12 +817,16 @@ async fn query(
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
-    operation::prepare_query_turn(&mut store, &conversation_id)?;
-    operation::require_gateway_running(GatewayUrl::new(state.gateway_url.clone())).await?;
     let model = request.model.unwrap_or_else(|| state.model.clone());
-    let llm = BifrostClient::new(BaseUrl::new(state.base_url.clone()), ModelName::new(model));
-    let message =
-        operation::query_conversation_once(&ApiOutput, &llm, &mut store, &conversation_id).await?;
+    let message = operation::query_conversation(
+        &ApiOutput,
+        &mut store,
+        &conversation_id,
+        GatewayUrl::new(state.gateway_url.clone()),
+        crate::llm::BaseUrl::new(state.base_url.clone()),
+        ModelName::new(model),
+    )
+    .await?;
 
     Ok(Json(MessageResponse::from_message(message)))
 }
@@ -1291,9 +1295,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_with_unresolved_tool_call_returns_raw_error_before_gateway_check() {
+    async fn query_with_unresolved_tool_call_returns_gateway_error_before_runtime_query() {
         let db_path = temp_database_path();
-        let app = test_app(db_path.clone());
+        let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
         let conversation_id = insert_multi_tool_call_assistant(&db_path);
 
         let response = app
@@ -1307,17 +1311,21 @@ mod tests {
         let status = response.status();
         let body = response_json_body(response).await;
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
             body["error"],
-            "tool call requires result before query: call_1"
+            "Bifrost is not running. Start it with: windie gateway start"
         );
         let _ = fs::remove_file(db_path);
     }
 
     fn test_app(store_path: PathBuf) -> Router {
+        test_app_with_gateway(store_path, "http://localhost:8080")
+    }
+
+    fn test_app_with_gateway(store_path: PathBuf, gateway_url: &str) -> Router {
         router(ApiState {
-            gateway_url: "http://localhost:8080".to_string(),
+            gateway_url: gateway_url.to_string(),
             base_url: "http://localhost:8080/v1".to_string(),
             model: "openai/test".to_string(),
             api_token: "test-token".to_string(),

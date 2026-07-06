@@ -440,7 +440,7 @@ fn formats_duration_as_seconds() {
 #[test]
 fn formats_performance_report_lines() {
     let report = PerformanceReport {
-        format_version: 1,
+        format_version: 3,
         mode: BenchmarkMode::Conversation,
         model: "openai/gpt-4o-mini".to_string(),
         conversation_id: Some("conversation-id".to_string()),

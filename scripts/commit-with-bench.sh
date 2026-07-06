@@ -8,7 +8,7 @@ usage() {
 usage: scripts/commit-with-bench.sh -m "subject" -m "description" [git commit options]
        scripts/commit-with-bench.sh -F message-file [git commit options]
 
-Runs a local provider-free benchmark, appends the comparison to the commit
+Runs local provider-free benchmarks, appends the comparisons to the commit
 message, then runs git commit.
 USAGE
 }
@@ -18,7 +18,10 @@ runs="${WINDIE_BENCH_RUNS:-5}"
 windie_bin="$PWD/target/release/windie"
 baseline_report="$perf_dir/baseline.json"
 current_report="$perf_dir/current.json"
-comparison_report="$perf_dir/comparison.txt"
+runtime_baseline_report="$perf_dir/runtime-baseline.json"
+runtime_current_report="$perf_dir/runtime-current.json"
+conversation_comparison_report="$perf_dir/conversation-comparison.txt"
+runtime_comparison_report="$perf_dir/runtime-comparison.txt"
 message_file="$perf_dir/commit-message.txt"
 
 mkdir -p "$perf_dir"
@@ -168,20 +171,41 @@ run_provider_free_benchmark() {
     return "$status"
 }
 
+run_runtime_benchmark() {
+    output_path="$1"
+    bench_home="$(mktemp -d)"
+    status=0
+
+    HOME="$bench_home" "$windie_bin" bench runtime --runs "$runs" --json > "$output_path" || status=$?
+
+    rm -rf "$bench_home"
+    return "$status"
+}
+
 echo "building release binary for benchmark..." >&2
 cargo build --release
 
 if [ ! -f "$baseline_report" ]; then
-    echo "no local benchmark baseline found; creating $baseline_report" >&2
+    echo "no local conversation benchmark baseline found; creating $baseline_report" >&2
     run_provider_free_benchmark "$baseline_report"
+fi
+if [ ! -f "$runtime_baseline_report" ]; then
+    echo "no local runtime benchmark baseline found; creating $runtime_baseline_report" >&2
+    run_runtime_benchmark "$runtime_baseline_report"
 fi
 
 tmp_current="$current_report.tmp"
-echo "running provider-free benchmark ($runs runs)..." >&2
+echo "running provider-free conversation benchmark ($runs runs)..." >&2
 run_provider_free_benchmark "$tmp_current"
 mv "$tmp_current" "$current_report"
 
-"$windie_bin" bench compare "$baseline_report" "$current_report" > "$comparison_report"
+tmp_runtime_current="$runtime_current_report.tmp"
+echo "running provider-free runtime benchmark ($runs runs)..." >&2
+run_runtime_benchmark "$tmp_runtime_current"
+mv "$tmp_runtime_current" "$runtime_current_report"
+
+"$windie_bin" bench compare "$baseline_report" "$current_report" > "$conversation_comparison_report"
+"$windie_bin" bench compare "$runtime_baseline_report" "$runtime_current_report" > "$runtime_comparison_report"
 
 {
     if [ "${#messages[@]}" -gt 0 ]; then
@@ -198,11 +222,16 @@ mv "$tmp_current" "$current_report"
     fi
 
     printf '\nPerf:\n'
-    sed 's/^/  /' "$comparison_report"
+    printf '  Conversation benchmark:\n'
+    sed 's/^/    /' "$conversation_comparison_report"
+    printf '  Runtime benchmark:\n'
+    sed 's/^/    /' "$runtime_comparison_report"
 } > "$message_file"
 
-echo "benchmark comparison:" >&2
-sed 's/^/  /' "$comparison_report" >&2
+echo "conversation benchmark comparison:" >&2
+sed 's/^/  /' "$conversation_comparison_report" >&2
+echo "runtime benchmark comparison:" >&2
+sed 's/^/  /' "$runtime_comparison_report" >&2
 
 if [ "${WINDIE_COMMIT_WITH_BENCH_DRY_RUN:-0}" = "1" ]; then
     echo "dry run: commit message written to $message_file" >&2

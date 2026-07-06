@@ -20,11 +20,10 @@ use crate::conversation::{
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::{ImageInput, read_image_input};
-use crate::llm::{ModelName, RuntimeLlm};
+use crate::llm::{BaseUrl, BifrostClient, ModelName, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
     approve_tool_call, deny_tool_call, pending_tool_approvals,
-    prepare_query_turn as runtime_prepare_query_turn,
     query_conversation_once as runtime_query_conversation_once,
 };
 use crate::store::{Compaction, ConversationInfo, ImagePayload, MessagePayload, Store};
@@ -409,17 +408,12 @@ pub fn list_tool_approvals(
     pending_tool_approvals(store, conversation_id)
 }
 
-/// Records policy-denied tool results, then validates that query can proceed.
-pub fn prepare_query_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    runtime_prepare_query_turn(store, conversation_id)
-}
-
 /// Runs one explicit model query turn for a conversation.
 ///
-/// This operation is the shared CLI/API entrypoint for query-like work. It does
-/// not prepare the active path and does not loop through tool calls; callers
-/// compose `prepare_query_turn`, approval, denial, and later query turns as
-/// separate explicit operations.
+/// This operation is the shared CLI/API entrypoint for one model request. The
+/// runtime query primitive prepares the active path before provider context is
+/// built. This operation does not loop through tool calls; callers compose
+/// approval, denial, and later query turns as separate explicit operations.
 pub async fn query_conversation_once<O, L>(
     output: &O,
     llm: &L,
@@ -431,6 +425,29 @@ where
     L: RuntimeLlm,
 {
     runtime_query_conversation_once(output, llm, store, conversation_id).await
+}
+
+/// Runs the shared CLI/API query sequence for one model request.
+///
+/// Clients pass runtime settings in, but this operation owns the repeated
+/// sequence: require the local gateway, construct the OpenAI-compatible Bifrost
+/// client, then run one runtime query turn. Runtime still owns active-path
+/// preparation and tool-result validation inside `query_conversation_once`.
+pub async fn query_conversation<O>(
+    output: &O,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+    model: ModelName,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+{
+    require_gateway_running(gateway_url).await?;
+    let llm = BifrostClient::new(base_url, model);
+
+    query_conversation_once(output, &llm, store, conversation_id).await
 }
 
 /// Executes one approved pending tool call and persists its result.

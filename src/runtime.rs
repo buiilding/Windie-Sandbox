@@ -22,13 +22,13 @@ use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
 
 /// Runs one assistant inference turn and persists the assistant message.
 ///
-/// This is intentionally one model request. Callers must run
-/// `prepare_query_turn` first so pending tool work cannot produce malformed
-/// provider context. If the assistant returns tool-call metadata, Windie stores
-/// that assistant message, records failed results for policy-denied calls, and
-/// stops before any approval-required tool execution. Callers compose approval
-/// steps explicitly with `pending_tool_approvals`, `approve_tool_call` or
-/// `deny_tool_call`, and then another prepared query turn.
+/// This is intentionally one model request. The function prepares the active
+/// path before building provider context so callers cannot accidentally query
+/// while tool results are still pending. If the assistant returns tool-call
+/// metadata, Windie stores that assistant message, records failed results for
+/// policy-denied calls, and stops before any approval-required tool execution.
+/// Callers compose approval steps explicitly with `pending_tool_approvals`,
+/// `approve_tool_call` or `deny_tool_call`, and then another query turn.
 pub(crate) async fn query_conversation_once<O, L>(
     output: &O,
     llm: &L,
@@ -39,6 +39,8 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
+    prepare_query_turn(store, conversation_id)?;
+
     let parent_message_id = store.active_message_id(conversation_id)?;
     let model_messages = ContextBuilder::build(store, conversation_id)?;
     let tool_schemas = store.load_tool_schemas(conversation_id)?;

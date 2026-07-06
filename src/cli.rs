@@ -429,6 +429,10 @@ fn parse_bench_command(args: &[String]) -> Command {
             index += 1;
             (BenchmarkMode::Live, None)
         }
+        Some("runtime") => {
+            index += 1;
+            (BenchmarkMode::Runtime, None)
+        }
         Some("ls") => return Command::Invalid,
         Some(argument) if argument.starts_with("--") => return Command::Invalid,
         Some(conversation_id) => {
@@ -1287,6 +1291,24 @@ mod tests {
             command,
             Command::Bench {
                 mode: BenchmarkMode::Live,
+                conversation_id: None,
+                options,
+            } if options.runs == 1 && !options.json
+        ));
+    }
+
+    #[test]
+    fn reads_runtime_bench_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "runtime".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Runtime,
                 conversation_id: None,
                 options,
             } if options.runs == 1 && !options.json

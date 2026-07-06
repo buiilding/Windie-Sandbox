@@ -77,7 +77,7 @@ if ! grep -q '"runs": 2' "$bench_report"; then
     echo "expected JSON benchmark report to include run count" >&2
     exit 1
 fi
-if ! grep -q '"format_version": 1' "$bench_report"; then
+if ! grep -q '"format_version": 3' "$bench_report"; then
     echo "expected JSON benchmark report to include format version" >&2
     exit 1
 fi
@@ -99,6 +99,27 @@ if ! grep -q '"context_build": {' "$bench_report"; then
 fi
 if ! grep -q '"tool_schema_load": {' "$bench_report"; then
     echo "expected JSON benchmark report to include tool schema load summary" >&2
+    exit 1
+fi
+bench_runtime_output="$(HOME="$check_home" target/release/windie bench runtime)"
+if ! printf '%s\n' "$bench_runtime_output" | grep -q "mode: runtime"; then
+    echo "expected runtime benchmark to print runtime mode" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_runtime_output" | grep -q "prepare query turn:"; then
+    echo "expected runtime benchmark to include query preparation timing" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_runtime_output" | grep -q "splice remove:"; then
+    echo "expected runtime benchmark to include splice remove timing" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_runtime_output" | grep -q "active path load 1000:"; then
+    echo "expected runtime benchmark to include active path scale timing" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$bench_runtime_output" | grep -q "context build with image parts:"; then
+    echo "expected runtime benchmark to include image context timing" >&2
     exit 1
 fi
 bench_compare_output="$(target/release/windie bench compare "$bench_report" "$current_report")"

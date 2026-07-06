@@ -781,11 +781,17 @@ async fn query_rejects_until_all_tool_calls_have_results() {
     let (_assistant_id, first_call_id, _second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
-    let first_error = prepare_query_turn(&mut store, &conversation_id).unwrap_err();
+    let first_error =
+        query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
+            .await
+            .unwrap_err();
     approve_tool_call(&mut store, &conversation_id, &first_call_id)
         .await
         .unwrap();
-    let second_error = prepare_query_turn(&mut store, &conversation_id).unwrap_err();
+    let second_error =
+        query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
+            .await
+            .unwrap_err();
 
     assert_eq!(
         first_error.to_string(),

@@ -480,6 +480,19 @@ min/median/p95/max summaries. Use this when checking whether a local code change
 actually made the runtime path faster or slower.
 
 ```text
+windie bench runtime
+```
+
+Run provider-free runtime and write-path benchmarks against temporary fixture
+databases. Measures small and scaled query preparation, policy-denied query
+preparation, pending tool approval scanning, tool result insertion, explicit
+denial persistence, splice remove variants, truncate variants, active-path
+scale, context scale, system prompt context, compaction context with a remaining
+active-path suffix, image-part context, and completed tool-result chains. Does
+not touch user conversations, start Bifrost, run shell commands, or send a
+provider request.
+
+```text
 windie bench <conversation_id> --runs 100 --json
 ```
 
@@ -513,9 +526,9 @@ Use this only when you intentionally want to measure the provider path.
 scripts/commit-with-bench.sh -m "commit message"
 ```
 
-Build the release binary, run the local/free stress benchmark, compare
-`.windie/perf/current.json` with `.windie/perf/baseline.json`, append the
-comparison to the commit message, then run `git commit`. If no local baseline
+Build the release binary, run the local/free conversation stress benchmark and
+runtime benchmark, compare current reports with local baselines, append both
+comparisons to the commit message, then run `git commit`. If no local baseline
 exists, the script creates one first. Set `WINDIE_BENCH_RUNS=<n>` to change the
 default repeated run count.
 
@@ -523,5 +536,5 @@ default repeated run count.
 scripts/push-with-bench.sh
 ```
 
-Run `git push`. After a successful push, promote `.windie/perf/current.json` to
-`.windie/perf/baseline.json` and remove the current report.
+Run `git push`. After a successful push, promote current benchmark reports to
+their local baselines and remove the current reports.
