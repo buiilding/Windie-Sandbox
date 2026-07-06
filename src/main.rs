@@ -20,7 +20,7 @@ mod runtime;
 mod shell;
 mod store;
 mod tool;
-mod tool_catalog;
+mod tool_provider;
 
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -36,7 +36,7 @@ use crate::operation::MessageInputPart;
 use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
 use crate::store::Store;
-use crate::tool_catalog::available_tool_schemas;
+use crate::tool::{ProviderToolName, ToolProviderId};
 
 const BASE_URL: &str = "http://localhost:8080/v1";
 const GATEWAY_URL: &str = "http://localhost:8080";
@@ -60,6 +60,11 @@ async fn main() -> Result<()> {
             conversation_id,
             tool_call_id,
         } => approve_tool(conversation_id, tool_call_id).await,
+        Command::AttachTool {
+            conversation_id,
+            provider_id,
+            tool_name,
+        } => attach_tool(conversation_id, provider_id, tool_name),
         Command::Help => print_help(),
         Command::Invalid => invalid_usage(),
         Command::Version => print_version(),
@@ -87,7 +92,7 @@ async fn main() -> Result<()> {
             conversation_id,
             model,
         } => inspect_conversation(conversation_id, model),
-        Command::Tools => list_tools(),
+        Command::Tools { provider_id } => list_tools(provider_id),
         Command::Fork {
             conversation_id,
             message_id,
@@ -108,6 +113,10 @@ async fn main() -> Result<()> {
             conversation_id,
             name,
         } => remove_tool_schema(conversation_id, name),
+        Command::DetachTool {
+            conversation_id,
+            schema_name,
+        } => detach_tool(conversation_id, schema_name),
         Command::DenyTool {
             conversation_id,
             tool_call_id,
@@ -282,12 +291,31 @@ fn inspect_conversation(conversation_id: ConversationId, model: Option<ModelName
     output.inspection_report_json(&report)
 }
 
-/// Lists Windie's built-in tool schemas without mutating any conversation.
-fn list_tools() -> Result<()> {
+/// Lists provider tools without mutating any conversation.
+fn list_tools(provider_id: Option<ToolProviderId>) -> Result<()> {
     let output = TerminalOutput;
-    let tool_schemas = available_tool_schemas();
+    let tools = provider_id
+        .as_ref()
+        .map(operation::available_provider_tools)
+        .unwrap_or_else(operation::available_tools);
 
-    output.available_tool_schemas(&tool_schemas);
+    output.available_tools(&tools);
+
+    Ok(())
+}
+
+/// Attaches one provider tool to a conversation.
+fn attach_tool(
+    conversation_id: ConversationId,
+    provider_id: ToolProviderId,
+    tool_name: ProviderToolName,
+) -> Result<()> {
+    let mut store = Store::open()?;
+    let output = TerminalOutput;
+    let schema_name =
+        operation::attach_tool(&mut store, &conversation_id, &provider_id, &tool_name)?;
+
+    output.inserted_tool_schema(&schema_name);
 
     Ok(())
 }
@@ -399,6 +427,17 @@ fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> 
 
     operation::remove_tool_schema(&mut store, &conversation_id, &name)?;
     output.removed_tool_schema(&name);
+
+    Ok(())
+}
+
+/// Detaches one provider-backed tool schema from a conversation.
+fn detach_tool(conversation_id: ConversationId, schema_name: ToolSchemaName) -> Result<()> {
+    let mut store = Store::open()?;
+    let output = TerminalOutput;
+
+    operation::detach_tool(&mut store, &conversation_id, &schema_name)?;
+    output.removed_tool_schema(&schema_name);
 
     Ok(())
 }

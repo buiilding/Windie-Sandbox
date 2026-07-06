@@ -132,10 +132,12 @@ Allowed in the current scope:
 - One-shot conversation query primitive.
 - Per-query model override with Bifrost-qualified model names.
 - Tool-call receiving and persistence.
-- Conversation-level tool schema persistence and model request serialization.
+- Conversation-level attached tool persistence and model request serialization.
 - Typed assistant metadata lanes for tool calls, reasoning, refusal, audio, and
   annotations.
-- Windie-native `run_shell` tool execution with explicit approval.
+- Unified tool provider layer for built-ins, future MCP providers, and future
+  plugins.
+- Windie-native `run_shell` provider tool execution with explicit approval.
 - Tool result persistence as `role: tool` messages linked to provider tool-call
   IDs.
 - Model-facing context construction.
@@ -192,7 +194,7 @@ src/output.rs        terminal and JSON output only
 src/output_tests.rs  terminal output tests
 src/policy.rs        tool execution policy and approval boundary
 src/policy_tests.rs  tool execution policy tests
-src/conversation.rs  message types, tool schema types, and assistant metadata types
+src/conversation.rs  message types, model-facing tool schema types, and assistant metadata types
 src/context.rs       model-facing context construction
 src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
@@ -201,12 +203,12 @@ src/llm.rs           Bifrost/OpenAI-compatible HTTP client
 src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
-src/shell.rs         built-in run_shell executor
-src/shell_tests.rs   built-in run_shell executor tests
-src/tool_catalog.rs  built-in tool schema catalog
+src/shell.rs         Windie built-in run_shell executor details
+src/shell_tests.rs   Windie built-in run_shell executor tests
+src/tool.rs          tool provider, attachment, approval, and execution result types
+src/tool_provider.rs tool provider registry and dispatch
 src/store.rs         SQLite persistence
 src/store_tests.rs   SQLite persistence tests
-src/tool.rs          tool approval request and execution result types
 ```
 
 Keep boundaries strict:
@@ -223,19 +225,19 @@ Keep boundaries strict:
 - Only `policy.rs` should decide whether tool execution is allowed, denied, or
   requires approval.
 - Only `conversation.rs` should own message roles, typed conversation/message
-  identifiers, tool schema types, and assistant metadata types.
+  identifiers, model-facing tool schema types, and assistant metadata types.
 - Only `context.rs` should decide what history the model sees.
 - Only `error.rs` should own typed Windie error categories used across client
   protocol boundaries.
 - Only `perf.rs` should own benchmark timing logic.
 - Only `runtime.rs` should coordinate query-like runtime flows.
-- Only `shell.rs` should execute local shell commands.
-- Only `tool_catalog.rs` should own built-in tool schemas that clients may
-  attach to conversations.
-- Only `store.rs` should own persisted message history, tool schemas, and know
-  about SQLite tables and queries.
-- Only `tool.rs` should own tool approval request and execution result data
-  shared across runtime, output, and executors.
+- Only `shell.rs` should own local shell command execution details.
+- Only `tool_provider.rs` should own provider catalog and execution dispatch
+  across built-ins, future MCP providers, and future plugins.
+- Only `store.rs` should own persisted message history, attached tools, and
+  know about SQLite tables and queries.
+- Only `tool.rs` should own tool provider, attachment, approval, and execution
+  result data shared across runtime, output, policy, store, and executors.
 - `main.rs` should stay small and only wire components together.
 
 ## Teaching Requirement

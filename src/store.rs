@@ -1,7 +1,8 @@
 //! SQLite persistence boundary.
 //!
-//! This module owns persisted conversations, messages, compactions, and tool
-//! schemas. Other modules should not know about SQLite tables or queries.
+//! This module owns persisted conversations, messages, compactions, and
+//! attached tools. Other modules should not know about SQLite tables or
+//! queries.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -20,6 +21,10 @@ use crate::conversation::{
     MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
 use crate::error;
+use crate::tool::{
+    AttachedTool, ProviderToolName, ToolAnnotations, ToolPermission, ToolProviderId,
+    ToolProviderKind, ToolProviderRef,
+};
 
 /// Decodes message roles from SQLite into the typed runtime role.
 impl FromSql for Role {
@@ -38,7 +43,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 5;
+const DATABASE_SCHEMA_VERSION: i32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -233,6 +238,11 @@ impl Store {
                     name TEXT NOT NULL,
                     description TEXT NOT NULL,
                     parameters_json TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    provider_tool_name TEXT NOT NULL,
+                    provider_kind TEXT NOT NULL,
+                    permissions_json TEXT NOT NULL,
+                    annotations_json TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
 
@@ -464,50 +474,105 @@ impl Store {
         self.set_system_prompt(conversation_id, "")
     }
 
-    /// Loads all tool schemas configured on one conversation.
+    /// Loads all attached provider tools configured on one conversation.
     ///
-    /// Tool schemas are conversation-level model inputs. They are not message
-    /// nodes and do not imply that Windie can execute the tools.
-    pub fn load_tool_schemas(&self, conversation_id: &ConversationId) -> Result<Vec<ToolSchema>> {
+    /// Attached tools are conversation-level model inputs plus provider
+    /// dispatch metadata. They are not message nodes and do not imply automatic
+    /// execution; runtime still requires approval before provider calls.
+    pub fn load_attached_tools(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<AttachedTool>> {
         self.ensure_conversation_exists(conversation_id)?;
 
         let mut statement = self
             .connection
             .prepare(
                 "
-                SELECT name, description, parameters_json
+                SELECT
+                    name,
+                    description,
+                    parameters_json,
+                    provider_id,
+                    provider_tool_name,
+                    provider_kind,
+                    permissions_json,
+                    annotations_json
                 FROM tool_schemas
                 WHERE conversation_id = ?1
                 ORDER BY created_at, rowid
                 ",
             )
-            .context("failed to prepare tool schema load")?;
+            .context("failed to prepare attached tool load")?;
 
-        let tool_schemas = statement
-            .query_map(params![conversation_id.as_str()], read_tool_schema_row)
-            .context("failed to load tool schemas")?
+        let attached_tools = statement
+            .query_map(params![conversation_id.as_str()], read_attached_tool_row)
+            .context("failed to load attached tools")?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read tool schemas")?;
+            .context("failed to read attached tools")?;
 
-        Ok(tool_schemas)
+        Ok(attached_tools)
     }
 
-    /// Inserts one tool schema for a conversation.
-    pub fn insert_tool_schema(
+    /// Loads the model-facing schema subset for attached tools.
+    pub fn load_tool_schemas(&self, conversation_id: &ConversationId) -> Result<Vec<ToolSchema>> {
+        Ok(self
+            .load_attached_tools(conversation_id)?
+            .into_iter()
+            .map(|tool| tool.schema())
+            .collect())
+    }
+
+    /// Loads one attached tool by its model-facing schema name.
+    pub fn load_attached_tool(
+        &self,
+        conversation_id: &ConversationId,
+        name: &ToolSchemaName,
+    ) -> Result<Option<AttachedTool>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let attached_tool = self
+            .connection
+            .query_row(
+                "
+                SELECT
+                    name,
+                    description,
+                    parameters_json,
+                    provider_id,
+                    provider_tool_name,
+                    provider_kind,
+                    permissions_json,
+                    annotations_json
+                FROM tool_schemas
+                WHERE conversation_id = ?1 AND name = ?2
+                ",
+                params![conversation_id.as_str(), name.as_str()],
+                read_attached_tool_row,
+            )
+            .optional()
+            .context("failed to load attached tool")?;
+
+        Ok(attached_tool)
+    }
+
+    /// Attaches one provider-backed tool to a conversation.
+    pub fn insert_attached_tool(
         &mut self,
         conversation_id: &ConversationId,
-        tool_schema: &ToolSchema,
+        attached_tool: &AttachedTool,
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
-        validate_tool_schema(tool_schema)?;
+        validate_attached_tool(attached_tool)?;
 
         let now = now_millis()?;
-        let parameters_json = encode_tool_parameters(&tool_schema.parameters)
-            .context("failed to encode tool schema")?;
+        let parameters_json = encode_tool_parameters(&attached_tool.parameters)?;
+        let permissions_json = encode_tool_permissions(&attached_tool.permissions)?;
+        let annotations_json = encode_tool_annotations(&attached_tool.annotations)?;
         let transaction = self
             .connection
             .transaction()
-            .context("failed to start tool schema insert transaction")?;
+            .context("failed to start attached tool insert transaction")?;
 
         transaction
             .execute(
@@ -517,27 +582,46 @@ impl Store {
                     name,
                     description,
                     parameters_json,
+                    provider_id,
+                    provider_tool_name,
+                    provider_kind,
+                    permissions_json,
+                    annotations_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
                 ",
                 params![
                     conversation_id.as_str(),
-                    tool_schema.name.as_str(),
-                    tool_schema.description.as_str(),
+                    attached_tool.schema_name.as_str(),
+                    attached_tool.description.as_str(),
                     parameters_json.as_str(),
+                    attached_tool.provider.provider_id.as_str(),
+                    attached_tool.provider.tool_name.as_str(),
+                    attached_tool.provider.kind.as_storage(),
+                    permissions_json.as_str(),
+                    annotations_json.as_str(),
                     now
                 ],
             )
-            .context("failed to insert tool schema")?;
+            .context("failed to attach tool")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
             .commit()
-            .context("failed to commit tool schema insert")?;
+            .context("failed to commit attached tool insert")?;
 
         Ok(())
+    }
+
+    /// Inserts one raw model-facing schema as a manual attached tool.
+    pub fn insert_tool_schema(
+        &mut self,
+        conversation_id: &ConversationId,
+        tool_schema: &ToolSchema,
+    ) -> Result<()> {
+        self.insert_attached_tool(conversation_id, &AttachedTool::manual(tool_schema.clone()))
     }
 
     /// Updates one existing tool schema, including an optional rename.
@@ -549,15 +633,17 @@ impl Store {
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_tool_schema_exists(conversation_id, current_name)?;
-        validate_tool_schema(tool_schema)?;
+        let attached_tool = AttachedTool::manual(tool_schema.clone());
+        validate_attached_tool(&attached_tool)?;
 
         let now = now_millis()?;
-        let parameters_json = encode_tool_parameters(&tool_schema.parameters)
-            .context("failed to encode tool schema")?;
+        let parameters_json = encode_tool_parameters(&attached_tool.parameters)?;
+        let permissions_json = encode_tool_permissions(&attached_tool.permissions)?;
+        let annotations_json = encode_tool_annotations(&attached_tool.annotations)?;
         let transaction = self
             .connection
             .transaction()
-            .context("failed to start tool schema update transaction")?;
+            .context("failed to start attached tool update transaction")?;
 
         transaction
             .execute(
@@ -566,24 +652,34 @@ impl Store {
                 SET name = ?1,
                     description = ?2,
                     parameters_json = ?3,
-                    updated_at = ?4
-                WHERE conversation_id = ?5 AND name = ?6
+                    provider_id = ?4,
+                    provider_tool_name = ?5,
+                    provider_kind = ?6,
+                    permissions_json = ?7,
+                    annotations_json = ?8,
+                    updated_at = ?9
+                WHERE conversation_id = ?10 AND name = ?11
                 ",
                 params![
-                    tool_schema.name.as_str(),
-                    tool_schema.description.as_str(),
+                    attached_tool.schema_name.as_str(),
+                    attached_tool.description.as_str(),
                     parameters_json.as_str(),
+                    attached_tool.provider.provider_id.as_str(),
+                    attached_tool.provider.tool_name.as_str(),
+                    attached_tool.provider.kind.as_storage(),
+                    permissions_json.as_str(),
+                    annotations_json.as_str(),
                     now,
                     conversation_id.as_str(),
                     current_name.as_str()
                 ],
             )
-            .context("failed to update tool schema")?;
+            .context("failed to update attached tool")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
             .commit()
-            .context("failed to commit tool schema update")?;
+            .context("failed to commit attached tool update")?;
 
         Ok(())
     }
@@ -1852,6 +1948,7 @@ impl Store {
         Ok(exists)
     }
 
+    /// Checks whether the conversations table contains one named column.
     fn conversation_has_column(&self, column_name: &str) -> Result<bool> {
         let mut statement = self
             .connection
@@ -1943,17 +2040,42 @@ fn assistant_tool_calls(message: &MessageTreeRow) -> Vec<ToolCallId> {
         .unwrap_or_default()
 }
 
-/// Converts one SQLite tool schema row into the runtime tool schema type.
-fn read_tool_schema_row(row: &Row<'_>) -> rusqlite::Result<ToolSchema> {
+/// Converts one SQLite attached tool row into the runtime attachment type.
+fn read_attached_tool_row(row: &Row<'_>) -> rusqlite::Result<AttachedTool> {
     let parameters_json = row.get::<_, String>(2)?;
     let parameters = serde_json::from_str(&parameters_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
     })?;
+    let provider_kind_text = row.get::<_, String>(5)?;
+    let provider_kind = ToolProviderKind::from_storage(&provider_kind_text).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            Type::Text,
+            format!("unknown tool provider kind: {provider_kind_text}").into(),
+        )
+    })?;
+    let permissions_json = row.get::<_, String>(6)?;
+    let permissions =
+        serde_json::from_str::<Vec<ToolPermission>>(&permissions_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+        })?;
+    let annotations_json = row.get::<_, String>(7)?;
+    let annotations =
+        serde_json::from_str::<ToolAnnotations>(&annotations_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+        })?;
 
-    Ok(ToolSchema {
-        name: ToolSchemaName::new(row.get::<_, String>(0)?),
+    Ok(AttachedTool {
+        schema_name: ToolSchemaName::new(row.get::<_, String>(0)?),
         description: row.get(1)?,
         parameters,
+        provider: ToolProviderRef::new(
+            ToolProviderId::new(row.get::<_, String>(3)?),
+            ProviderToolName::new(row.get::<_, String>(4)?),
+            provider_kind,
+        ),
+        permissions,
+        annotations,
     })
 }
 
@@ -2010,14 +2132,24 @@ fn encode_tool_parameters(parameters: &serde_json::Value) -> Result<String> {
     serde_json::to_string(parameters).context("failed to serialize tool schema parameters")
 }
 
-/// Validates the tool schema contract before storing it.
-fn validate_tool_schema(tool_schema: &ToolSchema) -> Result<()> {
-    if !tool_schema.name.is_valid() {
+/// Serializes attached tool permissions for SQLite storage.
+fn encode_tool_permissions(permissions: &[ToolPermission]) -> Result<String> {
+    serde_json::to_string(permissions).context("failed to serialize tool permissions")
+}
+
+/// Serializes attached tool annotations for SQLite storage.
+fn encode_tool_annotations(annotations: &ToolAnnotations) -> Result<String> {
+    serde_json::to_string(annotations).context("failed to serialize tool annotations")
+}
+
+/// Validates the attached tool contract before storing it.
+fn validate_attached_tool(attached_tool: &AttachedTool) -> Result<()> {
+    if !attached_tool.schema_name.is_valid() {
         return Err(error::invalid_request(
             "tool schema name must be 1-64 characters using letters, numbers, '_', or '-'",
         ));
     }
-    if !tool_schema.has_valid_description() {
+    if attached_tool.description.trim().is_empty() {
         return Err(error::invalid_request(
             "tool schema description must not be empty",
         ));

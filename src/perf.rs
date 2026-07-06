@@ -23,6 +23,8 @@ use crate::gateway::{BifrostGateway, GatewayUrl};
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
 use crate::store::{ImagePayload, MessagePayload, Store};
+use crate::tool::{ProviderToolName, ToolProviderId};
+use crate::tool_provider::ToolProviderRegistry;
 
 const BENCH_PROMPT: &str = "Reply with exactly: ok";
 const SCALE_PATH_MESSAGES: usize = 100;
@@ -733,6 +735,7 @@ fn benchmark_prepare_query_turn() -> Result<Duration> {
 fn benchmark_pending_tool_approval_scan() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-scan", |store| {
         let conversation_id = store.create_conversation()?;
+        attach_run_shell_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use tools")?;
         let metadata = tool_call_metadata(vec![
             tool_call(0, "call_1", "run_shell"),
@@ -907,6 +910,7 @@ fn benchmark_active_path_load(message_count: usize) -> Result<Duration> {
 fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-long-path", |store| {
         let conversation_id = store.create_conversation()?;
+        attach_run_shell_tool(store, &conversation_id)?;
         let parent_id = create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
         let metadata = tool_call_metadata(vec![tool_call(0, "call_1", "run_shell")]);
         store.insert_message(
@@ -930,6 +934,7 @@ fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
 fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-deep-chain", |store| {
         let conversation_id = store.create_conversation()?;
+        attach_run_shell_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use many tools")?;
         let tool_calls = (0..TOOL_CHAIN_RESULTS)
             .map(|index| tool_call(index as u16, &format!("call_{index}"), "run_shell"))
@@ -983,6 +988,7 @@ fn benchmark_prepare_query_completed_tool_chain() -> Result<Duration> {
 fn benchmark_prepare_query_requires_approval() -> Result<Duration> {
     with_runtime_store("prepare-query-requires-approval", |store| {
         let conversation_id = store.create_conversation()?;
+        attach_run_shell_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
         let metadata = tool_call_metadata(vec![tool_call(0, "call_1", "run_shell")]);
         store.insert_message(
@@ -1248,6 +1254,23 @@ fn insert_user_message(
         content,
         None,
     )
+}
+
+/// Attaches Windie's built-in shell tool to a benchmark conversation.
+///
+/// Runtime approval benchmarks need the same provider-backed attachment that
+/// real conversations use; otherwise policy would measure the detached-tool
+/// denial path instead of the approval path.
+fn attach_run_shell_tool(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
+    let registry = ToolProviderRegistry::new();
+    let definition = registry
+        .find_tool(
+            &ToolProviderId::new("windie"),
+            &ProviderToolName::new("run_shell"),
+        )
+        .ok_or_else(|| anyhow::anyhow!("run_shell provider tool is not registered"))?;
+
+    store.insert_attached_tool(conversation_id, &definition.attached_tool())
 }
 
 /// Creates a linear active path with alternating user and assistant messages.

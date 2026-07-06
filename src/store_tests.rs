@@ -526,7 +526,11 @@ fn rejects_non_object_tool_schema_parameters() {
         .insert_tool_schema(&conversation_id, &tool_schema)
         .unwrap_err();
 
-    assert!(error.to_string().contains("failed to encode tool schema"));
+    assert!(
+        error
+            .to_string()
+            .contains("tool schema parameters must be a JSON object")
+    );
 }
 
 #[test]

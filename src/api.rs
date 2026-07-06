@@ -32,8 +32,9 @@ use crate::llm::ModelName;
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::store::{ConversationInfo, Store};
-use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
-use crate::tool_catalog::available_tool_schemas;
+use crate::tool::{
+    ProviderToolName, ToolApprovalRequest, ToolDefinition, ToolExecutionResult, ToolProviderId,
+};
 
 const API_TOKEN_HEADER: &str = "x-windie-api-token";
 
@@ -81,6 +82,7 @@ fn router(state: ApiState) -> Router {
         .route("/api/health", get(health))
         .route("/api/status", get(status))
         .route("/api/tools", get(list_tools))
+        .route("/api/tools/{provider_id}", get(list_provider_tools))
         .route("/api/gateway/start", post(start_gateway))
         .route("/api/gateway/stop", post(stop_gateway))
         .route(
@@ -114,6 +116,14 @@ fn router(state: ApiState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/tool-schemas/{name}",
             patch(update_tool_schema).delete(remove_tool_schema),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/tools",
+            post(attach_tool),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/tools/{schema_name}",
+            axum::routing::delete(detach_tool),
         )
         .route(
             "/api/conversations/{conversation_id}/truncate",
@@ -260,15 +270,24 @@ async fn health() -> ApiResult<HealthResponse> {
 }
 
 #[derive(Debug, Serialize)]
-/// API response for Windie's built-in tool catalog.
+/// API response for provider tools available to attach.
 struct ToolCatalogResponse {
-    tools: Vec<ToolSchema>,
+    tools: Vec<ToolDefinition>,
 }
 
-/// Lists built-in tool schemas clients may attach to conversations.
+/// Lists provider tools clients may attach to conversations.
 async fn list_tools() -> ApiResult<ToolCatalogResponse> {
     Ok(Json(ToolCatalogResponse {
-        tools: available_tool_schemas(),
+        tools: operation::available_tools(),
+    }))
+}
+
+/// Lists available tools for one provider.
+async fn list_provider_tools(Path(provider_id): Path<String>) -> ApiResult<ToolCatalogResponse> {
+    let provider_id = ToolProviderId::new(provider_id);
+
+    Ok(Json(ToolCatalogResponse {
+        tools: operation::available_provider_tools(&provider_id),
     }))
 }
 
@@ -628,6 +647,31 @@ struct ToolSchemaResponse {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+/// Request body for attaching an available provider tool to a conversation.
+struct AttachToolRequest {
+    provider_id: String,
+    tool_name: String,
+}
+
+/// Attaches one available provider tool to a conversation.
+async fn attach_tool(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<AttachToolRequest>,
+) -> ApiResult<ToolSchemaResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let provider_id = ToolProviderId::new(request.provider_id);
+    let tool_name = ProviderToolName::new(request.tool_name);
+    let mut store = open_store(&state)?;
+    let schema_name =
+        operation::attach_tool(&mut store, &conversation_id, &provider_id, &tool_name)?;
+
+    Ok(Json(ToolSchemaResponse {
+        name: schema_name.as_str().to_string(),
+    }))
+}
+
 /// Inserts one conversation-level tool schema.
 async fn insert_tool_schema(
     State(state): State<ApiState>,
@@ -673,6 +717,20 @@ async fn remove_tool_schema(
     let mut store = open_store(&state)?;
 
     operation::remove_tool_schema(&mut store, &conversation_id, &name)?;
+
+    Ok(Json(DeletedResponse { deleted: true }))
+}
+
+/// Detaches one provider-backed tool schema from a conversation.
+async fn detach_tool(
+    State(state): State<ApiState>,
+    Path((conversation_id, schema_name)): Path<(String, String)>,
+) -> ApiResult<DeletedResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let schema_name = ToolSchemaName::new(schema_name);
+    let mut store = open_store(&state)?;
+
+    operation::detach_tool(&mut store, &conversation_id, &schema_name)?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }

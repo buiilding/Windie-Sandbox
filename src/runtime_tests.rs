@@ -939,7 +939,18 @@ fn insert_multi_tool_call_assistant(
 }
 
 fn attach_run_shell_schema(store: &mut Store, conversation_id: &ConversationId) {
-    attach_tool_schema(store, conversation_id, "run_shell");
+    let registry = crate::tool_provider::ToolProviderRegistry::new();
+    let attached_tool = registry
+        .find_tool(
+            &crate::tool::ToolProviderId::new("windie"),
+            &crate::tool::ProviderToolName::new("run_shell"),
+        )
+        .unwrap()
+        .attached_tool();
+
+    store
+        .insert_attached_tool(conversation_id, &attached_tool)
+        .unwrap();
 }
 
 fn attach_tool_schema(store: &mut Store, conversation_id: &ConversationId, name: &str) {

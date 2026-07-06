@@ -27,7 +27,10 @@ use crate::runtime::{
     query_conversation_once as runtime_query_conversation_once,
 };
 use crate::store::{Compaction, ConversationInfo, ImagePayload, MessagePayload, Store};
-use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
+use crate::tool::{
+    ProviderToolName, ToolApprovalRequest, ToolDefinition, ToolExecutionResult, ToolProviderId,
+};
+use crate::tool_provider::ToolProviderRegistry;
 
 /// One ordered message part accepted by client-facing insert operations.
 ///
@@ -340,6 +343,35 @@ pub fn remove_system_prompt(store: &mut Store, conversation_id: &ConversationId)
     store.remove_system_prompt(conversation_id)
 }
 
+/// Lists provider tools that can be attached to conversations.
+pub fn available_tools() -> Vec<ToolDefinition> {
+    ToolProviderRegistry::new().list_available_tools()
+}
+
+/// Lists provider tools for one provider ID.
+pub fn available_provider_tools(provider_id: &ToolProviderId) -> Vec<ToolDefinition> {
+    ToolProviderRegistry::new().list_provider_tools(provider_id)
+}
+
+/// Attaches one available provider tool to a conversation.
+pub fn attach_tool(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    provider_id: &ToolProviderId,
+    tool_name: &ProviderToolName,
+) -> Result<ToolSchemaName> {
+    let registry = ToolProviderRegistry::new();
+    let definition = registry.find_tool(provider_id, tool_name).ok_or_else(|| {
+        error::not_found(format!("tool does not exist: {provider_id}/{tool_name}"))
+    })?;
+    let attached_tool = definition.attached_tool();
+    let schema_name = attached_tool.schema_name.clone();
+
+    store.insert_attached_tool(conversation_id, &attached_tool)?;
+
+    Ok(schema_name)
+}
+
 /// Inserts one conversation-level tool schema.
 pub fn insert_tool_schema(
     store: &mut Store,
@@ -366,6 +398,15 @@ pub fn remove_tool_schema(
     name: &ToolSchemaName,
 ) -> Result<()> {
     store.remove_tool_schema(conversation_id, name)
+}
+
+/// Detaches one model-facing tool schema from a conversation.
+pub fn detach_tool(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    schema_name: &ToolSchemaName,
+) -> Result<()> {
+    remove_tool_schema(store, conversation_id, schema_name)
 }
 
 /// Deletes one conversation and all data owned by it.
@@ -629,6 +670,28 @@ mod tests {
     }
 
     #[test]
+    fn attaches_available_provider_tool() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store).unwrap();
+        let tools = available_tools();
+
+        let schema_name = attach_tool(
+            &mut store,
+            &conversation_id,
+            &ToolProviderId::new("windie"),
+            &ProviderToolName::new("run_shell"),
+        )
+        .unwrap();
+        let attached_tools = store.load_attached_tools(&conversation_id).unwrap();
+
+        assert!(tools.iter().any(|tool| tool.schema_name == schema_name));
+        assert_eq!(schema_name.as_str(), "run_shell");
+        assert_eq!(attached_tools.len(), 1);
+        assert_eq!(attached_tools[0].provider.provider_id.as_str(), "windie");
+        assert_eq!(attached_tools[0].provider.tool_name.as_str(), "run_shell");
+    }
+
+    #[test]
     fn shared_operations_match_direct_store_state() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store).unwrap();
@@ -705,12 +768,13 @@ mod tests {
     async fn approve_tool_persists_tool_result() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store).unwrap();
-        let tool_schema = ToolSchema {
-            name: ToolSchemaName::new("run_shell"),
-            description: "Run a shell command".to_string(),
-            parameters: serde_json::json!({"type":"object"}),
-        };
-        insert_tool_schema(&mut store, &conversation_id, &tool_schema).unwrap();
+        attach_tool(
+            &mut store,
+            &conversation_id,
+            &ToolProviderId::new("windie"),
+            &ProviderToolName::new("run_shell"),
+        )
+        .unwrap();
         let user_id = store
             .insert_message(&conversation_id, None, Role::User, "run command", None)
             .unwrap();

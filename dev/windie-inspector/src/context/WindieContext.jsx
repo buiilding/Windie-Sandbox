@@ -194,9 +194,12 @@ export function WindieProvider({ children }) {
   const addToolSchema = useCallback(
     (convId, toolSchema) =>
       runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/tool-schemas`, {
+        apiRequest(`/api/conversations/${convId}/tools`, {
           method: "POST",
-          body: JSON.stringify(toolSchema),
+          body: JSON.stringify({
+            provider_id: toolSchema.providerId,
+            tool_name: toolSchema.providerToolName,
+          }),
         })
       ),
     [runMutation]
@@ -205,7 +208,7 @@ export function WindieProvider({ children }) {
   const removeToolSchema = useCallback(
     (convId, name) =>
       runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/tool-schemas/${encodeURIComponent(name)}`, {
+        apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(name)}`, {
           method: "DELETE",
         })
       ),

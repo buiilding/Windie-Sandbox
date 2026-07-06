@@ -190,5 +190,8 @@ function toolSchemaFromApi(schema) {
     name: schema.name,
     description: schema.description,
     parameters: schema.parameters,
+    providerId: schema.provider?.provider_id,
+    providerToolName: schema.provider?.tool_name,
+    providerKind: schema.provider?.kind,
   };
 }

@@ -12,12 +12,12 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchema, ToolSchemaName,
+    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
 };
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::store::ConversationInfo;
-use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
+use crate::tool::{ToolApprovalRequest, ToolDefinition, ToolExecutionResult};
 
 /// Minimal output interface needed by runtime flows.
 ///
@@ -371,9 +371,9 @@ impl TerminalOutput {
         println!("gateway: not running");
     }
 
-    /// Prints built-in tool schemas that can be attached to conversations.
-    pub fn available_tool_schemas(&self, tool_schemas: &[ToolSchema]) {
-        for line in available_tool_schema_lines(tool_schemas) {
+    /// Prints provider tools that can be attached to conversations.
+    pub fn available_tools(&self, tools: &[ToolDefinition]) {
+        for line in available_tool_lines(tools) {
             println!("{line}");
         }
     }
@@ -558,6 +558,8 @@ fn help_lines() -> Vec<String> {
         "  windie approvals <conversation_id>",
         "  windie approve <conversation_id> <tool_call_id>",
         "  windie deny <conversation_id> <tool_call_id>",
+        "  windie attach <conversation_id> tool <provider_id> <tool_name>",
+        "  windie detach <conversation_id> tool <schema_name>",
         "  windie insert <conversation_id> message --role user --text \"hello\"",
         "  windie insert <conversation_id> message --role user --text \"first\" --image <path> --text \"second\"",
         "  windie insert <conversation_id> toolschema --name <name> --description <text> --parameters <json>",
@@ -584,7 +586,7 @@ fn help_lines() -> Vec<String> {
         "Notes:",
         "  windie exits successfully without runtime action.",
         "  windie api starts the localhost developer API server.",
-        "  windie tools lists built-in tool schemas available to attach to conversations.",
+        "  windie tools lists provider tools available to attach to conversations.",
         "  windie bench <conversation_id> measures active path, tree, tool schema load, and context build.",
         "  windie bench runtime measures provider-free runtime and write-path primitives.",
         "  windie bench <conversation_id> --json writes a persistent benchmark artifact to stdout.",
@@ -597,8 +599,10 @@ fn help_lines() -> Vec<String> {
         "  windie approvals lists pending tool calls that require user approval.",
         "  windie approve executes one pending tool call and stores its tool result.",
         "  windie deny stores a rejected tool result for one pending tool call.",
+        "  windie attach <conversation_id> tool attaches one provider tool to a conversation.",
+        "  windie detach <conversation_id> tool detaches one provider tool schema from a conversation.",
         "  windie set <conversation_id> systemprompt sets or replaces the conversation system prompt.",
-        "  windie insert <conversation_id> toolschema adds a model-facing tool definition.",
+        "  windie insert <conversation_id> toolschema adds a raw model-facing tool definition.",
         "  windie bench live sends a real provider request and may cost money.",
         "",
         "Options:",
@@ -610,18 +614,19 @@ fn help_lines() -> Vec<String> {
     .collect()
 }
 
-/// Converts the built-in tool catalog into compact CLI lines.
-fn available_tool_schema_lines(tool_schemas: &[ToolSchema]) -> Vec<String> {
-    if tool_schemas.is_empty() {
+/// Converts provider tool definitions into compact CLI lines.
+fn available_tool_lines(tools: &[ToolDefinition]) -> Vec<String> {
+    if tools.is_empty() {
         return vec!["no tools".to_string()];
     }
 
     let mut lines = vec!["tools".to_string()];
-    lines.extend(
-        tool_schemas
-            .iter()
-            .map(|schema| format!("{}  {}", schema.name, schema.description)),
-    );
+    lines.extend(tools.iter().map(|tool| {
+        format!(
+            "{}/{}  {}  {}",
+            tool.provider.provider_id, tool.provider.tool_name, tool.schema_name, tool.description
+        )
+    }));
 
     lines
 }

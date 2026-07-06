@@ -10,6 +10,7 @@ use crate::perf::{
     PerformanceReport, PerformanceSummary,
 };
 use crate::store::Compaction;
+use crate::tool_provider::ToolProviderRegistry;
 
 #[test]
 fn formats_empty_conversations() {
@@ -76,20 +77,21 @@ fn formats_help_lines() {
 
 #[test]
 fn formats_available_tool_schemas() {
-    let tool_schema = ToolSchema {
-        name: ToolSchemaName::new("run_shell"),
-        description: "Run a shell command".to_string(),
-        parameters: serde_json::json!({"type": "object"}),
-    };
+    let tools = ToolProviderRegistry::new().list_available_tools();
+    let lines = available_tool_lines(&tools);
 
-    let lines = available_tool_schema_lines(&[tool_schema]);
-
-    assert_eq!(lines, vec!["tools", "run_shell  Run a shell command"]);
+    assert_eq!(
+        lines,
+        vec![
+            "tools",
+            "windie/run_shell  run_shell  Run a bounded local shell command after explicit user approval."
+        ]
+    );
 }
 
 #[test]
 fn formats_empty_available_tool_schemas() {
-    let lines = available_tool_schema_lines(&[]);
+    let lines = available_tool_lines(&[]);
 
     assert_eq!(lines, vec!["no tools"]);
 }

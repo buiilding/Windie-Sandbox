@@ -12,6 +12,7 @@ use crate::conversation::{
 };
 use crate::llm::ModelName;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
+use crate::tool::{ProviderToolName, ToolProviderId};
 
 /// Parsed startup action for one `windie` process.
 ///
@@ -34,6 +35,12 @@ pub enum Command {
         conversation_id: ConversationId,
         tool_call_id: ToolCallId,
     },
+    /// Attach one provider tool to a conversation.
+    AttachTool {
+        conversation_id: ConversationId,
+        provider_id: ToolProviderId,
+        tool_name: ProviderToolName,
+    },
     /// Insert one message into a conversation without model inference.
     InsertMessage {
         conversation_id: ConversationId,
@@ -50,8 +57,10 @@ pub enum Command {
         conversation_id: ConversationId,
         model: Option<ModelName>,
     },
-    /// List built-in tool schemas that can be attached to conversations.
-    Tools,
+    /// List provider tools that can be attached to conversations.
+    Tools {
+        provider_id: Option<ToolProviderId>,
+    },
     /// Run one benchmark mode. Conversation mode carries the target
     /// conversation ID; live mode does not.
     Bench {
@@ -91,6 +100,11 @@ pub enum Command {
     RemoveToolSchema {
         conversation_id: ConversationId,
         name: ToolSchemaName,
+    },
+    /// Detach one provider-backed tool schema from a conversation.
+    DetachTool {
+        conversation_id: ConversationId,
+        schema_name: ToolSchemaName,
     },
     DenyTool {
         conversation_id: ConversationId,
@@ -150,7 +164,10 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
         [arg] if arg == "api" => Command::Api,
-        [arg] if arg == "tools" => Command::Tools,
+        [arg] if arg == "tools" => Command::Tools { provider_id: None },
+        [command, provider_id] if command == "tools" => Command::Tools {
+            provider_id: Some(ToolProviderId::new(provider_id.as_str())),
+        },
         [command, conversation_id] if command == "approvals" => Command::Approvals {
             conversation_id: ConversationId::new(conversation_id.as_str()),
         },
@@ -158,6 +175,23 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             tool_call_id: ToolCallId::new(tool_call_id.as_str()),
         },
+        [command, conversation_id, subject, provider_id, tool_name]
+            if command == "attach" && subject == "tool" =>
+        {
+            Command::AttachTool {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                provider_id: ToolProviderId::new(provider_id.as_str()),
+                tool_name: ProviderToolName::new(tool_name.as_str()),
+            }
+        }
+        [command, conversation_id, subject, schema_name]
+            if command == "detach" && subject == "tool" =>
+        {
+            Command::DetachTool {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                schema_name: ToolSchemaName::new(schema_name.as_str()),
+            }
+        }
         [command, conversation_id, tool_call_id] if command == "deny" => Command::DenyTool {
             conversation_id: ConversationId::new(conversation_id.as_str()),
             tool_call_id: ToolCallId::new(tool_call_id.as_str()),
@@ -543,7 +577,66 @@ mod tests {
     fn reads_tools_command() {
         let command = command_from_args(["windie".to_string(), "tools".to_string()]);
 
-        assert!(matches!(command, Command::Tools));
+        assert!(matches!(command, Command::Tools { provider_id: None }));
+    }
+
+    #[test]
+    fn reads_provider_tools_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "tools".to_string(),
+            "windie".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Tools {
+                provider_id: Some(provider_id)
+            } if provider_id.as_str() == "windie"
+        ));
+    }
+
+    #[test]
+    fn reads_attach_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "attach".to_string(),
+            "conversation-id".to_string(),
+            "tool".to_string(),
+            "windie".to_string(),
+            "run_shell".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::AttachTool {
+                conversation_id,
+                provider_id,
+                tool_name,
+            } if conversation_id.as_str() == "conversation-id"
+                && provider_id.as_str() == "windie"
+                && tool_name.as_str() == "run_shell"
+        ));
+    }
+
+    #[test]
+    fn reads_detach_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "detach".to_string(),
+            "conversation-id".to_string(),
+            "tool".to_string(),
+            "run_shell".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::DetachTool {
+                conversation_id,
+                schema_name,
+            } if conversation_id.as_str() == "conversation-id"
+                && schema_name.as_str() == "run_shell"
+        ));
     }
 
     #[test]

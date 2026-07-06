@@ -16,9 +16,9 @@ use crate::error;
 use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
 use crate::policy::{PolicyDecision, ToolPolicy};
-use crate::shell::ShellExecutor;
 use crate::store::Store;
-use crate::tool::{ToolApprovalRequest, ToolExecutionResult};
+use crate::tool::{AttachedTool, ToolApprovalRequest, ToolExecutionResult};
+use crate::tool_provider::ToolProviderRegistry;
 
 /// Runs one assistant inference turn and persists the assistant message.
 ///
@@ -133,9 +133,14 @@ pub(crate) fn pending_tool_approvals(
         return Ok(Vec::new());
     };
     let policy = ToolPolicy;
-    let attached_tool_names = load_attached_tool_names(store, conversation_id)?;
+    let registry = ToolProviderRegistry::new();
+    let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
 
-    if let PolicyDecision::Ask { reason } = policy.decide(&tool_call, &attached_tool_names) {
+    if let PolicyDecision::Ask { reason } = policy.decide(
+        &tool_call,
+        attached_tool.as_ref(),
+        attached_tool_can_execute(&registry, attached_tool.as_ref()),
+    ) {
         return Ok(vec![ToolApprovalRequest {
             assistant_message_id: execution.assistant_message_id,
             tool_call,
@@ -157,7 +162,7 @@ fn store_policy_denied_tool_results(
     conversation_id: &ConversationId,
 ) -> Result<()> {
     let policy = ToolPolicy;
-    let attached_tool_names = load_attached_tool_names(store, conversation_id)?;
+    let registry = ToolProviderRegistry::new();
 
     loop {
         let messages = store.load_active_path(conversation_id)?;
@@ -167,9 +172,13 @@ fn store_policy_denied_tool_results(
         let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
             return Ok(());
         };
+        let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
 
-        let PolicyDecision::Deny { reason } = policy.decide(&tool_call, &attached_tool_names)
-        else {
+        let PolicyDecision::Deny { reason } = policy.decide(
+            &tool_call,
+            attached_tool.as_ref(),
+            attached_tool_can_execute(&registry, attached_tool.as_ref()),
+        ) else {
             return Ok(());
         };
         let result = ToolExecutionResult::failure(tool_call.id.clone(), tool_call.name(), reason);
@@ -275,15 +284,29 @@ pub(crate) async fn approve_tool_call(
 ) -> Result<ToolExecutionResult> {
     let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
     let policy = ToolPolicy;
-    let attached_tool_names = load_attached_tool_names(store, conversation_id)?;
-    let shell = ShellExecutor::default();
-    let result = match policy.decide(&pending.tool_call, &attached_tool_names) {
+    let registry = ToolProviderRegistry::new();
+    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let result = match policy.decide(
+        &pending.tool_call,
+        attached_tool.as_ref(),
+        attached_tool_can_execute(&registry, attached_tool.as_ref()),
+    ) {
         PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
             pending.tool_call.id.clone(),
             pending.tool_call.name(),
             reason,
         ),
-        PolicyDecision::Ask { .. } => shell.execute_tool_call(&pending.tool_call).await,
+        PolicyDecision::Ask { .. } => {
+            let Some(attached_tool) = attached_tool.as_ref() else {
+                return Err(error::invalid_request(format!(
+                    "Tool is not attached: {}",
+                    pending.tool_call.name()
+                )));
+            };
+            registry
+                .call_tool(attached_tool, &pending.tool_call)
+                .await?
+        }
     };
 
     store_tool_result(
@@ -360,16 +383,22 @@ fn find_pending_tool_call(
     })
 }
 
-/// Loads the conversation-level tool names used by execution policy.
-fn load_attached_tool_names(
+/// Loads the attached tool matching one model-requested function name.
+fn load_attached_tool_for_call(
     store: &Store,
     conversation_id: &ConversationId,
-) -> Result<HashSet<ToolSchemaName>> {
-    Ok(store
-        .load_tool_schemas(conversation_id)?
-        .into_iter()
-        .map(|schema| schema.name)
-        .collect())
+    tool_call: &ToolCall,
+) -> Result<Option<AttachedTool>> {
+    store.load_attached_tool(conversation_id, &ToolSchemaName::new(tool_call.name()))
+}
+
+/// Returns whether a loaded attached tool has an executor in the current
+/// provider registry.
+fn attached_tool_can_execute(
+    registry: &ToolProviderRegistry,
+    attached_tool: Option<&AttachedTool>,
+) -> bool {
+    attached_tool.is_some_and(|attached_tool| registry.can_execute(attached_tool))
 }
 
 /// Saves one tool execution result as a `role: tool` child message.

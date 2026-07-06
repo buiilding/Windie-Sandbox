@@ -62,7 +62,7 @@ that token in the `X-Windie-Api-Token` header. The localhost inspector at
 The API is a JSON test harness over Windie's existing runtime and store
 primitives. It is intended for local tools such as `dev/windie-inspector` to
 test conversation trees, active path selection, message mutation, system
-prompts, tool schemas, gateway lifecycle, and one-shot queries without shelling
+prompts, attached tools, gateway lifecycle, and one-shot queries without shelling
 out for each operation.
 
 Initial routes:
@@ -71,6 +71,7 @@ Initial routes:
 GET    /api/health
 GET    /api/status
 GET    /api/tools
+GET    /api/tools/{provider_id}
 POST   /api/gateway/start
 POST   /api/gateway/stop
 GET    /api/conversations
@@ -86,6 +87,8 @@ PATCH  /api/conversations/{conversation_id}/messages/{message_id}
 DELETE /api/conversations/{conversation_id}/messages/{message_id}
 PATCH  /api/conversations/{conversation_id}/system-prompt
 DELETE /api/conversations/{conversation_id}/system-prompt
+POST   /api/conversations/{conversation_id}/tools
+DELETE /api/conversations/{conversation_id}/tools/{schema_name}
 POST   /api/conversations/{conversation_id}/tool-schemas
 PATCH  /api/conversations/{conversation_id}/tool-schemas/{name}
 DELETE /api/conversations/{conversation_id}/tool-schemas/{name}
@@ -94,19 +97,33 @@ POST   /api/conversations/{conversation_id}/fork
 POST   /api/conversations/{conversation_id}/query
 ```
 
-## Built-in Tools
+## Tools
 
 ```text
 windie tools
+windie tools <provider_id>
 ```
 
-List Windie's built-in tool schemas.
+List provider tools available to attach to conversations.
 
-This is a catalog, not a permission grant. A client can show these schemas to
-the user, then explicitly attach one to a conversation with `windie insert
-<conversation_id> toolschema ...` or `POST
-/api/conversations/{conversation_id}/tool-schemas`. Only conversation-level
-schemas are sent to Bifrost during `query`.
+This is a catalog, not a permission grant. Provider availability does not grant
+model access and does not authorize execution. A client can show these tools to
+the user, then explicitly attach one to a conversation.
+
+```text
+windie attach <conversation_id> tool windie run_shell
+```
+
+Attach one provider tool to a conversation. Attached tools are the schemas sent
+to Bifrost during `query`; approval is still required before execution.
+
+```text
+windie detach <conversation_id> tool run_shell
+```
+
+Detach one model-facing tool schema from a conversation. Past tool-call and
+tool-result messages stay in history; future calls to the detached schema are
+recorded as failed tool results with `Tool is not attached: <name>`.
 
 ## Conversations
 
@@ -238,16 +255,17 @@ windie rm <conversation_id> systemprompt
 
 Remove the conversation-level system prompt without changing messages.
 
-## Tool Schemas
+## Raw Tool Schemas
 
 ```text
 windie insert <conversation_id> toolschema --name run_shell --description "Run a shell command" --parameters '{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}'
 ```
 
-Insert one conversation-level tool schema.
+Insert one raw conversation-level tool schema.
 
-A tool schema is a definition sent to the model during `query`. It is not a
-message, not a tool call, and not permission to execute anything.
+A raw tool schema is a developer escape hatch. It is sent to the model during
+`query`, but it is attached to the `manual` provider and has no executor unless
+a real provider-backed tool is attached through `windie attach`.
 
 The schema name must be 1-64 ASCII letters, numbers, `_`, or `-`. The
 description must contain non-whitespace text. `--parameters` must be a JSON
@@ -257,8 +275,9 @@ object.
 windie update <conversation_id> toolschema run_shell --name run_shell --description "Run a shell command on the local machine" --parameters '{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}'
 ```
 
-Update one existing tool schema. The final `--name` value is the stored name
-after the update.
+Update one existing raw tool schema. The final `--name` value is the stored name
+after the update. Updating through this command keeps the row on the manual
+provider path.
 
 ```text
 windie rm <conversation_id> toolschema run_shell
