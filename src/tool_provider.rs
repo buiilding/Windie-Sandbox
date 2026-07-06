@@ -51,7 +51,9 @@ impl ToolProviderRegistry {
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
         let mut tools = self.built_in.list_tools();
         for provider in &self.mcp_providers {
-            tools.extend(provider.list_tools()?);
+            if let Ok(provider_tools) = provider.list_tools() {
+                tools.extend(provider_tools);
+            }
         }
 
         Ok(tools)
@@ -397,5 +399,28 @@ mod tests {
         };
 
         assert!(registry.can_execute(&attached_tool));
+    }
+
+    #[test]
+    fn unavailable_mcp_provider_does_not_hide_builtin_tools() {
+        let registry = ToolProviderRegistry {
+            built_in: BuiltInToolProvider,
+            mcp_providers: vec![McpToolProvider {
+                provider_id: ToolProviderId::new("missing-mcp"),
+                schema_prefix: "missing_mcp",
+                display_name: "Missing MCP",
+                command: McpCommand {
+                    program: "windie-missing-mcp-provider",
+                    args: &[],
+                },
+            }],
+        };
+
+        let tools = registry.list_available_tools().unwrap();
+
+        assert!(tools.iter().any(|tool| {
+            tool.provider.provider_id.as_str() == "windie"
+                && tool.provider.tool_name.as_str() == "run_shell"
+        }));
     }
 }
