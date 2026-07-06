@@ -21,6 +21,7 @@ use crate::conversation::{
 };
 use crate::gateway::{BifrostGateway, GatewayUrl};
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
+use crate::mcp::{self, McpCommand};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
 use crate::store::{ImagePayload, MessagePayload, Store};
 use crate::tool::{ProviderToolName, ToolProviderId};
@@ -33,6 +34,17 @@ const TOOL_CHAIN_RESULTS: usize = 10;
 const BRANCH_CHILDREN: usize = 100;
 const LARGE_TRUNCATE_DESCENDANTS: usize = 100;
 const IMAGE_PART_MESSAGES: usize = 10;
+const FAKE_MCP_SCRIPT: &str = r#"while IFS= read -r line; do
+case "$line" in
+*'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"windie-fake-mcp","version":"0"}}}' ;;
+*'"method":"tools/list"'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"click","description":"Fake click","inputSchema":{"type":"object","additionalProperties":false,"properties":{}}}]}}' ;;
+*'"method":"tools/call"'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}],"isError":false}}' ;;
+esac
+done"#;
+const FAKE_MCP_COMMAND: McpCommand = McpCommand {
+    program: "/bin/sh",
+    args: &["-c", FAKE_MCP_SCRIPT],
+};
 
 const REPORT_FORMAT_VERSION: u32 = 3;
 
@@ -124,6 +136,8 @@ pub struct PerformanceBaseline {
     pub context_build_with_system_prompt: Option<Duration>,
     pub context_build_with_compaction: Option<Duration>,
     pub context_build_with_image_parts: Option<Duration>,
+    pub provider_tool_attach_load: Option<Duration>,
+    pub fake_mcp_list_call: Option<Duration>,
     pub loaded_messages: Option<usize>,
     pub tree_messages: Option<usize>,
     pub requested_tool_calls: Option<usize>,
@@ -218,6 +232,10 @@ pub struct PerformanceSample {
     pub context_build_with_compaction_us: Option<u64>,
     #[serde(default)]
     pub context_build_with_image_parts_us: Option<u64>,
+    #[serde(default)]
+    pub provider_tool_attach_load_us: Option<u64>,
+    #[serde(default)]
+    pub fake_mcp_list_call_us: Option<u64>,
     pub active_path_messages: Option<usize>,
     pub tree_messages: Option<usize>,
     #[serde(default)]
@@ -302,6 +320,10 @@ pub struct PerformanceSummary {
     pub context_build_with_compaction: Option<DurationMetric>,
     #[serde(default)]
     pub context_build_with_image_parts: Option<DurationMetric>,
+    #[serde(default)]
+    pub provider_tool_attach_load: Option<DurationMetric>,
+    #[serde(default)]
+    pub fake_mcp_list_call: Option<DurationMetric>,
     pub gateway_ready: Option<DurationMetric>,
     pub first_token: Option<DurationMetric>,
     pub full_response: Option<DurationMetric>,
@@ -361,6 +383,8 @@ struct RuntimeBenchmarkTimings {
     context_build_with_system_prompt: Duration,
     context_build_with_compaction: Duration,
     context_build_with_image_parts: Duration,
+    provider_tool_attach_load: Duration,
+    fake_mcp_list_call: Duration,
     active_path_messages: usize,
     tree_messages: usize,
     requested_tool_calls: usize,
@@ -432,6 +456,8 @@ pub async fn run(
         context_build_with_system_prompt: None,
         context_build_with_compaction: None,
         context_build_with_image_parts: None,
+        provider_tool_attach_load: None,
+        fake_mcp_list_call: None,
         loaded_messages: None,
         tree_messages: None,
         requested_tool_calls: None,
@@ -569,6 +595,8 @@ pub async fn run(
                 Some(runtime.context_build_with_system_prompt);
             baseline.context_build_with_compaction = Some(runtime.context_build_with_compaction);
             baseline.context_build_with_image_parts = Some(runtime.context_build_with_image_parts);
+            baseline.provider_tool_attach_load = Some(runtime.provider_tool_attach_load);
+            baseline.fake_mcp_list_call = Some(runtime.fake_mcp_list_call);
             baseline.loaded_messages = Some(runtime.active_path_messages);
             baseline.tree_messages = Some(runtime.tree_messages);
             baseline.requested_tool_calls = Some(runtime.requested_tool_calls);
@@ -683,6 +711,8 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let context_build_with_system_prompt = benchmark_context_with_system_prompt()?;
     let context_build_with_compaction = benchmark_context_with_compaction()?;
     let context_build_with_image_parts = benchmark_context_with_image_parts()?;
+    let provider_tool_attach_load = benchmark_provider_tool_attach_load()?;
+    let fake_mcp_list_call = benchmark_fake_mcp_list_call()?;
 
     Ok(RuntimeBenchmarkTimings {
         prepare_query_turn,
@@ -709,6 +739,8 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
         context_build_with_system_prompt,
         context_build_with_compaction,
         context_build_with_image_parts,
+        provider_tool_attach_load,
+        fake_mcp_list_call,
         active_path_messages: context.active_path_messages,
         tree_messages: context.tree_messages,
         requested_tool_calls: context.requested_tool_calls,
@@ -1212,6 +1244,44 @@ fn benchmark_context_with_image_parts() -> Result<Duration> {
     })
 }
 
+/// Measures provider registry lookup plus attached-tool persistence.
+fn benchmark_provider_tool_attach_load() -> Result<Duration> {
+    with_runtime_store("provider-tool-attach-load", |store| {
+        let conversation_id = store.create_conversation()?;
+        let registry = ToolProviderRegistry::new();
+
+        let started = Instant::now();
+        let definition = registry
+            .find_tool(
+                &ToolProviderId::new("windie"),
+                &ProviderToolName::new("run_shell"),
+            )?
+            .ok_or_else(|| anyhow::anyhow!("run_shell provider tool is not registered"))?;
+        store.insert_attached_tool(&conversation_id, &definition.attached_tool())?;
+        let attached_tool = store
+            .load_attached_tool(&conversation_id, &definition.schema_name)?
+            .ok_or_else(|| anyhow::anyhow!("attached run_shell tool was not stored"))?;
+        let can_execute = registry.can_execute(&attached_tool);
+        let duration = started.elapsed();
+        debug_assert!(can_execute);
+
+        Ok(duration)
+    })
+}
+
+/// Measures a provider-free MCP initialize, tools/list, and tools/call path.
+fn benchmark_fake_mcp_list_call() -> Result<Duration> {
+    let started = Instant::now();
+    let tools = mcp::list_tools(FAKE_MCP_COMMAND)?;
+    let result = mcp::call_tool(FAKE_MCP_COMMAND, "click", serde_json::json!({}))?;
+    let duration = started.elapsed();
+    debug_assert_eq!(tools.len(), 1);
+    debug_assert_eq!(tools[0].name, "click");
+    debug_assert_eq!(result["isError"], false);
+
+    Ok(duration)
+}
+
 /// Creates one temporary benchmark store and removes database files after use.
 fn with_runtime_store<T>(scenario: &str, run: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
     let path = runtime_database_path(scenario);
@@ -1468,6 +1538,8 @@ impl PerformanceSample {
             context_build_with_image_parts_us: baseline
                 .context_build_with_image_parts
                 .map(duration_micros),
+            provider_tool_attach_load_us: baseline.provider_tool_attach_load.map(duration_micros),
+            fake_mcp_list_call_us: baseline.fake_mcp_list_call.map(duration_micros),
             active_path_messages: baseline.loaded_messages,
             tree_messages: baseline.tree_messages,
             requested_tool_calls: baseline.requested_tool_calls,
@@ -1656,6 +1728,16 @@ impl PerformanceSummary {
                 samples
                     .iter()
                     .filter_map(|sample| sample.context_build_with_image_parts_us),
+            ),
+            provider_tool_attach_load: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.provider_tool_attach_load_us),
+            ),
+            fake_mcp_list_call: duration_metric(
+                samples
+                    .iter()
+                    .filter_map(|sample| sample.fake_mcp_list_call_us),
             ),
             gateway_ready: duration_metric(
                 samples.iter().filter_map(|sample| sample.gateway_ready_us),
@@ -1874,6 +1956,16 @@ fn comparison_rows(
             "context build with image parts",
             &baseline.context_build_with_image_parts,
             &current.context_build_with_image_parts,
+        ),
+        (
+            "provider tool attach/load",
+            &baseline.provider_tool_attach_load,
+            &current.provider_tool_attach_load,
+        ),
+        (
+            "fake mcp list/call",
+            &baseline.fake_mcp_list_call,
+            &current.fake_mcp_list_call,
         ),
         (
             "gateway ready",

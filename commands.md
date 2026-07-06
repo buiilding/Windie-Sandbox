@@ -549,9 +549,10 @@ databases. Measures small and scaled query preparation, policy-denied query
 preparation, pending tool approval scanning, tool result insertion, explicit
 denial persistence, splice remove variants, truncate variants, active-path
 scale, context scale, system prompt context, compaction context with a remaining
-active-path suffix, image-part context, and completed tool-result chains. Does
-not touch user conversations, start Bifrost, run shell commands, or send a
-provider request.
+active-path suffix, image-part context, provider tool attach/load, a fake MCP
+stdio list/call round trip, and completed tool-result chains. Does not touch
+user conversations, start Bifrost, run shell commands, call real MCP providers,
+or send a provider request.
 
 ```text
 windie bench <conversation_id> --runs 100 --json

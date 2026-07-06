@@ -207,6 +207,12 @@ impl TerminalOutput {
                 format_duration(duration)
             );
         }
+        if let Some(duration) = baseline.provider_tool_attach_load {
+            println!("provider tool attach/load: {}", format_duration(duration));
+        }
+        if let Some(duration) = baseline.fake_mcp_list_call {
+            println!("fake mcp list/call: {}", format_duration(duration));
+        }
         if let Some(loaded_messages) = baseline.loaded_messages {
             println!("active path messages: {loaded_messages}");
         }
@@ -853,6 +859,16 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
         &mut lines,
         "context build with image parts",
         report.summary.context_build_with_image_parts.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "provider tool attach/load",
+        report.summary.provider_tool_attach_load.as_ref(),
+    );
+    push_metric_lines(
+        &mut lines,
+        "fake mcp list/call",
+        report.summary.fake_mcp_list_call.as_ref(),
     );
     push_metric_lines(
         &mut lines,
