@@ -35,7 +35,7 @@ const CUA_DRIVER_COMMAND: McpCommand = McpCommand {
 /// attached tool to a provider reference and calls this registry.
 pub struct ToolProviderRegistry {
     built_in: BuiltInToolProvider,
-    cua_driver: McpToolProvider,
+    mcp_providers: Vec<McpToolProvider>,
 }
 
 impl ToolProviderRegistry {
@@ -50,7 +50,9 @@ impl ToolProviderRegistry {
     /// returned definition before the model sees the function schema.
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
         let mut tools = self.built_in.list_tools();
-        tools.extend(self.cua_driver.list_tools()?);
+        for provider in &self.mcp_providers {
+            tools.extend(provider.list_tools()?);
+        }
 
         Ok(tools)
     }
@@ -60,8 +62,8 @@ impl ToolProviderRegistry {
         if provider_id.as_str() == WINDIE_PROVIDER_ID {
             return Ok(self.built_in.list_tools());
         }
-        if provider_id.as_str() == CUA_DRIVER_PROVIDER_ID {
-            return self.cua_driver.list_tools();
+        if let Some(provider) = self.mcp_provider(provider_id) {
+            return provider.list_tools();
         }
 
         Ok(Vec::new())
@@ -83,10 +85,15 @@ impl ToolProviderRegistry {
     /// Returns whether this process has an executor for the attached provider
     /// tool.
     pub fn can_execute(&self, attached_tool: &AttachedTool) -> bool {
-        matches!(
-            attached_tool.provider.provider_id.as_str(),
-            WINDIE_PROVIDER_ID | CUA_DRIVER_PROVIDER_ID
-        )
+        match attached_tool.provider.kind {
+            ToolProviderKind::BuiltIn => {
+                attached_tool.provider.provider_id.as_str() == WINDIE_PROVIDER_ID
+            }
+            ToolProviderKind::Mcp => self
+                .mcp_provider(&attached_tool.provider.provider_id)
+                .is_some(),
+            ToolProviderKind::Plugin => false,
+        }
     }
 
     /// Executes one approved model tool call through its attached provider.
@@ -97,12 +104,28 @@ impl ToolProviderRegistry {
     ) -> Result<ToolExecutionResult> {
         match attached_tool.provider.kind {
             ToolProviderKind::BuiltIn => self.built_in.call_tool(attached_tool, tool_call).await,
-            ToolProviderKind::Mcp => self.cua_driver.call_tool(attached_tool, tool_call).await,
+            ToolProviderKind::Mcp => {
+                let Some(provider) = self.mcp_provider(&attached_tool.provider.provider_id) else {
+                    return Err(error::invalid_request(format!(
+                        "unknown tool: {}",
+                        tool_call.name()
+                    )));
+                };
+
+                provider.call_tool(attached_tool, tool_call).await
+            }
             ToolProviderKind::Plugin => Err(error::invalid_request(format!(
                 "unknown tool: {}",
                 tool_call.name()
             ))),
         }
+    }
+
+    /// Finds one approved MCP provider by its stable provider ID.
+    fn mcp_provider(&self, provider_id: &ToolProviderId) -> Option<&McpToolProvider> {
+        self.mcp_providers
+            .iter()
+            .find(|provider| provider.id() == provider_id)
     }
 }
 
@@ -110,7 +133,7 @@ impl Default for ToolProviderRegistry {
     fn default() -> Self {
         Self {
             built_in: BuiltInToolProvider,
-            cua_driver: McpToolProvider::cua_driver(),
+            mcp_providers: vec![McpToolProvider::cua_driver()],
         }
     }
 }
@@ -193,6 +216,11 @@ pub struct McpToolProvider {
 }
 
 impl McpToolProvider {
+    /// Returns the stable provider ID used by attachments and dispatch.
+    fn id(&self) -> &ToolProviderId {
+        &self.provider_id
+    }
+
     /// Builds the approved CUA driver MCP provider.
     pub fn cua_driver() -> Self {
         Self {
@@ -331,5 +359,43 @@ mod tests {
             vec![ToolPermission::ExternalProcess]
         );
         assert_eq!(definition.annotations.read_only, Some(false));
+    }
+
+    #[test]
+    fn registry_executes_only_approved_mcp_provider_ids() {
+        let registry = ToolProviderRegistry::new();
+        let attached_tool = AttachedTool {
+            schema_name: ToolSchemaName::new("other__click"),
+            description: "Click somewhere".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("other-mcp"),
+                ProviderToolName::new("click"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        };
+
+        assert!(!registry.can_execute(&attached_tool));
+    }
+
+    #[test]
+    fn registry_recognizes_cua_driver_as_approved_mcp_provider() {
+        let registry = ToolProviderRegistry::new();
+        let attached_tool = AttachedTool {
+            schema_name: ToolSchemaName::new("cua_driver__click"),
+            description: "Click somewhere".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("cua-driver"),
+                ProviderToolName::new("click"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        };
+
+        assert!(registry.can_execute(&attached_tool));
     }
 }
