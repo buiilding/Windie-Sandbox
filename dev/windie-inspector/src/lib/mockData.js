@@ -141,7 +141,7 @@ const c1 = (() => {
       parts: [
         {
           type: "text",
-          text: "Core primitive: ConversationTree. Every message is a node with a parent and 0..n children. The runtime never mutates history — forks create sibling branches. An ActivePath is just an ordered list of node ids selected from the tree; the model context is derived from that path at query time.\n\nMinimal surface:\n  • append(nodeId, message) -> nodeId\n  • fork(nodeId) -> nodeId (new sibling parent)\n  • set_active_path([nodeIds])\n  • query(path, modelOverride?) -> stream",
+          text: "Core primitive: ConversationTree. Every message is a node with a parent and 0..n children. The runtime never mutates history — forks create sibling branches. An ActivePath is just an ordered list of node ids selected from the tree; the model context is derived from that path at query time.\n\nMinimal surface:\n  • append(nodeId, message) -> nodeId\n  • fork(nodeId) -> nodeId (new sibling parent)\n  • set_active_path([nodeIds])\n  • query(path) -> stream",
         },
       ],
       metadata: {
@@ -539,7 +539,7 @@ const c5 = (() => {
       parts: [
         {
           type: "text",
-          text: "One-liner: RuntimeRequestPreview is the deterministic projection of (tree, activePath, systemPrompt, modelOverride) into the exact payload the runtime would send. It is a *preview* — it must never mutate state.\n\nMinimum fields:\n  • model             (resolved id after override)\n  • messages          (flattened active path)\n  • tools             (enabled tool schemas)\n  • token_budget      (remaining budget after path)\n  • hash              (stable content hash for reproducibility)",
+          text: "One-liner: RuntimeRequestPreview is the deterministic projection of (tree, activePath, systemPrompt, conversation model) into the exact payload the runtime would send. It is a *preview* — it must never mutate state.\n\nMinimum fields:\n  • model             (persisted conversation model)\n  • messages          (flattened active path)\n  • tools             (enabled tool schemas)\n  • token_budget      (remaining budget after path)\n  • hash              (stable content hash for reproducibility)",
         },
       ],
       metadata: {

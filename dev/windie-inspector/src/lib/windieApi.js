@@ -79,12 +79,12 @@ export async function listModels() {
   }));
 }
 
-export async function countConversationInputTokens(conversationId, modelOverride) {
+export async function countConversationInputTokens(conversationId, model = null) {
   const body = await apiRequest(
     `/api/conversations/${encodeURIComponent(conversationId)}/input-tokens`,
     {
       method: "POST",
-      body: JSON.stringify({ model: modelOverride || null }),
+      body: JSON.stringify({ model: model || null }),
     }
   );
 
@@ -118,7 +118,7 @@ function parseSseBlock(block) {
   };
 }
 
-export async function streamConversationQuery(conversationId, modelOverride, onEvent) {
+export async function streamConversationQuery(conversationId, model, onEvent) {
   const token = apiToken();
   const response = await fetch(
     `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
@@ -128,7 +128,7 @@ export async function streamConversationQuery(conversationId, modelOverride, onE
         "Content-Type": "application/json",
         ...(token ? { "X-Windie-Api-Token": token } : {}),
       },
-      body: JSON.stringify({ model: modelOverride || null }),
+      body: JSON.stringify({ model: model || null }),
     }
   );
 
@@ -176,11 +176,18 @@ export async function streamConversationQuery(conversationId, modelOverride, onE
   }
 }
 
+export async function setConversationModel(conversationId, model) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/model`, {
+    method: "PATCH",
+    body: JSON.stringify({ model }),
+  });
+}
+
 export function conversationSummaryFromApi(summary) {
   return {
     id: summary.id,
     name: summary.title || `conversation ${summary.id.slice(0, 8)}`,
-    model: DEFAULT_MODEL,
+    model: summary.model || DEFAULT_MODEL,
     systemPrompt: "",
     toolApprovalMode: "manual",
     rootId: null,

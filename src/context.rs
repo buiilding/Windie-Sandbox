@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn builds_full_context_without_compaction() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = store.create_conversation().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
 
         let first_id = store
             .insert_message(&conversation_id, None, Role::User, "hello", None)
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn prepends_conversation_system_prompt() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = store.create_conversation().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
         store
             .set_system_prompt(&conversation_id, "You are concise.")
             .unwrap();
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn builds_compacted_context_from_latest_checkpoint() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = store.create_conversation().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
 
         let first_id = store
             .insert_message(&conversation_id, None, Role::User, "one", None)
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn ignores_compaction_outside_active_path() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = store.create_conversation().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
 
         let root_id = store
             .insert_message(&conversation_id, None, Role::User, "root", None)

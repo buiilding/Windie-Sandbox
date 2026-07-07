@@ -200,8 +200,8 @@ Messages include IDs, parent IDs, role, content, ordered parts, and assistant
 metadata. Image parts include asset ID, MIME type, and byte count; raw image
 bytes are not printed.
 
-`--model` changes only the model value shown in this inspection output. Windie
-does not persist conversation or global model selection yet.
+`--model` changes only the model value shown in this inspection output. It does
+not rewrite the persisted conversation model.
 
 ## Messages
 
@@ -266,6 +266,16 @@ The system prompt is not inserted into the message tree. During `query`, Windie
 prepends it to the active path before sending context to Bifrost. Setting the
 system prompt works on an empty conversation tree and also replaces an existing
 system prompt.
+
+```text
+windie set <conversation_id> model <provider/model>
+```
+
+Persist the conversation model used by future `query`, `inspect`, and
+developer API calls.
+
+`windie query <conversation_id> --model <provider/model>` remains a one-request
+override. It does not rewrite the persisted conversation model.
 
 ```text
 windie rm <conversation_id> systemprompt
@@ -422,8 +432,8 @@ windie query <conversation_id> --model <provider/model>
 Run one model response from the active path using a specific model. Requires the
 local Bifrost gateway to already be running.
 
-The model name is passed to Bifrost for this one request only. Windie does not
-persist conversation or global model selection yet.
+The model name is passed to Bifrost for this one request only. It does not
+rewrite the persisted conversation model.
 
 Bifrost must have provider config once for each provider used by Windie. The
 provider row names the provider, such as `anthropic`. The key row points to the

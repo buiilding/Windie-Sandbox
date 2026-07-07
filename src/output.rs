@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::conversation::{
     ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
 };
-use crate::llm::ModelInfo;
+use crate::llm::{ModelInfo, ModelName};
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::store::ConversationInfo;
@@ -300,6 +300,11 @@ impl TerminalOutput {
         println!("set systemprompt {conversation_id}");
     }
 
+    /// Confirms that the conversation default model was set.
+    pub fn set_model(&self, conversation_id: &ConversationId, model: &ModelName) {
+        println!("set model {conversation_id} {model}");
+    }
+
     /// Confirms that the conversation-level system prompt was removed.
     pub fn removed_system_prompt(&self, conversation_id: &ConversationId) {
         println!("removed systemprompt {conversation_id}");
@@ -529,6 +534,7 @@ impl ConversationListReport {
 struct ConversationSummary {
     id: String,
     title: Option<String>,
+    model: String,
     message_count: i64,
 }
 
@@ -538,6 +544,7 @@ impl ConversationSummary {
         Self {
             id: info.id.as_str().to_string(),
             title: info.title.clone(),
+            model: info.model.clone(),
             message_count: info.message_count,
         }
     }
@@ -579,6 +586,7 @@ fn help_lines() -> Vec<String> {
         "  windie update <conversation_id> message <message_id> --text \"new text\"",
         "  windie update <conversation_id> toolschema <name> --name <name> --description <text> --parameters <json>",
         "  windie set <conversation_id> systemprompt --text \"system prompt\"",
+        "  windie set <conversation_id> model <provider/model>",
         "  windie rm <conversation_id>",
         "  windie rm <conversation_id> message <message_id>",
         "  windie rm <conversation_id> systemprompt",
@@ -610,13 +618,14 @@ fn help_lines() -> Vec<String> {
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie models requires the local Bifrost gateway to be running.",
         "  windie query requires the local Bifrost gateway to be running.",
-        "  windie query --model passes the model name to Bifrost for one request.",
+        "  windie query uses the conversation model unless --model is passed for one request.",
         "  windie approvals lists pending tool calls that require user approval.",
         "  windie approve executes one pending tool call and stores its tool result.",
         "  windie deny stores a rejected tool result for one pending tool call.",
         "  windie attach <conversation_id> tool attaches one provider tool to a conversation.",
         "  windie detach <conversation_id> tool detaches one provider tool schema from a conversation.",
         "  windie set <conversation_id> systemprompt sets or replaces the conversation system prompt.",
+        "  windie set <conversation_id> model persists the conversation model.",
         "  windie insert <conversation_id> toolschema adds a raw model-facing tool definition.",
         "  windie bench live sends a real provider request and may cost money.",
         "",

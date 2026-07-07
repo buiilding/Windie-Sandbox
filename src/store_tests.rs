@@ -98,7 +98,9 @@ fn insert_tool_result_with_parts(
 fn creates_default_conversation() {
     let store = Store::open_memory().unwrap();
 
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     assert_eq!(conversation_id.as_str(), "default");
 }
@@ -181,16 +183,56 @@ fn rejects_existing_unversioned_database_schema() {
 fn creates_conversation_with_unique_id() {
     let store = Store::open_memory().unwrap();
 
-    let first_id = store.create_conversation().unwrap();
-    let second_id = store.create_conversation().unwrap();
+    let first_id = store.create_conversation("openai/test").unwrap();
+    let second_id = store.create_conversation("openai/test").unwrap();
 
     assert_ne!(first_id, second_id);
 }
 
 #[test]
+fn creates_conversation_with_model() {
+    let store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("anthropic/test").unwrap();
+
+    let model = store.conversation_model(&conversation_id).unwrap();
+    let conversations = store.list_conversations().unwrap();
+
+    assert_eq!(model, "anthropic/test");
+    assert_eq!(conversations[0].model, "anthropic/test");
+}
+
+#[test]
+fn set_conversation_model_persists() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+
+    store
+        .set_conversation_model(&conversation_id, "anthropic/test")
+        .unwrap();
+
+    let model = store.conversation_model(&conversation_id).unwrap();
+
+    assert_eq!(model, "anthropic/test");
+}
+
+#[test]
+fn rejects_empty_conversation_model() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+
+    let create_error = store.create_conversation("  ").unwrap_err();
+    let set_error = store
+        .set_conversation_model(&conversation_id, "  ")
+        .unwrap_err();
+
+    assert_eq!(create_error.to_string(), "model requires non-empty text");
+    assert_eq!(set_error.to_string(), "model requires non-empty text");
+}
+
+#[test]
 fn new_conversation_defaults_to_manual_tool_approval() {
     let store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     let mode = store.tool_approval_mode(&conversation_id).unwrap();
 
@@ -200,7 +242,7 @@ fn new_conversation_defaults_to_manual_tool_approval() {
 #[test]
 fn set_tool_approval_mode_persists() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     store
         .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
@@ -214,7 +256,7 @@ fn set_tool_approval_mode_persists() {
 #[test]
 fn lists_conversations() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -229,7 +271,7 @@ fn lists_conversations() {
 #[test]
 fn sets_and_replaces_system_prompt() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     assert!(store.system_prompt(&conversation_id).unwrap().is_none());
 
@@ -253,7 +295,7 @@ fn sets_and_replaces_system_prompt() {
 #[test]
 fn clears_system_prompt_with_empty_text() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     store
         .set_system_prompt(&conversation_id, "You are direct.")
@@ -277,7 +319,7 @@ fn rejects_system_prompt_for_missing_conversation() {
 #[test]
 fn loads_empty_messages_for_existing_conversation() {
     let store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
 
@@ -287,7 +329,7 @@ fn loads_empty_messages_for_existing_conversation() {
 #[test]
 fn loads_empty_active_path_for_empty_conversation() {
     let store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     let active_message_id = store.active_message_id(&conversation_id).unwrap();
     let path = store.load_active_path(&conversation_id).unwrap();
@@ -310,7 +352,9 @@ fn rejects_loading_messages_from_missing_conversation() {
 #[test]
 fn saves_and_loads_messages() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
@@ -341,7 +385,7 @@ fn saves_and_loads_messages() {
 #[test]
 fn insert_sets_active_message() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     let message_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
@@ -355,7 +399,7 @@ fn insert_sets_active_message() {
 #[test]
 fn loads_active_path() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let root_id = store
         .insert_message(&conversation_id, None, Role::User, "root", None)
         .unwrap();
@@ -393,8 +437,8 @@ fn loads_active_path() {
 #[test]
 fn rejects_setting_active_message_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -430,7 +474,7 @@ fn rejects_saving_message_to_missing_conversation() {
 #[test]
 fn saves_message_with_parent_from_same_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let parent_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -458,8 +502,8 @@ fn saves_message_with_parent_from_same_conversation() {
 #[test]
 fn rejects_message_parent_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let parent_id = store
         .insert_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -484,7 +528,9 @@ fn rejects_message_parent_from_another_conversation() {
 #[test]
 fn preserves_metadata() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let metadata = MessageMetadata {
         tool_calls: vec![ToolCall::function(
             "call_123",
@@ -519,7 +565,9 @@ fn preserves_metadata() {
 #[test]
 fn replacing_message_text_preserves_metadata() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let metadata = MessageMetadata {
         tool_calls: vec![ToolCall::function(
             "call_123",
@@ -546,7 +594,9 @@ fn replacing_message_text_preserves_metadata() {
 #[test]
 fn saves_updates_and_removes_tool_schemas() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let tool_schema = ToolSchema {
         name: ToolSchemaName::new("run_shell"),
         description: "Run a shell command".to_string(),
@@ -591,7 +641,9 @@ fn saves_updates_and_removes_tool_schemas() {
 #[test]
 fn batch_attached_tool_insert_is_atomic() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let first = AttachedTool::manual(ToolSchema {
         name: ToolSchemaName::new("first_tool"),
         description: "First tool".to_string(),
@@ -619,7 +671,9 @@ fn batch_attached_tool_insert_is_atomic() {
 #[test]
 fn rejects_non_object_tool_schema_parameters() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let tool_schema = ToolSchema {
         name: ToolSchemaName::new("bad"),
         description: "Bad schema".to_string(),
@@ -640,7 +694,9 @@ fn rejects_non_object_tool_schema_parameters() {
 #[test]
 fn rejects_invalid_tool_schema_name() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let tool_schema = ToolSchema {
         name: ToolSchemaName::new("run shell"),
         description: "Run a shell command".to_string(),
@@ -657,7 +713,9 @@ fn rejects_invalid_tool_schema_name() {
 #[test]
 fn rejects_empty_tool_schema_description() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let tool_schema = ToolSchema {
         name: ToolSchemaName::new("run_shell"),
         description: " ".to_string(),
@@ -678,7 +736,9 @@ fn rejects_empty_tool_schema_description() {
 #[test]
 fn saves_and_loads_image_message_parts() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     store
         .insert_message_with_parts(
@@ -707,8 +767,8 @@ fn saves_and_loads_image_message_parts() {
 #[test]
 fn loads_image_asset_only_for_owning_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
-    let other_conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let other_conversation_id = store.create_conversation("openai/test").unwrap();
 
     store
         .insert_message_with_parts(
@@ -748,7 +808,9 @@ fn loads_image_asset_only_for_owning_conversation() {
 #[test]
 fn saves_and_loads_tool_message_parts() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "use screenshot", None)
         .unwrap();
@@ -798,7 +860,9 @@ fn saves_and_loads_tool_message_parts() {
 #[test]
 fn saves_and_loads_multiple_image_message_parts() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     store
         .insert_message_with_parts(
@@ -830,7 +894,9 @@ fn saves_and_loads_multiple_image_message_parts() {
 #[test]
 fn saves_and_loads_interleaved_text_and_image_message_parts() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     store
         .insert_message_with_parts(
@@ -864,7 +930,9 @@ fn saves_and_loads_interleaved_text_and_image_message_parts() {
 #[test]
 fn updates_image_message_text_part_with_content() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     let message_id = store
         .insert_message_with_parts(
@@ -896,7 +964,9 @@ fn updates_image_message_text_part_with_content() {
 #[test]
 fn updating_image_message_to_empty_text_removes_text_part() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     let message_id = store
         .insert_message_with_parts(
@@ -927,7 +997,9 @@ fn updating_image_message_to_empty_text_removes_text_part() {
 #[test]
 fn loads_messages_after_checkpoint() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
@@ -965,8 +1037,8 @@ fn loads_messages_after_checkpoint() {
 #[test]
 fn rejects_load_messages_after_checkpoint_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let first_message_id = store
         .insert_message(&first_conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -981,7 +1053,7 @@ fn rejects_load_messages_after_checkpoint_from_another_conversation() {
 #[test]
 fn rejects_load_messages_after_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -996,7 +1068,9 @@ fn rejects_load_messages_after_missing_conversation() {
 #[test]
 fn updates_message_text_without_deleting_later_messages() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
 
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "helo", None)
@@ -1039,8 +1113,8 @@ fn updates_message_text_without_deleting_later_messages() {
 #[test]
 fn rejects_updating_message_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -1059,7 +1133,7 @@ fn rejects_updating_message_from_another_conversation() {
 #[test]
 fn rejects_updating_message_in_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -1074,7 +1148,7 @@ fn rejects_updating_message_in_missing_conversation() {
 #[test]
 fn remove_message_splices_middle_node_from_chain() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1119,7 +1193,7 @@ fn remove_message_splices_middle_node_from_chain() {
 #[test]
 fn remove_message_splices_branch_point() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1159,7 +1233,7 @@ fn remove_message_splices_branch_point() {
 #[test]
 fn remove_message_deletes_leaf_only() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1185,7 +1259,7 @@ fn remove_message_deletes_leaf_only() {
 #[test]
 fn remove_root_with_one_child_promotes_child_to_root() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1210,7 +1284,7 @@ fn remove_root_with_one_child_promotes_child_to_root() {
 #[test]
 fn remove_root_with_multiple_children_promotes_children_to_roots() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1253,7 +1327,7 @@ fn remove_root_with_multiple_children_promotes_children_to_roots() {
 #[test]
 fn remove_active_middle_node_moves_active_to_parent() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1289,7 +1363,7 @@ fn remove_active_middle_node_moves_active_to_parent() {
 #[test]
 fn remove_ancestor_keeps_descendant_active() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1327,7 +1401,7 @@ fn remove_ancestor_keeps_descendant_active() {
 #[test]
 fn remove_message_keeps_unrelated_active() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1363,7 +1437,7 @@ fn remove_message_keeps_unrelated_active() {
 #[test]
 fn remove_message_clears_compactions_and_deletes_orphan_image_assets() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message_with_parts(
             &conversation_id,
@@ -1406,8 +1480,8 @@ fn remove_message_clears_compactions_and_deletes_orphan_image_assets() {
 #[test]
 fn rejects_deleting_message_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -1426,7 +1500,7 @@ fn rejects_deleting_message_from_another_conversation() {
 #[test]
 fn remove_assistant_tool_call_deletes_tool_pair_and_preserves_later_descendant() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1492,7 +1566,7 @@ fn remove_assistant_tool_call_deletes_tool_pair_and_preserves_later_descendant()
 #[test]
 fn remove_assistant_tool_call_ignores_same_tool_call_id_on_other_branch() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1585,7 +1659,7 @@ fn remove_assistant_tool_call_ignores_same_tool_call_id_on_other_branch() {
 #[test]
 fn remove_tool_output_deletes_tool_pair_and_preserves_later_descendant() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1647,7 +1721,7 @@ fn remove_tool_output_deletes_tool_pair_and_preserves_later_descendant() {
 #[test]
 fn remove_pending_assistant_tool_call_without_result_uses_normal_splice() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1694,7 +1768,7 @@ fn remove_pending_assistant_tool_call_without_result_uses_normal_splice() {
 #[test]
 fn remove_multi_tool_call_assistant_deletes_tool_group() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1759,7 +1833,7 @@ fn remove_multi_tool_call_assistant_deletes_tool_group() {
 #[test]
 fn remove_multi_tool_output_deletes_whole_tool_group() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1824,7 +1898,7 @@ fn remove_multi_tool_output_deletes_whole_tool_group() {
 #[test]
 fn remove_second_multi_tool_output_deletes_whole_tool_group() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1889,7 +1963,7 @@ fn remove_second_multi_tool_output_deletes_whole_tool_group() {
 #[test]
 fn generic_insert_rejects_role_tool_message() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     let error = store
         .insert_message(
@@ -1913,7 +1987,7 @@ fn generic_insert_rejects_role_tool_message() {
 #[test]
 fn tool_result_insert_without_matching_assistant_parent_rejects() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1937,7 +2011,7 @@ fn tool_result_insert_without_matching_assistant_parent_rejects() {
 #[test]
 fn truncates_conversation_after_message() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -1985,8 +2059,8 @@ fn truncates_conversation_after_message() {
 #[test]
 fn rejects_truncating_after_message_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -2005,7 +2079,10 @@ fn rejects_truncating_after_message_from_another_conversation() {
 #[test]
 fn forks_conversation_at_message() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    store
+        .set_conversation_model(&conversation_id, "anthropic/test")
+        .unwrap();
     let metadata = MessageMetadata {
         tool_calls: vec![ToolCall::function(
             "call_456",
@@ -2045,8 +2122,10 @@ fn forks_conversation_at_message() {
     let source_messages = store.load_messages(&conversation_id).unwrap();
     let forked_messages = store.load_messages(&forked_conversation_id).unwrap();
     let forked_active_message_id = store.active_message_id(&forked_conversation_id).unwrap();
+    let forked_model = store.conversation_model(&forked_conversation_id).unwrap();
 
     assert_ne!(forked_conversation_id, conversation_id);
+    assert_eq!(forked_model, "anthropic/test");
     assert_eq!(source_messages.len(), 3);
     assert_eq!(forked_messages.len(), 2);
     assert_eq!(forked_messages[0].role, Role::User);
@@ -2068,8 +2147,8 @@ fn forks_conversation_at_message() {
 #[test]
 fn rejects_forking_at_message_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -2088,7 +2167,7 @@ fn rejects_forking_at_message_from_another_conversation() {
 #[test]
 fn deletes_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -2115,7 +2194,9 @@ fn rejects_deleting_missing_conversation() {
 #[test]
 fn saves_and_loads_latest_compaction() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let conversation_id = store
+        .get_or_create_default_conversation("openai/test")
+        .unwrap();
     let message_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -2135,7 +2216,7 @@ fn saves_and_loads_latest_compaction() {
 #[test]
 fn loads_no_latest_compaction_for_existing_conversation() {
     let store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     let compaction = store.latest_compaction(&conversation_id).unwrap();
 
@@ -2156,8 +2237,8 @@ fn rejects_latest_compaction_for_missing_conversation() {
 #[test]
 fn rejects_compaction_checkpoint_from_another_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation().unwrap();
-    let second_conversation_id = store.create_conversation().unwrap();
+    let first_conversation_id = store.create_conversation("openai/test").unwrap();
+    let second_conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&first_conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -2176,7 +2257,7 @@ fn rejects_compaction_checkpoint_from_another_conversation() {
 #[test]
 fn rejects_saving_compaction_to_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let message_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();

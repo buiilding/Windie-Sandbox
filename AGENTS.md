@@ -130,7 +130,8 @@ Allowed in the current scope:
 - Read-only JSON inspection for developer tools.
 - JSON API access to the same explicit runtime/store primitives as the CLI.
 - One-shot conversation query primitive.
-- Per-query model override with Bifrost-qualified model names.
+- Conversation-level persisted model selection with optional per-query override
+  for explicit one-shot calls.
 - Tool-call receiving and persistence.
 - Conversation-level attached tool persistence and model request serialization.
 - Typed assistant metadata lanes for tool calls, reasoning, refusal, audio, and
@@ -169,7 +170,7 @@ Not in scope yet:
 - Plugin systems.
 - Production web dashboard.
 - General config files beyond the explicit Bifrost `.env` provider-key file.
-- Persisted conversation/global model selection.
+- Global model selection.
 - Slash commands.
 - Automatic history compaction.
 - Memory systems beyond persisted conversation messages and future compaction checkpoints.

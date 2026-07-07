@@ -125,6 +125,10 @@ fn router(state: ApiState) -> Router {
             patch(set_system_prompt).delete(remove_system_prompt),
         )
         .route(
+            "/api/conversations/{conversation_id}/model",
+            patch(set_conversation_model),
+        )
+        .route(
             "/api/conversations/{conversation_id}/tool-approval-mode",
             patch(set_tool_approval_mode),
         )
@@ -438,6 +442,7 @@ struct ConversationListResponse {
 struct ConversationSummary {
     id: String,
     title: Option<String>,
+    model: String,
     message_count: i64,
 }
 
@@ -446,6 +451,7 @@ impl From<ConversationInfo> for ConversationSummary {
         Self {
             id: info.id.as_str().to_string(),
             title: info.title,
+            model: info.model,
             message_count: info.message_count,
         }
     }
@@ -471,7 +477,7 @@ struct ConversationIdResponse {
 /// Creates a new empty conversation.
 async fn create_conversation(State(state): State<ApiState>) -> ApiResult<ConversationIdResponse> {
     let store = open_store(&state)?;
-    let conversation_id = operation::create_conversation(&store)?;
+    let conversation_id = operation::create_conversation(&store, &ModelName::new(state.model))?;
 
     Ok(Json(ConversationIdResponse {
         conversation_id: conversation_id.as_str().to_string(),
@@ -485,9 +491,9 @@ async fn inspect_conversation(
     query: axum::extract::Query<InspectQuery>,
 ) -> ApiResult<InspectionReport> {
     let conversation_id = ConversationId::new(conversation_id);
-    let model = query.model.clone().unwrap_or_else(|| state.model.clone());
     let store = open_store(&state)?;
-    let report = operation::inspect_conversation(&store, &conversation_id, &ModelName::new(model))?;
+    let model_override = query.model.clone().map(ModelName::new);
+    let report = operation::inspect_conversation(&store, &conversation_id, model_override)?;
 
     Ok(Json(report))
 }
@@ -723,6 +729,37 @@ async fn remove_system_prompt(
 
     Ok(Json(SystemPromptResponse {
         system_prompt: None,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+/// Request body for setting the conversation default model.
+struct ConversationModelRequest {
+    model: String,
+}
+
+#[derive(Debug, Serialize)]
+/// Response for conversation model mutation.
+struct ConversationModelResponse {
+    model: String,
+}
+
+/// Sets the conversation model used by future queries.
+async fn set_conversation_model(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<ConversationModelRequest>,
+) -> ApiResult<ConversationModelResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let mut store = open_store(&state)?;
+    let model = ModelName::new(request.model);
+
+    operation::set_conversation_model(&mut store, &conversation_id, &model)?;
+
+    Ok(Json(ConversationModelResponse {
+        model: operation::conversation_model(&store, &conversation_id)?
+            .as_str()
+            .to_string(),
     }))
 }
 
@@ -1100,7 +1137,11 @@ async fn count_input_tokens(
 ) -> ApiResult<InputTokensResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let store = open_store(&state)?;
-    let model = request.model.unwrap_or_else(|| state.model.clone());
+    let model = operation::resolve_conversation_model(
+        &store,
+        &conversation_id,
+        request.model.map(ModelName::new),
+    )?;
     let context = operation::conversation_input_token_context(&store, &conversation_id)?;
     let source = context
         .as_ref()
@@ -1109,7 +1150,7 @@ async fn count_input_tokens(
     let count = operation::count_input_tokens_for_context(
         GatewayUrl::new(state.gateway_url),
         BaseUrl::new(state.base_url),
-        &ModelName::new(model),
+        &model,
         context,
     )
     .await?;
@@ -1131,14 +1172,13 @@ async fn query(
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
-    let model = request.model.unwrap_or_else(|| state.model.clone());
     let message = operation::query_conversation_with_registry(
         &ApiOutput,
         &mut store,
         &conversation_id,
         GatewayUrl::new(state.gateway_url.clone()),
         crate::llm::BaseUrl::new(state.base_url.clone()),
-        ModelName::new(model),
+        request.model.map(ModelName::new),
         state.tool_registry.as_ref(),
     )
     .await?;
@@ -1199,14 +1239,13 @@ async fn query_stream(
     tokio::spawn(async move {
         let result = async {
             let mut store = open_store(&state)?;
-            let model = request.model.unwrap_or_else(|| state.model.clone());
             let events = QueryStreamEventSink {
                 sender: sender.clone(),
             };
             let runtime = operation::QueryStreamRuntime::new(
                 GatewayUrl::new(state.gateway_url.clone()),
                 BaseUrl::new(state.base_url.clone()),
-                ModelName::new(model),
+                request.model.map(ModelName::new),
                 state.tool_registry.as_ref(),
             );
             let message = operation::query_conversation_with_registry_and_events(
@@ -1429,11 +1468,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conversation_model_route_persists_model() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+
+        let updated = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::PATCH,
+                    &format!("/api/conversations/{conversation_id}/model"),
+                    Some(json!({"model":"anthropic/test"})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let inspected = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::GET,
+                    &format!("/api/conversations/{conversation_id}"),
+                    None,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let listed = response_json(
+            app.oneshot(authed_request(Method::GET, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(updated["model"], "anthropic/test");
+        assert_eq!(inspected["model"], "anthropic/test");
+        assert_eq!(listed["conversations"][0]["model"], "anthropic/test");
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn conversation_image_route_returns_scoped_image_bytes() {
         let db_path = temp_database_path();
         let conversation_id = {
             let mut store = Store::open_at(&db_path).unwrap();
-            let conversation_id = store.create_conversation().unwrap();
+            let conversation_id = store.create_conversation("openai/test").unwrap();
             store
                 .insert_message_with_parts(
                     &conversation_id,
@@ -1826,7 +1914,7 @@ mod tests {
         let db_path = temp_database_path();
         let app = test_app(db_path.clone());
         let mut store = Store::open_at(&db_path).unwrap();
-        let conversation_id = store.create_conversation().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
         let parent_id = store
             .insert_message(&conversation_id, None, Role::User, "one", None)
             .unwrap();
@@ -1927,7 +2015,7 @@ mod tests {
         let db_path = temp_database_path();
         let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
         let mut store = Store::open_at(&db_path).unwrap();
-        let conversation_id = store.create_conversation().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
         store
             .insert_message(&conversation_id, None, Role::User, "hello", None)
             .unwrap();
@@ -2070,7 +2158,7 @@ mod tests {
 
     fn insert_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
         let mut store = Store::open_at(db_path).unwrap();
-        let conversation_id = store.create_conversation().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
         let user_id = store
             .insert_message(&conversation_id, None, Role::User, "run commands", None)
             .unwrap();

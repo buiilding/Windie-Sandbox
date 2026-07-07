@@ -216,9 +216,38 @@ fn inspection_message_parts(parts: Vec<MessagePart>) -> Vec<InspectionMessagePar
         .collect()
 }
 
-/// Creates an empty persisted conversation.
-pub fn create_conversation(store: &Store) -> Result<ConversationId> {
-    store.create_conversation()
+/// Creates an empty persisted conversation with its default model.
+pub fn create_conversation(store: &Store, model: &ModelName) -> Result<ConversationId> {
+    store.create_conversation(model.as_str())
+}
+
+/// Loads the persisted model for one conversation.
+pub fn conversation_model(store: &Store, conversation_id: &ConversationId) -> Result<ModelName> {
+    Ok(ModelName::new(store.conversation_model(conversation_id)?))
+}
+
+/// Sets the persisted model for future conversation turns.
+pub fn set_conversation_model(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    model: &ModelName,
+) -> Result<()> {
+    store.set_conversation_model(conversation_id, model.as_str())
+}
+
+/// Resolves the model for a runtime operation.
+///
+/// A caller-supplied model is a one-request override. Without one, Windie uses
+/// the conversation's persisted model.
+pub fn resolve_conversation_model(
+    store: &Store,
+    conversation_id: &ConversationId,
+    model_override: Option<ModelName>,
+) -> Result<ModelName> {
+    match model_override {
+        Some(model) => Ok(model),
+        None => conversation_model(store, conversation_id),
+    }
 }
 
 /// Lists persisted conversations without loading message bodies.
@@ -342,8 +371,9 @@ pub fn conversation_tree(
 pub fn inspect_conversation(
     store: &Store,
     conversation_id: &ConversationId,
-    model: &ModelName,
+    model_override: Option<ModelName>,
 ) -> Result<InspectionReport> {
+    let model = resolve_conversation_model(store, conversation_id, model_override)?;
     let active_message_id = store.active_message_id(conversation_id)?;
     let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
     let messages = store.load_message_tree(conversation_id)?;
@@ -702,12 +732,13 @@ pub async fn query_conversation<O>(
     conversation_id: &ConversationId,
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
-    model: ModelName,
+    model_override: Option<ModelName>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
 {
     require_gateway_running(gateway_url).await?;
+    let model = resolve_conversation_model(store, conversation_id, model_override)?;
     let llm = BifrostClient::new(base_url, model);
     let registry = ToolProviderRegistry::new();
 
@@ -725,13 +756,14 @@ pub async fn query_conversation_with_registry<O>(
     conversation_id: &ConversationId,
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
-    model: ModelName,
+    model_override: Option<ModelName>,
     registry: &ToolProviderRegistry,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
 {
     require_gateway_running(gateway_url).await?;
+    let model = resolve_conversation_model(store, conversation_id, model_override)?;
     let llm = BifrostClient::new(base_url, model);
 
     query_conversation_resolving_automatic_tools(output, &llm, store, conversation_id, registry)
@@ -746,22 +778,23 @@ where
 pub struct QueryStreamRuntime<'a> {
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
-    model: ModelName,
+    model_override: Option<ModelName>,
     registry: &'a ToolProviderRegistry,
 }
 
 impl<'a> QueryStreamRuntime<'a> {
-    /// Groups the gateway, Bifrost endpoint, model, and provider registry.
+    /// Groups the gateway, Bifrost endpoint, optional model override, and
+    /// provider registry.
     pub fn new(
         gateway_url: GatewayUrl,
         base_url: BaseUrl,
-        model: ModelName,
+        model_override: Option<ModelName>,
         registry: &'a ToolProviderRegistry,
     ) -> Self {
         Self {
             gateway_url,
             base_url,
-            model,
+            model_override,
             registry,
         }
     }
@@ -785,7 +818,8 @@ where
     E: RuntimeEventSink,
 {
     require_gateway_running(runtime.gateway_url).await?;
-    let llm = BifrostClient::new(runtime.base_url, runtime.model);
+    let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
+    let llm = BifrostClient::new(runtime.base_url, model);
 
     query_conversation_resolving_automatic_tools_with_events(
         output,
@@ -901,7 +935,7 @@ mod tests {
     #[test]
     fn inserts_text_message() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
 
         let message_id = insert_message(
             &mut store,
@@ -920,7 +954,7 @@ mod tests {
     #[test]
     fn rejects_direct_tool_message_insert() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
 
         let error = insert_message(
             &mut store,
@@ -939,7 +973,7 @@ mod tests {
     #[test]
     fn inserts_multi_part_message() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
         let image_path = temp_image_path("png");
         fs::write(
             &image_path,
@@ -967,7 +1001,7 @@ mod tests {
     #[test]
     fn inserts_loaded_image_bytes() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
 
         insert_message(
             &mut store,
@@ -991,7 +1025,7 @@ mod tests {
     #[test]
     fn input_token_context_uses_synthetic_input_for_tool_only_setup() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
         insert_tool_schema(
             &mut store,
             &conversation_id,
@@ -1023,7 +1057,13 @@ mod tests {
     #[test]
     fn inspection_snapshot_includes_runtime_state() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+        set_conversation_model(
+            &mut store,
+            &conversation_id,
+            &ModelName::new("anthropic/test"),
+        )
+        .unwrap();
         set_system_prompt(&mut store, &conversation_id, "You are concise.").unwrap();
         let user_id = insert_message(
             &mut store,
@@ -1042,12 +1082,12 @@ mod tests {
             .save_compaction(&conversation_id, &user_id, "hello happened")
             .unwrap();
 
-        let report =
-            inspect_conversation(&store, &conversation_id, &ModelName::new("openai/test")).unwrap();
+        let report = inspect_conversation(&store, &conversation_id, None).unwrap();
         let value = serde_json::to_value(report).unwrap();
 
         assert_eq!(value["conversation_id"], conversation_id.as_str());
         assert_eq!(value["active_message_id"], user_id.as_str());
+        assert_eq!(value["model"], "anthropic/test");
         assert_eq!(value["system_prompt"], "You are concise.");
         assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
         assert_eq!(value["messages"][0]["id"], user_id.as_str());
@@ -1059,7 +1099,7 @@ mod tests {
     #[test]
     fn attaches_available_provider_tool() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
         let registry = registry_with_cached_test_tool();
         let read_file = registry
             .find_tool(
@@ -1092,7 +1132,7 @@ mod tests {
     #[test]
     fn batch_attaches_available_provider_tools() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
 
         let registry = registry_with_cached_test_tool();
         let schema_names = attach_tools_with_registry(
@@ -1120,7 +1160,7 @@ mod tests {
     #[test]
     fn shared_operations_match_direct_store_state() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
         let first_id = insert_message(
             &mut store,
             &conversation_id,
@@ -1152,7 +1192,7 @@ mod tests {
     #[test]
     fn deny_tool_persists_tool_result() {
         let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
         let user_id = store
             .insert_message(&conversation_id, None, Role::User, "run command", None)
             .unwrap();

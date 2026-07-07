@@ -297,7 +297,7 @@ impl RuntimeLlm for ToolThenReplyLlm {
 #[tokio::test]
 async fn query_conversation_saves_assistant_message() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
@@ -340,7 +340,7 @@ async fn query_conversation_saves_assistant_message() {
 #[tokio::test]
 async fn query_conversation_uses_active_path() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let root_id = store
         .insert_message(&conversation_id, None, Role::User, "root", None)
         .unwrap();
@@ -381,7 +381,7 @@ async fn query_conversation_uses_active_path() {
 #[tokio::test]
 async fn query_conversation_passes_tool_schemas_to_llm() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let tool_schema = ToolSchema {
         name: ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
         description: "Run a shell command".to_string(),
@@ -405,7 +405,7 @@ async fn query_conversation_passes_tool_schemas_to_llm() {
 #[tokio::test]
 async fn query_approve_query_composes_provider_tool_flow() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
@@ -464,7 +464,7 @@ async fn query_approve_query_composes_provider_tool_flow() {
 #[tokio::test]
 async fn auto_approval_executes_tool_and_queries_again() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
@@ -503,7 +503,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
 #[tokio::test]
 async fn auto_approval_emits_persisted_runtime_events() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
@@ -542,7 +542,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
 #[tokio::test]
 async fn query_conversation_once_saves_tool_calls_without_executing() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
@@ -565,7 +565,7 @@ async fn query_conversation_once_saves_tool_calls_without_executing() {
 #[tokio::test]
 async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
     store
         .insert_message(&conversation_id, None, Role::User, "use a tool", None)
@@ -601,7 +601,7 @@ async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
 #[tokio::test]
 async fn detached_tool_call_is_auto_denied() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
@@ -626,7 +626,7 @@ async fn detached_tool_call_is_auto_denied() {
 #[test]
 fn removed_tool_schema_makes_existing_pending_call_policy_denied() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
@@ -670,7 +670,7 @@ fn removed_tool_schema_makes_existing_pending_call_policy_denied() {
 #[tokio::test]
 async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
     attach_test_mcp_tool(&mut store, &conversation_id);
     store
@@ -698,7 +698,7 @@ async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() 
 #[tokio::test]
 async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_query() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "use a tool", None)
@@ -739,7 +739,7 @@ async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_que
 #[tokio::test]
 async fn pending_tool_approvals_lists_pending_provider_calls() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
@@ -772,7 +772,7 @@ async fn pending_tool_approvals_lists_pending_provider_calls() {
 #[tokio::test]
 async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
@@ -822,7 +822,7 @@ async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
 #[tokio::test]
 async fn approve_tool_call_executes_provider_and_stores_tool_result() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
@@ -874,7 +874,7 @@ async fn approve_tool_call_executes_provider_and_stores_tool_result() {
 #[test]
 fn deny_tool_call_stores_rejected_tool_result() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
@@ -907,7 +907,7 @@ fn deny_tool_call_stores_rejected_tool_result() {
 #[tokio::test]
 async fn multi_tool_approvals_resolve_in_metadata_order() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let (_assistant_id, _first_call, _second_call) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
@@ -920,7 +920,7 @@ async fn multi_tool_approvals_resolve_in_metadata_order() {
 #[tokio::test]
 async fn multi_tool_approvals_store_results_as_linear_chain() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let (assistant_id, first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
     let registry = test_mcp_registry();
@@ -986,7 +986,7 @@ async fn multi_tool_approvals_store_results_as_linear_chain() {
 #[tokio::test]
 async fn approving_later_tool_call_before_previous_call_rejects() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let (_assistant_id, _first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
@@ -1003,7 +1003,7 @@ async fn approving_later_tool_call_before_previous_call_rejects() {
 #[tokio::test]
 async fn query_rejects_until_all_tool_calls_have_results() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let (_assistant_id, first_call_id, _second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
     let registry = test_mcp_registry();
@@ -1033,7 +1033,7 @@ async fn query_rejects_until_all_tool_calls_have_results() {
 #[test]
 fn denying_multi_tool_call_uses_linear_chain_parent() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
     let (_assistant_id, first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
@@ -1053,7 +1053,7 @@ fn denying_multi_tool_call_uses_linear_chain_parent() {
 #[tokio::test]
 async fn query_conversation_reports_llm_failure() {
     let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
 
     let error = query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
         .await

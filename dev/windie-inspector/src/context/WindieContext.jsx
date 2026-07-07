@@ -6,6 +6,7 @@ import {
   conversationFromInspection,
   conversationSummaryFromApi,
   listModels,
+  setConversationModel as setConversationModelApi,
   streamConversationQuery,
   toolCatalogFromApi,
 } from "@/lib/windieApi";
@@ -109,7 +110,6 @@ export function WindieProvider({ children }) {
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
-  const [modelOverride, setModelOverride] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
   const [gatewayRunning, setGatewayRunning] = useState(false);
@@ -133,7 +133,14 @@ export function WindieProvider({ children }) {
     setConversations((prev) =>
       summaries.map((summary) => {
         const existing = prev.find((conv) => conv.id === summary.id);
-        return existing ? { ...summary, ...existing, messageCount: summary.messageCount } : summary;
+        return existing
+          ? {
+              ...summary,
+              ...existing,
+              model: summary.model,
+              messageCount: summary.messageCount,
+            }
+          : summary;
       })
     );
 
@@ -172,9 +179,8 @@ export function WindieProvider({ children }) {
   const loadConversation = useCallback(
     async (convId, options = {}) => {
       if (!convId) return null;
-      const query = modelOverride ? `?model=${encodeURIComponent(modelOverride)}` : "";
       const [report, approvalBody] = await Promise.all([
-        apiRequest(`/api/conversations/${convId}${query}`),
+        apiRequest(`/api/conversations/${convId}`),
         apiRequest(`/api/conversations/${convId}/approvals`),
       ]);
       const loaded = conversationFromInspection(report, null);
@@ -194,7 +200,7 @@ export function WindieProvider({ children }) {
       setApprovals(approvalBody.approvals || []);
 
       if (options.countTokens !== false && loaded?.id) {
-        const loadedModelId = modelOverride || loaded?.model || null;
+        const loadedModelId = loaded?.model || null;
         const signature = contextSignatureParts(loaded, loadedModelId).fullSignature;
         const countKey = tokenCountKey(loaded?.id, loadedModelId);
         const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -207,7 +213,7 @@ export function WindieProvider({ children }) {
           },
         }));
 
-        countConversationInputTokens(loaded.id, loadedModelId)
+        countConversationInputTokens(loaded.id)
           .then((count) => {
             setInputTokenCounts((prev) => {
               if (prev[countKey]?.latestRequestId !== requestId) return prev;
@@ -248,7 +254,7 @@ export function WindieProvider({ children }) {
 
       return loaded;
     },
-    [modelOverride]
+    []
   );
 
   useEffect(() => {
@@ -304,8 +310,8 @@ export function WindieProvider({ children }) {
   }, [activeConv]);
 
   const activeModelId = useMemo(
-    () => modelOverride || activeConv?.model || null,
-    [activeConv?.model, modelOverride]
+    () => activeConv?.model || null,
+    [activeConv?.model]
   );
 
   const activeContextSignatures = useMemo(
@@ -387,6 +393,15 @@ export function WindieProvider({ children }) {
           body: JSON.stringify({ text }),
         })
       ),
+    [runMutation]
+  );
+
+  const setConversationModel = useCallback(
+    (convId, model) =>
+      runMutation(() => setConversationModelApi(convId, model), {
+        convId,
+        refreshList: true,
+      }),
     [runMutation]
   );
 
@@ -524,9 +539,9 @@ export function WindieProvider({ children }) {
   );
 
   const runStreamingQuery = useCallback(
-    async (convId, nextModelOverride) => {
+    async (convId) => {
       try {
-        await streamConversationQuery(convId, nextModelOverride, async ({ data }) => {
+        await streamConversationQuery(convId, null, async ({ data }) => {
           if (
             data?.type === "assistant_message_saved" ||
             data?.type === "tool_result_saved"
@@ -557,7 +572,7 @@ export function WindieProvider({ children }) {
           body: JSON.stringify({ role: "user", parts }),
         });
         await loadConversation(convId);
-        await runStreamingQuery(convId, options.modelOverride || modelOverride);
+        await runStreamingQuery(convId);
         setApiError(null);
       } catch (error) {
         setApiError(error.message);
@@ -566,15 +581,15 @@ export function WindieProvider({ children }) {
         setStreaming(false);
       }
     },
-    [loadConversation, modelOverride, runStreamingQuery, streaming]
+    [loadConversation, runStreamingQuery, streaming]
   );
 
   const continueConversation = useCallback(
-    async (convId, options = {}) => {
+    async (convId) => {
       if (!convId || streaming) return;
       setStreaming(true);
       try {
-        await runStreamingQuery(convId, options.modelOverride || modelOverride);
+        await runStreamingQuery(convId);
         setApiError(null);
       } catch (error) {
         setApiError(error.message);
@@ -583,7 +598,7 @@ export function WindieProvider({ children }) {
         setStreaming(false);
       }
     },
-    [modelOverride, runStreamingQuery, streaming]
+    [runStreamingQuery, streaming]
   );
 
   const startGateway = useCallback(
@@ -621,10 +636,10 @@ export function WindieProvider({ children }) {
           method: "POST",
         });
         await loadConversation(convId);
-        await runStreamingQuery(convId, modelOverride);
+        await runStreamingQuery(convId);
         return result;
       }, { reload: false }),
-    [loadConversation, modelOverride, runMutation, runStreamingQuery]
+    [loadConversation, runMutation, runStreamingQuery]
   );
 
   const denyToolCall = useCallback(
@@ -634,10 +649,10 @@ export function WindieProvider({ children }) {
           method: "POST",
         });
         await loadConversation(convId);
-        await runStreamingQuery(convId, modelOverride);
+        await runStreamingQuery(convId);
         return result;
       }, { reload: false }),
-    [loadConversation, modelOverride, runMutation, runStreamingQuery]
+    [loadConversation, runMutation, runStreamingQuery]
   );
 
   const value = {
@@ -650,7 +665,6 @@ export function WindieProvider({ children }) {
     treeOverlayOpen,
     contextPreviewOpen,
     streaming,
-    modelOverride,
     searchQuery,
     models,
     modelsLoading,
@@ -666,13 +680,13 @@ export function WindieProvider({ children }) {
     setTheme,
     setTreeOverlayOpen,
     setContextPreviewOpen,
-    setModelOverride,
     setSearchQuery,
     refreshModels,
     createConversation,
     renameConversation,
     deleteConversation,
     setSystemPrompt,
+    setConversationModel,
     setToolApprovalMode,
     addToolSchema,
     addToolSchemas,

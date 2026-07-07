@@ -118,6 +118,11 @@ pub enum Command {
         conversation_id: ConversationId,
         text: String,
     },
+    /// Persist the conversation model used by future queries.
+    SetModel {
+        conversation_id: ConversationId,
+        model: ModelName,
+    },
     Truncate {
         conversation_id: ConversationId,
         message_id: MessageId,
@@ -266,6 +271,12 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
             Command::SetSystemPrompt {
                 conversation_id: ConversationId::new(conversation_id.as_str()),
                 text: text.to_string(),
+            }
+        }
+        [command, conversation_id, subject, model] if command == "set" && subject == "model" => {
+            Command::SetModel {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: ModelName::new(model.as_str()),
             }
         }
         [command, conversation_id] if command == "query" => Command::Query {
@@ -1327,6 +1338,26 @@ mod tests {
         ]);
 
         assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_set_model_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "set".to_string(),
+            "conversation-id".to_string(),
+            "model".to_string(),
+            "anthropic/claude-3-5-haiku".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::SetModel {
+                conversation_id,
+                model,
+            } if conversation_id.as_str() == "conversation-id"
+                && model.as_str() == "anthropic/claude-3-5-haiku"
+        ));
     }
 
     #[test]

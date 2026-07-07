@@ -14,8 +14,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-function Section({ title, children, defaultOpen = true, right, testId }) {
+function Section({ title, children, defaultOpen = true, right, testId, resetKey }) {
   const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (resetKey === undefined) return;
+    setOpen(defaultOpen);
+  }, [defaultOpen, resetKey]);
+
   return (
     <div className="border-b border-border" data-testid={testId}>
       <button
@@ -441,6 +447,7 @@ export default function InspectorPanel() {
           title={`tool schemas · ${availableToolSchemas.length}`}
           testId="inspector-section-tools"
           defaultOpen={true}
+          resetKey={activeConv.id}
         >
           <div className="space-y-2">
             {availableToolSchemas.length > 0 ? (

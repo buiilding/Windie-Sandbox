@@ -43,13 +43,14 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 7;
+const DATABASE_SCHEMA_VERSION: i32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
 pub struct ConversationInfo {
     pub id: ConversationId,
     pub title: Option<String>,
+    pub model: String,
     pub message_count: i64,
 }
 
@@ -180,6 +181,7 @@ impl Store {
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     title TEXT,
+                    model TEXT NOT NULL,
                     active_message_id TEXT,
                     system_prompt TEXT,
                     tool_approval_mode TEXT NOT NULL,
@@ -284,8 +286,9 @@ impl Store {
             .context("failed to read database schema version")
     }
 
-    /// Creates an empty conversation with a generated ID.
-    pub fn create_conversation(&self) -> Result<ConversationId> {
+    /// Creates an empty conversation with a generated ID and persisted model.
+    pub fn create_conversation(&self, model: &str) -> Result<ConversationId> {
+        let model = normalize_conversation_model(model)?;
         let id = ConversationId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
 
@@ -295,15 +298,21 @@ impl Store {
                 INSERT INTO conversations (
                     id,
                     title,
+                    model,
                     active_message_id,
                     system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, NULL, NULL, ?2, ?3, ?3)
+                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
                 ",
-                params![id.as_str(), ToolApprovalMode::Manual.as_storage(), now],
+                params![
+                    id.as_str(),
+                    model,
+                    ToolApprovalMode::Manual.as_storage(),
+                    now
+                ],
             )
             .context("failed to create conversation")?;
 
@@ -313,7 +322,8 @@ impl Store {
     #[cfg(test)]
     /// Creates a deterministic conversation ID for tests that need predictable
     /// setup.
-    pub(crate) fn get_or_create_default_conversation(&self) -> Result<ConversationId> {
+    pub(crate) fn get_or_create_default_conversation(&self, model: &str) -> Result<ConversationId> {
+        let model = normalize_conversation_model(model)?;
         let now = now_millis()?;
 
         self.connection
@@ -322,16 +332,18 @@ impl Store {
                 INSERT OR IGNORE INTO conversations (
                     id,
                     title,
+                    model,
                     active_message_id,
                     system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, NULL, NULL, ?2, ?3, ?3)
+                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     DEFAULT_CONVERSATION_ID,
+                    model,
                     ToolApprovalMode::Manual.as_storage(),
                     now
                 ],
@@ -350,6 +362,7 @@ impl Store {
                 SELECT
                     conversations.id,
                     conversations.title,
+                    conversations.model,
                     COUNT(messages.id) AS message_count
                 FROM conversations
                 LEFT JOIN messages ON messages.conversation_id = conversations.id
@@ -364,7 +377,8 @@ impl Store {
                 Ok(ConversationInfo {
                     id: ConversationId::new(row.get::<_, String>(0)?),
                     title: row.get(1)?,
-                    message_count: row.get(2)?,
+                    model: row.get(2)?,
+                    message_count: row.get(3)?,
                 })
             })
             .context("failed to list conversations")?
@@ -423,6 +437,49 @@ impl Store {
             .optional()
             .context("failed to load system prompt")
             .map(Option::flatten)
+    }
+
+    /// Loads the conversation's persisted default model.
+    pub fn conversation_model(&self, conversation_id: &ConversationId) -> Result<String> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        self.connection
+            .query_row(
+                "SELECT model FROM conversations WHERE id = ?1",
+                params![conversation_id.as_str()],
+                |row| row.get(0),
+            )
+            .context("failed to load conversation model")
+    }
+
+    /// Sets the conversation's persisted default model.
+    pub fn set_conversation_model(
+        &mut self,
+        conversation_id: &ConversationId,
+        model: &str,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        let model = normalize_conversation_model(model)?;
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start conversation model transaction")?;
+
+        transaction
+            .execute(
+                "UPDATE conversations SET model = ?1 WHERE id = ?2",
+                params![model, conversation_id.as_str()],
+            )
+            .context("failed to save conversation model")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit conversation model update")?;
+
+        Ok(())
     }
 
     /// Loads the conversation default for tool-call approval.
@@ -1592,6 +1649,7 @@ impl Store {
         let source_messages = self
             .load_path_to_message(conversation_id, message_id)
             .context("failed to load messages for conversation fork")?;
+        let source_model = self.conversation_model(conversation_id)?;
         let source_tool_approval_mode = self.tool_approval_mode(conversation_id)?;
         let forked_conversation_id = ConversationId::new(Uuid::new_v4().to_string());
         let mut message_id_map = HashMap::new();
@@ -1607,16 +1665,18 @@ impl Store {
                 INSERT INTO conversations (
                     id,
                     title,
+                    model,
                     active_message_id,
                     system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, NULL, NULL, ?2, ?3, ?3)
+                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     forked_conversation_id.as_str(),
+                    source_model,
                     source_tool_approval_mode.as_storage(),
                     now
                 ],
@@ -2707,6 +2767,16 @@ fn set_active_message_in_transaction(
     )?;
 
     Ok(())
+}
+
+/// Normalizes and validates the persisted model name for a conversation.
+fn normalize_conversation_model(model: &str) -> Result<&str> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(error::invalid_request("model requires non-empty text"));
+    }
+
+    Ok(model)
 }
 
 /// Returns current Unix time in milliseconds for ordering persisted rows.

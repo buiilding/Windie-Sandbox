@@ -128,6 +128,10 @@ async fn main() -> Result<()> {
             conversation_id,
             text,
         } => set_system_prompt(conversation_id, &text),
+        Command::SetModel {
+            conversation_id,
+            model,
+        } => set_model(conversation_id, model),
         Command::Truncate {
             conversation_id,
             message_id,
@@ -234,7 +238,7 @@ fn compare_benchmarks(baseline_path: PathBuf, current_path: PathBuf) -> Result<(
 fn new_conversation() -> Result<()> {
     let store = Store::open()?;
     let output = TerminalOutput;
-    let conversation_id = operation::create_conversation(&store)?;
+    let conversation_id = operation::create_conversation(&store, &model_name())?;
 
     output.created_conversation(&conversation_id);
 
@@ -286,8 +290,7 @@ fn show_tree(conversation_id: ConversationId) -> Result<()> {
 fn inspect_conversation(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
     let store = Store::open()?;
     let output = TerminalOutput;
-    let effective_model = model.unwrap_or_else(model_name);
-    let report = operation::inspect_conversation(&store, &conversation_id, &effective_model)?;
+    let report = operation::inspect_conversation(&store, &conversation_id, model)?;
 
     output.inspection_report_json(&report)
 }
@@ -547,9 +550,20 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
         &conversation_id,
         gateway_url(),
         base_url(),
-        model.unwrap_or_else(model_name),
+        model,
     )
     .await?;
+
+    Ok(())
+}
+
+/// Persists the default model for future turns in one conversation.
+fn set_model(conversation_id: ConversationId, model: ModelName) -> Result<()> {
+    let mut store = Store::open()?;
+    let output = TerminalOutput;
+
+    operation::set_conversation_model(&mut store, &conversation_id, &model)?;
+    output.set_model(&conversation_id, &model);
 
     Ok(())
 }

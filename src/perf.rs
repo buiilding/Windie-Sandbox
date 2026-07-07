@@ -761,7 +761,7 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
 /// Measures query preparation on a minimal ready active path.
 fn benchmark_prepare_query_turn() -> Result<Duration> {
     with_runtime_store("prepare-query-turn", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         insert_user_message(store, &conversation_id, None, "ready")?;
 
         let started = Instant::now();
@@ -773,7 +773,7 @@ fn benchmark_prepare_query_turn() -> Result<Duration> {
 /// Measures active-path scanning for the next approval-required tool call.
 fn benchmark_pending_tool_approval_scan() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-scan", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         attach_test_mcp_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use tools")?;
         let metadata = tool_call_metadata(vec![
@@ -800,7 +800,7 @@ fn benchmark_pending_tool_approval_scan() -> Result<Duration> {
 /// Measures raw tool-result message persistence without shell execution.
 fn benchmark_tool_result_insert() -> Result<Duration> {
     with_runtime_store("tool-result-insert", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
         let call = tool_call(0, "call_1", "desktop_commander__read_file");
         let assistant_id = store.insert_message(
@@ -824,7 +824,7 @@ fn benchmark_tool_result_insert() -> Result<Duration> {
 /// Measures explicit denial lookup plus result persistence without shell work.
 fn benchmark_deny_tool_result_persist() -> Result<Duration> {
     with_runtime_store("deny-tool-result-persist", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
         let call = tool_call(0, "call_1", "desktop_commander__read_file");
         store.insert_message(
@@ -844,7 +844,7 @@ fn benchmark_deny_tool_result_persist() -> Result<Duration> {
 /// Measures splice delete for a middle message in a chain.
 fn benchmark_splice_remove() -> Result<(Duration, usize, usize)> {
     with_runtime_store("splice-remove", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let first_id = insert_user_message(store, &conversation_id, None, "first")?;
         let removed_id = store.insert_message(
             &conversation_id,
@@ -864,7 +864,7 @@ fn benchmark_splice_remove() -> Result<(Duration, usize, usize)> {
 /// Measures descendant deletion below a checkpoint message.
 fn benchmark_truncate() -> Result<(Duration, usize)> {
     with_runtime_store("truncate", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let first_id = insert_user_message(store, &conversation_id, None, "first")?;
         let checkpoint_id = store.insert_message(
             &conversation_id,
@@ -891,7 +891,7 @@ fn benchmark_truncate() -> Result<(Duration, usize)> {
 /// Measures context construction after a completed two-result tool chain.
 fn benchmark_context_after_tool_chain() -> Result<RuntimeContextBenchmark> {
     with_runtime_store("context-after-tool-chain", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let user_id = insert_user_message(store, &conversation_id, None, "use tools")?;
         let first_call = tool_call(0, "call_1", "desktop_commander__read_file");
         let second_call = tool_call(1, "call_2", "desktop_commander__read_file");
@@ -930,7 +930,7 @@ fn benchmark_context_after_tool_chain() -> Result<RuntimeContextBenchmark> {
 /// Measures active-path loading for a generated message chain.
 fn benchmark_active_path_load(message_count: usize) -> Result<Duration> {
     with_runtime_store(&format!("active-path-load-{message_count}"), |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         create_message_chain(store, &conversation_id, message_count)?;
 
         let started = Instant::now();
@@ -945,7 +945,7 @@ fn benchmark_active_path_load(message_count: usize) -> Result<Duration> {
 /// Measures approval scanning when a tool call appears after a long path.
 fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-long-path", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         attach_test_mcp_tool(store, &conversation_id)?;
         let parent_id = create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
         let metadata =
@@ -970,7 +970,7 @@ fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
 /// Measures approval scanning after many prior tool results in one execution.
 fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-deep-chain", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         attach_test_mcp_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use many tools")?;
         let tool_calls = (0..TOOL_CHAIN_RESULTS)
@@ -1006,7 +1006,7 @@ fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
 /// Measures query preparation on a plain completed active path.
 fn benchmark_prepare_query_no_tools() -> Result<Duration> {
     with_runtime_store("prepare-query-no-tools", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
 
         let started = Instant::now();
@@ -1018,7 +1018,7 @@ fn benchmark_prepare_query_no_tools() -> Result<Duration> {
 /// Measures query preparation after all requested tool calls have results.
 fn benchmark_prepare_query_completed_tool_chain() -> Result<Duration> {
     with_runtime_store("prepare-query-completed-tool-chain", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         create_completed_tool_chain(store, &conversation_id, TOOL_CHAIN_RESULTS)?;
 
         let started = Instant::now();
@@ -1030,7 +1030,7 @@ fn benchmark_prepare_query_completed_tool_chain() -> Result<Duration> {
 /// Measures the rejection path when query is waiting on approval.
 fn benchmark_prepare_query_requires_approval() -> Result<Duration> {
     with_runtime_store("prepare-query-requires-approval", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         attach_test_mcp_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
         let metadata =
@@ -1055,7 +1055,7 @@ fn benchmark_prepare_query_requires_approval() -> Result<Duration> {
 /// Measures preparation when policy-denied tool calls are auto-recorded.
 fn benchmark_prepare_query_policy_denied() -> Result<Duration> {
     with_runtime_store("prepare-query-policy-denied", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
         let metadata = tool_call_metadata(vec![tool_call(0, "denied_call", "unknown_tool")]);
         store.insert_message(
@@ -1075,7 +1075,7 @@ fn benchmark_prepare_query_policy_denied() -> Result<Duration> {
 /// Measures splice delete for a branch point with many direct children.
 fn benchmark_splice_remove_branch_point() -> Result<(Duration, usize, usize)> {
     with_runtime_store("splice-remove-branch-point", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let root_id = insert_user_message(store, &conversation_id, None, "root")?;
         let branch_id = store.insert_message(
             &conversation_id,
@@ -1102,7 +1102,7 @@ fn benchmark_splice_remove_branch_point() -> Result<(Duration, usize, usize)> {
 /// Measures splice delete for a root node with many direct children.
 fn benchmark_splice_remove_root_many_children() -> Result<(Duration, usize, usize)> {
     with_runtime_store("splice-remove-root-many-children", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let root_id = insert_user_message(store, &conversation_id, None, "root")?;
         for index in 0..BRANCH_CHILDREN {
             insert_user_message(
@@ -1122,7 +1122,7 @@ fn benchmark_splice_remove_root_many_children() -> Result<(Duration, usize, usiz
 /// Measures splice delete for an assistant tool-call group.
 fn benchmark_splice_remove_tool_group() -> Result<Duration> {
     with_runtime_store("splice-remove-tool-group", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let assistant_id = create_completed_tool_chain(store, &conversation_id, 2)?;
         let second_result_id = store
             .active_message_id(&conversation_id)?
@@ -1144,7 +1144,7 @@ fn benchmark_splice_remove_tool_group() -> Result<Duration> {
 /// Measures truncate for a subtree with many descendants.
 fn benchmark_truncate_large_subtree() -> Result<(Duration, usize)> {
     with_runtime_store("truncate-large-subtree", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let checkpoint_id = insert_user_message(store, &conversation_id, None, "checkpoint")?;
         let mut parent_id = checkpoint_id.clone();
         for index in 0..LARGE_TRUNCATE_DESCENDANTS {
@@ -1170,7 +1170,7 @@ fn benchmark_truncate_large_subtree() -> Result<(Duration, usize)> {
 /// Measures context build for a plain generated message chain.
 fn benchmark_context_plain(message_count: usize) -> Result<Duration> {
     with_runtime_store(&format!("context-plain-{message_count}"), |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         create_message_chain(store, &conversation_id, message_count)?;
 
         let started = Instant::now();
@@ -1182,7 +1182,7 @@ fn benchmark_context_plain(message_count: usize) -> Result<Duration> {
 /// Measures context build when a conversation system prompt exists.
 fn benchmark_context_with_system_prompt() -> Result<Duration> {
     with_runtime_store("context-with-system-prompt", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
         store.set_system_prompt(&conversation_id, "You are a concise local runtime.")?;
 
@@ -1195,7 +1195,7 @@ fn benchmark_context_with_system_prompt() -> Result<Duration> {
 /// Measures context build with a compaction summary plus a remaining suffix.
 fn benchmark_context_with_compaction() -> Result<Duration> {
     with_runtime_store("context-with-compaction", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let checkpoint_index = SCALE_PATH_MESSAGES / 2;
         let mut parent_id = None;
         let mut checkpoint_id = None;
@@ -1231,7 +1231,7 @@ fn benchmark_context_with_compaction() -> Result<Duration> {
 /// Measures context build for image-heavy message parts.
 fn benchmark_context_with_image_parts() -> Result<Duration> {
     with_runtime_store("context-with-image-parts", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let image_bytes = tiny_png_bytes();
         let mut parent_id = None;
         for index in 0..IMAGE_PART_MESSAGES {
@@ -1261,7 +1261,7 @@ fn benchmark_context_with_image_parts() -> Result<Duration> {
 /// Measures provider registry lookup plus attached-tool persistence.
 fn benchmark_provider_tool_attach_load() -> Result<Duration> {
     with_runtime_store("provider-tool-attach-load", |store| {
-        let conversation_id = store.create_conversation()?;
+        let conversation_id = store.create_conversation("openai/test")?;
         let definition = test_tool_definition();
 
         let started = Instant::now();

@@ -28,8 +28,7 @@ export default function Composer() {
     sendMessage,
     continueConversation,
     streaming,
-    modelOverride,
-    setModelOverride,
+    setConversationModel,
     models,
     modelsLoading,
     modelsError,
@@ -62,7 +61,7 @@ export default function Composer() {
     []
   );
 
-  const currentModel = modelOverride || activeConv?.model;
+  const currentModel = activeConv?.model;
   const filteredModels = models.filter((model) =>
     model.id.toLowerCase().includes(modelSearch.trim().toLowerCase())
   );
@@ -116,12 +115,12 @@ export default function Composer() {
     const sentAttachments = attachments;
     setText("");
     clearAttachments();
-    await sendMessage(activeConv.id, sentText, { modelOverride, attachments: sentAttachments });
+    await sendMessage(activeConv.id, sentText, { attachments: sentAttachments });
   };
 
   const continueQuery = () => {
     if (!activeConv || streaming) return;
-    continueConversation(activeConv.id, { modelOverride });
+    continueConversation(activeConv.id);
   };
 
   const refreshModelList = () => {
@@ -217,15 +216,12 @@ export default function Composer() {
 
             <div className="relative">
               <button
-                data-testid="composer-model-override"
+                data-testid="composer-model"
                 onClick={() => setModelMenuOpen(!modelMenuOpen)}
                 className="h-7 max-w-[440px] px-2 flex items-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[11px] uppercase tracking-widest"
               >
                 <span className="text-muted-foreground">model</span>
                 <span className="min-w-0 truncate text-foreground normal-case">{currentModel}</span>
-                {modelOverride && (
-                  <span className="text-[hsl(var(--accent))] normal-case">· override</span>
-                )}
                 <ChevronDown className="size-3" />
               </button>
               {modelMenuOpen && (
@@ -236,7 +232,7 @@ export default function Composer() {
                   />
                   <div className="absolute bottom-full mb-1 left-0 z-20 w-[420px] max-w-[calc(100vw-3rem)] bg-popover border border-border shadow-md">
                     <div className="px-2.5 py-1.5 border-b border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground flex items-center justify-between gap-2">
-                      <span>model override</span>
+                      <span>model</span>
                       <button
                         type="button"
                         onClick={(event) => {
@@ -250,18 +246,6 @@ export default function Composer() {
                         <RefreshCw className={`size-3.5 ${modelsLoading ? "animate-spin" : ""}`} strokeWidth={1.75} />
                       </button>
                     </div>
-                    <button
-                      data-testid="composer-model-option-inherit"
-                      onClick={() => {
-                        setModelOverride(null);
-                        setModelMenuOpen(false);
-                      }}
-                      className="w-full text-left px-2.5 py-1.5 text-xs font-mono hover:bg-surface-hover flex items-center justify-between"
-                    >
-                      <span>default</span>
-                      <span className="ml-3 min-w-0 truncate text-muted-foreground">{activeConv?.model}</span>
-                    </button>
-                    <div className="border-t border-border" />
                     <div className="p-2 border-b border-border">
                       <input
                         data-testid="composer-model-filter"
@@ -292,12 +276,16 @@ export default function Composer() {
                           key={m.id}
                           data-testid={`composer-model-option-${m.id}`}
                           onClick={() => {
-                            setModelOverride(m.id);
+                            if (activeConv) {
+                              setConversationModel(activeConv.id, m.id).catch((error) =>
+                                toast.error(error.message)
+                              );
+                            }
                             setModelMenuOpen(false);
                             setModelSearch("");
                           }}
                           className={`w-full text-left px-2.5 py-1.5 text-xs font-mono hover:bg-surface-hover flex items-center justify-between gap-3 ${
-                            modelOverride === m.id ? "bg-surface" : ""
+                            currentModel === m.id ? "bg-surface" : ""
                           }`}
                         >
                           <span className="min-w-0 truncate">{m.label}</span>
