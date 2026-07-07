@@ -251,6 +251,9 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
                 ON messages(conversation_id, created_at);
 
+                CREATE INDEX IF NOT EXISTS messages_id_conversation_idx
+                ON messages(id, conversation_id);
+
                 CREATE INDEX IF NOT EXISTS messages_parent_idx
                 ON messages(conversation_id, parent_message_id);
 
@@ -873,7 +876,8 @@ impl Store {
                         messages.metadata,
                         path.depth + 1
                     FROM path
-                    CROSS JOIN messages ON messages.id = path.parent_message_id
+                    CROSS JOIN messages INDEXED BY messages_id_conversation_idx
+                        ON messages.id = path.parent_message_id
                     WHERE messages.conversation_id = ?1
                 )
                 SELECT id, parent_message_id, role, content, metadata

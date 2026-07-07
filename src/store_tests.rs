@@ -83,6 +83,7 @@ fn creates_performance_indexes() {
     let store = Store::open_memory().unwrap();
 
     assert!(index_exists(&store, "messages_parent_idx"));
+    assert!(index_exists(&store, "messages_id_conversation_idx"));
     assert!(index_exists(&store, "conversations_updated_idx"));
 }
 
