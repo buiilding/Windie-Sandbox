@@ -7,7 +7,9 @@
 //! provider sessions for API-owned runtime tools.
 
 use std::collections::HashMap;
+use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,6 +34,20 @@ static PERSISTENT_SESSIONS: OnceLock<Arc<Mutex<PersistentMcpSessions>>> = OnceLo
 pub struct McpCommand {
     pub program: &'static str,
     pub args: &'static [&'static str],
+    pub env: &'static [McpEnv],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Environment variable assigned before Windie starts an MCP provider.
+pub struct McpEnv {
+    pub key: &'static str,
+    pub value: McpEnvValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Static environment value shape for approved MCP provider commands.
+pub enum McpEnvValue {
+    WindieDataDir(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -324,8 +340,9 @@ struct McpSession {
 impl McpSession {
     /// Starts the provider process and completes the MCP initialize handshake.
     fn start(command: McpCommand) -> Result<Self> {
-        let mut child = Command::new(command.program)
-            .args(command.args)
+        let mut process = Command::new(command.program);
+        configure_process(&mut process, command)?;
+        let mut child = process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -488,8 +505,9 @@ fn run_shutdown_best_effort(command: Option<McpCommand>) {
 
 /// Runs one shutdown command with a small timeout.
 fn run_shutdown_command(command: McpCommand) -> Result<()> {
-    let mut child = Command::new(command.program)
-        .args(command.args)
+    let mut process = Command::new(command.program);
+    configure_process(&mut process, command)?;
+    let mut child = process
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -515,6 +533,34 @@ fn run_shutdown_command(command: McpCommand) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Applies the static command definition to a spawned provider process.
+fn configure_process(process: &mut Command, command: McpCommand) -> Result<()> {
+    process.args(command.args);
+    for variable in command.env {
+        process.env(variable.key, resolve_env_value(variable.value)?);
+    }
+
+    Ok(())
+}
+
+/// Resolves an MCP environment value at process-start time.
+fn resolve_env_value(value: McpEnvValue) -> Result<String> {
+    match value {
+        McpEnvValue::WindieDataDir(relative_path) => Ok(windie_data_dir()
+            .join(relative_path)
+            .to_string_lossy()
+            .into_owned()),
+    }
+}
+
+/// Returns Windie's per-user data directory.
+fn windie_data_dir() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".windie")
 }
 
 /// Reads provider stdout on a dedicated thread so protocol waits can time out.
@@ -612,5 +658,12 @@ mod tests {
         let captured = Arc::new(Mutex::new(vec![b'x'; MCP_STDERR_MAX_BYTES]));
 
         assert!(captured_stderr(&captured).ends_with("\n[truncated]"));
+    }
+
+    #[test]
+    fn windie_data_dir_env_value_resolves_under_user_home() {
+        let value = resolve_env_value(McpEnvValue::WindieDataDir("mcp/desktop-commander")).unwrap();
+
+        assert!(value.ends_with(".windie/mcp/desktop-commander"));
     }
 }

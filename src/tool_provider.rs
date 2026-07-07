@@ -6,13 +6,17 @@
 //! Built-ins, MCP servers, and future plugins should enter runtime through this
 //! same registry shape.
 
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
-use crate::mcp::{self, McpCommand, McpTool};
+use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpTool};
 use crate::shell::ShellExecutor;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolExecutionResult,
@@ -21,6 +25,7 @@ use crate::tool::{
 
 const WINDIE_PROVIDER_ID: &str = "windie";
 const RUN_SHELL_TOOL_NAME: &str = "run_shell";
+const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -236,6 +241,13 @@ struct McpProviderDefinition {
     display_name: &'static str,
     command: McpCommand,
     shutdown_command: Option<McpCommand>,
+    setup: Option<McpProviderSetup>,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Provider-specific setup Windie runs before starting an MCP process.
+enum McpProviderSetup {
+    DesktopCommanderConfig,
 }
 
 /// MCP providers Windie is willing to start and execute.
@@ -243,19 +255,39 @@ struct McpProviderDefinition {
 /// This is a code-owned allowlist, not user configuration. Provider
 /// availability still does not grant model access; conversations must attach
 /// individual tools before their schemas are sent to the model.
-const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[McpProviderDefinition {
-    provider_id: "cua-driver",
-    schema_prefix: "cua_driver",
-    display_name: "CUA Driver",
-    command: McpCommand {
-        program: "cua-driver",
-        args: &["mcp"],
+const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
+    McpProviderDefinition {
+        provider_id: "cua-driver",
+        schema_prefix: "cua_driver",
+        display_name: "CUA Driver",
+        command: McpCommand {
+            program: "cua-driver",
+            args: &["mcp"],
+            env: &[],
+        },
+        shutdown_command: Some(McpCommand {
+            program: "cua-driver",
+            args: &["stop"],
+            env: &[],
+        }),
+        setup: None,
     },
-    shutdown_command: Some(McpCommand {
-        program: "cua-driver",
-        args: &["stop"],
-    }),
-}];
+    McpProviderDefinition {
+        provider_id: "desktop-commander",
+        schema_prefix: "desktop_commander",
+        display_name: "Desktop Commander",
+        command: McpCommand {
+            program: "desktop-commander",
+            args: &[],
+            env: &[McpEnv {
+                key: "HOME",
+                value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
+            }],
+        },
+        shutdown_command: None,
+        setup: Some(McpProviderSetup::DesktopCommanderConfig),
+    },
+];
 
 #[derive(Debug, Clone)]
 /// Provider for an approved MCP stdio server.
@@ -265,6 +297,7 @@ pub struct McpToolProvider {
     display_name: &'static str,
     command: McpCommand,
     shutdown_command: Option<McpCommand>,
+    setup: Option<McpProviderSetup>,
 }
 
 impl McpToolProvider {
@@ -276,6 +309,7 @@ impl McpToolProvider {
             display_name: definition.display_name,
             command: definition.command,
             shutdown_command: definition.shutdown_command,
+            setup: definition.setup,
         }
     }
 
@@ -286,6 +320,7 @@ impl McpToolProvider {
 
     /// Lists tools from the MCP server and maps them into Windie definitions.
     pub fn list_tools(&self) -> Result<Vec<ToolDefinition>> {
+        self.prepare()?;
         Ok(
             mcp::list_tools_with_shutdown(self.command, self.shutdown_command)?
                 .into_iter()
@@ -319,6 +354,7 @@ impl McpToolProvider {
                 ));
             }
         };
+        self.prepare()?;
         let result = if persistent {
             mcp::call_tool_persistent(
                 self.provider_id.as_str(),
@@ -387,6 +423,72 @@ impl McpToolProvider {
             },
         }
     }
+
+    /// Runs provider-specific setup before Windie starts the MCP process.
+    fn prepare(&self) -> Result<()> {
+        match self.setup {
+            Some(McpProviderSetup::DesktopCommanderConfig) => write_desktop_commander_config(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Writes Windie's isolated Desktop Commander config.
+///
+/// Desktop Commander reads config from `$HOME/.claude-server-commander`, so
+/// Windie starts the process with a provider-specific HOME and keeps this
+/// config separate from any user-level Desktop Commander install.
+fn write_desktop_commander_config() -> Result<()> {
+    let config_path = desktop_commander_home()
+        .join(".claude-server-commander")
+        .join("config.json");
+    let config_dir = config_path
+        .parent()
+        .ok_or_else(|| anyhow!("Desktop Commander config path has no parent"))?;
+    fs::create_dir_all(config_dir).with_context(|| {
+        format!(
+            "failed to create Desktop Commander config directory: {}",
+            config_dir.display()
+        )
+    })?;
+
+    let config = json!({
+        "blockedCommands": desktop_commander_blocked_commands(),
+        "allowedDirectories": [],
+        "telemetryEnabled": false,
+        "fileWriteLineLimit": 50,
+        "fileReadLineLimit": 1000,
+        "pendingWelcomeOnboarding": false
+    });
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?).with_context(|| {
+        format!(
+            "failed to write Desktop Commander config: {}",
+            config_path.display()
+        )
+    })
+}
+
+/// Returns the HOME directory Windie assigns to Desktop Commander.
+fn desktop_commander_home() -> PathBuf {
+    windie_data_dir().join(DESKTOP_COMMANDER_HOME_RELATIVE)
+}
+
+/// Returns Windie's per-user data directory.
+fn windie_data_dir() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".windie")
+}
+
+/// Keeps Desktop Commander's default high-risk shell command blocklist.
+fn desktop_commander_blocked_commands() -> Vec<&'static str> {
+    vec![
+        "mkfs", "format", "mount", "umount", "fdisk", "dd", "parted", "diskpart", "sudo", "su",
+        "passwd", "adduser", "useradd", "usermod", "groupadd", "chsh", "visudo", "shutdown",
+        "reboot", "halt", "poweroff", "init", "iptables", "firewall", "netsh", "sfc", "bcdedit",
+        "reg", "net", "sc", "runas", "cipher", "takeown",
+    ]
 }
 
 /// Builds the model-facing schema name for one MCP provider tool.
@@ -495,6 +597,15 @@ mod tests {
         McpToolProvider::new(definition)
     }
 
+    fn approved_desktop_commander_provider() -> McpToolProvider {
+        let definition = APPROVED_MCP_PROVIDERS
+            .iter()
+            .copied()
+            .find(|definition| definition.provider_id == "desktop-commander")
+            .unwrap();
+        McpToolProvider::new(definition)
+    }
+
     #[test]
     fn mcp_schema_names_are_provider_prefixed() {
         assert_eq!(mcp_schema_name("cua_driver", "click"), "cua_driver__click");
@@ -525,6 +636,50 @@ mod tests {
             vec![ToolPermission::ExternalProcess]
         );
         assert_eq!(definition.annotations.read_only, Some(false));
+    }
+
+    #[test]
+    fn desktop_commander_mcp_tools_map_to_provider_backed_definitions() {
+        let provider = approved_desktop_commander_provider();
+        let definition = provider.definition_from_mcp_tool(McpTool {
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: json!({"type":"object"}),
+            annotations: Some(mcp::McpToolAnnotations {
+                read_only_hint: Some(true),
+            }),
+        });
+
+        assert_eq!(
+            definition.schema_name.as_str(),
+            "desktop_commander__read_file"
+        );
+        assert_eq!(
+            definition.provider.provider_id.as_str(),
+            "desktop-commander"
+        );
+        assert_eq!(definition.provider.tool_name.as_str(), "read_file");
+        assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+        assert_eq!(
+            definition.permissions,
+            vec![ToolPermission::ExternalProcess]
+        );
+        assert_eq!(definition.annotations.read_only, Some(true));
+    }
+
+    #[test]
+    fn desktop_commander_config_allows_every_directory() {
+        let config = json!({
+            "blockedCommands": desktop_commander_blocked_commands(),
+            "allowedDirectories": [],
+            "telemetryEnabled": false,
+            "fileWriteLineLimit": 50,
+            "fileReadLineLimit": 1000,
+            "pendingWelcomeOnboarding": false
+        });
+
+        assert_eq!(config["allowedDirectories"].as_array().unwrap().len(), 0);
+        assert_eq!(config["telemetryEnabled"], false);
     }
 
     #[test]
@@ -604,8 +759,10 @@ mod tests {
                 command: McpCommand {
                     program: "windie-missing-mcp-provider",
                     args: &[],
+                    env: &[],
                 },
                 shutdown_command: None,
+                setup: None,
             })],
             persistent_mcp_calls: false,
         };

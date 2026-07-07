@@ -45,6 +45,7 @@ done"#;
 const FAKE_MCP_COMMAND: McpCommand = McpCommand {
     program: "/bin/sh",
     args: &["-c", FAKE_MCP_SCRIPT],
+    env: &[],
 };
 
 const REPORT_FORMAT_VERSION: u32 = 3;
