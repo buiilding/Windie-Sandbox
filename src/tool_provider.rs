@@ -400,7 +400,7 @@ impl McpToolProvider {
             }
         };
         self.prepare()?;
-        let result = if let Some(session_pool) = session_pool {
+        let result = match if let Some(session_pool) = session_pool {
             session_pool.call_tool(
                 self.provider_id.as_str(),
                 self.command,
@@ -415,7 +415,16 @@ impl McpToolProvider {
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
             )
-        }?;
+        } {
+            Ok(result) => result,
+            Err(error) => {
+                return Ok(mcp_tool_call_failure_result(
+                    &self.provider_id,
+                    tool_call,
+                    &error,
+                ));
+            }
+        };
         let success = !result
             .get("isError")
             .and_then(Value::as_bool)
@@ -475,6 +484,45 @@ impl McpToolProvider {
             Some(McpProviderSetup::DesktopCommanderConfig) => write_desktop_commander_config(),
             None => Ok(()),
         }
+    }
+}
+
+/// Converts an MCP `tools/call` operation failure into a model-facing tool
+/// result.
+///
+/// At this point policy has already approved the model's tool call. Returning a
+/// failed result lets runtime persist a linked `role: tool` message so the next
+/// model turn can observe the failure instead of losing the tool-call contract
+/// to an outer operation error.
+fn mcp_tool_call_failure_result(
+    provider_id: &ToolProviderId,
+    tool_call: &ToolCall,
+    error: &anyhow::Error,
+) -> ToolExecutionResult {
+    let content = if let Some(timeout) = mcp::request_timeout_from_error(error) {
+        json!({
+            "error": "MCP provider timed out",
+            "detail": timeout.to_string(),
+            "provider": timeout.provider.as_str(),
+            "method": timeout.method.as_str(),
+            "timeout_ms": timeout.timeout_ms(),
+            "timeout_seconds": timeout.timeout_seconds()
+        })
+    } else {
+        json!({
+            "error": "MCP provider tool call failed",
+            "detail": error.to_string(),
+            "provider": provider_id.as_str(),
+            "method": "tools/call"
+        })
+    };
+
+    ToolExecutionResult {
+        tool_call_id: tool_call.id.clone(),
+        tool_name: tool_call.name().to_string(),
+        content: content.to_string(),
+        parts: Vec::new(),
+        success: false,
     }
 }
 
@@ -773,6 +821,52 @@ mod tests {
             tool_result_preview(&parts),
             "desktop screenshot\n[image: image/png, 3 bytes]\nstructuredContent: {\"screen_width\":1710}"
         );
+    }
+
+    #[test]
+    fn mcp_tool_call_timeout_becomes_failed_tool_result() {
+        let error: anyhow::Error = mcp::McpRequestTimeout::new(
+            "desktop-commander",
+            "tools/call",
+            std::time::Duration::from_secs(300),
+        )
+        .into();
+        let tool_call = ToolCall::function("call_123", "desktop_commander__read_file", "{}");
+
+        let result = mcp_tool_call_failure_result(
+            &ToolProviderId::new("desktop-commander"),
+            &tool_call,
+            &error,
+        );
+        let content = serde_json::from_str::<Value>(&result.content).unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.tool_call_id.as_str(), "call_123");
+        assert_eq!(result.tool_name, "desktop_commander__read_file");
+        assert_eq!(content["error"], "MCP provider timed out");
+        assert_eq!(content["provider"], "desktop-commander");
+        assert_eq!(content["method"], "tools/call");
+        assert_eq!(content["timeout_ms"], 300_000);
+        assert_eq!(content["timeout_seconds"], 300);
+    }
+
+    #[test]
+    fn mcp_tool_call_process_error_becomes_failed_tool_result() {
+        let error = anyhow!("provider exited early");
+        let tool_call = ToolCall::function("call_123", "desktop_commander__read_file", "{}");
+
+        let result = mcp_tool_call_failure_result(
+            &ToolProviderId::new("desktop-commander"),
+            &tool_call,
+            &error,
+        );
+        let content = serde_json::from_str::<Value>(&result.content).unwrap();
+
+        assert!(!result.success);
+        assert_eq!(content["error"], "MCP provider tool call failed");
+        assert_eq!(content["detail"], "provider exited early");
+        assert_eq!(content["provider"], "desktop-commander");
+        assert_eq!(content["method"], "tools/call");
     }
 
     #[test]

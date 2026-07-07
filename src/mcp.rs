@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -19,13 +20,66 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MCP_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SHUTDOWN_RETRY_DELAY: Duration = Duration::from_millis(750);
 const MCP_SHUTDOWN_RETRIES: usize = 4;
 const MCP_STDERR_MAX_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Typed timeout error for one MCP JSON-RPC request.
+///
+/// Tool execution code can detect this error after it crosses the MCP boundary
+/// and turn approved `tools/call` timeouts into model-facing tool results. MCP
+/// catalog and initialize callers still receive it as a normal operation error.
+pub struct McpRequestTimeout {
+    pub provider: String,
+    pub method: String,
+    pub timeout: Duration,
+}
+
+impl McpRequestTimeout {
+    /// Builds a timeout error for one provider request.
+    pub fn new(provider: impl Into<String>, method: impl Into<String>, timeout: Duration) -> Self {
+        Self {
+            provider: provider.into(),
+            method: method.into(),
+            timeout,
+        }
+    }
+
+    /// Returns the timeout duration in milliseconds for structured tool output.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout.as_millis().min(u128::from(u64::MAX)) as u64
+    }
+
+    /// Returns the timeout duration in whole seconds for human-facing errors.
+    pub fn timeout_seconds(&self) -> u64 {
+        self.timeout.as_secs()
+    }
+}
+
+impl fmt::Display for McpRequestTimeout {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "MCP provider timed out during {} after {}s: {}",
+            self.method,
+            self.timeout_seconds(),
+            self.provider
+        )
+    }
+}
+
+impl std::error::Error for McpRequestTimeout {}
+
+/// Finds an MCP timeout in an anyhow error chain.
+pub fn request_timeout_from_error(error: &anyhow::Error) -> Option<&McpRequestTimeout> {
+    error.downcast_ref::<McpRequestTimeout>()
+}
 
 /// Process command for one approved MCP provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,20 +499,20 @@ impl McpSession {
 
     /// Reads JSON-RPC lines until the response matching `request_id` arrives.
     fn read_response(&mut self, request_id: u64, method: &str) -> Result<Value> {
+        let timeout = request_timeout_for_method(method);
         loop {
-            let line = match self.stdout_lines.recv_timeout(MCP_REQUEST_TIMEOUT) {
+            let line = match self.stdout_lines.recv_timeout(timeout) {
                 Ok(Ok(line)) => line,
                 Ok(Err(error)) => {
-                    return Err(self.error_with_stderr(format!("{error} for {method}")));
+                    return Err(self.error_with_stderr(anyhow!("{error} for {method}")));
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(self.error_with_stderr(format!(
-                        "MCP provider timed out during {method}: {}",
-                        self.command.program
-                    )));
+                    return Err(self.error_with_stderr(
+                        McpRequestTimeout::new(self.command.program, method, timeout).into(),
+                    ));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(self.error_with_stderr(format!(
+                    return Err(self.error_with_stderr(anyhow!(
                         "MCP provider stdout reader stopped before responding to {method}"
                     )));
                 }
@@ -475,25 +529,26 @@ impl McpSession {
                 continue;
             }
             if let Some(error) = response.error {
-                return Err(self.error_with_stderr(format!(
+                return Err(self.error_with_stderr(anyhow!(
                     "MCP error {} from {method}: {}",
-                    error.code, error.message
+                    error.code,
+                    error.message
                 )));
             }
 
             return response.result.ok_or_else(|| {
-                self.error_with_stderr(format!("MCP response for {method} did not include result"))
+                self.error_with_stderr(anyhow!("MCP response for {method} did not include result"))
             });
         }
     }
 
     /// Adds captured provider stderr to MCP protocol/process errors.
-    fn error_with_stderr(&self, message: String) -> anyhow::Error {
+    fn error_with_stderr(&self, error: anyhow::Error) -> anyhow::Error {
         let stderr = captured_stderr(&self.stderr);
         if stderr.trim().is_empty() {
-            anyhow!(message)
+            error
         } else {
-            anyhow!("{message}\nstderr:\n{stderr}")
+            error.context(format!("stderr:\n{stderr}"))
         }
     }
 }
@@ -518,6 +573,15 @@ fn run_shutdown_best_effort(command: Option<McpCommand>) {
         if run_shutdown_command(command).is_ok() {
             return;
         }
+    }
+}
+
+/// Returns the request timeout for one MCP method.
+fn request_timeout_for_method(method: &str) -> Duration {
+    if method == "tools/call" {
+        MCP_TOOL_CALL_TIMEOUT
+    } else {
+        MCP_PROTOCOL_REQUEST_TIMEOUT
     }
 }
 
@@ -676,6 +740,38 @@ mod tests {
         let captured = Arc::new(Mutex::new(vec![b'x'; MCP_STDERR_MAX_BYTES]));
 
         assert!(captured_stderr(&captured).ends_with("\n[truncated]"));
+    }
+
+    #[test]
+    fn tool_calls_use_longer_timeout_than_protocol_requests() {
+        assert_eq!(
+            request_timeout_for_method("initialize"),
+            MCP_PROTOCOL_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            request_timeout_for_method("tools/list"),
+            MCP_PROTOCOL_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            request_timeout_for_method("tools/call"),
+            MCP_TOOL_CALL_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn mcp_timeout_errors_report_elapsed_limit() {
+        let timeout =
+            McpRequestTimeout::new("desktop-commander", "tools/call", MCP_TOOL_CALL_TIMEOUT);
+        let error: anyhow::Error = timeout.into();
+        let found = request_timeout_from_error(&error).unwrap();
+
+        assert_eq!(found.provider, "desktop-commander");
+        assert_eq!(found.method, "tools/call");
+        assert_eq!(found.timeout_ms(), 300_000);
+        assert_eq!(
+            error.to_string(),
+            "MCP provider timed out during tools/call after 300s: desktop-commander"
+        );
     }
 
     #[test]

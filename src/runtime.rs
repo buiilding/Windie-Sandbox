@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use crate::context::ContextBuilder;
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId, ToolSchemaName,
+    ConversationId, Message, MessageId, Role, ToolCall, ToolCallId, ToolSchemaName,
 };
 use crate::error;
 use crate::llm::RuntimeLlm;
@@ -684,27 +684,20 @@ fn store_tool_result(
     parent_message_id: &MessageId,
     result: &ToolExecutionResult,
 ) -> Result<MessageId> {
-    let metadata = MessageMetadata {
-        tool_call_id: Some(result.tool_call_id.clone()),
-        ..Default::default()
-    };
-
     if result.parts.is_empty() {
-        store.insert_message(
+        store.insert_tool_result_message(
             conversation_id,
-            Some(parent_message_id),
-            Role::Tool,
+            parent_message_id,
+            &result.tool_call_id,
             &result.content,
-            Some(&metadata),
         )
     } else {
-        store.insert_message_with_parts(
+        store.insert_tool_result_message_with_parts(
             conversation_id,
-            Some(parent_message_id),
-            Role::Tool,
+            parent_message_id,
+            &result.tool_call_id,
             &result.content,
             &result.parts,
-            Some(&metadata),
         )
     }
 }

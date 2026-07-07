@@ -1813,7 +1813,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remove_message_returns_raw_delete_policy_error() {
+    async fn remove_tool_result_message_deletes_tool_group() {
         let db_path = temp_database_path();
         let app = test_app(db_path.clone());
         let mut store = Store::open_at(&db_path).unwrap();
@@ -1821,17 +1821,24 @@ mod tests {
         let parent_id = store
             .insert_message(&conversation_id, None, Role::User, "one", None)
             .unwrap();
-        let metadata = MessageMetadata {
-            tool_call_id: Some(ToolCallId::new("call_1")),
-            ..Default::default()
-        };
-        let message_id = store
+        let assistant_id = store
             .insert_message(
                 &conversation_id,
                 Some(&parent_id),
-                Role::Tool,
+                Role::Assistant,
+                "",
+                Some(&MessageMetadata {
+                    tool_calls: vec![ToolCall::function("call_1", "run_shell", "{}")],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let message_id = store
+            .insert_tool_result_message(
+                &conversation_id,
+                &assistant_id,
+                &ToolCallId::new("call_1"),
                 "{}",
-                Some(&metadata),
             )
             .unwrap();
         drop(store);
@@ -1845,18 +1852,14 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let body = response_json_body(response).await;
+        let store = Store::open_at(&db_path).unwrap();
+        let messages = store.load_messages(&conversation_id).unwrap();
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error"],
-            "cannot remove role: tool message because its parent is not an assistant tool-call message"
-        );
-        assert_eq!(
-            body["causes"].as_array().unwrap().last().unwrap(),
-            "cannot remove role: tool message because its parent is not an assistant tool-call message"
-        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["deleted"], true);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id.as_ref(), Some(&parent_id));
         let _ = fs::remove_file(db_path);
     }
 

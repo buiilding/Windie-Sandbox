@@ -1070,6 +1070,94 @@ impl Store {
         content: &str,
         metadata: Option<&MessageMetadata>,
     ) -> Result<MessageId> {
+        if role == Role::Tool {
+            return Err(error::invalid_request(
+                "role: tool messages must be created through insert_tool_result_message",
+            ));
+        }
+
+        self.insert_message_unchecked(conversation_id, parent_message_id, role, content, metadata)
+    }
+
+    /// Inserts one tool result message after validating the assistant tool-call
+    /// chain it answers.
+    ///
+    /// Generic message insertion cannot create `role: tool` messages. Runtime
+    /// must use this primitive so the store can enforce that every tool result
+    /// is linked to a provider tool-call ID requested by an assistant message in
+    /// the same conversation path.
+    pub fn insert_tool_result_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+    ) -> Result<MessageId> {
+        self.ensure_tool_result_parent_matches_call(
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+        )?;
+        let metadata = MessageMetadata {
+            tool_call_id: Some(tool_call_id.clone()),
+            ..Default::default()
+        };
+
+        self.insert_message_unchecked(
+            conversation_id,
+            Some(parent_message_id),
+            Role::Tool,
+            content,
+            Some(&metadata),
+        )
+    }
+
+    /// Inserts a rich tool result with ordered model-facing parts.
+    ///
+    /// This is the multipart companion to `insert_tool_result_message`. It is
+    /// used by screenshot-like tools that need to persist text and image parts
+    /// while preserving the same assistant tool-call ownership invariant.
+    pub fn insert_tool_result_message_with_parts(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        self.ensure_tool_result_parent_matches_call(
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+        )?;
+        let metadata = MessageMetadata {
+            tool_call_id: Some(tool_call_id.clone()),
+            ..Default::default()
+        };
+
+        self.insert_message_with_parts_unchecked(
+            conversation_id,
+            Some(parent_message_id),
+            Role::Tool,
+            content,
+            parts,
+            Some(&metadata),
+        )
+    }
+
+    /// Inserts one message without the public role gate.
+    ///
+    /// Only store-owned primitives call this helper. Public callers must use
+    /// `insert_message` for normal messages or `insert_tool_result_message` for
+    /// tool results so role-specific invariants stay centralized here.
+    fn insert_message_unchecked(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        role: Role,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
         let id = MessageId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
         let metadata_json = encode_message_metadata(metadata)?;
@@ -1128,6 +1216,32 @@ impl Store {
     /// messages. User images and rich tool results both flow through the same
     /// persisted `message_parts` and `image_assets` tables.
     pub fn insert_message_with_parts(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        role: Role,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        if role == Role::Tool {
+            return Err(error::invalid_request(
+                "role: tool messages must be created through insert_tool_result_message_with_parts",
+            ));
+        }
+
+        self.insert_message_with_parts_unchecked(
+            conversation_id,
+            parent_message_id,
+            role,
+            content,
+            parts,
+            metadata,
+        )
+    }
+
+    /// Inserts a multipart message without the public role gate.
+    fn insert_message_with_parts_unchecked(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: Option<&MessageId>,
@@ -1792,6 +1906,39 @@ impl Store {
                 }
             }
         }
+    }
+
+    /// Verifies that a new tool result answers an assistant-requested tool call.
+    ///
+    /// The parent may be the assistant tool-call message itself, or a previous
+    /// `role: tool` result in the same linear result chain. In both cases the
+    /// owning assistant must have requested the provider tool-call ID being
+    /// stored.
+    fn ensure_tool_result_parent_matches_call(
+        &self,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        let parent = self.load_message_tree_row(conversation_id, parent_message_id)?;
+        let assistant = match parent.role {
+            Role::Assistant if !assistant_tool_calls(&parent).is_empty() => parent,
+            Role::Tool => self.assistant_tool_group_owner(conversation_id, &parent)?,
+            _ => {
+                return Err(error::invalid_request(
+                    "role: tool result parent must be an assistant tool-call message or tool result chain",
+                ));
+            }
+        };
+
+        if !assistant_tool_calls(&assistant).contains(tool_call_id) {
+            return Err(error::invalid_request(format!(
+                "assistant did not request tool call: {tool_call_id}"
+            )));
+        }
+
+        Ok(())
     }
 
     /// Returns the assistant tool-call group deleted as one model-context unit.

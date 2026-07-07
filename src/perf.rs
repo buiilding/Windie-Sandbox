@@ -805,15 +805,12 @@ fn benchmark_tool_result_insert() -> Result<Duration> {
             "",
             Some(&tool_call_metadata(vec![call.clone()])),
         )?;
-        let metadata = tool_result_metadata(call.id.clone());
-
         let started = Instant::now();
-        store.insert_message(
+        store.insert_tool_result_message(
             &conversation_id,
-            Some(&assistant_id),
-            Role::Tool,
+            &assistant_id,
+            &call.id,
             r#"{"stdout":"ok","stderr":"","exit_code":0}"#,
-            Some(&metadata),
         )?;
         Ok(started.elapsed())
     })
@@ -1407,14 +1404,11 @@ fn insert_tool_result(
     parent_message_id: &MessageId,
     tool_call_id: &ToolCallId,
 ) -> Result<MessageId> {
-    let metadata = tool_result_metadata(tool_call_id.clone());
-
-    store.insert_message(
+    store.insert_tool_result_message(
         conversation_id,
-        Some(parent_message_id),
-        Role::Tool,
+        parent_message_id,
+        tool_call_id,
         r#"{"stdout":"ok","stderr":"","exit_code":0}"#,
-        Some(&metadata),
     )
 }
 
@@ -1422,14 +1416,6 @@ fn insert_tool_result(
 fn tool_call_metadata(tool_calls: Vec<ToolCall>) -> MessageMetadata {
     MessageMetadata {
         tool_calls,
-        ..Default::default()
-    }
-}
-
-/// Builds tool-result metadata linking a result to a provider tool-call ID.
-fn tool_result_metadata(tool_call_id: ToolCallId) -> MessageMetadata {
-    MessageMetadata {
-        tool_call_id: Some(tool_call_id),
         ..Default::default()
     }
 }

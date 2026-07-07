@@ -58,6 +58,42 @@ fn image_asset_count(store: &Store) -> i64 {
         .unwrap()
 }
 
+fn insert_tool_result(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    parent_message_id: &MessageId,
+    tool_call_id: &str,
+    content: &str,
+) -> MessageId {
+    store
+        .insert_tool_result_message(
+            conversation_id,
+            parent_message_id,
+            &ToolCallId::new(tool_call_id),
+            content,
+        )
+        .unwrap()
+}
+
+fn insert_tool_result_with_parts(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    parent_message_id: &MessageId,
+    tool_call_id: &str,
+    content: &str,
+    parts: &[UnsavedMessagePart],
+) -> MessageId {
+    store
+        .insert_tool_result_message_with_parts(
+            conversation_id,
+            parent_message_id,
+            &ToolCallId::new(tool_call_id),
+            content,
+            parts,
+        )
+        .unwrap()
+}
+
 #[test]
 fn creates_default_conversation() {
     let store = Store::open_memory().unwrap();
@@ -713,40 +749,49 @@ fn loads_image_asset_only_for_owning_conversation() {
 fn saves_and_loads_tool_message_parts() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.get_or_create_default_conversation().unwrap();
-    let metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_123")),
-        ..Default::default()
-    };
-
-    store
-        .insert_message_with_parts(
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use screenshot", None)
+        .unwrap();
+    let assistant_id = store
+        .insert_message(
             &conversation_id,
-            None,
-            Role::Tool,
-            "screenshot\n[image: image/png, 3 bytes]",
-            &[
-                unsaved_text("screenshot"),
-                unsaved_image("image/png", &[1, 2, 3]),
-            ],
-            Some(&metadata),
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_123", "screenshot", "{}")],
+                ..Default::default()
+            }),
         )
         .unwrap();
 
+    insert_tool_result_with_parts(
+        &mut store,
+        &conversation_id,
+        &assistant_id,
+        "call_123",
+        "screenshot\n[image: image/png, 3 bytes]",
+        &[
+            unsaved_text("screenshot"),
+            unsaved_image("image/png", &[1, 2, 3]),
+        ],
+    );
+
     let messages = store.load_messages(&conversation_id).unwrap();
 
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].role, Role::Tool);
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[2].role, Role::Tool);
     assert_eq!(
-        messages[0]
+        messages[2]
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.tool_call_id.as_ref())
             .map(ToolCallId::as_str),
         Some("call_123")
     );
-    assert_eq!(messages[0].parts.len(), 2);
-    assert!(matches!(&messages[0].parts[0], MessagePart::Text(text) if text == "screenshot"));
-    assert!(matches!(&messages[0].parts[1], MessagePart::Image(image)
+    assert_eq!(messages[2].parts.len(), 2);
+    assert!(matches!(&messages[2].parts[0], MessagePart::Text(text) if text == "screenshot"));
+    assert!(matches!(&messages[2].parts[1], MessagePart::Image(image)
         if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
 }
 
@@ -1402,19 +1447,13 @@ fn remove_assistant_tool_call_deletes_tool_pair_and_preserves_later_descendant()
             Some(&assistant_metadata),
         )
         .unwrap();
-    let tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_123")),
-        ..Default::default()
-    };
-    let tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&assistant_id),
-            Role::Tool,
-            "{}",
-            Some(&tool_metadata),
-        )
-        .unwrap();
+    let tool_id = insert_tool_result(
+        &mut store,
+        &conversation_id,
+        &assistant_id,
+        "call_123",
+        "{}",
+    );
     let final_id = store
         .insert_message(
             &conversation_id,
@@ -1474,19 +1513,13 @@ fn remove_assistant_tool_call_ignores_same_tool_call_id_on_other_branch() {
             Some(&assistant_metadata),
         )
         .unwrap();
-    let tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_123")),
-        ..Default::default()
-    };
-    let tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&assistant_id),
-            Role::Tool,
-            "{}",
-            Some(&tool_metadata),
-        )
-        .unwrap();
+    let tool_id = insert_tool_result(
+        &mut store,
+        &conversation_id,
+        &assistant_id,
+        "call_123",
+        "{}",
+    );
     let other_root_id = store
         .insert_message(&conversation_id, None, Role::User, "other", None)
         .unwrap();
@@ -1499,15 +1532,13 @@ fn remove_assistant_tool_call_ignores_same_tool_call_id_on_other_branch() {
             Some(&assistant_metadata),
         )
         .unwrap();
-    let other_tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&other_assistant_id),
-            Role::Tool,
-            "{}",
-            Some(&tool_metadata),
-        )
-        .unwrap();
+    let other_tool_id = insert_tool_result(
+        &mut store,
+        &conversation_id,
+        &other_assistant_id,
+        "call_123",
+        "{}",
+    );
     let final_id = store
         .insert_message(
             &conversation_id,
@@ -1575,19 +1606,13 @@ fn remove_tool_output_deletes_tool_pair_and_preserves_later_descendant() {
             Some(&assistant_metadata),
         )
         .unwrap();
-    let tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_123")),
-        ..Default::default()
-    };
-    let tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&assistant_id),
-            Role::Tool,
-            "{}",
-            Some(&tool_metadata),
-        )
-        .unwrap();
+    let tool_id = insert_tool_result(
+        &mut store,
+        &conversation_id,
+        &assistant_id,
+        "call_123",
+        "{}",
+    );
     let final_id = store
         .insert_message(
             &conversation_id,
@@ -1689,32 +1714,10 @@ fn remove_multi_tool_call_assistant_deletes_tool_group() {
             Some(&metadata),
         )
         .unwrap();
-    let first_tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_1")),
-        ..Default::default()
-    };
-    let first_tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&assistant_id),
-            Role::Tool,
-            "{}",
-            Some(&first_tool_metadata),
-        )
-        .unwrap();
-    let second_tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_2")),
-        ..Default::default()
-    };
-    let second_tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&first_tool_id),
-            Role::Tool,
-            "{}",
-            Some(&second_tool_metadata),
-        )
-        .unwrap();
+    let first_tool_id =
+        insert_tool_result(&mut store, &conversation_id, &assistant_id, "call_1", "{}");
+    let second_tool_id =
+        insert_tool_result(&mut store, &conversation_id, &first_tool_id, "call_2", "{}");
     let final_id = store
         .insert_message(
             &conversation_id,
@@ -1776,32 +1779,10 @@ fn remove_multi_tool_output_deletes_whole_tool_group() {
             Some(&metadata),
         )
         .unwrap();
-    let first_tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_1")),
-        ..Default::default()
-    };
-    let first_tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&assistant_id),
-            Role::Tool,
-            "{}",
-            Some(&first_tool_metadata),
-        )
-        .unwrap();
-    let second_tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_2")),
-        ..Default::default()
-    };
-    let second_tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&first_tool_id),
-            Role::Tool,
-            "{}",
-            Some(&second_tool_metadata),
-        )
-        .unwrap();
+    let first_tool_id =
+        insert_tool_result(&mut store, &conversation_id, &assistant_id, "call_1", "{}");
+    let second_tool_id =
+        insert_tool_result(&mut store, &conversation_id, &first_tool_id, "call_2", "{}");
     let final_id = store
         .insert_message(
             &conversation_id,
@@ -1863,30 +1844,10 @@ fn remove_second_multi_tool_output_deletes_whole_tool_group() {
             Some(&metadata),
         )
         .unwrap();
-    let first_tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&assistant_id),
-            Role::Tool,
-            "{}",
-            Some(&MessageMetadata {
-                tool_call_id: Some(ToolCallId::new("call_1")),
-                ..Default::default()
-            }),
-        )
-        .unwrap();
-    let second_tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&first_tool_id),
-            Role::Tool,
-            "{}",
-            Some(&MessageMetadata {
-                tool_call_id: Some(ToolCallId::new("call_2")),
-                ..Default::default()
-            }),
-        )
-        .unwrap();
+    let first_tool_id =
+        insert_tool_result(&mut store, &conversation_id, &assistant_id, "call_1", "{}");
+    let second_tool_id =
+        insert_tool_result(&mut store, &conversation_id, &first_tool_id, "call_2", "{}");
     let final_id = store
         .insert_message(
             &conversation_id,
@@ -1926,32 +1887,51 @@ fn remove_second_multi_tool_output_deletes_whole_tool_group() {
 }
 
 #[test]
-fn remove_role_tool_without_matching_assistant_parent_rejects() {
+fn generic_insert_rejects_role_tool_message() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+
+    let error = store
+        .insert_message(
+            &conversation_id,
+            None,
+            Role::Tool,
+            "{}",
+            Some(&MessageMetadata {
+                tool_call_id: Some(ToolCallId::new("call_123")),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "role: tool messages must be created through insert_tool_result_message"
+    );
+}
+
+#[test]
+fn tool_result_insert_without_matching_assistant_parent_rejects() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
-    let tool_metadata = MessageMetadata {
-        tool_call_id: Some(ToolCallId::new("call_123")),
-        ..Default::default()
-    };
-    let tool_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&first_id),
-            Role::Tool,
-            "{}",
-            Some(&tool_metadata),
-        )
-        .unwrap();
 
     let error = store
-        .remove_message(&conversation_id, &tool_id)
+        .insert_tool_result_message(
+            &conversation_id,
+            &first_id,
+            &ToolCallId::new("call_123"),
+            "{}",
+        )
         .unwrap_err();
 
-    assert!(error.to_string().contains("parent is not an assistant"));
-    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 2);
+    assert_eq!(
+        error.to_string(),
+        "role: tool result parent must be an assistant tool-call message or tool result chain"
+    );
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 1);
 }
 
 #[test]
