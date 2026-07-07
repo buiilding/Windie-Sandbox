@@ -282,14 +282,30 @@ pub(crate) async fn approve_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
+    let registry = ToolProviderRegistry::new();
+
+    approve_tool_call_with_registry(store, conversation_id, tool_call_id, &registry).await
+}
+
+/// Executes one approved pending tool call through a caller-owned provider
+/// registry and stores its result.
+///
+/// Long-lived clients such as the API server pass a registry configured for
+/// persistent MCP sessions. One-shot CLI commands use `approve_tool_call`,
+/// which builds the default short-lived registry.
+pub(crate) async fn approve_tool_call_with_registry(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
     let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
     let policy = ToolPolicy;
-    let registry = ToolProviderRegistry::new();
     let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
     let result = match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(&registry, attached_tool.as_ref()),
+        attached_tool_can_execute(registry, attached_tool.as_ref()),
     ) {
         PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
             pending.tool_call.id.clone(),

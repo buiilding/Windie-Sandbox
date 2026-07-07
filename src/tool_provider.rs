@@ -31,12 +31,26 @@ const RUN_SHELL_TOOL_NAME: &str = "run_shell";
 pub struct ToolProviderRegistry {
     built_in: BuiltInToolProvider,
     mcp_providers: Vec<McpToolProvider>,
+    persistent_mcp_calls: bool,
 }
 
 impl ToolProviderRegistry {
     /// Builds the default registry for the local Windie process.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Builds a registry whose MCP tool calls reuse persistent provider
+    /// sessions.
+    ///
+    /// The API server uses this shape because it lives long enough for idle
+    /// cleanup to matter. CLI commands keep the default short-lived execution
+    /// path because each CLI invocation is a separate process.
+    pub fn with_persistent_mcp_sessions() -> Self {
+        Self {
+            persistent_mcp_calls: true,
+            ..Self::default()
+        }
     }
 
     /// Lists every provider tool that clients may attach to conversations.
@@ -109,7 +123,9 @@ impl ToolProviderRegistry {
                     )));
                 };
 
-                provider.call_tool(attached_tool, tool_call).await
+                provider
+                    .call_tool(attached_tool, tool_call, self.persistent_mcp_calls)
+                    .await
             }
             ToolProviderKind::Plugin => Err(error::invalid_request(format!(
                 "unknown tool: {}",
@@ -135,6 +151,7 @@ impl Default for ToolProviderRegistry {
                 .copied()
                 .map(McpToolProvider::new)
                 .collect(),
+            persistent_mcp_calls: false,
         }
     }
 }
@@ -218,6 +235,7 @@ struct McpProviderDefinition {
     schema_prefix: &'static str,
     display_name: &'static str,
     command: McpCommand,
+    shutdown_command: Option<McpCommand>,
 }
 
 /// MCP providers Windie is willing to start and execute.
@@ -233,6 +251,10 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[McpProviderDefinition
         program: "cua-driver",
         args: &["mcp"],
     },
+    shutdown_command: Some(McpCommand {
+        program: "cua-driver",
+        args: &["stop"],
+    }),
 }];
 
 #[derive(Debug, Clone)]
@@ -242,6 +264,7 @@ pub struct McpToolProvider {
     schema_prefix: &'static str,
     display_name: &'static str,
     command: McpCommand,
+    shutdown_command: Option<McpCommand>,
 }
 
 impl McpToolProvider {
@@ -252,6 +275,7 @@ impl McpToolProvider {
             schema_prefix: definition.schema_prefix,
             display_name: definition.display_name,
             command: definition.command,
+            shutdown_command: definition.shutdown_command,
         }
     }
 
@@ -262,10 +286,12 @@ impl McpToolProvider {
 
     /// Lists tools from the MCP server and maps them into Windie definitions.
     pub fn list_tools(&self) -> Result<Vec<ToolDefinition>> {
-        Ok(mcp::list_tools(self.command)?
-            .into_iter()
-            .map(|tool| self.definition_from_mcp_tool(tool))
-            .collect())
+        Ok(
+            mcp::list_tools_with_shutdown(self.command, self.shutdown_command)?
+                .into_iter()
+                .map(|tool| self.definition_from_mcp_tool(tool))
+                .collect(),
+        )
     }
 
     /// Executes one approved MCP tool call.
@@ -273,6 +299,7 @@ impl McpToolProvider {
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,
+        persistent: bool,
     ) -> Result<ToolExecutionResult> {
         if attached_tool.provider.provider_id != self.provider_id
             || tool_call.name() != attached_tool.schema_name.as_str()
@@ -292,11 +319,22 @@ impl McpToolProvider {
                 ));
             }
         };
-        let result = mcp::call_tool(
-            self.command,
-            attached_tool.provider.tool_name.as_str(),
-            arguments,
-        )?;
+        let result = if persistent {
+            mcp::call_tool_persistent(
+                self.provider_id.as_str(),
+                self.command,
+                self.shutdown_command,
+                attached_tool.provider.tool_name.as_str(),
+                arguments,
+            )
+        } else {
+            mcp::call_tool_with_shutdown(
+                self.command,
+                self.shutdown_command,
+                attached_tool.provider.tool_name.as_str(),
+                arguments,
+            )
+        }?;
         let success = !result
             .get("isError")
             .and_then(Value::as_bool)
@@ -567,7 +605,9 @@ mod tests {
                     program: "windie-missing-mcp-provider",
                     args: &[],
                 },
+                shutdown_command: None,
             })],
+            persistent_mcp_calls: false,
         };
 
         let tools = registry.list_available_tools().unwrap();

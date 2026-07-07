@@ -2,24 +2,33 @@
 //!
 //! This module owns the protocol boundary for approved MCP providers. It runs a
 //! configured command, speaks line-delimited JSON-RPC 2.0 over stdin/stdout,
-//! performs the MCP initialize handshake, and exposes the two tool operations
-//! Windie needs now: `tools/list` and `tools/call`.
+//! performs the MCP initialize handshake, and exposes the tool operations
+//! Windie needs now: `tools/list`, short-lived `tools/call`, and persistent
+//! provider sessions for API-owned runtime tools.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const MCP_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
+const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const MCP_SHUTDOWN_RETRY_DELAY: Duration = Duration::from_millis(750);
+const MCP_SHUTDOWN_RETRIES: usize = 4;
 const MCP_STDERR_MAX_BYTES: usize = 16 * 1024;
 
+static PERSISTENT_SESSIONS: OnceLock<Arc<Mutex<PersistentMcpSessions>>> = OnceLock::new();
+
 /// Process command for one approved MCP provider.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McpCommand {
     pub program: &'static str,
     pub args: &'static [&'static str],
@@ -76,6 +85,30 @@ pub fn list_tools(command: McpCommand) -> Result<Vec<McpTool>> {
     Ok(list.tools)
 }
 
+/// Lists tools with a provider-specific cleanup hook after the MCP process
+/// exits.
+///
+/// Some MCP commands are only a proxy to a separate daemon. CUA is the current
+/// example: `cua-driver mcp` exits after `tools/list`, but the CUA daemon may
+/// remain alive. This helper keeps catalog reads live while still coupling
+/// provider-specific cleanup to the end of the short-lived MCP session.
+pub fn list_tools_with_shutdown(
+    command: McpCommand,
+    shutdown_command: Option<McpCommand>,
+) -> Result<Vec<McpTool>> {
+    let result = {
+        let mut session = McpSession::start(command)?;
+        let result = session.call("tools/list", None)?;
+        serde_json::from_value::<McpToolsList>(result)
+            .context("failed to decode MCP tools/list response")
+            .map(|list| list.tools)
+    };
+
+    run_shutdown_best_effort(shutdown_command);
+
+    result
+}
+
 /// Calls one MCP provider tool and returns the raw MCP result value.
 pub fn call_tool(command: McpCommand, name: &str, arguments: Value) -> Result<Value> {
     let mut session = McpSession::start(command)?;
@@ -87,6 +120,195 @@ pub fn call_tool(command: McpCommand, name: &str, arguments: Value) -> Result<Va
             "arguments": arguments
         })),
     )
+}
+
+/// Calls one MCP provider tool and runs a provider-specific cleanup hook when
+/// the short-lived MCP process exits.
+pub fn call_tool_with_shutdown(
+    command: McpCommand,
+    shutdown_command: Option<McpCommand>,
+    name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    let result = {
+        let mut session = McpSession::start(command)?;
+        session.call(
+            "tools/call",
+            Some(json!({
+                "name": name,
+                "arguments": arguments
+            })),
+        )
+    };
+
+    run_shutdown_best_effort(shutdown_command);
+
+    result
+}
+
+/// Calls one MCP provider tool through a process-wide persistent provider
+/// session.
+///
+/// The persistent session is keyed by provider ID, not command string, because
+/// provider identity is the routing boundary used by attached tool schemas. The
+/// session is stopped after a period of inactivity, and stopping the session
+/// also runs the provider shutdown hook when one is configured.
+pub fn call_tool_persistent(
+    provider_id: &str,
+    command: McpCommand,
+    shutdown_command: Option<McpCommand>,
+    name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    let sessions = persistent_sessions();
+    let mut sessions = sessions
+        .lock()
+        .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?;
+
+    sessions.call_tool(provider_id, command, shutdown_command, name, arguments)
+}
+
+/// Returns the process-wide persistent MCP session manager and starts its idle
+/// reaper on first use.
+fn persistent_sessions() -> Arc<Mutex<PersistentMcpSessions>> {
+    PERSISTENT_SESSIONS
+        .get_or_init(|| {
+            let sessions = Arc::new(Mutex::new(PersistentMcpSessions::default()));
+            spawn_idle_reaper(Arc::clone(&sessions));
+            sessions
+        })
+        .clone()
+}
+
+/// Starts a small background loop that stops idle persistent MCP sessions.
+fn spawn_idle_reaper(sessions: Arc<Mutex<PersistentMcpSessions>>) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(MCP_IDLE_REAPER_INTERVAL);
+            let Ok(mut sessions) = sessions.lock() else {
+                break;
+            };
+            sessions.stop_idle_sessions(MCP_IDLE_TIMEOUT);
+        }
+    });
+}
+
+#[derive(Default)]
+/// Process-wide owner for persistent MCP provider sessions.
+struct PersistentMcpSessions {
+    sessions: HashMap<String, PersistentMcpSession>,
+}
+
+impl PersistentMcpSessions {
+    /// Calls one tool through the persistent session for `provider_id`.
+    fn call_tool(
+        &mut self,
+        provider_id: &str,
+        command: McpCommand,
+        shutdown_command: Option<McpCommand>,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        self.ensure_session(provider_id, command, shutdown_command)?;
+
+        let result = {
+            let session = self
+                .sessions
+                .get_mut(provider_id)
+                .ok_or_else(|| anyhow!("persistent MCP session was not started: {provider_id}"))?;
+            session.last_used_at = Instant::now();
+            session.session.call(
+                "tools/call",
+                Some(json!({
+                    "name": name,
+                    "arguments": arguments
+                })),
+            )
+        };
+
+        match result {
+            Ok(result) => {
+                if let Some(session) = self.sessions.get_mut(provider_id) {
+                    session.last_used_at = Instant::now();
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                self.stop_session(provider_id);
+                Err(error)
+            }
+        }
+    }
+
+    /// Ensures a matching persistent MCP session exists for one provider.
+    fn ensure_session(
+        &mut self,
+        provider_id: &str,
+        command: McpCommand,
+        shutdown_command: Option<McpCommand>,
+    ) -> Result<()> {
+        let command_changed = self.sessions.get(provider_id).is_some_and(|session| {
+            session.command != command || session.shutdown_command != shutdown_command
+        });
+        if command_changed {
+            self.stop_session(provider_id);
+        }
+        if self.sessions.contains_key(provider_id) {
+            return Ok(());
+        }
+
+        let session = McpSession::start(command)?;
+        self.sessions.insert(
+            provider_id.to_string(),
+            PersistentMcpSession {
+                command,
+                shutdown_command,
+                session,
+                last_used_at: Instant::now(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Stops sessions that have not received a call within `idle_timeout`.
+    fn stop_idle_sessions(&mut self, idle_timeout: Duration) {
+        let now = Instant::now();
+        let provider_ids = self
+            .sessions
+            .iter()
+            .filter_map(|(provider_id, session)| {
+                if now.duration_since(session.last_used_at) >= idle_timeout {
+                    Some(provider_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        for provider_id in provider_ids {
+            self.stop_session(&provider_id);
+        }
+    }
+
+    /// Stops one persistent session and runs its provider shutdown hook.
+    fn stop_session(&mut self, provider_id: &str) {
+        let Some(session) = self.sessions.remove(provider_id) else {
+            return;
+        };
+        let shutdown_command = session.shutdown_command;
+        drop(session);
+
+        run_shutdown_best_effort(shutdown_command);
+    }
+}
+
+/// Runtime state for one persistent MCP provider.
+struct PersistentMcpSession {
+    command: McpCommand,
+    shutdown_command: Option<McpCommand>,
+    session: McpSession,
+    last_used_at: Instant,
 }
 
 /// One short-lived stdio MCP session.
@@ -247,6 +469,51 @@ impl Drop for McpSession {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Runs a provider-specific shutdown command without failing the user-facing
+/// operation that already completed.
+fn run_shutdown_best_effort(command: Option<McpCommand>) {
+    let Some(command) = command else {
+        return;
+    };
+    for attempt in 0..MCP_SHUTDOWN_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(MCP_SHUTDOWN_RETRY_DELAY);
+        }
+        let _ = run_shutdown_command(command);
+    }
+}
+
+/// Runs one shutdown command with a small timeout.
+fn run_shutdown_command(command: McpCommand) -> Result<()> {
+    let mut child = Command::new(command.program)
+        .args(command.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to start MCP shutdown command: {}", command.program))?;
+    let started = Instant::now();
+
+    loop {
+        if child
+            .try_wait()
+            .context("failed to wait for MCP shutdown command")?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if started.elapsed() >= MCP_SHUTDOWN_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!(
+                "MCP shutdown command timed out: {}",
+                command.program
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

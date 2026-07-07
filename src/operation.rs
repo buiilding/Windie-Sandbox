@@ -23,7 +23,7 @@ use crate::image_input::{ImageInput, read_image_input, validate_image_input_byte
 use crate::llm::{self, BaseUrl, BifrostClient, ModelInfo, ModelName, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
-    approve_tool_call, deny_tool_call, pending_tool_approvals,
+    approve_tool_call, approve_tool_call_with_registry, deny_tool_call, pending_tool_approvals,
     query_conversation_once as runtime_query_conversation_once,
 };
 use crate::store::{Compaction, ConversationInfo, Store};
@@ -516,6 +516,21 @@ pub async fn approve_tool(
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
     approve_tool_call(store, conversation_id, tool_call_id).await
+}
+
+/// Executes one approved pending tool call through a caller-owned provider
+/// registry and persists its result.
+///
+/// The API server uses this to keep MCP providers warm across HTTP requests.
+/// CLI callers keep using `approve_tool`, which creates the default
+/// short-lived registry.
+pub async fn approve_tool_with_registry(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
+    approve_tool_call_with_registry(store, conversation_id, tool_call_id, registry).await
 }
 
 /// Persists a rejected result for one pending tool call.

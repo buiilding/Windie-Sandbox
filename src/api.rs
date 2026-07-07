@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::extract::{Path, Request, State};
@@ -36,6 +37,7 @@ use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalRequest, ToolDefinition, ToolExecutionResult, ToolProviderId,
 };
+use crate::tool_provider::ToolProviderRegistry;
 
 const API_TOKEN_HEADER: &str = "x-windie-api-token";
 
@@ -54,6 +56,7 @@ pub async fn serve(
         model: model.to_string(),
         api_token,
         store_path: None,
+        tool_registry: Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions()),
     };
     let listener = TcpListener::bind(address)
         .await
@@ -168,6 +171,7 @@ struct ApiState {
     model: String,
     api_token: String,
     store_path: Option<PathBuf>,
+    tool_registry: Arc<ToolProviderRegistry>,
 }
 
 /// Opens the production store, or a test-scoped store when route tests inject
@@ -907,7 +911,13 @@ async fn approve_tool(
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
     let mut store = open_store(&state)?;
-    let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await?;
+    let result = operation::approve_tool_with_registry(
+        &mut store,
+        &conversation_id,
+        &tool_call_id,
+        &state.tool_registry,
+    )
+    .await?;
 
     Ok(Json(ToolResultResponse::from(result)))
 }
@@ -1578,6 +1588,7 @@ mod tests {
             model: "openai/test".to_string(),
             api_token: "test-token".to_string(),
             store_path: Some(store_path),
+            tool_registry: Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions()),
         })
     }
 
