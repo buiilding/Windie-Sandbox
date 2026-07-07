@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCallId, ToolSchema,
-    ToolSchemaName,
+    ToolSchemaName, UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
@@ -28,7 +28,7 @@ use crate::runtime::{
     approve_tool_call, deny_tool_call, pending_tool_approvals,
     query_conversation_once as runtime_query_conversation_once,
 };
-use crate::store::{Compaction, ConversationInfo, ImagePayload, MessagePayload, Store};
+use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalRequest, ToolDefinition, ToolExecutionResult, ToolProviderId,
 };
@@ -208,15 +208,10 @@ pub async fn require_gateway_running(gateway_url: GatewayUrl) -> Result<()> {
 /// This operation is intentionally read-only. It does not start, stop, restart,
 /// or reconfigure Bifrost; users restart the gateway explicitly after changing
 /// `.env`.
-pub async fn list_models(
-    gateway_url: GatewayUrl,
-    base_url: BaseUrl,
-    chat_only: bool,
-) -> Result<Vec<ModelInfo>> {
+pub async fn list_models(gateway_url: GatewayUrl, base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
     require_gateway_running(gateway_url).await?;
-    let request_type = chat_only.then_some(ModelRequestType::ChatCompletion);
 
-    llm::list_models(base_url, request_type).await
+    llm::list_models(base_url, Some(ModelRequestType::ResponsesStream)).await
 }
 
 /// Loads the active path shown by the CLI and inspector.
@@ -300,22 +295,24 @@ pub fn insert_message(
             .iter()
             .map(load_insert_part)
             .collect::<Result<Vec<_>>>()?;
-        let payloads = loaded_parts
+        let message_parts = loaded_parts
             .iter()
             .map(|part| match part {
-                LoadedInsertPart::Text(text) => MessagePayload::Text(text),
-                LoadedInsertPart::Image(image) => MessagePayload::Image(ImagePayload {
-                    mime_type: &image.mime_type,
-                    bytes: &image.bytes,
+                LoadedInsertPart::Text(text) => UnsavedMessagePart::Text(text.clone()),
+                LoadedInsertPart::Image(image) => UnsavedMessagePart::Image(UnsavedImagePart {
+                    mime_type: image.mime_type.clone(),
+                    bytes: image.bytes.clone(),
                 }),
             })
             .collect::<Vec<_>>();
 
-        return store.insert_user_message_with_parts(
+        return store.insert_message_with_parts(
             conversation_id,
             parent_message_id.as_ref(),
+            Role::User,
             &content,
-            &payloads,
+            &message_parts,
+            None,
         );
     }
 

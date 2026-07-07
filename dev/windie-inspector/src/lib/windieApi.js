@@ -43,8 +43,8 @@ export async function apiRequest(path, options = {}) {
   return body;
 }
 
-export async function listChatModels() {
-  const body = await apiRequest("/api/models?chat=true");
+export async function listModels() {
+  const body = await apiRequest("/api/models");
   return (body.models || []).map((model) => ({
     id: model.id,
     label: model.id,

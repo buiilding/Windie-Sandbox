@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
-    MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName,
+    MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName, UnsavedMessagePart,
 };
 use crate::error;
 use crate::tool::{
@@ -82,20 +82,6 @@ struct MessageSpliceDelete {
     deleted_message_ids: HashSet<String>,
     splice_parent_message_id: Option<MessageId>,
     promoted_child_ids: Vec<MessageId>,
-}
-
-#[derive(Debug, Clone, Copy)]
-/// Raw image bytes ready to be copied into message asset storage.
-pub struct ImagePayload<'a> {
-    pub mime_type: &'a str,
-    pub bytes: &'a [u8],
-}
-
-#[derive(Debug, Clone, Copy)]
-/// One ordered message part ready to be persisted.
-pub enum MessagePayload<'a> {
-    Text(&'a str),
-    Image(ImagePayload<'a>),
 }
 
 /// SQLite-backed persistence boundary for conversations, messages, and
@@ -1035,17 +1021,19 @@ impl Store {
         Ok(id)
     }
 
-    /// Inserts one user message with ordered text/image parts and updates the active
-    /// message pointer.
+    /// Inserts a new message with ordered text/image parts.
     ///
-    /// The plain `content` column remains the text preview. Ordered
-    /// `message_parts` preserve the model-facing text/image structure.
-    pub fn insert_user_message_with_parts(
+    /// This is the shared multipart storage primitive for model-facing
+    /// messages. User images and rich tool results both flow through the same
+    /// persisted `message_parts` and `image_assets` tables.
+    pub fn insert_message_with_parts(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: Option<&MessageId>,
+        role: Role,
         content: &str,
-        parts: &[MessagePayload<'_>],
+        parts: &[UnsavedMessagePart],
+        metadata: Option<&MessageMetadata>,
     ) -> Result<MessageId> {
         if parts.is_empty() {
             return Err(error::invalid_request(
@@ -1055,6 +1043,7 @@ impl Store {
 
         let id = MessageId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
+        let metadata_json = encode_message_metadata(metadata)?;
 
         self.ensure_conversation_exists(conversation_id)?;
 
@@ -1065,7 +1054,7 @@ impl Store {
         let transaction = self
             .connection
             .transaction()
-            .context("failed to start image message save transaction")?;
+            .context("failed to start multipart message save transaction")?;
 
         transaction
             .execute(
@@ -1079,46 +1068,29 @@ impl Store {
                     metadata,
                     created_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ",
                 params![
                     id.as_str(),
                     conversation_id.as_str(),
                     parent_message_id.map(MessageId::as_str),
-                    Role::User.as_str(),
+                    role.as_str(),
                     content,
+                    metadata_json.as_deref(),
                     now
                 ],
             )
-            .context("failed to save image message")?;
+            .context("failed to save multipart message")?;
 
-        for (position, part) in parts.iter().enumerate() {
-            match part {
-                MessagePayload::Text(text) => {
-                    insert_text_part_in_transaction(&transaction, &id, position, text)
-                        .context("failed to save message text part")?;
-                }
-                MessagePayload::Image(image) => {
-                    let image_asset_id = insert_image_asset_in_transaction(
-                        &transaction,
-                        image.mime_type,
-                        image.bytes,
-                        now,
-                    )
-                    .context("failed to save image asset")?;
-                    insert_image_part_in_transaction(&transaction, &id, position, &image_asset_id)
-                        .context("failed to save image message part")?;
-                }
-            }
-        }
-
+        insert_unsaved_message_parts_in_transaction(&transaction, &id, parts, now)
+            .context("failed to save multipart message parts")?;
         set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
             .context("failed to set active message")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
             .commit()
-            .context("failed to commit image message save")?;
+            .context("failed to commit multipart message save")?;
 
         Ok(id)
     }
@@ -2158,7 +2130,44 @@ fn validate_attached_tool(attached_tool: &AttachedTool) -> Result<()> {
     Ok(())
 }
 
-/// Writes all ordered parts for one message into an existing transaction.
+/// Writes all ordered unsaved parts for one new message into an existing
+/// transaction.
+fn insert_unsaved_message_parts_in_transaction(
+    transaction: &Transaction<'_>,
+    message_id: &MessageId,
+    parts: &[UnsavedMessagePart],
+    now: i64,
+) -> Result<()> {
+    for (position, part) in parts.iter().enumerate() {
+        match part {
+            UnsavedMessagePart::Text(text) => {
+                insert_text_part_in_transaction(transaction, message_id, position, text)
+                    .context("failed to save text message part")?;
+            }
+            UnsavedMessagePart::Image(image) => {
+                let image_asset_id = insert_image_asset_in_transaction(
+                    transaction,
+                    &image.mime_type,
+                    &image.bytes,
+                    now,
+                )
+                .context("failed to copy image asset")?;
+                insert_image_part_in_transaction(
+                    transaction,
+                    message_id,
+                    position,
+                    &image_asset_id,
+                )
+                .context("failed to save image message part")?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Writes all ordered persisted parts for a copied message into an existing
+/// transaction.
 fn insert_message_parts_in_transaction(
     transaction: &Transaction<'_>,
     message_id: &MessageId,

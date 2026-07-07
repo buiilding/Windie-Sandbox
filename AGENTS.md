@@ -144,8 +144,8 @@ Allowed in the current scope:
 - Future-ready compaction storage.
 - Basic local performance baselines, repeated benchmark runs, and JSON
   benchmark comparison.
-- OpenAI-compatible `/chat/completions` requests.
-- OpenAI-compatible image request serialization.
+- OpenAI-compatible `/responses` requests.
+- OpenAI-compatible Responses image request serialization.
 - Bifrost gateway health check.
 - Explicit Bifrost gateway start and stop commands.
 - Public Bifrost gateway startup through `npx @maximhq/bifrost` or Docker when

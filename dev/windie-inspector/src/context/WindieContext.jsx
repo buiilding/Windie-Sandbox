@@ -4,7 +4,7 @@ import {
   apiRequest,
   conversationFromInspection,
   conversationSummaryFromApi,
-  listChatModels,
+  listModels,
   toolCatalogFromApi,
 } from "@/lib/windieApi";
 
@@ -57,7 +57,7 @@ export function WindieProvider({ children }) {
   const refreshModels = useCallback(async () => {
     setModelsLoading(true);
     try {
-      const nextModels = await listChatModels();
+      const nextModels = await listModels();
       setModels(nextModels);
       setModelsError(null);
       return nextModels;

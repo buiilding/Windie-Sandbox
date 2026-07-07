@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Path, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -307,12 +307,6 @@ async fn status(
     }))
 }
 
-#[derive(Debug, Deserialize)]
-/// Optional filters accepted by the model list endpoint.
-struct ModelsQuery {
-    chat: Option<bool>,
-}
-
 #[derive(Debug, Serialize)]
 /// Models returned by the configured local Bifrost gateway.
 struct ModelListResponse {
@@ -334,12 +328,10 @@ impl From<ModelInfo> for ModelResponse {
 /// Lists models reported by the running gateway for API clients.
 async fn list_models(
     axum::extract::State(state): axum::extract::State<ApiState>,
-    Query(query): Query<ModelsQuery>,
 ) -> ApiResult<ModelListResponse> {
     let models = operation::list_models(
         GatewayUrl::new(state.gateway_url),
         BaseUrl::new(state.base_url),
-        query.chat.unwrap_or(false),
     )
     .await?;
 
@@ -1425,7 +1417,7 @@ mod tests {
         let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
 
         let response = app
-            .oneshot(authed_request(Method::GET, "/api/models?chat=true", None))
+            .oneshot(authed_request(Method::GET, "/api/models", None))
             .await
             .unwrap();
         let status = response.status();

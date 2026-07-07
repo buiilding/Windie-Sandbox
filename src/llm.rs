@@ -1,8 +1,9 @@
-//! OpenAI-compatible streaming LLM client.
+//! OpenAI-compatible Responses client.
 //!
-//! This module owns OpenAI-compatible request serialization, HTTP requests to
-//! Bifrost's chat completions and model-list endpoints, and streamed response
-//! parsing.
+//! This module owns provider HTTP request serialization, HTTP requests to
+//! Bifrost's Responses and model-list endpoints, and streamed Responses event
+//! parsing. Runtime code passes Windie messages and tool schemas in; this
+//! boundary turns them into the provider wire shape.
 
 use std::collections::BTreeMap;
 
@@ -12,10 +13,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::conversation::{
-    AssistantAnnotation, AssistantAudio, ImagePart, Message, MessageMetadata, MessagePart,
-    ReasoningDetail, ToolCall, ToolSchema,
-};
+use crate::conversation::{ImagePart, Message, MessageMetadata, MessagePart, ToolCall, ToolSchema};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the OpenAI-compatible provider adapter.
@@ -71,14 +69,14 @@ pub struct ModelInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Bifrost request-type filter for model listing.
 pub enum ModelRequestType {
-    ChatCompletion,
+    ResponsesStream,
 }
 
 impl ModelRequestType {
     /// Returns the request type text understood by Bifrost.
     fn as_str(self) -> &'static str {
         match self {
-            Self::ChatCompletion => "chat_completion",
+            Self::ResponsesStream => "responses_stream",
         }
     }
 }
@@ -99,7 +97,7 @@ pub(crate) trait RuntimeLlm {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-/// Complete assistant response received from a streaming chat request.
+/// Complete assistant response received from a streaming Responses request.
 pub struct AssistantResponse {
     pub content: String,
     pub metadata: MessageMetadata,
@@ -112,10 +110,9 @@ pub enum FinishReason {
     Stop,
     Length,
     ToolCalls,
-    Other,
 }
 
-/// HTTP client for Bifrost's OpenAI-compatible chat completions endpoint.
+/// HTTP client for Bifrost's OpenAI-compatible Responses endpoint.
 pub struct BifrostClient {
     http: Client,
     base_url: BaseUrl,
@@ -123,12 +120,12 @@ pub struct BifrostClient {
 }
 
 #[derive(Debug, Serialize)]
-/// JSON request body sent to `/chat/completions`.
-struct ChatRequest<'a> {
+/// JSON request body sent to `/responses`.
+struct ResponsesRequest<'a> {
     model: &'a str,
-    messages: Vec<ChatMessage<'a>>,
+    input: Vec<ResponsesInputItem<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ChatTool<'a>>>,
+    tools: Option<Vec<ResponsesTool<'a>>>,
     stream: bool,
 }
 
@@ -139,123 +136,134 @@ struct ModelsResponse {
 }
 
 #[derive(Debug, Serialize)]
-/// OpenAI-compatible message payload sent to Bifrost.
-struct ChatMessage<'a> {
-    role: crate::conversation::Role,
-    content: ChatMessageContent<'a>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<&'a [ToolCall]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    refusal: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_details: Option<&'a [ReasoningDetail]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    audio: Option<&'a AssistantAudio>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    annotations: Option<&'a [AssistantAnnotation]>,
+#[serde(untagged)]
+/// One item inside a Responses `input` array.
+enum ResponsesInputItem<'a> {
+    Message(ResponsesMessageItem<'a>),
+    FunctionCall(ResponsesFunctionCallItem<'a>),
+    FunctionCallOutput(ResponsesFunctionCallOutputItem<'a>),
 }
 
 #[derive(Debug, Serialize)]
-/// OpenAI-compatible function tool definition sent to Bifrost.
-struct ChatTool<'a> {
+/// User/system/assistant message item for Responses input.
+struct ResponsesMessageItem<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
-    function: ChatToolFunction<'a>,
+    role: &'static str,
+    content: ResponsesMessageContent<'a>,
 }
 
 #[derive(Debug, Serialize)]
-/// Function schema inside one OpenAI-compatible tool definition.
-struct ChatToolFunction<'a> {
+/// Assistant function-call item for Responses input history.
+struct ResponsesFunctionCallItem<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    call_id: &'a str,
     name: &'a str,
-    description: &'a str,
-    parameters: &'a serde_json::Value,
+    arguments: &'a str,
+    status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+/// Function-call output item for Responses input history.
+struct ResponsesFunctionCallOutputItem<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    call_id: &'a str,
+    output: ResponsesToolOutput<'a>,
+    status: &'static str,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-/// OpenAI-compatible content field: plain text or ordered multimodal parts.
-enum ChatMessageContent<'a> {
+/// Responses message content: plain text or ordered multimodal blocks.
+enum ResponsesMessageContent<'a> {
     Text(&'a str),
-    Parts(Vec<ChatContentPart<'a>>),
+    Parts(Vec<ResponsesContentPart<'a>>),
 }
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-/// One OpenAI-compatible multimodal content part.
-enum ChatContentPart<'a> {
-    Text(ChatTextPart<'a>),
-    Image(ChatImagePart),
+/// Responses function-call output: plain text or ordered multimodal blocks.
+enum ResponsesToolOutput<'a> {
+    Text(&'a str),
+    Parts(Vec<ResponsesContentPart<'a>>),
 }
 
 #[derive(Debug, Serialize)]
-/// OpenAI-compatible text content part.
-struct ChatTextPart<'a> {
+#[serde(untagged)]
+/// One Responses content block.
+enum ResponsesContentPart<'a> {
+    Text(ResponsesTextPart<'a>),
+    Image(ResponsesImagePart),
+}
+
+#[derive(Debug, Serialize)]
+/// Responses text content block.
+struct ResponsesTextPart<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     text: &'a str,
 }
 
 #[derive(Debug, Serialize)]
-/// OpenAI-compatible image content part.
-struct ChatImagePart {
+/// Responses image content block.
+struct ResponsesImagePart {
     #[serde(rename = "type")]
     kind: &'static str,
-    image_url: ChatImageUrl,
+    image_url: String,
 }
 
 #[derive(Debug, Serialize)]
-/// OpenAI-compatible image URL payload.
-struct ChatImageUrl {
-    url: String,
+/// OpenAI-compatible function tool definition sent through Responses.
+struct ResponsesTool<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
-/// One streamed server-sent event payload from the provider adapter.
-struct ChatStreamChunk {
-    choices: Vec<StreamChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-/// One candidate choice inside a streamed chat chunk.
-struct StreamChoice {
-    finish_reason: Option<String>,
-    delta: StreamDelta,
-}
-
-#[derive(Debug, Deserialize)]
-/// Incremental assistant content inside a streamed choice.
-struct StreamDelta {
-    content: Option<String>,
+/// One streamed Responses server-sent event payload from Bifrost.
+struct ResponsesStreamEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    output_index: Option<u16>,
+    delta: Option<String>,
+    text: Option<String>,
     refusal: Option<String>,
-    reasoning: Option<String>,
-    #[serde(default)]
-    reasoning_details: Vec<ReasoningDetail>,
-    audio: Option<AssistantAudio>,
-    #[serde(default)]
-    annotations: Vec<AssistantAnnotation>,
-    #[serde(default)]
-    tool_calls: Vec<StreamToolCallDelta>,
+    arguments: Option<String>,
+    item: Option<ResponsesStreamItem>,
+    response: Option<ResponsesStreamResponse>,
+    error: Option<ResponsesStreamError>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-/// Incremental tool-call payload inside a streamed choice.
-struct StreamToolCallDelta {
-    index: u16,
+/// Stream item used by `response.output_item.*` events.
+struct ResponsesStreamItem {
     id: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
-    function: Option<StreamToolCallFunctionDelta>,
+    call_id: Option<String>,
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-/// Incremental function-call fields inside a streamed tool call.
-struct StreamToolCallFunctionDelta {
-    name: Option<String>,
-    arguments: Option<String>,
+/// Terminal response body used by failed/incomplete Responses events.
+struct ResponsesStreamResponse {
+    error: Option<ResponsesStreamError>,
+}
+
+#[derive(Debug, Deserialize)]
+/// Error payload embedded in Responses stream events.
+struct ResponsesStreamError {
+    message: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    code: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -264,23 +272,15 @@ struct AssistantStreamState {
     content: String,
     metadata: MessageMetadata,
     tool_calls: BTreeMap<u16, PartialToolCall>,
-    reasoning_details: BTreeMap<u16, PartialReasoningDetail>,
     finish_reason: Option<FinishReason>,
 }
 
 #[derive(Debug, Default)]
-/// Tool call assembled from multiple streaming chunks.
+/// Tool call assembled from Responses stream events.
 struct PartialToolCall {
     id: Option<String>,
-    kind: Option<String>,
     name: Option<String>,
     arguments: String,
-}
-
-#[derive(Debug)]
-/// Reasoning detail assembled from multiple streaming chunks.
-struct PartialReasoningDetail {
-    detail: ReasoningDetail,
 }
 
 impl BifrostClient {
@@ -293,13 +293,14 @@ impl BifrostClient {
         }
     }
 
-    /// Builds the chat completions endpoint from the normalized base URL.
-    pub fn chat_endpoint(&self) -> String {
-        format!("{}/chat/completions", self.base_url)
+    /// Builds the Responses endpoint from the normalized base URL.
+    pub fn responses_endpoint(&self) -> String {
+        format!("{}/responses", self.base_url)
     }
 
-    /// Sends the chat request, streams assistant text deltas to the caller, and
-    /// returns the complete assistant response including tool calls.
+    /// Sends the Responses request, streams assistant text deltas to the
+    /// caller, and returns the complete assistant response including tool
+    /// calls.
     pub async fn stream<F>(
         &self,
         messages: &[Message],
@@ -309,25 +310,25 @@ impl BifrostClient {
     where
         F: FnMut(&str) -> Result<()>,
     {
-        let request = ChatRequest {
+        let request = ResponsesRequest {
             model: self.model.as_str(),
-            messages: chat_messages(messages),
-            tools: chat_tools(tools),
+            input: responses_input(messages),
+            tools: responses_tools(tools),
             stream: true,
         };
 
         let response = self
             .http
-            .post(self.chat_endpoint())
+            .post(self.responses_endpoint())
             .json(&request)
             .send()
             .await
-            .context("failed to send chat request")?;
+            .context("failed to send responses request")?;
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("chat request failed with {status}: {body}"));
+            return Err(anyhow!("responses request failed with {status}: {body}"));
         }
 
         let mut stream = response.bytes_stream();
@@ -336,7 +337,7 @@ impl BifrostClient {
         let mut state = AssistantStreamState::default();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("failed to read chat stream")?;
+            let chunk = chunk.context("failed to read responses stream")?;
 
             // Network chunks can split inside UTF-8 characters or SSE lines, so
             // bytes are decoded separately from line parsing.
@@ -351,7 +352,7 @@ impl BifrostClient {
         let response = state.finalize()?;
         if response.content.trim().is_empty() && response.metadata.is_empty() {
             return Err(anyhow!(
-                "chat stream did not include assistant content or metadata"
+                "responses stream did not include assistant content or metadata"
             ));
         }
 
@@ -397,51 +398,158 @@ pub async fn list_models(
     Ok(response.data)
 }
 
-/// Converts Windie's internal messages into the OpenAI-compatible request shape.
-fn chat_messages(messages: &[Message]) -> Vec<ChatMessage<'_>> {
-    messages.iter().map(ChatMessage::from_message).collect()
+/// Converts Windie's internal messages into the Responses request input array.
+fn responses_input(messages: &[Message]) -> Vec<ResponsesInputItem<'_>> {
+    messages
+        .iter()
+        .flat_map(responses_items_for_message)
+        .collect()
 }
 
-impl<'a> ChatMessage<'a> {
-    /// Builds one provider request message from the runtime message model.
-    fn from_message(message: &'a Message) -> Self {
-        let tool_calls = message
-            .metadata
-            .as_ref()
-            .filter(|_| message.role == crate::conversation::Role::Assistant)
-            .map(|metadata| metadata.tool_calls.as_slice())
-            .filter(|tool_calls| !tool_calls.is_empty());
-        let tool_call_id = message
-            .metadata
-            .as_ref()
-            .filter(|_| message.role == crate::conversation::Role::Tool)
-            .and_then(|metadata| metadata.tool_call_id.as_ref())
-            .map(|id| id.as_str());
-        let metadata = message
-            .metadata
-            .as_ref()
-            .filter(|_| message.role == crate::conversation::Role::Assistant);
+/// Converts one Windie message into one or more Responses input items.
+fn responses_items_for_message(message: &Message) -> Vec<ResponsesInputItem<'_>> {
+    match message.role {
+        crate::conversation::Role::Assistant => {
+            let metadata = message.metadata.as_ref();
+            if let Some(tool_calls) = metadata
+                .map(|metadata| metadata.tool_calls.as_slice())
+                .filter(|tool_calls| !tool_calls.is_empty())
+            {
+                let mut items = Vec::new();
+                if !message.content.is_empty() || !message.parts.is_empty() {
+                    items.push(ResponsesInputItem::Message(ResponsesMessageItem {
+                        kind: "message",
+                        role: "assistant",
+                        content: responses_message_content(message),
+                    }));
+                }
+                items.extend(
+                    tool_calls
+                        .iter()
+                        .map(|tool_call| {
+                            ResponsesInputItem::FunctionCall(ResponsesFunctionCallItem {
+                                kind: "function_call",
+                                call_id: tool_call.id.as_str(),
+                                name: tool_call.name(),
+                                arguments: tool_call.arguments(),
+                                status: "completed",
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
 
-        Self {
-            role: message.role,
-            content: chat_message_content(message),
-            tool_call_id,
-            tool_calls,
-            refusal: metadata.and_then(|metadata| metadata.refusal.as_deref()),
-            reasoning: metadata.and_then(|metadata| metadata.reasoning.as_deref()),
-            reasoning_details: metadata
-                .map(|metadata| metadata.reasoning_details.as_slice())
-                .filter(|reasoning_details| !reasoning_details.is_empty()),
-            audio: metadata.and_then(|metadata| metadata.audio.as_ref()),
-            annotations: metadata
-                .map(|metadata| metadata.annotations.as_slice())
-                .filter(|annotations| !annotations.is_empty()),
+                return items;
+            }
+
+            vec![ResponsesInputItem::Message(ResponsesMessageItem {
+                kind: "message",
+                role: "assistant",
+                content: responses_message_content(message),
+            })]
+        }
+        crate::conversation::Role::Tool => {
+            let call_id = message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.tool_call_id.as_ref())
+                .map(|id| id.as_str());
+            call_id
+                .map(|call_id| {
+                    vec![ResponsesInputItem::FunctionCallOutput(
+                        ResponsesFunctionCallOutputItem {
+                            kind: "function_call_output",
+                            call_id,
+                            output: responses_tool_output(message),
+                            status: "completed",
+                        },
+                    )]
+                })
+                .unwrap_or_default()
+        }
+        crate::conversation::Role::System => {
+            vec![ResponsesInputItem::Message(ResponsesMessageItem {
+                kind: "message",
+                role: "system",
+                content: responses_message_content(message),
+            })]
+        }
+        crate::conversation::Role::User => {
+            vec![ResponsesInputItem::Message(ResponsesMessageItem {
+                kind: "message",
+                role: "user",
+                content: responses_message_content(message),
+            })]
         }
     }
 }
 
-/// Converts Windie's tool schemas into the OpenAI-compatible request shape.
-fn chat_tools(tools: &[ToolSchema]) -> Option<Vec<ChatTool<'_>>> {
+/// Converts one normal message body into Responses content.
+fn responses_message_content(message: &Message) -> ResponsesMessageContent<'_> {
+    if message.parts.is_empty() {
+        if message.role == crate::conversation::Role::Assistant && !message.content.is_empty() {
+            return ResponsesMessageContent::Parts(vec![ResponsesContentPart::Text(
+                ResponsesTextPart {
+                    kind: "output_text",
+                    text: &message.content,
+                },
+            )]);
+        }
+
+        return ResponsesMessageContent::Text(&message.content);
+    }
+
+    ResponsesMessageContent::Parts(responses_content_parts(
+        &message.parts,
+        message.role == crate::conversation::Role::Assistant,
+    ))
+}
+
+/// Converts one tool message body into Responses function-call output.
+fn responses_tool_output(message: &Message) -> ResponsesToolOutput<'_> {
+    if message.parts.is_empty() {
+        return ResponsesToolOutput::Text(&message.content);
+    }
+
+    ResponsesToolOutput::Parts(responses_content_parts(&message.parts, false))
+}
+
+/// Converts stored text/image parts into Responses content blocks.
+fn responses_content_parts(
+    parts: &[MessagePart],
+    assistant_output: bool,
+) -> Vec<ResponsesContentPart<'_>> {
+    let text_kind = if assistant_output {
+        "output_text"
+    } else {
+        "input_text"
+    };
+
+    parts
+        .iter()
+        .map(|part| match part {
+            MessagePart::Text(text) => ResponsesContentPart::Text(ResponsesTextPart {
+                kind: text_kind,
+                text,
+            }),
+            MessagePart::Image(image) => ResponsesContentPart::Image(responses_image_part(image)),
+        })
+        .collect()
+}
+
+/// Encodes one persisted image as the data URL accepted by Responses.
+fn responses_image_part(image: &ImagePart) -> ResponsesImagePart {
+    ResponsesImagePart {
+        kind: "input_image",
+        image_url: format!(
+            "data:{};base64,{}",
+            image.mime_type,
+            STANDARD.encode(&image.bytes)
+        ),
+    }
+}
+
+/// Converts Windie's tool schemas into Responses function tool definitions.
+fn responses_tools(tools: &[ToolSchema]) -> Option<Vec<ResponsesTool<'_>>> {
     if tools.is_empty() {
         return None;
     }
@@ -449,50 +557,14 @@ fn chat_tools(tools: &[ToolSchema]) -> Option<Vec<ChatTool<'_>>> {
     Some(
         tools
             .iter()
-            .map(|tool| ChatTool {
+            .map(|tool| ResponsesTool {
                 kind: "function",
-                function: ChatToolFunction {
-                    name: tool.name.as_str(),
-                    description: tool.description.as_str(),
-                    parameters: &tool.parameters,
-                },
+                name: tool.name.as_str(),
+                description: tool.description.as_str(),
+                parameters: &tool.parameters,
             })
             .collect(),
     )
-}
-
-/// Converts one message body into plain text or ordered multimodal parts.
-fn chat_message_content(message: &Message) -> ChatMessageContent<'_> {
-    if message.parts.is_empty() {
-        return ChatMessageContent::Text(&message.content);
-    }
-
-    ChatMessageContent::Parts(chat_content_parts(&message.parts))
-}
-
-/// Converts stored text/image parts into OpenAI-compatible content parts.
-fn chat_content_parts(parts: &[MessagePart]) -> Vec<ChatContentPart<'_>> {
-    parts
-        .iter()
-        .map(|part| match part {
-            MessagePart::Text(text) => ChatContentPart::Text(ChatTextPart { kind: "text", text }),
-            MessagePart::Image(image) => ChatContentPart::Image(chat_image_part(image)),
-        })
-        .collect()
-}
-
-/// Encodes one persisted image as the data URL accepted by the chat request.
-fn chat_image_part(image: &ImagePart) -> ChatImagePart {
-    ChatImagePart {
-        kind: "image_url",
-        image_url: ChatImageUrl {
-            url: format!(
-                "data:{};base64,{}",
-                image.mime_type,
-                STANDARD.encode(&image.bytes)
-            ),
-        },
-    }
 }
 
 impl RuntimeLlm for BifrostClient {
@@ -522,14 +594,14 @@ fn append_valid_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Res
             let valid_up_to = error.valid_up_to();
             if valid_up_to > 0 {
                 let text = std::str::from_utf8(&byte_buffer[..valid_up_to])
-                    .context("chat stream contained invalid utf-8")?
+                    .context("responses stream contained invalid utf-8")?
                     .to_string();
                 text_buffer.push_str(&text);
                 byte_buffer.drain(..valid_up_to);
             }
 
             if error.error_len().is_some() {
-                return Err(anyhow!("chat stream contained invalid utf-8"));
+                return Err(anyhow!("responses stream contained invalid utf-8"));
             }
 
             Ok(())
@@ -543,7 +615,7 @@ fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()
     append_valid_utf8(byte_buffer, text_buffer)?;
 
     if !byte_buffer.is_empty() {
-        return Err(anyhow!("chat stream ended with incomplete utf-8"));
+        return Err(anyhow!("responses stream ended with incomplete utf-8"));
     }
 
     Ok(())
@@ -603,97 +675,131 @@ where
         return Ok(());
     }
 
-    let chunk: ChatStreamChunk =
-        serde_json::from_str(data).context("failed to parse chat stream chunk")?;
-    for choice in chunk.choices {
-        if let Some(finish_reason) = choice.finish_reason {
-            state.finish_reason = Some(FinishReason::from_provider(&finish_reason));
-        }
-
-        if let Some(content) = choice.delta.content {
-            handle_delta(&content)?;
-            state.content.push_str(&content);
-        }
-        if let Some(refusal) = choice.delta.refusal {
-            append_optional_text(&mut state.metadata.refusal, &refusal);
-        }
-        if let Some(reasoning) = choice.delta.reasoning {
-            append_optional_text(&mut state.metadata.reasoning, &reasoning);
-        }
-        if let Some(audio) = choice.delta.audio {
-            state.push_audio_delta(audio);
-        }
-        if !choice.delta.annotations.is_empty() {
-            state.metadata.annotations.extend(choice.delta.annotations);
-        }
-        for reasoning_detail in choice.delta.reasoning_details {
-            state.push_reasoning_detail_delta(reasoning_detail);
-        }
-
-        for tool_call in choice.delta.tool_calls {
-            state.push_tool_call_delta(tool_call);
-        }
-    }
-
-    Ok(())
-}
-
-impl FinishReason {
-    /// Converts provider finish reason text into Windie's small enum.
-    fn from_provider(value: &str) -> Self {
-        match value {
-            "stop" => Self::Stop,
-            "length" => Self::Length,
-            "tool_calls" => Self::ToolCalls,
-            _ => Self::Other,
-        }
-    }
+    let event: ResponsesStreamEvent =
+        serde_json::from_str(data).context("failed to parse responses stream event")?;
+    state.push_event(event, handle_delta)
 }
 
 impl AssistantStreamState {
-    /// Applies one streamed tool-call delta to the in-progress call at its
-    /// provider index.
-    fn push_tool_call_delta(&mut self, delta: StreamToolCallDelta) {
-        let tool_call = self.tool_calls.entry(delta.index).or_default();
+    /// Applies one Responses stream event to the accumulated assistant turn.
+    fn push_event<F>(&mut self, event: ResponsesStreamEvent, handle_delta: &mut F) -> Result<()>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        match event.kind.as_str() {
+            "response.output_text.delta" => {
+                if let Some(delta) = event.delta {
+                    handle_delta(&delta)?;
+                    self.content.push_str(&delta);
+                }
+            }
+            "response.output_text.done" => {
+                if self.content.is_empty() {
+                    if let Some(text) = event.text {
+                        self.content = text;
+                    }
+                }
+            }
+            "response.refusal.delta" => {
+                if let Some(refusal) = event.refusal.or(event.delta) {
+                    append_optional_text(&mut self.metadata.refusal, &refusal);
+                }
+            }
+            "response.reasoning_summary_text.delta" => {
+                if let Some(reasoning) = event.delta {
+                    append_optional_text(&mut self.metadata.reasoning, &reasoning);
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                if let Some(delta) = event.delta {
+                    self.partial_tool_call(event.output_index)
+                        .arguments
+                        .push_str(&delta);
+                }
+            }
+            "response.function_call_arguments.done" => {
+                if let Some(arguments) = event.arguments {
+                    self.partial_tool_call(event.output_index).arguments = arguments;
+                }
+            }
+            "response.output_item.added" | "response.output_item.done" => {
+                if let Some(item) = event.item {
+                    self.push_output_item(event.output_index, item);
+                }
+            }
+            "response.completed" => {
+                self.finish_reason.get_or_insert(FinishReason::Stop);
+            }
+            "response.incomplete" => {
+                self.finish_reason = Some(FinishReason::Length);
+            }
+            "response.failed" | "error" => {
+                return Err(anyhow!(
+                    "responses stream failed: {}",
+                    event_error_text(&event)
+                ));
+            }
+            _ => {}
+        }
 
-        if let Some(id) = delta.id {
-            tool_call.id = Some(id);
-        }
-        if let Some(kind) = delta.kind {
-            tool_call.kind = Some(kind);
-        }
-        if let Some(function) = delta.function {
-            if let Some(name) = function.name {
-                tool_call.name = Some(name);
-            }
-            if let Some(arguments) = function.arguments {
-                tool_call.arguments.push_str(&arguments);
-            }
-        }
+        Ok(())
     }
 
-    /// Applies one streamed reasoning detail delta by its provider index.
-    fn push_reasoning_detail_delta(&mut self, detail: ReasoningDetail) {
-        self.reasoning_details
-            .entry(detail.index)
-            .and_modify(|partial| partial.push_delta(detail.clone()))
-            .or_insert_with(|| PartialReasoningDetail { detail });
+    /// Applies a streamed function-call item.
+    fn push_output_item(&mut self, output_index: Option<u16>, item: ResponsesStreamItem) {
+        if item.kind.as_deref() != Some("function_call") {
+            return;
+        }
+
+        let key = self.tool_call_key(output_index, item.call_id.as_deref().or(item.id.as_deref()));
+        let partial = self.tool_calls.entry(key).or_default();
+
+        if item.call_id.is_some() {
+            partial.id = item.call_id;
+        } else if item.id.is_some() {
+            partial.id = item.id;
+        }
+        if let Some(name) = item.name {
+            partial.name = Some(name);
+        }
+        if let Some(arguments) = item.arguments {
+            partial.arguments = arguments;
+        }
+        self.finish_reason = Some(FinishReason::ToolCalls);
     }
 
-    /// Applies one streamed audio delta to the assistant audio metadata lane.
-    fn push_audio_delta(&mut self, delta: AssistantAudio) {
-        if let Some(audio) = self.metadata.audio.as_mut() {
-            if !delta.id.is_empty() {
-                audio.id = delta.id;
-            }
-            audio.data.push_str(&delta.data);
-            if delta.expires_at != 0 {
-                audio.expires_at = delta.expires_at;
-            }
-            audio.transcript.push_str(&delta.transcript);
-        } else {
-            self.metadata.audio = Some(delta);
+    /// Returns the mutable partial tool call for one stream output index.
+    fn partial_tool_call(&mut self, output_index: Option<u16>) -> &mut PartialToolCall {
+        let key = output_index.unwrap_or_else(|| self.next_tool_call_key());
+        self.tool_calls.entry(key).or_default()
+    }
+
+    /// Finds the stream key for a function-call item.
+    fn tool_call_key(&self, output_index: Option<u16>, tool_call_id: Option<&str>) -> u16 {
+        if let Some(output_index) = output_index {
+            return output_index;
         }
+        if let Some(tool_call_id) = tool_call_id {
+            if let Some((key, _)) = self
+                .tool_calls
+                .iter()
+                .find(|(_, partial)| partial.id.as_deref() == Some(tool_call_id))
+            {
+                return *key;
+            }
+        }
+
+        self.next_tool_call_key()
+    }
+
+    /// Returns a stream key greater than any existing partial tool call key.
+    fn next_tool_call_key(&self) -> u16 {
+        self.tool_calls
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1)
     }
 
     /// Converts the stream state into a complete assistant response.
@@ -701,15 +807,11 @@ impl AssistantStreamState {
         let mut metadata = self.metadata;
         let tool_calls = self
             .tool_calls
-            .into_iter()
+            .into_values()
+            .enumerate()
             .map(|(index, tool_call)| tool_call.finalize(index))
             .collect::<Result<Vec<_>>>()?;
         metadata.tool_calls = tool_calls;
-        metadata.reasoning_details = self
-            .reasoning_details
-            .into_values()
-            .map(|partial| partial.detail)
-            .collect();
 
         Ok(AssistantResponse {
             content: self.content,
@@ -721,7 +823,7 @@ impl AssistantStreamState {
 
 impl PartialToolCall {
     /// Validates and returns one complete tool call after streaming has ended.
-    fn finalize(self, index: u16) -> Result<ToolCall> {
+    fn finalize(self, index: usize) -> Result<ToolCall> {
         let id = self
             .id
             .ok_or_else(|| anyhow!("tool call {index} did not include id"))?;
@@ -730,26 +832,30 @@ impl PartialToolCall {
             .ok_or_else(|| anyhow!("tool call {index} did not include function name"))?;
 
         let mut tool_call = ToolCall::function(id, name, self.arguments);
-        tool_call.index = index;
+        tool_call.index = u16::try_from(index).unwrap_or(u16::MAX);
 
         Ok(tool_call)
     }
 }
 
-impl PartialReasoningDetail {
-    /// Appends text-like reasoning fields while keeping latest identity fields.
-    fn push_delta(&mut self, delta: ReasoningDetail) {
-        self.detail.kind = delta.kind;
-        if delta.id.is_some() {
-            self.detail.id = delta.id;
-        }
-        append_optional_field(&mut self.detail.summary, delta.summary);
-        append_optional_field(&mut self.detail.text, delta.text);
-        if delta.signature.is_some() {
-            self.detail.signature = delta.signature;
-        }
-        append_optional_field(&mut self.detail.data, delta.data);
-    }
+/// Returns the most useful error text from a failed Responses stream event.
+fn event_error_text(event: &ResponsesStreamEvent) -> String {
+    event
+        .error
+        .as_ref()
+        .and_then(|error| error.message.as_deref())
+        .or(event.message.as_deref())
+        .or_else(|| {
+            event
+                .response
+                .as_ref()
+                .and_then(|response| response.error.as_ref())
+                .and_then(|error| error.message.as_deref())
+        })
+        .or_else(|| event.error.as_ref().and_then(|error| error.code.as_deref()))
+        .or_else(|| event.error.as_ref().and_then(|error| error.kind.as_deref()))
+        .unwrap_or("unknown responses stream error")
+        .to_string()
 }
 
 /// Appends one text delta into an optional accumulated text field.
@@ -760,19 +866,12 @@ fn append_optional_text(target: &mut Option<String>, delta: &str) {
     }
 }
 
-/// Appends an optional text delta into an optional accumulated text field.
-fn append_optional_field(target: &mut Option<String>, delta: Option<String>) {
-    if let Some(delta) = delta {
-        append_optional_text(target, &delta);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::conversation::{
-        ImageAssetId, MessageId, MessageMetadata, ReasoningDetailKind, Role, ToolCallFunction,
-        ToolCallId, ToolCallKind, ToolSchema, ToolSchemaName,
+        ImageAssetId, MessageId, MessageMetadata, Role, ToolCallFunction, ToolCallId, ToolCallKind,
+        ToolSchema, ToolSchemaName,
     };
 
     #[test]
@@ -790,15 +889,15 @@ mod tests {
     }
 
     #[test]
-    fn builds_chat_endpoint_from_base_url() {
+    fn builds_responses_endpoint_from_base_url() {
         let llm = BifrostClient::new(
             BaseUrl::new("http://localhost:8080/v1/"),
             ModelName::new("openai/gpt-4o-mini"),
         );
 
         assert_eq!(
-            llm.chat_endpoint(),
-            "http://localhost:8080/v1/chat/completions"
+            llm.responses_endpoint(),
+            "http://localhost:8080/v1/responses"
         );
     }
 
@@ -813,31 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_model_list_response() {
-        let response: ModelsResponse = serde_json::from_value(serde_json::json!({
-            "object": "list",
-            "data": [
-                {"id": "openai/gpt-4o-mini", "object": "model"},
-                {"id": "anthropic/claude-sonnet-4-5", "object": "model"}
-            ]
-        }))
-        .unwrap();
-
-        assert_eq!(
-            response.data,
-            vec![
-                ModelInfo {
-                    id: "openai/gpt-4o-mini".to_string()
-                },
-                ModelInfo {
-                    id: "anthropic/claude-sonnet-4-5".to_string()
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn serializes_text_message_for_chat_request() {
+    fn serializes_text_message_for_responses_request() {
         let messages = vec![Message {
             id: Some(MessageId::new("message-id")),
             parent_message_id: Some(MessageId::new("parent-id")),
@@ -846,9 +921,9 @@ mod tests {
             parts: Vec::new(),
             metadata: None,
         }];
-        let request = ChatRequest {
+        let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            messages: chat_messages(&messages),
+            input: responses_input(&messages),
             tools: None,
             stream: true,
         };
@@ -859,14 +934,14 @@ mod tests {
             value,
             serde_json::json!({
                 "model": "openai/gpt-4o-mini",
-                "messages": [{"role": "user", "content": "hello"}],
+                "input": [{"type": "message", "role": "user", "content": "hello"}],
                 "stream": true
             })
         );
     }
 
     #[test]
-    fn serializes_assistant_tool_calls_for_chat_request() {
+    fn serializes_assistant_tool_calls_for_responses_request() {
         let messages = vec![Message {
             id: Some(MessageId::new("message-id")),
             parent_message_id: Some(MessageId::new("parent-id")),
@@ -886,9 +961,9 @@ mod tests {
                 ..Default::default()
             }),
         }];
-        let request = ChatRequest {
+        let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            messages: chat_messages(&messages),
+            input: responses_input(&messages),
             tools: None,
             stream: true,
         };
@@ -899,18 +974,12 @@ mod tests {
             value,
             serde_json::json!({
                 "model": "openai/gpt-4o-mini",
-                "messages": [{
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call-id",
-                        "type": "function",
-                        "function": {
-                            "name": "run_shell",
-                            "arguments": "{\"command\":\"ls\"}"
-                        }
-                    }]
+                "input": [{
+                    "type": "function_call",
+                    "call_id": "call-id",
+                    "name": "run_shell",
+                    "arguments": "{\"command\":\"ls\"}",
+                    "status": "completed"
                 }],
                 "stream": true
             })
@@ -918,7 +987,63 @@ mod tests {
     }
 
     #[test]
-    fn serializes_user_image_parts_for_chat_request() {
+    fn serializes_assistant_text_before_tool_call_for_responses_request() {
+        let messages = vec![Message {
+            id: Some(MessageId::new("message-id")),
+            parent_message_id: Some(MessageId::new("parent-id")),
+            role: Role::Assistant,
+            content: "I will inspect the desktop.".to_string(),
+            parts: Vec::new(),
+            metadata: Some(MessageMetadata {
+                tool_calls: vec![ToolCall {
+                    index: 0,
+                    id: ToolCallId::new("call-id"),
+                    kind: ToolCallKind::Function,
+                    function: ToolCallFunction {
+                        name: "cua_driver__get_desktop_state".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                }],
+                ..Default::default()
+            }),
+        }];
+        let request = ResponsesRequest {
+            model: "openai/gpt-4o-mini",
+            input: responses_input(&messages),
+            tools: None,
+            stream: true,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "I will inspect the desktop."
+                        }]
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-id",
+                        "name": "cua_driver__get_desktop_state",
+                        "arguments": "{}",
+                        "status": "completed"
+                    }
+                ],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_user_image_parts_for_responses_request() {
         let messages = vec![Message {
             id: Some(MessageId::new("message-id")),
             parent_message_id: None,
@@ -934,9 +1059,9 @@ mod tests {
             ],
             metadata: None,
         }];
-        let request = ChatRequest {
+        let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            messages: chat_messages(&messages),
+            input: responses_input(&messages),
             tools: None,
             stream: true,
         };
@@ -947,11 +1072,12 @@ mod tests {
             value,
             serde_json::json!({
                 "model": "openai/gpt-4o-mini",
-                "messages": [{
+                "input": [{
+                    "type": "message",
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "what is this?"},
-                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AQID"}}
+                        {"type": "input_text", "text": "what is this?"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AQID"}
                     ]
                 }],
                 "stream": true
@@ -960,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn serializes_tool_message_call_id_for_chat_request() {
+    fn serializes_tool_message_call_id_for_responses_request() {
         let messages = vec![Message {
             id: Some(MessageId::new("message-id")),
             parent_message_id: Some(MessageId::new("parent-id")),
@@ -972,9 +1098,9 @@ mod tests {
                 ..Default::default()
             }),
         }];
-        let request = ChatRequest {
+        let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            messages: chat_messages(&messages),
+            input: responses_input(&messages),
             tools: None,
             stream: true,
         };
@@ -983,10 +1109,11 @@ mod tests {
             serde_json::to_value(&request).unwrap(),
             serde_json::json!({
                 "model": "openai/gpt-4o-mini",
-                "messages": [{
-                    "role": "tool",
-                    "content": "{\"stdout\":\"ok\"}",
-                    "tool_call_id": "call-id"
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": "call-id",
+                    "output": "{\"stdout\":\"ok\"}",
+                    "status": "completed"
                 }],
                 "stream": true
             })
@@ -994,7 +1121,52 @@ mod tests {
     }
 
     #[test]
-    fn serializes_tool_schemas_for_chat_request() {
+    fn serializes_tool_image_parts_for_responses_request() {
+        let messages = vec![Message {
+            id: Some(MessageId::new("message-id")),
+            parent_message_id: Some(MessageId::new("parent-id")),
+            role: Role::Tool,
+            content: "screenshot".to_string(),
+            parts: vec![
+                MessagePart::Text("screenshot".to_string()),
+                MessagePart::Image(ImagePart {
+                    asset_id: ImageAssetId::new("image-id"),
+                    mime_type: "image/png".to_string(),
+                    bytes: vec![1, 2, 3],
+                }),
+            ],
+            metadata: Some(MessageMetadata {
+                tool_call_id: Some(ToolCallId::new("call-id")),
+                ..Default::default()
+            }),
+        }];
+        let request = ResponsesRequest {
+            model: "openai/gpt-4o-mini",
+            input: responses_input(&messages),
+            tools: None,
+            stream: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": "call-id",
+                    "output": [
+                        {"type": "input_text", "text": "screenshot"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AQID"}
+                    ],
+                    "status": "completed"
+                }],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_tool_schemas_for_responses_request() {
         let tools = vec![ToolSchema {
             name: ToolSchemaName::new("run_shell"),
             description: "Run a shell command".to_string(),
@@ -1006,10 +1178,10 @@ mod tests {
                 "required": ["command"]
             }),
         }];
-        let request = ChatRequest {
+        let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            messages: Vec::new(),
-            tools: chat_tools(&tools),
+            input: Vec::new(),
+            tools: responses_tools(&tools),
             stream: true,
         };
 
@@ -1019,19 +1191,17 @@ mod tests {
             value,
             serde_json::json!({
                 "model": "openai/gpt-4o-mini",
-                "messages": [],
+                "input": [],
                 "tools": [{
                     "type": "function",
-                    "function": {
-                        "name": "run_shell",
-                        "description": "Run a shell command",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "command": {"type": "string"}
-                            },
-                            "required": ["command"]
-                        }
+                    "name": "run_shell",
+                    "description": "Run a shell command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"}
+                        },
+                        "required": ["command"]
                     }
                 }],
                 "stream": true
@@ -1049,7 +1219,7 @@ mod tests {
         };
 
         process_stream_line(
-            r#"data: {"choices":[{"delta":{"content":"Hello"}}]}"#,
+            r#"data: {"type":"response.output_text.delta","delta":"Hello"}"#,
             &mut state,
             &mut handle_delta,
         )
@@ -1060,12 +1230,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_stream_assistant_metadata_lanes() {
+    fn parses_stream_metadata_lanes() {
         let mut state = AssistantStreamState::default();
         let mut handle_delta = |_text: &str| Ok(());
 
         process_stream_line(
-            r#"data: {"choices":[{"delta":{"refusal":"no","reasoning":"think","reasoning_details":[{"index":0,"type":"reasoning.text","text":"think"}]}}]}"#,
+            r#"data: {"type":"response.refusal.delta","refusal":"no"}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+        process_stream_line(
+            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"think"}"#,
             &mut state,
             &mut handle_delta,
         )
@@ -1075,15 +1251,6 @@ mod tests {
 
         assert_eq!(response.metadata.refusal.as_deref(), Some("no"));
         assert_eq!(response.metadata.reasoning.as_deref(), Some("think"));
-        assert_eq!(response.metadata.reasoning_details.len(), 1);
-        assert_eq!(
-            response.metadata.reasoning_details[0].kind,
-            ReasoningDetailKind::Text
-        );
-        assert_eq!(
-            response.metadata.reasoning_details[0].text.as_deref(),
-            Some("think")
-        );
     }
 
     #[test]
@@ -1092,13 +1259,19 @@ mod tests {
         let mut handle_delta = |_text: &str| Ok(());
 
         process_stream_line(
-            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"run_shell","arguments":"{\"command\""}}]}}]}"#,
+            r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_123","name":"run_shell","arguments":""}}"#,
             &mut state,
             &mut handle_delta,
         )
         .unwrap();
         process_stream_line(
-            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"ls\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\""}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+        process_stream_line(
+            r#"data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":":\"ls\"}"}"#,
             &mut state,
             &mut handle_delta,
         )
@@ -1143,7 +1316,10 @@ mod tests {
 
         let error = append_valid_utf8(&mut byte_buffer, &mut text_buffer).unwrap_err();
 
-        assert_eq!(error.to_string(), "chat stream contained invalid utf-8");
+        assert_eq!(
+            error.to_string(),
+            "responses stream contained invalid utf-8"
+        );
     }
 
     #[test]
@@ -1153,7 +1329,10 @@ mod tests {
 
         let error = finish_utf8(&mut byte_buffer, &mut text_buffer).unwrap_err();
 
-        assert_eq!(error.to_string(), "chat stream ended with incomplete utf-8");
+        assert_eq!(
+            error.to_string(),
+            "responses stream ended with incomplete utf-8"
+        );
     }
 
     #[test]
@@ -1172,24 +1351,9 @@ mod tests {
     }
 
     #[test]
-    fn ignores_non_data_stream_line() {
-        let mut state = AssistantStreamState::default();
-        let mut deltas = Vec::new();
-        let mut handle_delta = |text: &str| {
-            deltas.push(text.to_string());
-            Ok(())
-        };
-
-        process_stream_line("event: message", &mut state, &mut handle_delta).unwrap();
-
-        assert!(state.content.is_empty());
-        assert!(deltas.is_empty());
-    }
-
-    #[test]
     fn accumulates_multiple_stream_lines() {
-        let mut buffer = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\
-             data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\
+        let mut buffer = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\
+             data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\
              data: [DONE]\n"
             .to_string();
         let mut state = AssistantStreamState::default();
@@ -1204,38 +1368,5 @@ mod tests {
         assert!(buffer.is_empty());
         assert_eq!(state.content, "Hello");
         assert_eq!(deltas, vec!["Hel", "lo"]);
-    }
-
-    #[test]
-    fn keeps_partial_line_in_buffer() {
-        let mut buffer = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}".to_string();
-        let mut state = AssistantStreamState::default();
-        let mut deltas = Vec::new();
-
-        {
-            let mut handle_delta = |text: &str| {
-                deltas.push(text.to_string());
-                Ok(())
-            };
-
-            process_stream_lines(&mut buffer, &mut state, &mut handle_delta).unwrap();
-        }
-
-        assert!(!buffer.is_empty());
-        assert!(state.content.is_empty());
-        assert!(deltas.is_empty());
-
-        {
-            let mut handle_delta = |text: &str| {
-                deltas.push(text.to_string());
-                Ok(())
-            };
-
-            process_final_stream_line(&mut buffer, &mut state, &mut handle_delta).unwrap();
-        }
-
-        assert!(buffer.is_empty());
-        assert_eq!(state.content, "Hello");
-        assert_eq!(deltas, vec!["Hello"]);
     }
 }

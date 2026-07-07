@@ -8,7 +8,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::conversation::{MessageId, ToolCall, ToolCallId, ToolSchema, ToolSchemaName};
+use crate::conversation::{
+    MessageId, ToolCall, ToolCallId, ToolSchema, ToolSchemaName, UnsavedMessagePart,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Stable identifier for one tool provider.
@@ -186,7 +188,7 @@ pub struct AttachedTool {
 }
 
 impl AttachedTool {
-    /// Returns the model-facing schema subset sent with a chat request.
+    /// Returns the model-facing schema subset sent with a Responses request.
     pub fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: self.schema_name.clone(),
@@ -232,7 +234,14 @@ pub struct ToolApprovalRequest {
 pub struct ToolExecutionResult {
     pub tool_call_id: ToolCallId,
     pub tool_name: String,
+    /// Compact visible preview stored on the message row.
     pub content: String,
+    /// Ordered model-facing content parts. Text-only tools can leave this empty
+    /// and use `content`; rich tools such as MCP screenshot providers store
+    /// text/image parts here so Responses can replay them without base64 text
+    /// bloat.
+    #[serde(skip)]
+    pub parts: Vec<UnsavedMessagePart>,
     pub success: bool,
 }
 
@@ -247,6 +256,23 @@ impl ToolExecutionResult {
             tool_call_id,
             tool_name: tool_name.into(),
             content,
+            parts: Vec::new(),
+            success: true,
+        }
+    }
+
+    /// Creates a successful rich tool result with ordered model-facing parts.
+    pub fn success_with_parts(
+        tool_call_id: ToolCallId,
+        tool_name: impl Into<String>,
+        content: String,
+        parts: Vec<UnsavedMessagePart>,
+    ) -> Self {
+        Self {
+            tool_call_id,
+            tool_name: tool_name.into(),
+            content,
+            parts,
             success: true,
         }
     }
@@ -261,6 +287,7 @@ impl ToolExecutionResult {
             tool_call_id,
             tool_name: tool_name.into(),
             content: serde_json::json!({ "error": reason.into() }).to_string(),
+            parts: Vec::new(),
             success: false,
         }
     }

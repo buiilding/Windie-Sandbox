@@ -276,7 +276,7 @@ impl ToolCall {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-/// Tool call kind accepted by the OpenAI-compatible chat format.
+/// Tool call kind accepted by the OpenAI-compatible Responses format.
 pub enum ToolCallKind {
     Function,
 }
@@ -396,9 +396,26 @@ pub enum MessagePart {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One typed message part before it has been copied into durable storage.
+///
+/// Unsaved parts carry raw bytes only. `store.rs` is responsible for assigning
+/// durable asset IDs when it writes the message.
+pub enum UnsavedMessagePart {
+    Text(String),
+    Image(UnsavedImagePart),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Durable image bytes attached to a message.
 pub struct ImagePart {
     pub asset_id: ImageAssetId,
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Image bytes that have not yet been copied into durable image asset storage.
+pub struct UnsavedImagePart {
     pub mime_type: String,
     pub bytes: Vec<u8>,
 }

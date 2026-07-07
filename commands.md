@@ -441,15 +441,9 @@ windie query <conversation_id> --model ollama/llama3.2
 windie models
 ```
 
-List models currently reported by the running Bifrost gateway.
-
-```text
-windie models --chat
-```
-
-List models Bifrost reports as supporting `chat_completion`. This is the model
-class Windie's current `query` path can use because Windie sends
-OpenAI-compatible `/v1/chat/completions` requests.
+List models Bifrost reports as supporting streamed Responses requests. This is
+the model class Windie's current `query` path can use because Windie sends
+OpenAI-compatible `/v1/responses` requests with streaming enabled.
 
 Requires the local Bifrost gateway to already be running. This command is
 read-only: it does not start, stop, restart, or reconfigure Bifrost.

@@ -413,13 +413,24 @@ fn store_tool_result(
         ..Default::default()
     };
 
-    store.insert_message(
-        conversation_id,
-        Some(parent_message_id),
-        Role::Tool,
-        &result.content,
-        Some(&metadata),
-    )
+    if result.parts.is_empty() {
+        store.insert_message(
+            conversation_id,
+            Some(parent_message_id),
+            Role::Tool,
+            &result.content,
+            Some(&metadata),
+        )
+    } else {
+        store.insert_message_with_parts(
+            conversation_id,
+            Some(parent_message_id),
+            Role::Tool,
+            &result.content,
+            &result.parts,
+            Some(&metadata),
+        )
+    }
 }
 
 #[allow(dead_code)]

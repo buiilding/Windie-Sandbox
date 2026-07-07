@@ -1,7 +1,20 @@
 //! Tests for the SQLite persistence boundary.
 
 use super::*;
-use crate::conversation::{MessagePart, ToolCall, ToolSchema, ToolSchemaName};
+use crate::conversation::{
+    MessagePart, ToolCall, ToolSchema, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart,
+};
+
+fn unsaved_text(text: &str) -> UnsavedMessagePart {
+    UnsavedMessagePart::Text(text.to_string())
+}
+
+fn unsaved_image(mime_type: &str, bytes: &[u8]) -> UnsavedMessagePart {
+    UnsavedMessagePart::Image(UnsavedImagePart {
+        mime_type: mime_type.to_string(),
+        bytes: bytes.to_vec(),
+    })
+}
 
 fn index_exists(store: &Store, index_name: &str) -> bool {
     store
@@ -577,17 +590,16 @@ fn saves_and_loads_image_message_parts() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     store
-        .insert_user_message_with_parts(
+        .insert_message_with_parts(
             &conversation_id,
             None,
+            Role::User,
             "what is this?",
             &[
-                MessagePayload::Text("what is this?"),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/png",
-                    bytes: &[1, 2, 3],
-                }),
+                unsaved_text("what is this?"),
+                unsaved_image("image/png", &[1, 2, 3]),
             ],
+            None,
         )
         .unwrap();
 
@@ -602,26 +614,63 @@ fn saves_and_loads_image_message_parts() {
 }
 
 #[test]
+fn saves_and_loads_tool_message_parts() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let metadata = MessageMetadata {
+        tool_call_id: Some(ToolCallId::new("call_123")),
+        ..Default::default()
+    };
+
+    store
+        .insert_message_with_parts(
+            &conversation_id,
+            None,
+            Role::Tool,
+            "screenshot\n[image: image/png, 3 bytes]",
+            &[
+                unsaved_text("screenshot"),
+                unsaved_image("image/png", &[1, 2, 3]),
+            ],
+            Some(&metadata),
+        )
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, Role::Tool);
+    assert_eq!(
+        messages[0]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.tool_call_id.as_ref())
+            .map(ToolCallId::as_str),
+        Some("call_123")
+    );
+    assert_eq!(messages[0].parts.len(), 2);
+    assert!(matches!(&messages[0].parts[0], MessagePart::Text(text) if text == "screenshot"));
+    assert!(matches!(&messages[0].parts[1], MessagePart::Image(image)
+        if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
+}
+
+#[test]
 fn saves_and_loads_multiple_image_message_parts() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     store
-        .insert_user_message_with_parts(
+        .insert_message_with_parts(
             &conversation_id,
             None,
+            Role::User,
             "compare these",
             &[
-                MessagePayload::Text("compare these"),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/png",
-                    bytes: &[1, 2, 3],
-                }),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/jpeg",
-                    bytes: &[4, 5, 6],
-                }),
+                unsaved_text("compare these"),
+                unsaved_image("image/png", &[1, 2, 3]),
+                unsaved_image("image/jpeg", &[4, 5, 6]),
             ],
+            None,
         )
         .unwrap();
 
@@ -643,22 +692,18 @@ fn saves_and_loads_interleaved_text_and_image_message_parts() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     store
-        .insert_user_message_with_parts(
+        .insert_message_with_parts(
             &conversation_id,
             None,
+            Role::User,
             "first\nsecond",
             &[
-                MessagePayload::Text("first"),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/png",
-                    bytes: &[1, 2, 3],
-                }),
-                MessagePayload::Text("second"),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/jpeg",
-                    bytes: &[4, 5, 6],
-                }),
+                unsaved_text("first"),
+                unsaved_image("image/png", &[1, 2, 3]),
+                unsaved_text("second"),
+                unsaved_image("image/jpeg", &[4, 5, 6]),
             ],
+            None,
         )
         .unwrap();
 
@@ -681,17 +726,16 @@ fn updates_image_message_text_part_with_content() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     let message_id = store
-        .insert_user_message_with_parts(
+        .insert_message_with_parts(
             &conversation_id,
             None,
+            Role::User,
             "what is this?",
             &[
-                MessagePayload::Text("what is this?"),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/png",
-                    bytes: &[1, 2, 3],
-                }),
+                unsaved_text("what is this?"),
+                unsaved_image("image/png", &[1, 2, 3]),
             ],
+            None,
         )
         .unwrap();
 
@@ -714,17 +758,16 @@ fn updating_image_message_to_empty_text_removes_text_part() {
     let conversation_id = store.get_or_create_default_conversation().unwrap();
 
     let message_id = store
-        .insert_user_message_with_parts(
+        .insert_message_with_parts(
             &conversation_id,
             None,
+            Role::User,
             "what is this?",
             &[
-                MessagePayload::Text("what is this?"),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/png",
-                    bytes: &[1, 2, 3],
-                }),
+                unsaved_text("what is this?"),
+                unsaved_image("image/png", &[1, 2, 3]),
             ],
+            None,
         )
         .unwrap();
 
@@ -1181,17 +1224,16 @@ fn remove_message_clears_compactions_and_deletes_orphan_image_assets() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let first_id = store
-        .insert_user_message_with_parts(
+        .insert_message_with_parts(
             &conversation_id,
             None,
+            Role::User,
             "image",
             &[
-                MessagePayload::Text("image"),
-                MessagePayload::Image(ImagePayload {
-                    mime_type: "image/png",
-                    bytes: &[1, 2, 3],
-                }),
+                unsaved_text("image"),
+                unsaved_image("image/png", &[1, 2, 3]),
             ],
+            None,
         )
         .unwrap();
     let second_id = store

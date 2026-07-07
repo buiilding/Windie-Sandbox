@@ -18,12 +18,13 @@ use uuid::Uuid;
 use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId,
+    UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::gateway::{BifrostGateway, GatewayUrl};
 use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::mcp::{self, McpCommand};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
-use crate::store::{ImagePayload, MessagePayload, Store};
+use crate::store::Store;
 use crate::tool::{ProviderToolName, ToolProviderId};
 use crate::tool_provider::ToolProviderRegistry;
 
@@ -1223,17 +1224,19 @@ fn benchmark_context_with_image_parts() -> Result<Duration> {
         let image_bytes = tiny_png_bytes();
         let mut parent_id = None;
         for index in 0..IMAGE_PART_MESSAGES {
-            let id = store.insert_user_message_with_parts(
+            let id = store.insert_message_with_parts(
                 &conversation_id,
                 parent_id.as_ref(),
+                Role::User,
                 &format!("image message {index}"),
                 &[
-                    MessagePayload::Text("image"),
-                    MessagePayload::Image(ImagePayload {
-                        mime_type: "image/png",
-                        bytes: image_bytes,
+                    UnsavedMessagePart::Text("image".to_string()),
+                    UnsavedMessagePart::Image(UnsavedImagePart {
+                        mime_type: "image/png".to_string(),
+                        bytes: image_bytes.to_vec(),
                     }),
                 ],
+                None,
             )?;
             parent_id = Some(id);
         }
