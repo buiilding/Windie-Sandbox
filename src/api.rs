@@ -5,6 +5,7 @@
 //! `windie-inspector`; persistence, context construction, gateway checks, and
 //! model requests still flow through the same modules used by the CLI.
 
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,13 +15,16 @@ use axum::extract::{Path, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -33,6 +37,7 @@ use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
+use crate::runtime::RuntimeEventSink;
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
@@ -168,6 +173,10 @@ fn router(state: ApiState) -> Router {
             post(count_input_tokens),
         )
         .route("/api/conversations/{conversation_id}/query", post(query))
+        .route(
+            "/api/conversations/{conversation_id}/query-stream",
+            post(query_stream),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_token,
@@ -1137,6 +1146,116 @@ async fn query(
     Ok(Json(MessageResponse::from_message(message)))
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+/// One durable runtime event streamed by `query-stream`.
+enum QueryStreamEvent {
+    AssistantMessageSaved { message_id: String },
+    ToolResultSaved { message_id: String },
+    QueryDone { message_id: Option<String> },
+    QueryError { error: String, causes: Vec<String> },
+}
+
+impl QueryStreamEvent {
+    /// Returns the SSE event name matching the JSON `type`.
+    fn event_name(&self) -> &'static str {
+        match self {
+            Self::AssistantMessageSaved { .. } => "assistant_message_saved",
+            Self::ToolResultSaved { .. } => "tool_result_saved",
+            Self::QueryDone { .. } => "query_done",
+            Self::QueryError { .. } => "query_error",
+        }
+    }
+}
+
+/// Runtime event sink that forwards persisted-message events to an SSE channel.
+struct QueryStreamEventSink {
+    sender: mpsc::UnboundedSender<QueryStreamEvent>,
+}
+
+impl RuntimeEventSink for QueryStreamEventSink {
+    fn assistant_message_saved(&self, message_id: &MessageId) {
+        let _ = self.sender.send(QueryStreamEvent::AssistantMessageSaved {
+            message_id: message_id.as_str().to_string(),
+        });
+    }
+
+    fn tool_result_saved(&self, message_id: &MessageId) {
+        let _ = self.sender.send(QueryStreamEvent::ToolResultSaved {
+            message_id: message_id.as_str().to_string(),
+        });
+    }
+}
+
+/// Runs a query and streams durable runtime events as server-sent events.
+async fn query_stream(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<QueryRequest>,
+) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let (sender, receiver) = mpsc::unbounded_channel::<QueryStreamEvent>();
+
+    tokio::spawn(async move {
+        let result = async {
+            let mut store = open_store(&state)?;
+            let model = request.model.unwrap_or_else(|| state.model.clone());
+            let events = QueryStreamEventSink {
+                sender: sender.clone(),
+            };
+            let runtime = operation::QueryStreamRuntime::new(
+                GatewayUrl::new(state.gateway_url.clone()),
+                BaseUrl::new(state.base_url.clone()),
+                ModelName::new(model),
+                state.tool_registry.as_ref(),
+            );
+            let message = operation::query_conversation_with_registry_and_events(
+                &ApiOutput,
+                &events,
+                &mut store,
+                &conversation_id,
+                runtime,
+            )
+            .await?;
+
+            Ok::<Message, anyhow::Error>(message)
+        }
+        .await;
+
+        match result {
+            Ok(message) => {
+                let _ = sender.send(QueryStreamEvent::QueryDone {
+                    message_id: message.id.map(|id| id.as_str().to_string()),
+                });
+            }
+            Err(error) => {
+                let _ = sender.send(QueryStreamEvent::QueryError {
+                    error: raw_error_message(&error),
+                    causes: error_causes(&error),
+                });
+            }
+        }
+    });
+
+    let stream = stream::unfold(receiver, |mut receiver| async move {
+        let event = receiver.recv().await?;
+        let event_name = event.event_name();
+        let data = serde_json::to_string(&event).unwrap_or_else(|error| {
+            serde_json::json!({
+                "type": "query_error",
+                "error": format!("failed to serialize query stream event: {error}"),
+                "causes": [format!("failed to serialize query stream event: {error}")],
+            })
+            .to_string()
+        });
+        let sse = Event::default().event(event_name).data(data);
+
+        Some((Ok::<Event, Infallible>(sse), receiver))
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 /// Runtime output sink used by API query execution.
 struct ApiOutput;
 
@@ -1788,6 +1907,42 @@ mod tests {
             body["error"],
             "Bifrost is not running. Start it with: windie gateway start"
         );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn query_stream_returns_gateway_errors_as_sse_events() {
+        let db_path = temp_database_path();
+        let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
+        let mut store = Store::open_at(&db_path).unwrap();
+        let conversation_id = store.create_conversation().unwrap();
+        store
+            .insert_message(&conversation_id, None, Role::User, "hello", None)
+            .unwrap();
+        drop(store);
+
+        let response = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/query-stream"),
+                Some(json!({"model":"openai/test"})),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+        assert!(body.contains("event: query_error"));
+        assert!(body.contains("Bifrost is not running. Start it with: windie gateway start"));
         let _ = fs::remove_file(db_path);
     }
 

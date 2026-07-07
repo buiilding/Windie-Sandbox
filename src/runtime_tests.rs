@@ -24,6 +24,42 @@ impl RuntimeOutput for NoopOutput {
     fn assistant_tool_calls(&self, _tool_calls: &[ToolCall]) {}
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RecordedRuntimeEvent {
+    AssistantMessageSaved(MessageId),
+    ToolResultSaved(MessageId),
+}
+
+struct RecordingRuntimeEvents {
+    events: Mutex<Vec<RecordedRuntimeEvent>>,
+}
+
+impl RecordingRuntimeEvents {
+    fn new() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl RuntimeEventSink for RecordingRuntimeEvents {
+    fn assistant_message_saved(&self, message_id: &MessageId) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(RecordedRuntimeEvent::AssistantMessageSaved(
+                message_id.clone(),
+            ));
+    }
+
+    fn tool_result_saved(&self, message_id: &MessageId) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(RecordedRuntimeEvent::ToolResultSaved(message_id.clone()));
+    }
+}
+
 struct FailingLlm;
 
 impl RuntimeLlm for FailingLlm {
@@ -435,6 +471,45 @@ async fn auto_approval_executes_tool_and_queries_again() {
     assert!(approvals.is_empty());
     assert_eq!(second_turn_messages.len(), 3);
     assert_eq!(second_turn_messages[2].role, Role::Tool);
+}
+
+#[tokio::test]
+async fn auto_approval_emits_persisted_runtime_events() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    attach_run_shell_schema(&mut store, &conversation_id);
+    store
+        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
+        .unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "list files", None)
+        .unwrap();
+    let llm = ToolThenReplyLlm::new();
+    let registry = ToolProviderRegistry::new();
+    let events = RecordingRuntimeEvents::new();
+
+    query_conversation_resolving_automatic_tools_with_events(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        &conversation_id,
+        &registry,
+        &events,
+    )
+    .await
+    .unwrap();
+
+    let messages = store.load_active_path(&conversation_id).unwrap();
+    let recorded = events.events.lock().unwrap().clone();
+
+    assert_eq!(
+        recorded,
+        vec![
+            RecordedRuntimeEvent::AssistantMessageSaved(messages[1].id.clone().unwrap()),
+            RecordedRuntimeEvent::ToolResultSaved(messages[2].id.clone().unwrap()),
+            RecordedRuntimeEvent::AssistantMessageSaved(messages[3].id.clone().unwrap()),
+        ]
+    );
 }
 
 #[tokio::test]

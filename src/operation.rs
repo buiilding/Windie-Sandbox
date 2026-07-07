@@ -24,8 +24,10 @@ use crate::image_input::{ImageInput, read_image_input, validate_image_input_byte
 use crate::llm::{self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
-    approve_tool_call, approve_tool_call_with_registry, deny_tool_call, pending_tool_approvals,
-    pending_tool_approvals_with_registry, query_conversation_resolving_automatic_tools,
+    RuntimeEventSink, approve_tool_call, approve_tool_call_with_registry, deny_tool_call,
+    pending_tool_approvals, pending_tool_approvals_with_registry,
+    query_conversation_resolving_automatic_tools,
+    query_conversation_resolving_automatic_tools_with_events,
 };
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
@@ -734,6 +736,66 @@ where
 
     query_conversation_resolving_automatic_tools(output, &llm, store, conversation_id, registry)
         .await
+}
+
+/// Provider/runtime inputs needed to execute a streamed query.
+///
+/// The streaming operation has one extra event sink compared with the blocking
+/// query path, so this struct keeps the API call site explicit without growing
+/// a long parameter list.
+pub struct QueryStreamRuntime<'a> {
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+    model: ModelName,
+    registry: &'a ToolProviderRegistry,
+}
+
+impl<'a> QueryStreamRuntime<'a> {
+    /// Groups the gateway, Bifrost endpoint, model, and provider registry.
+    pub fn new(
+        gateway_url: GatewayUrl,
+        base_url: BaseUrl,
+        model: ModelName,
+        registry: &'a ToolProviderRegistry,
+    ) -> Self {
+        Self {
+            gateway_url,
+            base_url,
+            model,
+            registry,
+        }
+    }
+}
+
+/// Runs the shared query sequence while emitting durable runtime events.
+///
+/// The API streaming route uses this path to notify clients after assistant
+/// messages and tool results have been persisted. Existing blocking callers use
+/// `query_conversation_with_registry`, which keeps the same runtime flow with a
+/// no-op event sink.
+pub async fn query_conversation_with_registry_and_events<O, E>(
+    output: &O,
+    events: &E,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    runtime: QueryStreamRuntime<'_>,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    E: RuntimeEventSink,
+{
+    require_gateway_running(runtime.gateway_url).await?;
+    let llm = BifrostClient::new(runtime.base_url, runtime.model);
+
+    query_conversation_resolving_automatic_tools_with_events(
+        output,
+        &llm,
+        store,
+        conversation_id,
+        runtime.registry,
+        events,
+    )
+    .await
 }
 
 /// Executes one approved pending tool call and persists its result.

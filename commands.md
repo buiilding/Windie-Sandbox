@@ -96,6 +96,7 @@ DELETE /api/conversations/{conversation_id}/tool-schemas/{name}
 POST   /api/conversations/{conversation_id}/truncate
 POST   /api/conversations/{conversation_id}/fork
 POST   /api/conversations/{conversation_id}/query
+POST   /api/conversations/{conversation_id}/query-stream
 ```
 
 ## Tools

@@ -20,6 +20,21 @@ use crate::store::Store;
 use crate::tool::{AttachedTool, ToolApprovalRequest, ToolExecutionResult};
 use crate::tool_provider::ToolProviderRegistry;
 
+/// Receives durable runtime state changes during a query flow.
+///
+/// Runtime emits these events only after data has been persisted. HTTP clients
+/// can stream them to a UI, while CLI callers use the no-op sink and keep the
+/// existing blocking behavior.
+pub(crate) trait RuntimeEventSink {
+    fn assistant_message_saved(&self, _message_id: &MessageId) {}
+    fn tool_result_saved(&self, _message_id: &MessageId) {}
+}
+
+/// Runtime event sink used by existing blocking callers.
+pub(crate) struct NoopRuntimeEventSink;
+
+impl RuntimeEventSink for NoopRuntimeEventSink {}
+
 /// Runs one assistant inference turn and persists the assistant message.
 ///
 /// This is intentionally one model request. The function prepares the active
@@ -41,24 +56,34 @@ where
     L: RuntimeLlm,
 {
     let registry = ToolProviderRegistry::new();
+    let events = NoopRuntimeEventSink;
 
-    query_conversation_once_with_registry(output, llm, store, conversation_id, &registry).await
+    query_conversation_once_with_registry_and_events(
+        output,
+        llm,
+        store,
+        conversation_id,
+        &registry,
+        &events,
+    )
+    .await
 }
 
-/// Runs one assistant inference turn using a caller-owned provider registry for
-/// query preparation.
-pub(crate) async fn query_conversation_once_with_registry<O, L>(
+/// Runs one assistant inference turn and emits persisted message events.
+pub(crate) async fn query_conversation_once_with_registry_and_events<O, L, E>(
     output: &O,
     llm: &L,
     store: &mut Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
+    events: &E,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
+    E: RuntimeEventSink,
 {
-    prepare_query_turn_with_registry(store, conversation_id, registry)?;
+    prepare_query_turn_with_registry_and_events(store, conversation_id, registry, events)?;
 
     let parent_message_id = store.active_message_id(conversation_id)?;
     let model_messages = ContextBuilder::build(store, conversation_id)?;
@@ -85,7 +110,8 @@ where
         &assistant_response.content,
         metadata.as_ref(),
     )?;
-    store_policy_denied_tool_results(store, conversation_id, registry)?;
+    events.assistant_message_saved(&assistant_message_id);
+    store_policy_denied_tool_results(store, conversation_id, registry, events)?;
 
     Ok(Message {
         id: Some(assistant_message_id),
@@ -115,11 +141,43 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
+    let events = NoopRuntimeEventSink;
+
+    query_conversation_resolving_automatic_tools_with_events(
+        output,
+        llm,
+        store,
+        conversation_id,
+        registry,
+        &events,
+    )
+    .await
+}
+
+/// Runs assistant turns while emitting durable persisted-message events.
+pub(crate) async fn query_conversation_resolving_automatic_tools_with_events<O, L, E>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+    events: &E,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+    E: RuntimeEventSink,
+{
     let mut last_assistant_message = None;
 
     loop {
-        match resolve_next_automatic_tool_call_with_registry(store, conversation_id, registry)
-            .await?
+        match resolve_next_automatic_tool_call_with_registry_and_events(
+            store,
+            conversation_id,
+            registry,
+            events,
+        )
+        .await?
         {
             AutomaticToolResolution::Resolved => {}
             AutomaticToolResolution::WaitingForApproval => {
@@ -127,22 +185,24 @@ where
                     return Ok(message);
                 }
 
-                return query_conversation_once_with_registry(
+                return query_conversation_once_with_registry_and_events(
                     output,
                     llm,
                     store,
                     conversation_id,
                     registry,
+                    events,
                 )
                 .await;
             }
             AutomaticToolResolution::Idle => {
-                let message = query_conversation_once_with_registry(
+                let message = query_conversation_once_with_registry_and_events(
                     output,
                     llm,
                     store,
                     conversation_id,
                     registry,
+                    events,
                 )
                 .await?;
                 let has_tool_calls = message
@@ -181,7 +241,22 @@ pub(crate) fn prepare_query_turn_with_registry(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
 ) -> Result<()> {
-    store_policy_denied_tool_results(store, conversation_id, registry)?;
+    let events = NoopRuntimeEventSink;
+
+    prepare_query_turn_with_registry_and_events(store, conversation_id, registry, &events)
+}
+
+/// Prepares a model query and emits events for policy-denied tool results.
+pub(crate) fn prepare_query_turn_with_registry_and_events<E>(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+    events: &E,
+) -> Result<()>
+where
+    E: RuntimeEventSink,
+{
+    store_policy_denied_tool_results(store, conversation_id, registry, events)?;
     validate_query_availability(store, conversation_id)
 }
 
@@ -268,6 +343,7 @@ fn store_policy_denied_tool_results(
     store: &mut Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
+    events: &impl RuntimeEventSink,
 ) -> Result<()> {
     let policy = ToolPolicy;
 
@@ -291,12 +367,13 @@ fn store_policy_denied_tool_results(
             return Ok(());
         };
         let result = ToolExecutionResult::failure(tool_call.id.clone(), tool_call.name(), reason);
-        store_tool_result(
+        let message_id = store_tool_result(
             store,
             conversation_id,
             &execution.result_parent_message_id,
             &result,
         )?;
+        events.tool_result_saved(&message_id);
     }
 }
 
@@ -307,16 +384,17 @@ enum AutomaticToolResolution {
     Resolved,
 }
 
-/// Resolves the next pending tool call when policy does not need user input.
+/// Resolves one pending tool call and emits an event for the stored result.
 ///
 /// Denied calls become failed `role: tool` results. Auto-approved attached
 /// calls execute through the provider registry and then become normal tool
 /// results. Approval-required calls are left untouched so clients can show the
 /// approval request.
-async fn resolve_next_automatic_tool_call_with_registry(
+async fn resolve_next_automatic_tool_call_with_registry_and_events(
     store: &mut Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
+    events: &impl RuntimeEventSink,
 ) -> Result<AutomaticToolResolution> {
     let messages = store.load_active_path(conversation_id)?;
     let Some(execution) = active_tool_execution(&messages) else {
@@ -351,12 +429,13 @@ async fn resolve_next_automatic_tool_call_with_registry(
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
 
-    store_tool_result(
+    let message_id = store_tool_result(
         store,
         conversation_id,
         &pending.result_parent_message_id,
         &result,
     )?;
+    events.tool_result_saved(&message_id);
 
     Ok(AutomaticToolResolution::Resolved)
 }

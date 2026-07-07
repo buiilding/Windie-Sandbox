@@ -97,6 +97,85 @@ export async function countConversationInputTokens(conversationId, modelOverride
   };
 }
 
+function parseSseBlock(block) {
+  const lines = block.split(/\r?\n/);
+  let event = "message";
+  const data = [];
+
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      data.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  if (data.length === 0) return null;
+
+  return {
+    event,
+    data: JSON.parse(data.join("\n")),
+  };
+}
+
+export async function streamConversationQuery(conversationId, modelOverride, onEvent) {
+  const token = apiToken();
+  const response = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { "X-Windie-Api-Token": token } : {}),
+      },
+      body: JSON.stringify({ model: modelOverride || null }),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+    throw new Error(body?.error || `Windie query stream failed: ${response.status}`);
+  }
+
+  if (!response.body) return;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() || "";
+
+    for (const block of blocks) {
+      const parsed = parseSseBlock(block.trim());
+      if (!parsed) continue;
+      await onEvent(parsed);
+      if (parsed.data?.type === "query_error") {
+        throw new Error(parsed.data.error || "Windie query stream failed");
+      }
+    }
+
+    if (done) break;
+  }
+
+  const final = parseSseBlock(buffer.trim());
+  if (final) {
+    await onEvent(final);
+    if (final.data?.type === "query_error") {
+      throw new Error(final.data.error || "Windie query stream failed");
+    }
+  }
+}
+
 export function conversationSummaryFromApi(summary) {
   return {
     id: summary.id,
