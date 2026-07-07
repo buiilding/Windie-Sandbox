@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { createContext, useContext, useMemo, useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import {
   apiRequest,
@@ -52,16 +52,6 @@ function tokenCountKey(conversationId, modelId) {
 function pathNodesForConversation(conversation) {
   if (!conversation) return [];
   return conversation.activePath.map((id) => conversation.nodes[id]).filter(Boolean);
-}
-
-function latestAssistantUsageNode(nodes) {
-  return [...nodes]
-    .reverse()
-    .find(
-      (node) =>
-        node.message.role === "assistant" &&
-        node.message.metadata?.usage?.totalTokens != null
-    );
 }
 
 function stableJson(value) {
@@ -128,7 +118,6 @@ export function WindieProvider({ children }) {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
-  const previousContextSignaturesRef = useRef(null);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -179,31 +168,65 @@ export function WindieProvider({ children }) {
     return tools;
   }, []);
 
-  const loadConversation = useCallback(async (convId, options = {}) => {
-    if (!convId) return null;
-    const query = modelOverride ? `?model=${encodeURIComponent(modelOverride)}` : "";
-    const [report, approvalBody] = await Promise.all([
-      apiRequest(`/api/conversations/${convId}${query}`),
-      apiRequest(`/api/conversations/${convId}/approvals`),
-    ]);
-    let loaded = null;
+  const loadConversation = useCallback(
+    async (convId, options = {}) => {
+      if (!convId) return null;
+      const query = modelOverride ? `?model=${encodeURIComponent(modelOverride)}` : "";
+      const [report, approvalBody] = await Promise.all([
+        apiRequest(`/api/conversations/${convId}${query}`),
+        apiRequest(`/api/conversations/${convId}/approvals`),
+      ]);
+      const loaded = conversationFromInspection(report, null);
 
-    setConversations((prev) => {
-      const fallback = prev.find((conv) => conv.id === convId);
-      loaded = conversationFromInspection(report, fallback);
-      const exists = prev.some((conv) => conv.id === convId);
-      if (!exists) return [loaded, ...prev];
-      return prev.map((conv) => (conv.id === convId ? loaded : conv));
-    });
+      setConversations((prev) => {
+        const fallback = prev.find((conv) => conv.id === convId);
+        const loadedWithFallback = conversationFromInspection(report, fallback);
+        const exists = prev.some((conv) => conv.id === convId);
+        if (!exists) return [loadedWithFallback, ...prev];
+        return prev.map((conv) => (conv.id === convId ? loadedWithFallback : conv));
+      });
 
-    if (options.selectLast !== false) {
-      const last = loaded?.activePath?.[loaded.activePath.length - 1] || loaded?.rootId || null;
-      setSelectedNodeId((current) => (current && loaded?.nodes[current] ? current : last));
-    }
-    setApprovals(approvalBody.approvals || []);
+      if (options.selectLast !== false) {
+        const last = loaded?.activePath?.[loaded.activePath.length - 1] || loaded?.rootId || null;
+        setSelectedNodeId((current) => (current && loaded?.nodes[current] ? current : last));
+      }
+      setApprovals(approvalBody.approvals || []);
 
-    return loaded;
-  }, [modelOverride]);
+      const loadedModelId = modelOverride || loaded?.model || null;
+      const signature = contextSignatureParts(loaded, loadedModelId).fullSignature;
+      const countKey = tokenCountKey(loaded?.id, loadedModelId);
+      countConversationInputTokens(loaded.id, loadedModelId)
+        .then((count) => {
+          setInputTokenCounts((prev) => ({
+            ...prev,
+            [countKey]: {
+              ...count,
+              source: count.source || "prequery_input",
+              signature,
+              measuredAt: Date.now(),
+            },
+          }));
+        })
+        .catch((error) => {
+          setApiError(error.message);
+          setInputTokenCounts((prev) => ({
+            ...prev,
+            [countKey]: {
+              inputTokens: null,
+              totalTokens: null,
+              model: loadedModelId,
+              raw: null,
+              source: "prequery_input",
+              signature,
+              measuredAt: Date.now(),
+            },
+          }));
+        });
+
+      return loaded;
+    },
+    [modelOverride]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -267,103 +290,21 @@ export function WindieProvider({ children }) {
     [activeConv, activeModelId]
   );
 
-  const refreshInputTokenCount = useCallback(
-    async (conversation, modelId, signature) => {
-      if (!conversation?.id) return null;
-
-      const countKey = tokenCountKey(conversation.id, modelId);
-
-      try {
-        const count = await countConversationInputTokens(conversation.id, modelId);
-        setInputTokenCounts((prev) => ({
-          ...prev,
-          [countKey]: {
-            ...count,
-            source: count.source || "prequery_input",
-            signature,
-            measuredAt: Date.now(),
-          },
-        }));
-        setApiError(null);
-        return count;
-      } catch (error) {
-        setApiError(error.message);
-        setInputTokenCounts((prev) => ({
-          ...prev,
-          [countKey]: {
-            inputTokens: null,
-            totalTokens: null,
-            model: modelId,
-            raw: null,
-            source: "prequery_input",
-            signature,
-            measuredAt: Date.now(),
-          },
-        }));
-        return null;
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    if (!activeConv || !activeContextSignatures.fullSignature) return;
-
-    const previous = previousContextSignaturesRef.current;
-    const pathChanged =
-      !previous || previous.pathSignature !== activeContextSignatures.pathSignature;
-    const setupChanged =
-      !previous || previous.setupSignature !== activeContextSignatures.setupSignature;
-    const latestNode = activePathNodes[activePathNodes.length - 1] || null;
-    const latestNodeIsCompletedAssistant =
-      latestNode?.message.role === "assistant" &&
-      latestNode.message.metadata?.usage?.totalTokens != null;
-    previousContextSignaturesRef.current = activeContextSignatures;
-
-    if (latestNodeIsCompletedAssistant && (!previous || (pathChanged && !setupChanged))) {
-      return;
-    }
-
-    refreshInputTokenCount(activeConv, activeModelId, activeContextSignatures.fullSignature);
-  }, [
-    activeConv,
-    activeModelId,
-    activePathNodes,
-    activeContextSignatures,
-    refreshInputTokenCount,
-  ]);
-
   const tokenMeter = useMemo(() => {
     const selectedModel = models.find((model) => model.id === activeModelId);
     const maxTokens = selectedModel?.contextLength ?? selectedModel?.maxInputTokens ?? null;
-    const latestUsageNode = latestAssistantUsageNode(activePathNodes);
-    const latestNode = activePathNodes[activePathNodes.length - 1] || null;
-    const latestNodeIsCompletedAssistant =
-      latestNode?.message.role === "assistant" &&
-      latestNode.message.metadata?.usage?.totalTokens != null;
     const inputCount = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
-    const matchingInputCount =
-      inputCount?.signature === activeContextSignatures.fullSignature ? inputCount : null;
 
     return {
-      used:
-        matchingInputCount?.inputTokens ??
-        (latestNodeIsCompletedAssistant
-          ? latestUsageNode?.message.metadata?.usage?.totalTokens
-          : null) ??
-        null,
+      used: inputCount?.inputTokens ?? null,
       max: maxTokens,
       model: activeModelId,
-      measuredModel: latestUsageNode?.message.model || null,
-      source:
-        matchingInputCount?.source ||
-        (latestNodeIsCompletedAssistant ? "assistant_total" : null),
+      measuredModel: inputCount?.model || null,
+      source: inputCount?.source || null,
     };
   }, [
     activeConv?.id,
-    activeContextSignatures.fullSignature,
     activeModelId,
-    activePathNodes,
     inputTokenCounts,
     models,
   ]);

@@ -15,9 +15,6 @@ function tokenMeterTitle(source) {
   if (source === "prequery_synthetic_input") {
     return "Approximate current token count using synthetic input";
   }
-  if (source === "assistant_total") {
-    return "Latest active-path assistant total tokens over selected model context";
-  }
   return "Token count over selected model context";
 }
 
