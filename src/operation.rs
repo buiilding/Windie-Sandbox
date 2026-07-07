@@ -21,7 +21,7 @@ use crate::conversation::{
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::{ImageInput, read_image_input, validate_image_input_bytes};
-use crate::llm::{self, BaseUrl, BifrostClient, ModelInfo, ModelName};
+use crate::llm::{self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
     approve_tool_call, approve_tool_call_with_registry, deny_tool_call, pending_tool_approvals,
@@ -46,10 +46,46 @@ pub enum MessageInputPart {
     ImageBytes { mime_type: String, bytes: Vec<u8> },
 }
 
+const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
+
 /// Full message tree plus the selected active node.
 pub struct ConversationTree {
     pub messages: Vec<Message>,
     pub active_message_id: Option<MessageId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Source of a pre-query input-token count.
+pub enum InputTokenCountSource {
+    PrequeryInput,
+    PrequerySyntheticInput,
+}
+
+impl InputTokenCountSource {
+    /// Returns the stable API/UI label for this count source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PrequeryInput => "prequery_input",
+            Self::PrequerySyntheticInput => "prequery_synthetic_input",
+        }
+    }
+}
+
+/// Read-only model-facing payload pieces prepared for input-token counting.
+///
+/// Loading these pieces is separate from the async Bifrost request so API
+/// handlers can release SQLite state before awaiting network I/O.
+pub struct InputTokenCountContext {
+    model_messages: Vec<Message>,
+    tool_schemas: Vec<ToolSchema>,
+    source: InputTokenCountSource,
+}
+
+impl InputTokenCountContext {
+    /// Returns whether the count uses real context input or synthetic input.
+    pub fn source(&self) -> InputTokenCountSource {
+        self.source
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -217,6 +253,68 @@ pub async fn list_models(gateway_url: GatewayUrl, base_url: BaseUrl) -> Result<V
     require_gateway_running(gateway_url).await?;
 
     llm::list_models(base_url).await
+}
+
+/// Builds the current model-facing input-token context for one conversation.
+///
+/// This is a read-only preview operation. It builds the same flattened context
+/// and attached tool schema list used by query execution, but it does not run
+/// query preparation because that path can persist automatic tool results.
+/// Bifrost requires at least one Responses input item before it can count tool
+/// schema tokens, so a tool-only setup uses a tiny synthetic system message
+/// that is never persisted and never sent during a real query.
+pub fn conversation_input_token_context(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<Option<InputTokenCountContext>> {
+    let mut model_messages = ContextBuilder::build(store, conversation_id)?;
+    let tool_schemas = store.load_tool_schemas(conversation_id)?;
+    let source = if model_messages.is_empty() {
+        if tool_schemas.is_empty() {
+            return Ok(None);
+        }
+        model_messages.push(synthetic_input_token_count_message());
+        InputTokenCountSource::PrequerySyntheticInput
+    } else {
+        InputTokenCountSource::PrequeryInput
+    };
+
+    Ok(Some(InputTokenCountContext {
+        model_messages,
+        tool_schemas,
+        source,
+    }))
+}
+
+/// Builds the tiny provider input needed to count a tool-only setup.
+fn synthetic_input_token_count_message() -> Message {
+    Message {
+        id: None,
+        parent_message_id: None,
+        role: Role::System,
+        content: SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE.to_string(),
+        parts: Vec::new(),
+        metadata: None,
+    }
+}
+
+/// Counts prepared model-facing input tokens through Bifrost.
+pub async fn count_input_tokens_for_context(
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+    model: &ModelName,
+    context: Option<InputTokenCountContext>,
+) -> Result<Option<InputTokenCount>> {
+    let Some(context) = context else {
+        return Ok(None);
+    };
+    require_gateway_running(gateway_url).await?;
+
+    let client = BifrostClient::new(base_url, model.clone());
+    client
+        .count_input_tokens(&context.model_messages, &context.tool_schemas)
+        .await
+        .map(Some)
 }
 
 /// Loads the active path shown by the CLI and inspector.
@@ -824,6 +922,38 @@ mod tests {
         let messages = active_path(&store, &conversation_id).unwrap();
         assert_eq!(messages[0].content, "clipboard");
         assert_eq!(messages[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn input_token_context_uses_synthetic_input_for_tool_only_setup() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store).unwrap();
+        insert_tool_schema(
+            &mut store,
+            &conversation_id,
+            &ToolSchema {
+                name: ToolSchemaName::new("run_shell"),
+                description: "Run a shell command".to_string(),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+        )
+        .unwrap();
+
+        let context = conversation_input_token_context(&store, &conversation_id)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            context.source(),
+            InputTokenCountSource::PrequerySyntheticInput
+        );
+        assert_eq!(context.model_messages.len(), 1);
+        assert_eq!(context.model_messages[0].role, Role::System);
+        assert_eq!(
+            context.model_messages[0].content,
+            SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE
+        );
+        assert_eq!(context.tool_schemas.len(), 1);
     }
 
     #[test]

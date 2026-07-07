@@ -73,7 +73,28 @@ export async function listModels() {
   return (body.models || []).map((model) => ({
     id: model.id,
     label: model.id,
+    contextLength: model.context_length ?? null,
+    maxInputTokens: model.max_input_tokens ?? null,
+    maxOutputTokens: model.max_output_tokens ?? null,
   }));
+}
+
+export async function countConversationInputTokens(conversationId, modelOverride) {
+  const body = await apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/input-tokens`,
+    {
+      method: "POST",
+      body: JSON.stringify({ model: modelOverride || null }),
+    }
+  );
+
+  return {
+    inputTokens: body?.input_tokens ?? null,
+    totalTokens: body?.total_tokens ?? null,
+    model: body?.model ?? null,
+    source: body?.source || null,
+    raw: body?.raw || null,
+  };
 }
 
 export function conversationSummaryFromApi(summary) {
@@ -188,6 +209,7 @@ function metadataFromApi(metadata) {
       arguments: parseJson(call.function?.arguments || "{}"),
       status: "received",
     })),
+    toolCallId: metadata.tool_call_id || null,
     reasoning: metadata.reasoning || undefined,
     refusal: metadata.refusal
       ? { category: "provider_refusal", reason: metadata.refusal }
@@ -202,6 +224,14 @@ function metadataFromApi(metadata) {
           durationSec: 0,
           speakers: 1,
           transcriptTokens: metadata.audio.transcript?.split(/\s+/).filter(Boolean).length || 0,
+        }
+      : undefined,
+    usage: metadata.usage
+      ? {
+          inputTokens: metadata.usage.input_tokens ?? null,
+          outputTokens: metadata.usage.output_tokens ?? null,
+          totalTokens: metadata.usage.total_tokens ?? null,
+          raw: metadata.usage.raw || null,
         }
       : undefined,
   };

@@ -13,7 +13,9 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::conversation::{ImagePart, Message, MessageMetadata, MessagePart, ToolCall, ToolSchema};
+use crate::conversation::{
+    ImagePart, Message, MessageMetadata, MessagePart, TokenUsage, ToolCall, ToolSchema,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the OpenAI-compatible provider adapter.
@@ -64,6 +66,9 @@ impl std::fmt::Display for ModelName {
 /// One model returned by Bifrost's OpenAI-compatible `/models` endpoint.
 pub struct ModelInfo {
     pub id: String,
+    pub context_length: Option<u64>,
+    pub max_input_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 /// Minimal LLM interface needed by runtime query execution.
@@ -89,6 +94,19 @@ pub struct AssistantResponse {
     pub finish_reason: Option<FinishReason>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+/// Token count returned by Bifrost's Responses input-token endpoint.
+///
+/// `input_tokens` is the model-facing input count for the request Windie built.
+/// Bifrost may also return provider-specific totals or breakdown fields, so the
+/// full response is preserved for future UI or persistence work.
+pub struct InputTokenCount {
+    pub input_tokens: u64,
+    pub total_tokens: Option<u64>,
+    pub model: Option<String>,
+    pub raw: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Normalized reason the provider stopped the assistant stream.
 pub enum FinishReason {
@@ -112,6 +130,15 @@ struct ResponsesRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ResponsesTool<'a>>>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+/// JSON request body sent to `/responses/input_tokens`.
+struct ResponsesInputTokensRequest<'a> {
+    model: &'a str,
+    input: Vec<ResponsesInputItem<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ResponsesTool<'a>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,6 +267,7 @@ struct ResponsesStreamItem {
 /// Terminal response body used by failed/incomplete Responses events.
 struct ResponsesStreamResponse {
     error: Option<ResponsesStreamError>,
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +309,51 @@ impl BifrostClient {
     /// Builds the Responses endpoint from the normalized base URL.
     pub fn responses_endpoint(&self) -> String {
         format!("{}/responses", self.base_url)
+    }
+
+    /// Builds the Responses input-token endpoint from the normalized base URL.
+    pub fn input_tokens_endpoint(&self) -> String {
+        format!("{}/responses/input_tokens", self.base_url)
+    }
+
+    /// Counts the model-facing input tokens for one Responses request.
+    ///
+    /// The request uses the same message and tool serializers as streaming
+    /// inference. This keeps the count endpoint aligned with the payload Windie
+    /// would send to Bifrost for a real model turn.
+    pub async fn count_input_tokens(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> Result<InputTokenCount> {
+        let request = ResponsesInputTokensRequest {
+            model: self.model.as_str(),
+            input: responses_input(messages),
+            tools: responses_tools(tools),
+        };
+
+        let response = self
+            .http
+            .post(self.input_tokens_endpoint())
+            .json(&request)
+            .send()
+            .await
+            .context("failed to send responses input token request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "responses input token request failed with {status}: {body}"
+            ));
+        }
+
+        let raw = response
+            .json::<serde_json::Value>()
+            .await
+            .context("failed to parse responses input token response")?;
+
+        input_token_count_from_raw(raw)
     }
 
     /// Sends the Responses request, streams assistant text deltas to the
@@ -706,9 +779,11 @@ impl AssistantStreamState {
                 }
             }
             "response.completed" => {
+                self.push_response_usage(event.response);
                 self.finish_reason.get_or_insert(FinishReason::Stop);
             }
             "response.incomplete" => {
+                self.push_response_usage(event.response);
                 self.finish_reason = Some(FinishReason::Length);
             }
             "response.failed" | "error" => {
@@ -744,6 +819,15 @@ impl AssistantStreamState {
             partial.arguments = arguments;
         }
         self.finish_reason = Some(FinishReason::ToolCalls);
+    }
+
+    /// Persists provider-reported usage from terminal response events.
+    fn push_response_usage(&mut self, response: Option<ResponsesStreamResponse>) {
+        let Some(usage) = response.and_then(|response| response.usage) else {
+            return;
+        };
+
+        self.metadata.usage = Some(token_usage_from_raw(usage));
     }
 
     /// Returns the mutable partial tool call for one stream output index.
@@ -815,6 +899,36 @@ impl PartialToolCall {
     }
 }
 
+/// Extracts stable token totals while preserving the full raw usage payload.
+fn token_usage_from_raw(raw: serde_json::Value) -> TokenUsage {
+    TokenUsage {
+        input_tokens: raw.get("input_tokens").and_then(serde_json::Value::as_u64),
+        output_tokens: raw.get("output_tokens").and_then(serde_json::Value::as_u64),
+        total_tokens: raw.get("total_tokens").and_then(serde_json::Value::as_u64),
+        raw,
+    }
+}
+
+/// Extracts the stable count fields from Bifrost's input-token response.
+fn input_token_count_from_raw(raw: serde_json::Value) -> Result<InputTokenCount> {
+    let input_tokens = raw
+        .get("input_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("responses input token response missing input_tokens"))?;
+    let total_tokens = raw.get("total_tokens").and_then(serde_json::Value::as_u64);
+    let model = raw
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
+    Ok(InputTokenCount {
+        input_tokens,
+        total_tokens,
+        model,
+        raw,
+    })
+}
+
 /// Returns the most useful error text from a failed Responses stream event.
 fn event_error_text(event: &ResponsesStreamEvent) -> String {
     event
@@ -875,6 +989,19 @@ mod tests {
         assert_eq!(
             llm.responses_endpoint(),
             "http://localhost:8080/v1/responses"
+        );
+    }
+
+    #[test]
+    fn builds_input_tokens_endpoint_from_base_url() {
+        let llm = BifrostClient::new(
+            BaseUrl::new("http://localhost:8080/v1/"),
+            ModelName::new("openai/gpt-4o-mini"),
+        );
+
+        assert_eq!(
+            llm.input_tokens_endpoint(),
+            "http://localhost:8080/v1/responses/input_tokens"
         );
     }
 
@@ -1187,6 +1314,50 @@ mod tests {
     }
 
     #[test]
+    fn serializes_input_token_request_without_stream() {
+        let messages = vec![Message {
+            id: None,
+            parent_message_id: None,
+            role: Role::System,
+            content: "You are concise.".to_string(),
+            parts: Vec::new(),
+            metadata: None,
+        }];
+        let request = ResponsesInputTokensRequest {
+            model: "openai/gpt-4o-mini",
+            input: responses_input(&messages),
+            tools: None,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "model": "openai/gpt-4o-mini",
+                "input": [{"type": "message", "role": "system", "content": "You are concise."}]
+            })
+        );
+    }
+
+    #[test]
+    fn parses_input_token_count_response() {
+        let response = input_token_count_from_raw(serde_json::json!({
+            "object": "response.input_tokens",
+            "model": "openai/gpt-4o-mini",
+            "input_tokens": 42,
+            "total_tokens": 45,
+            "input_tokens_details": {"cached_tokens": 3}
+        }))
+        .unwrap();
+
+        assert_eq!(response.input_tokens, 42);
+        assert_eq!(response.total_tokens, Some(45));
+        assert_eq!(response.model.as_deref(), Some("openai/gpt-4o-mini"));
+        assert_eq!(response.raw["input_tokens_details"]["cached_tokens"], 3);
+    }
+
+    #[test]
     fn parses_stream_content_delta() {
         let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
@@ -1228,6 +1399,27 @@ mod tests {
 
         assert_eq!(response.metadata.refusal.as_deref(), Some("no"));
         assert_eq!(response.metadata.reasoning.as_deref(), Some("think"));
+    }
+
+    #[test]
+    fn parses_stream_usage_metadata() {
+        let mut state = AssistantStreamState::default();
+        let mut handle_delta = |_text: &str| Ok(());
+
+        process_stream_line(
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15,"output_tokens_details":{"reasoning_tokens":1}}}}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+
+        let response = state.finalize().unwrap();
+        let usage = response.metadata.usage.as_ref().unwrap();
+
+        assert_eq!(usage.input_tokens, Some(12));
+        assert_eq!(usage.output_tokens, Some(3));
+        assert_eq!(usage.total_tokens, Some(15));
+        assert_eq!(usage.raw["output_tokens_details"]["reasoning_tokens"], 1);
     }
 
     #[test]

@@ -351,6 +351,23 @@ pub struct AssistantCitation {
     pub kind: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Provider-reported token usage for one completed assistant model call.
+///
+/// The three common token totals are first-class fields because they are stable
+/// across OpenAI-compatible Responses usage payloads. `raw` preserves the full
+/// Bifrost/provider usage object so Windie does not lose newer or
+/// provider-specific accounting details before it has typed contracts for them.
+pub struct TokenUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    pub raw: Value,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 /// Metadata stored on messages outside normal visible text.
 ///
@@ -373,6 +390,8 @@ pub struct MessageMetadata {
     pub audio: Option<AssistantAudio>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<AssistantAnnotation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
 }
 
 impl MessageMetadata {
@@ -385,6 +404,7 @@ impl MessageMetadata {
             && self.reasoning_details.is_empty()
             && self.audio.is_none()
             && self.annotations.is_empty()
+            && self.usage.is_none()
     }
 }
 

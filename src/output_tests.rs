@@ -103,9 +103,15 @@ fn formats_models() {
     let lines = model_lines(&[
         ModelInfo {
             id: "openai/gpt-4o-mini".to_string(),
+            context_length: Some(128_000),
+            max_input_tokens: Some(128_000),
+            max_output_tokens: Some(16_384),
         },
         ModelInfo {
             id: "anthropic/claude-sonnet-4-5".to_string(),
+            context_length: Some(200_000),
+            max_input_tokens: Some(200_000),
+            max_output_tokens: Some(64_000),
         },
     ]);
 

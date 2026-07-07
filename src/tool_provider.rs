@@ -6,9 +6,11 @@
 //! Built-ins, MCP servers, and future plugins should enter runtime through this
 //! same registry shape.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -37,6 +39,7 @@ pub struct ToolProviderRegistry {
     built_in: BuiltInToolProvider,
     mcp_providers: Vec<McpToolProvider>,
     mcp_session_pool: Option<McpSessionPool>,
+    catalog_cache: Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>>,
 }
 
 impl ToolProviderRegistry {
@@ -61,11 +64,13 @@ impl ToolProviderRegistry {
     /// Lists every provider tool that clients may attach to conversations.
     ///
     /// Availability does not grant model access. Clients still need to attach a
-    /// returned definition before the model sees the function schema.
+    /// returned definition before the model sees the function schema. Provider
+    /// catalogs loaded here are cached for later attachment requests in the same
+    /// process.
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
         let mut tools = self.built_in.list_tools();
         for provider in &self.mcp_providers {
-            if let Ok(provider_tools) = provider.list_tools() {
+            if let Ok(provider_tools) = self.list_provider_tools(provider.id()) {
                 tools.extend(provider_tools);
             }
         }
@@ -74,12 +79,22 @@ impl ToolProviderRegistry {
     }
 
     /// Lists available tools for one provider ID.
+    ///
+    /// MCP provider catalogs can require starting a provider process for
+    /// `tools/list`. The API server keeps one registry for the process, so this
+    /// method caches successful catalog loads and lets later attachment
+    /// resolution reuse the backend-owned schema copy.
     pub fn list_provider_tools(&self, provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
         if provider_id.as_str() == WINDIE_PROVIDER_ID {
             return Ok(self.built_in.list_tools());
         }
+        if let Some(tools) = self.cached_provider_tools(provider_id)? {
+            return Ok(tools);
+        }
         if let Some(provider) = self.mcp_provider(provider_id) {
-            return provider.list_tools();
+            let tools = provider.list_tools()?;
+            self.cache_provider_tools(provider_id, &tools)?;
+            return Ok(tools);
         }
 
         Ok(Vec::new())
@@ -145,6 +160,35 @@ impl ToolProviderRegistry {
             .iter()
             .find(|provider| provider.id() == provider_id)
     }
+
+    /// Returns a cached provider catalog when this process has already loaded
+    /// one.
+    fn cached_provider_tools(
+        &self,
+        provider_id: &ToolProviderId,
+    ) -> Result<Option<Vec<ToolDefinition>>> {
+        let cache = self
+            .catalog_cache
+            .lock()
+            .map_err(|_| anyhow!("tool provider catalog cache lock was poisoned"))?;
+
+        Ok(cache.get(provider_id).cloned())
+    }
+
+    /// Stores one backend-owned provider catalog for reuse by later operations.
+    fn cache_provider_tools(
+        &self,
+        provider_id: &ToolProviderId,
+        tools: &[ToolDefinition],
+    ) -> Result<()> {
+        let mut cache = self
+            .catalog_cache
+            .lock()
+            .map_err(|_| anyhow!("tool provider catalog cache lock was poisoned"))?;
+        cache.insert(provider_id.clone(), tools.to_vec());
+
+        Ok(())
+    }
 }
 
 impl Default for ToolProviderRegistry {
@@ -157,6 +201,7 @@ impl Default for ToolProviderRegistry {
                 .map(McpToolProvider::new)
                 .collect(),
             mcp_session_pool: None,
+            catalog_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -606,6 +651,26 @@ mod tests {
         McpToolProvider::new(definition)
     }
 
+    fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    fn cached_test_tool(provider_id: &str, tool_name: &str) -> ToolDefinition {
+        ToolDefinition {
+            schema_name: ToolSchemaName::new(format!("{provider_id}__{tool_name}")),
+            display_name: tool_name.to_string(),
+            description: format!("{tool_name} description"),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new(provider_id),
+                ProviderToolName::new(tool_name),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        }
+    }
+
     #[test]
     fn mcp_schema_names_are_provider_prefixed() {
         assert_eq!(mcp_schema_name("cua_driver", "click"), "cua_driver__click");
@@ -749,6 +814,40 @@ mod tests {
     }
 
     #[test]
+    fn registry_finds_tools_from_cached_provider_catalog() {
+        let provider_id = ToolProviderId::new("missing-mcp");
+        let tool = cached_test_tool(provider_id.as_str(), "cached_tool");
+        let catalog_cache = test_cache();
+        catalog_cache
+            .lock()
+            .unwrap()
+            .insert(provider_id.clone(), vec![tool.clone()]);
+        let registry = ToolProviderRegistry {
+            built_in: BuiltInToolProvider,
+            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                provider_id: "missing-mcp",
+                schema_prefix: "missing_mcp",
+                display_name: "Missing MCP",
+                command: McpCommand {
+                    program: "windie-missing-mcp-provider",
+                    args: &[],
+                    env: &[],
+                },
+                shutdown_command: None,
+                setup: None,
+            })],
+            mcp_session_pool: None,
+            catalog_cache,
+        };
+
+        let found = registry
+            .find_tool(&provider_id, &ProviderToolName::new("cached_tool"))
+            .unwrap();
+
+        assert_eq!(found, Some(tool));
+    }
+
+    #[test]
     fn unavailable_mcp_provider_does_not_hide_builtin_tools() {
         let registry = ToolProviderRegistry {
             built_in: BuiltInToolProvider,
@@ -765,6 +864,7 @@ mod tests {
                 setup: None,
             })],
             mcp_session_pool: None,
+            catalog_cache: test_cache(),
         };
 
         let tools = registry.list_available_tools().unwrap();

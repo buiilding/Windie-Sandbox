@@ -1,6 +1,26 @@
 import { useWindie } from "@/context/WindieContext";
 import { Sun, Moon, GitBranch, Circle, Play, Square } from "lucide-react";
 
+function formatTokenCount(value) {
+  if (value == null) return "--";
+  if (value >= 1_000_000) return `${Number(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
+  if (value >= 1_000) return `${Number(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(value);
+}
+
+function tokenMeterTitle(source) {
+  if (source === "prequery_input") {
+    return "Current input token count over selected model context";
+  }
+  if (source === "prequery_synthetic_input") {
+    return "Approximate current token count using synthetic input";
+  }
+  if (source === "assistant_total") {
+    return "Latest active-path assistant total tokens over selected model context";
+  }
+  return "Token count over selected model context";
+}
+
 export default function TopBar() {
   const {
     theme,
@@ -10,6 +30,7 @@ export default function TopBar() {
     activeConv,
     streaming,
     gatewayRunning,
+    tokenMeter,
     startGateway,
     stopGateway,
   } =
@@ -40,6 +61,18 @@ export default function TopBar() {
       </div>
 
       <div className="flex-1" />
+
+      <div
+        className="flex items-center gap-1.5 text-muted-foreground"
+        title={tokenMeterTitle(tokenMeter?.source)}
+      >
+        <span className="uppercase tracking-widest">tokens</span>
+        <span className="text-foreground">
+          {formatTokenCount(tokenMeter?.used)} / {formatTokenCount(tokenMeter?.max)}
+        </span>
+      </div>
+
+      <div className="h-4 w-px bg-border" />
 
       <div className="flex items-center gap-1 text-muted-foreground">
         <Circle

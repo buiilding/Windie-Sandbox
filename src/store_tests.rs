@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::conversation::{
-    MessagePart, ToolCall, ToolSchema, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart,
+    MessagePart, TokenUsage, ToolCall, ToolSchema, ToolSchemaName, UnsavedImagePart,
+    UnsavedMessagePart,
 };
 use crate::tool::ToolApprovalMode;
 
@@ -453,6 +454,19 @@ fn preserves_metadata() {
             "run_shell",
             r#"{"command":"ls"}"#,
         )],
+        usage: Some(TokenUsage {
+            input_tokens: Some(12),
+            output_tokens: Some(3),
+            total_tokens: Some(15),
+            raw: serde_json::json!({
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "total_tokens": 15,
+                "output_tokens_details": {
+                    "reasoning_tokens": 1
+                }
+            }),
+        }),
         ..Default::default()
     };
 

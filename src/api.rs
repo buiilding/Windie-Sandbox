@@ -30,7 +30,7 @@ use crate::conversation::{
 };
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, ModelInfo, ModelName};
+use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::store::{ConversationInfo, Store};
@@ -162,6 +162,10 @@ fn router(state: ApiState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/approvals/{tool_call_id}/deny",
             post(deny_tool),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/input-tokens",
+            post(count_input_tokens),
         )
         .route("/api/conversations/{conversation_id}/query", post(query))
         .layer(middleware::from_fn_with_state(
@@ -341,11 +345,19 @@ struct ModelListResponse {
 /// One provider-qualified model id available through Bifrost.
 struct ModelResponse {
     id: String,
+    context_length: Option<u64>,
+    max_input_tokens: Option<u64>,
+    max_output_tokens: Option<u64>,
 }
 
 impl From<ModelInfo> for ModelResponse {
     fn from(model: ModelInfo) -> Self {
-        Self { id: model.id }
+        Self {
+            id: model.id,
+            context_length: model.context_length,
+            max_input_tokens: model.max_input_tokens,
+            max_output_tokens: model.max_output_tokens,
+        }
     }
 }
 
@@ -1030,6 +1042,70 @@ async fn deny_tool(
     let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
 
     Ok(Json(ToolResultResponse::from(result)))
+}
+
+#[derive(Debug, Deserialize)]
+/// Request body for counting the current model-facing input tokens.
+struct InputTokensRequest {
+    model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+/// Response body for a read-only input-token count.
+struct InputTokensResponse {
+    input_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    model: Option<String>,
+    source: Option<String>,
+    raw: Option<Value>,
+}
+
+impl InputTokensResponse {
+    /// Builds the API shape while preserving the count source computed before
+    /// the async Bifrost request.
+    fn from_count(count: Option<InputTokenCount>, source: Option<String>) -> Self {
+        match count {
+            Some(count) => Self {
+                input_tokens: Some(count.input_tokens),
+                total_tokens: count.total_tokens,
+                model: count.model,
+                source,
+                raw: Some(count.raw),
+            },
+            None => Self {
+                input_tokens: None,
+                total_tokens: None,
+                model: None,
+                source: None,
+                raw: None,
+            },
+        }
+    }
+}
+
+/// Counts current model-facing input tokens without mutating conversation state.
+async fn count_input_tokens(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<InputTokensRequest>,
+) -> ApiResult<InputTokensResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let store = open_store(&state)?;
+    let model = request.model.unwrap_or_else(|| state.model.clone());
+    let context = operation::conversation_input_token_context(&store, &conversation_id)?;
+    let source = context
+        .as_ref()
+        .map(|context| context.source().as_str().to_string());
+    drop(store);
+    let count = operation::count_input_tokens_for_context(
+        GatewayUrl::new(state.gateway_url),
+        BaseUrl::new(state.base_url),
+        &ModelName::new(model),
+        context,
+    )
+    .await?;
+
+    Ok(Json(InputTokensResponse::from_count(count, source)))
 }
 
 #[derive(Debug, Deserialize)]
