@@ -672,10 +672,10 @@ impl AssistantStreamState {
                 }
             }
             "response.output_text.done" => {
-                if self.content.is_empty() {
-                    if let Some(text) = event.text {
-                        self.content = text;
-                    }
+                if self.content.is_empty()
+                    && let Some(text) = event.text
+                {
+                    self.content = text;
                 }
             }
             "response.refusal.delta" => {
@@ -757,14 +757,13 @@ impl AssistantStreamState {
         if let Some(output_index) = output_index {
             return output_index;
         }
-        if let Some(tool_call_id) = tool_call_id {
-            if let Some((key, _)) = self
+        if let Some(tool_call_id) = tool_call_id
+            && let Some((key, _)) = self
                 .tool_calls
                 .iter()
                 .find(|(_, partial)| partial.id.as_deref() == Some(tool_call_id))
-            {
-                return *key;
-            }
+        {
+            return *key;
         }
 
         self.next_tool_call_key()

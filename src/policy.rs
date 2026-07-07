@@ -55,8 +55,7 @@ impl ToolPolicy {
 
         if attached_tool
             .permissions
-            .iter()
-            .any(|permission| *permission == ToolPermission::LocalShell)
+            .contains(&ToolPermission::LocalShell)
         {
             PolicyDecision::Ask {
                 reason: "shell tool requires approval".to_string(),

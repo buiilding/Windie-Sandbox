@@ -136,6 +136,10 @@ fn router(state: ApiState) -> Router {
             post(attach_tool),
         )
         .route(
+            "/api/conversations/{conversation_id}/tools/batch",
+            post(attach_tools),
+        )
+        .route(
             "/api/conversations/{conversation_id}/tools/{schema_name}",
             axum::routing::delete(detach_tool),
         )
@@ -291,18 +295,24 @@ struct ToolCatalogResponse {
 }
 
 /// Lists provider tools clients may attach to conversations.
-async fn list_tools() -> ApiResult<ToolCatalogResponse> {
+async fn list_tools(State(state): State<ApiState>) -> ApiResult<ToolCatalogResponse> {
     Ok(Json(ToolCatalogResponse {
-        tools: operation::available_tools()?,
+        tools: operation::available_tools_with_registry(&state.tool_registry)?,
     }))
 }
 
 /// Lists available tools for one provider.
-async fn list_provider_tools(Path(provider_id): Path<String>) -> ApiResult<ToolCatalogResponse> {
+async fn list_provider_tools(
+    State(state): State<ApiState>,
+    Path(provider_id): Path<String>,
+) -> ApiResult<ToolCatalogResponse> {
     let provider_id = ToolProviderId::new(provider_id);
 
     Ok(Json(ToolCatalogResponse {
-        tools: operation::available_provider_tools(&provider_id)?,
+        tools: operation::available_provider_tools_with_registry(
+            &state.tool_registry,
+            &provider_id,
+        )?,
     }))
 }
 
@@ -748,11 +758,23 @@ struct ToolSchemaResponse {
     name: String,
 }
 
+#[derive(Debug, Serialize)]
+/// Response for batch tool schema mutations.
+struct ToolSchemasResponse {
+    names: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 /// Request body for attaching an available provider tool to a conversation.
 struct AttachToolRequest {
     provider_id: String,
     tool_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+/// Request body for attaching multiple available provider tools.
+struct AttachToolsRequest {
+    tools: Vec<AttachToolRequest>,
 }
 
 /// Attaches one available provider tool to a conversation.
@@ -765,11 +787,49 @@ async fn attach_tool(
     let provider_id = ToolProviderId::new(request.provider_id);
     let tool_name = ProviderToolName::new(request.tool_name);
     let mut store = open_store(&state)?;
-    let schema_name =
-        operation::attach_tool(&mut store, &conversation_id, &provider_id, &tool_name)?;
+    let schema_name = operation::attach_tool_with_registry(
+        &mut store,
+        &conversation_id,
+        &provider_id,
+        &tool_name,
+        &state.tool_registry,
+    )?;
 
     Ok(Json(ToolSchemaResponse {
         name: schema_name.as_str().to_string(),
+    }))
+}
+
+/// Attaches multiple available provider tools to a conversation.
+async fn attach_tools(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<AttachToolsRequest>,
+) -> ApiResult<ToolSchemasResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let requests = request
+        .tools
+        .into_iter()
+        .map(|tool| {
+            operation::ToolAttachmentInput::new(
+                ToolProviderId::new(tool.provider_id),
+                ProviderToolName::new(tool.tool_name),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut store = open_store(&state)?;
+    let schema_names = operation::attach_tools_with_registry(
+        &mut store,
+        &conversation_id,
+        &requests,
+        &state.tool_registry,
+    )?;
+
+    Ok(Json(ToolSchemasResponse {
+        names: schema_names
+            .into_iter()
+            .map(|name| name.as_str().to_string())
+            .collect(),
     }))
 }
 
@@ -908,10 +968,14 @@ async fn list_approvals(
 ) -> ApiResult<ApprovalListResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let store = open_store(&state)?;
-    let approvals = operation::list_tool_approvals(&store, &conversation_id)?
-        .into_iter()
-        .map(ApprovalResponse::from)
-        .collect();
+    let approvals = operation::list_tool_approvals_with_registry(
+        &store,
+        &conversation_id,
+        &state.tool_registry,
+    )?
+    .into_iter()
+    .map(ApprovalResponse::from)
+    .collect();
 
     Ok(Json(ApprovalListResponse { approvals }))
 }
@@ -1503,6 +1567,53 @@ mod tests {
         )
         .await;
         assert!(listed["conversations"].as_array().unwrap().is_empty());
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn batch_attach_tools_route_attaches_provider_tools() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+
+        let attached = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::POST,
+                    &format!("/api/conversations/{conversation_id}/tools/batch"),
+                    Some(json!({
+                        "tools": [
+                            {
+                                "provider_id": "windie",
+                                "tool_name": "run_shell"
+                            }
+                        ]
+                    })),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let inspected = response_json(
+            app.oneshot(authed_request(
+                Method::GET,
+                &format!("/api/conversations/{conversation_id}"),
+                None,
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+
+        assert_eq!(attached["names"], json!(["run_shell"]));
+        assert_eq!(inspected["tool_schemas"][0]["name"], "run_shell");
         let _ = fs::remove_file(db_path);
     }
 

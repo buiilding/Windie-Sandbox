@@ -275,17 +275,17 @@ export function WindieProvider({ children }) {
 
   const addToolSchemas = useCallback(
     (convId, toolSchemas) =>
-      runMutation(async () => {
-        for (const toolSchema of toolSchemas) {
-          await apiRequest(`/api/conversations/${convId}/tools`, {
-            method: "POST",
-            body: JSON.stringify({
+      runMutation(() =>
+        apiRequest(`/api/conversations/${convId}/tools/batch`, {
+          method: "POST",
+          body: JSON.stringify({
+            tools: toolSchemas.map((toolSchema) => ({
               provider_id: toolSchema.providerId,
               tool_name: toolSchema.providerToolName,
-            }),
-          });
-        }
-      }),
+            })),
+          }),
+        })
+      ),
     [runMutation]
   );
 

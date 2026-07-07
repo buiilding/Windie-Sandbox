@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -26,8 +26,6 @@ const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SHUTDOWN_RETRY_DELAY: Duration = Duration::from_millis(750);
 const MCP_SHUTDOWN_RETRIES: usize = 4;
 const MCP_STDERR_MAX_BYTES: usize = 16 * 1024;
-
-static PERSISTENT_SESSIONS: OnceLock<Arc<Mutex<PersistentMcpSessions>>> = OnceLock::new();
 
 /// Process command for one approved MCP provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,38 +160,56 @@ pub fn call_tool_with_shutdown(
     result
 }
 
-/// Calls one MCP provider tool through a process-wide persistent provider
-/// session.
+/// Owns persistent MCP provider sessions for one registry/client.
 ///
 /// The persistent session is keyed by provider ID, not command string, because
 /// provider identity is the routing boundary used by attached tool schemas. The
 /// session is stopped after a period of inactivity, and stopping the session
 /// also runs the provider shutdown hook when one is configured.
-pub fn call_tool_persistent(
-    provider_id: &str,
-    command: McpCommand,
-    shutdown_command: Option<McpCommand>,
-    name: &str,
-    arguments: Value,
-) -> Result<Value> {
-    let sessions = persistent_sessions();
-    let mut sessions = sessions
-        .lock()
-        .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?;
-
-    sessions.call_tool(provider_id, command, shutdown_command, name, arguments)
+#[derive(Clone)]
+pub struct McpSessionPool {
+    sessions: Arc<Mutex<PersistentMcpSessions>>,
 }
 
-/// Returns the process-wide persistent MCP session manager and starts its idle
-/// reaper on first use.
-fn persistent_sessions() -> Arc<Mutex<PersistentMcpSessions>> {
-    PERSISTENT_SESSIONS
-        .get_or_init(|| {
-            let sessions = Arc::new(Mutex::new(PersistentMcpSessions::default()));
-            spawn_idle_reaper(Arc::clone(&sessions));
-            sessions
-        })
-        .clone()
+impl std::fmt::Debug for McpSessionPool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpSessionPool")
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpSessionPool {
+    /// Creates a registry-owned persistent MCP session pool.
+    pub fn new() -> Self {
+        let sessions = Arc::new(Mutex::new(PersistentMcpSessions::default()));
+        spawn_idle_reaper(Arc::clone(&sessions));
+
+        Self { sessions }
+    }
+
+    /// Calls one MCP provider tool through this pool's persistent session.
+    pub fn call_tool(
+        &self,
+        provider_id: &str,
+        command: McpCommand,
+        shutdown_command: Option<McpCommand>,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?;
+
+        sessions.call_tool(provider_id, command, shutdown_command, name, arguments)
+    }
+}
+
+impl Default for McpSessionPool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Starts a small background loop that stops idle persistent MCP sessions.
@@ -455,7 +471,7 @@ impl McpSession {
                 Ok(response) => response,
                 Err(_) => continue,
             };
-            if response.id != Value::from(request_id) {
+            if response.id != request_id {
                 continue;
             }
             if let Some(error) = response.error {
@@ -499,7 +515,9 @@ fn run_shutdown_best_effort(command: Option<McpCommand>) {
         if attempt > 0 {
             std::thread::sleep(MCP_SHUTDOWN_RETRY_DELAY);
         }
-        let _ = run_shutdown_command(command);
+        if run_shutdown_command(command).is_ok() {
+            return;
+        }
     }
 }
 

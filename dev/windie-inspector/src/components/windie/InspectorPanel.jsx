@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useWindie } from "@/context/WindieContext";
 import { ROLE_TOKENS } from "@/lib/mockData";
 import {
@@ -10,6 +10,7 @@ import {
   ChevronDown,
   Route,
   Plus,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -76,6 +77,9 @@ export default function InspectorPanel() {
   } = useWindie();
   const [editingSys, setEditingSys] = useState(false);
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
+  const [pendingToolActionKeys, setPendingToolActionKeys] = useState([]);
+  const [collapsedToolProviderIds, setCollapsedToolProviderIds] = useState([]);
+  const pendingToolActionKeysRef = useRef(new Set());
 
   useEffect(() => {
     setSysDraft(activeConv?.systemPrompt || "");
@@ -87,6 +91,38 @@ export default function InspectorPanel() {
     () => new Set(toolSchemas.map((schema) => schema.name)),
     [toolSchemas]
   );
+  const pendingToolActions = useMemo(
+    () => new Set(pendingToolActionKeys),
+    [pendingToolActionKeys]
+  );
+  const collapsedToolProviders = useMemo(
+    () => new Set(collapsedToolProviderIds),
+    [collapsedToolProviderIds]
+  );
+  const toggleToolProvider = (providerId) => {
+    setCollapsedToolProviderIds((current) =>
+      current.includes(providerId)
+        ? current.filter((id) => id !== providerId)
+        : [...current, providerId]
+    );
+  };
+  const setToolActionPending = (key, pending) => {
+    const next = new Set(pendingToolActionKeysRef.current);
+    if (pending) next.add(key);
+    else next.delete(key);
+    pendingToolActionKeysRef.current = next;
+    setPendingToolActionKeys([...next]);
+  };
+  const runToolAction = async (key, action, successMessage, description) => {
+    if (pendingToolActionKeysRef.current.has(key)) return;
+    setToolActionPending(key, true);
+    try {
+      await action();
+      toast.message(successMessage, description ? { description } : undefined);
+    } finally {
+      setToolActionPending(key, false);
+    }
+  };
   const groupedToolSchemas = useMemo(
     () => groupToolSchemasByProvider(availableToolSchemas),
     [availableToolSchemas]
@@ -114,7 +150,10 @@ export default function InspectorPanel() {
         inspector
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto windie-scroll">
+      <div
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden windie-scroll"
+        style={{ scrollbarGutter: "stable" }}
+      >
         {/* Conversation Metadata */}
         <Section title="conversation" testId="inspector-section-conversation">
           <KV k="id" v={activeConv.id} />
@@ -479,11 +518,31 @@ export default function InspectorPanel() {
                   const attachedTools = group.tools.filter((schema) =>
                     attachedToolNames.has(schema.name)
                   );
+                  const addProviderKey = `provider:add:${activeConv.id}:${group.providerId}`;
+                  const removeProviderKey = `provider:remove:${activeConv.id}:${group.providerId}`;
+                  const addProviderPending = pendingToolActions.has(addProviderKey);
+                  const removeProviderPending = pendingToolActions.has(removeProviderKey);
+                  const providerPending = addProviderPending || removeProviderPending;
+                  const providerCollapsed = collapsedToolProviders.has(group.providerId);
 
                   return (
                     <div key={group.providerId} className="border border-border">
-                      <div className="min-h-8 px-2 py-1.5 flex items-center justify-between gap-2 bg-surface/40 border-b border-border">
-                        <div className="min-w-0">
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => toggleToolProvider(group.providerId)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleToolProvider(group.providerId);
+                          }
+                        }}
+                        className={`w-full min-h-8 px-2 py-1.5 flex items-center justify-between gap-2 bg-surface/40 hover:bg-surface-hover ${
+                          providerCollapsed ? "" : "border-b border-border"
+                        }`}
+                        aria-expanded={!providerCollapsed}
+                      >
+                        <div className="min-w-0 text-left">
                           <div className="font-mono text-[10px] uppercase tracking-widest text-foreground">
                             {providerLabel(group.providerId)}
                           </div>
@@ -496,55 +555,77 @@ export default function InspectorPanel() {
                             <button
                               type="button"
                               data-testid={`tool-provider-add-${group.providerId}`}
-                              onClick={() => {
-                                addToolSchemas(activeConv.id, unattachedTools);
-                                toast.message("tool provider added", {
-                                  description: providerLabel(group.providerId),
-                                });
+                              disabled={providerPending}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                runToolAction(
+                                  addProviderKey,
+                                  () => addToolSchemas(activeConv.id, unattachedTools),
+                                  "tool provider added",
+                                  providerLabel(group.providerId)
+                                );
                               }}
-                              className="size-7 grid place-items-center border border-border hover:bg-surface-hover"
+                              className="size-7 grid place-items-center border border-border hover:bg-surface-hover disabled:cursor-wait disabled:opacity-50"
                               aria-label={`Add ${providerLabel(group.providerId)} tools`}
                             >
-                              <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
+                              {addProviderPending ? (
+                                <Loader2 className="size-3 text-muted-foreground animate-spin" strokeWidth={1.75} />
+                              ) : (
+                                <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
+                              )}
                             </button>
                           )}
                           {attachedTools.length > 0 && (
                             <button
                               type="button"
                               data-testid={`tool-provider-remove-${group.providerId}`}
-                              onClick={() => {
-                                removeToolSchemas(
-                                  activeConv.id,
-                                  attachedTools.map((schema) => schema.name)
+                              disabled={providerPending}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                runToolAction(
+                                  removeProviderKey,
+                                  () =>
+                                    removeToolSchemas(
+                                      activeConv.id,
+                                      attachedTools.map((schema) => schema.name)
+                                    ),
+                                  "tool provider removed",
+                                  providerLabel(group.providerId)
                                 );
-                                toast.message("tool provider removed", {
-                                  description: providerLabel(group.providerId),
-                                });
                               }}
-                              className="size-7 grid place-items-center border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover"
+                              className="size-7 grid place-items-center border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover disabled:cursor-wait disabled:opacity-50"
                               aria-label={`Remove ${providerLabel(group.providerId)} tools`}
                             >
-                              <Trash2 className="size-3" strokeWidth={1.75} />
+                              {removeProviderPending ? (
+                                <Loader2 className="size-3 animate-spin" strokeWidth={1.75} />
+                              ) : (
+                                <Trash2 className="size-3" strokeWidth={1.75} />
+                              )}
                             </button>
                           )}
                         </div>
                       </div>
 
-                      <div className="divide-y divide-border">
+                      {!providerCollapsed && <div className="divide-y divide-border">
                         {group.tools.map((schema) => {
                           const attached = attachedToolNames.has(schema.name);
                           const displayName = schema.providerToolName || schema.name;
+                          const addToolKey = `tool:add:${activeConv.id}:${schema.name}`;
+                          const removeToolKey = `tool:remove:${activeConv.id}:${schema.name}`;
+                          const addToolPending = pendingToolActions.has(addToolKey);
+                          const removeToolPending = pendingToolActions.has(removeToolKey);
+                          const toolPending = addToolPending || removeToolPending || providerPending;
 
                           return (
                             <div
                               key={schema.name}
                               className="w-full min-h-8 pl-4 pr-2 py-1.5 flex items-center justify-between gap-2"
                             >
-                              <span className="min-w-0">
-                                <span className="block font-mono text-[11px] text-[hsl(var(--tool-call))]">
+                              <span className="min-w-0 flex-1 overflow-hidden">
+                                <span className="block font-mono text-[11px] text-[hsl(var(--tool-call))] break-words">
                                   {displayName}
                                 </span>
-                                <span className="block text-[10px] text-muted-foreground leading-snug">
+                                <span className="block text-[10px] text-muted-foreground leading-snug break-words">
                                   {schema.description}
                                 </span>
                               </span>
@@ -552,33 +633,51 @@ export default function InspectorPanel() {
                                 <button
                                   type="button"
                                   data-testid={`tool-catalog-remove-${schema.name}`}
-                                  onClick={() => {
-                                    removeToolSchema(activeConv.id, schema.name);
-                                    toast.message("tool schema removed", { description: schema.name });
-                                  }}
-                                  className="size-7 grid place-items-center shrink-0 border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover"
+                                  disabled={toolPending}
+                                  onClick={() =>
+                                    runToolAction(
+                                      removeToolKey,
+                                      () => removeToolSchema(activeConv.id, schema.name),
+                                      "tool schema removed",
+                                      schema.name
+                                    )
+                                  }
+                                  className="size-7 grid place-items-center shrink-0 border border-border text-[hsl(var(--destructive))] hover:bg-surface-hover disabled:cursor-wait disabled:opacity-50"
                                   aria-label={`Remove ${schema.name}`}
                                 >
-                                  <Trash2 className="size-3" strokeWidth={1.75} />
+                                  {removeToolPending ? (
+                                    <Loader2 className="size-3 animate-spin" strokeWidth={1.75} />
+                                  ) : (
+                                    <Trash2 className="size-3" strokeWidth={1.75} />
+                                  )}
                                 </button>
                               ) : (
                                 <button
                                   type="button"
                                   data-testid={`tool-catalog-add-${schema.name}`}
-                                  onClick={() => {
-                                    addToolSchema(activeConv.id, schema);
-                                    toast.message("tool schema added", { description: schema.name });
-                                  }}
-                                  className="size-7 grid place-items-center shrink-0 border border-border hover:bg-surface-hover"
+                                  disabled={toolPending}
+                                  onClick={() =>
+                                    runToolAction(
+                                      addToolKey,
+                                      () => addToolSchema(activeConv.id, schema),
+                                      "tool schema added",
+                                      schema.name
+                                    )
+                                  }
+                                  className="size-7 grid place-items-center shrink-0 border border-border hover:bg-surface-hover disabled:cursor-wait disabled:opacity-50"
                                   aria-label={`Add ${schema.name}`}
                                 >
-                                  <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
+                                  {addToolPending ? (
+                                    <Loader2 className="size-3 text-muted-foreground animate-spin" strokeWidth={1.75} />
+                                  ) : (
+                                    <Plus className="size-3 text-muted-foreground" strokeWidth={1.75} />
+                                  )}
                                 </button>
                               )}
                             </div>
                           );
                         })}
-                      </div>
+                      </div>}
                     </div>
                   );
                 })}

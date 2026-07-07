@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
-use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpTool};
+use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
 use crate::shell::ShellExecutor;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolExecutionResult,
@@ -36,7 +36,7 @@ const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 pub struct ToolProviderRegistry {
     built_in: BuiltInToolProvider,
     mcp_providers: Vec<McpToolProvider>,
-    persistent_mcp_calls: bool,
+    mcp_session_pool: Option<McpSessionPool>,
 }
 
 impl ToolProviderRegistry {
@@ -53,7 +53,7 @@ impl ToolProviderRegistry {
     /// path because each CLI invocation is a separate process.
     pub fn with_persistent_mcp_sessions() -> Self {
         Self {
-            persistent_mcp_calls: true,
+            mcp_session_pool: Some(McpSessionPool::new()),
             ..Self::default()
         }
     }
@@ -129,7 +129,7 @@ impl ToolProviderRegistry {
                 };
 
                 provider
-                    .call_tool(attached_tool, tool_call, self.persistent_mcp_calls)
+                    .call_tool(attached_tool, tool_call, self.mcp_session_pool.as_ref())
                     .await
             }
             ToolProviderKind::Plugin => Err(error::invalid_request(format!(
@@ -156,7 +156,7 @@ impl Default for ToolProviderRegistry {
                 .copied()
                 .map(McpToolProvider::new)
                 .collect(),
-            persistent_mcp_calls: false,
+            mcp_session_pool: None,
         }
     }
 }
@@ -334,7 +334,7 @@ impl McpToolProvider {
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,
-        persistent: bool,
+        session_pool: Option<&McpSessionPool>,
     ) -> Result<ToolExecutionResult> {
         if attached_tool.provider.provider_id != self.provider_id
             || tool_call.name() != attached_tool.schema_name.as_str()
@@ -355,8 +355,8 @@ impl McpToolProvider {
             }
         };
         self.prepare()?;
-        let result = if persistent {
-            mcp::call_tool_persistent(
+        let result = if let Some(session_pool) = session_pool {
+            session_pool.call_tool(
                 self.provider_id.as_str(),
                 self.command,
                 self.shutdown_command,
@@ -551,12 +551,12 @@ fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
         }
     }
 
-    if let Some(structured_content) = result.get("structuredContent") {
-        if !structured_content.is_null() {
-            parts.push(UnsavedMessagePart::Text(format!(
-                "structuredContent: {structured_content}"
-            )));
-        }
+    if let Some(structured_content) = result.get("structuredContent")
+        && !structured_content.is_null()
+    {
+        parts.push(UnsavedMessagePart::Text(format!(
+            "structuredContent: {structured_content}"
+        )));
     }
 
     if parts.is_empty() {
@@ -764,7 +764,7 @@ mod tests {
                 shutdown_command: None,
                 setup: None,
             })],
-            persistent_mcp_calls: false,
+            mcp_session_pool: None,
         };
 
         let tools = registry.list_available_tools().unwrap();

@@ -153,13 +153,24 @@ impl Store {
 
     /// Creates or validates the current schema.
     ///
-    /// Windie refuses to open databases from a newer schema version because this
-    /// binary may not understand their shape.
+    /// Windie refuses to open databases from any other schema version. This
+    /// keeps the current foundation clean while schema compatibility is not a
+    /// supported project goal.
     pub fn migrate(&self) -> Result<()> {
         let existing_version = self.database_schema_version()?;
         if existing_version > DATABASE_SCHEMA_VERSION {
             return Err(anyhow!(
                 "database schema version {existing_version} is newer than supported version {DATABASE_SCHEMA_VERSION}"
+            ));
+        }
+        if existing_version != 0 && existing_version < DATABASE_SCHEMA_VERSION {
+            return Err(anyhow!(
+                "database schema version {existing_version} is older than supported version {DATABASE_SCHEMA_VERSION}; remove the old Windie database or recreate it"
+            ));
+        }
+        if existing_version == 0 && self.table_exists("conversations")? {
+            return Err(anyhow!(
+                "existing unversioned Windie database is not supported; remove the old Windie database or recreate it"
             ));
         }
 
@@ -257,33 +268,6 @@ impl Store {
                 ",
             )
             .context("failed to migrate database")?;
-
-        if !self
-            .conversation_has_column("active_message_id")
-            .context("failed to inspect conversation columns")?
-        {
-            self.connection
-                .execute(
-                    "ALTER TABLE conversations ADD COLUMN active_message_id TEXT",
-                    [],
-                )
-                .context("failed to add active message column")?;
-        }
-
-        if !self
-            .conversation_has_column("system_prompt")
-            .context("failed to inspect conversation columns")?
-        {
-            self.connection
-                .execute(
-                    "ALTER TABLE conversations ADD COLUMN system_prompt TEXT",
-                    [],
-                )
-                .context("failed to add system prompt column")?;
-        }
-
-        self.backfill_active_messages()
-            .context("failed to backfill active messages")?;
 
         self.connection
             .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)
@@ -619,51 +603,52 @@ impl Store {
         validate_attached_tool(attached_tool)?;
 
         let now = now_millis()?;
-        let parameters_json = encode_tool_parameters(&attached_tool.parameters)?;
-        let permissions_json = encode_tool_permissions(&attached_tool.permissions)?;
-        let annotations_json = encode_tool_annotations(&attached_tool.annotations)?;
         let transaction = self
             .connection
             .transaction()
             .context("failed to start attached tool insert transaction")?;
 
-        transaction
-            .execute(
-                "
-                INSERT INTO tool_schemas (
-                    conversation_id,
-                    name,
-                    description,
-                    parameters_json,
-                    provider_id,
-                    provider_tool_name,
-                    provider_kind,
-                    permissions_json,
-                    annotations_json,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
-                ",
-                params![
-                    conversation_id.as_str(),
-                    attached_tool.schema_name.as_str(),
-                    attached_tool.description.as_str(),
-                    parameters_json.as_str(),
-                    attached_tool.provider.provider_id.as_str(),
-                    attached_tool.provider.tool_name.as_str(),
-                    attached_tool.provider.kind.as_storage(),
-                    permissions_json.as_str(),
-                    annotations_json.as_str(),
-                    now
-                ],
-            )
+        insert_attached_tool_in_transaction(&transaction, conversation_id, attached_tool, now)
             .context("failed to attach tool")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
             .commit()
             .context("failed to commit attached tool insert")?;
+
+        Ok(())
+    }
+
+    /// Attaches multiple provider-backed tools as one atomic conversation
+    /// mutation.
+    pub fn insert_attached_tools(
+        &mut self,
+        conversation_id: &ConversationId,
+        attached_tools: &[AttachedTool],
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        for attached_tool in attached_tools {
+            validate_attached_tool(attached_tool)?;
+        }
+        if attached_tools.is_empty() {
+            return Ok(());
+        }
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start attached tools insert transaction")?;
+
+        for attached_tool in attached_tools {
+            insert_attached_tool_in_transaction(&transaction, conversation_id, attached_tool, now)
+                .context("failed to attach tools")?;
+        }
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit attached tools insert")?;
 
         Ok(())
     }
@@ -1316,8 +1301,7 @@ impl Store {
                 .context("failed to reparent message child during splice delete")?;
         }
 
-        let placeholders = std::iter::repeat("?")
-            .take(splice_delete.deleted_message_ids.len())
+        let placeholders = std::iter::repeat_n("?", splice_delete.deleted_message_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
@@ -1870,8 +1854,7 @@ impl Store {
         conversation_id: &ConversationId,
         deleted_message_ids: &HashSet<String>,
     ) -> Result<Vec<MessageId>> {
-        let placeholders = std::iter::repeat("?")
-            .take(deleted_message_ids.len())
+        let placeholders = std::iter::repeat_n("?", deleted_message_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
@@ -2045,47 +2028,24 @@ impl Store {
         Ok(exists)
     }
 
-    /// Checks whether the conversations table contains one named column.
-    fn conversation_has_column(&self, column_name: &str) -> Result<bool> {
-        let mut statement = self
+    /// Checks whether one SQLite table already exists.
+    fn table_exists(&self, table_name: &str) -> Result<bool> {
+        let exists = self
             .connection
-            .prepare("PRAGMA table_info(conversations)")
-            .context("failed to prepare conversation column inspection")?;
-        let exists = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .context("failed to inspect conversation columns")?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read conversation columns")?
-            .iter()
-            .any(|column| column == column_name);
+            .query_row(
+                "
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = ?1
+                ",
+                params![table_name],
+                |_| Ok(()),
+            )
+            .optional()
+            .context("failed to inspect database tables")?
+            .is_some();
 
         Ok(exists)
-    }
-
-    fn backfill_active_messages(&self) -> Result<()> {
-        self.connection
-            .execute(
-                "
-                UPDATE conversations
-                SET active_message_id = (
-                    SELECT messages.id
-                    FROM messages
-                    WHERE messages.conversation_id = conversations.id
-                    ORDER BY messages.created_at DESC, messages.rowid DESC
-                    LIMIT 1
-                )
-                WHERE active_message_id IS NULL
-                  AND EXISTS (
-                    SELECT 1
-                    FROM messages
-                    WHERE messages.conversation_id = conversations.id
-                  )
-                ",
-                [],
-            )
-            .context("failed to backfill active messages")?;
-
-        Ok(())
     }
 }
 
@@ -2251,6 +2211,56 @@ fn validate_attached_tool(attached_tool: &AttachedTool) -> Result<()> {
             "tool schema description must not be empty",
         ));
     }
+    if !attached_tool.parameters.is_object() {
+        return Err(error::invalid_request(
+            "tool schema parameters must be a JSON object",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Inserts one already-validated attached tool inside an existing transaction.
+fn insert_attached_tool_in_transaction(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    attached_tool: &AttachedTool,
+    now: i64,
+) -> Result<()> {
+    let parameters_json = encode_tool_parameters(&attached_tool.parameters)?;
+    let permissions_json = encode_tool_permissions(&attached_tool.permissions)?;
+    let annotations_json = encode_tool_annotations(&attached_tool.annotations)?;
+
+    transaction.execute(
+        "
+        INSERT INTO tool_schemas (
+            conversation_id,
+            name,
+            description,
+            parameters_json,
+            provider_id,
+            provider_tool_name,
+            provider_kind,
+            permissions_json,
+            annotations_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+        ",
+        params![
+            conversation_id.as_str(),
+            attached_tool.schema_name.as_str(),
+            attached_tool.description.as_str(),
+            parameters_json.as_str(),
+            attached_tool.provider.provider_id.as_str(),
+            attached_tool.provider.tool_name.as_str(),
+            attached_tool.provider.kind.as_storage(),
+            permissions_json.as_str(),
+            annotations_json.as_str(),
+            now
+        ],
+    )?;
 
     Ok(())
 }

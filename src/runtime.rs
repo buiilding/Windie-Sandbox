@@ -29,6 +29,7 @@ use crate::tool_provider::ToolProviderRegistry;
 /// policy-denied calls, and stops before any approval-required tool execution.
 /// Callers compose approval steps explicitly with `pending_tool_approvals`,
 /// `approve_tool_call` or `deny_tool_call`, and then another query turn.
+#[cfg(test)]
 pub(crate) async fn query_conversation_once<O, L>(
     output: &O,
     llm: &L,
@@ -39,7 +40,25 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    prepare_query_turn(store, conversation_id)?;
+    let registry = ToolProviderRegistry::new();
+
+    query_conversation_once_with_registry(output, llm, store, conversation_id, &registry).await
+}
+
+/// Runs one assistant inference turn using a caller-owned provider registry for
+/// query preparation.
+pub(crate) async fn query_conversation_once_with_registry<O, L>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+{
+    prepare_query_turn_with_registry(store, conversation_id, registry)?;
 
     let parent_message_id = store.active_message_id(conversation_id)?;
     let model_messages = ContextBuilder::build(store, conversation_id)?;
@@ -66,7 +85,7 @@ where
         &assistant_response.content,
         metadata.as_ref(),
     )?;
-    store_policy_denied_tool_results(store, conversation_id)?;
+    store_policy_denied_tool_results(store, conversation_id, registry)?;
 
     Ok(Message {
         id: Some(assistant_message_id),
@@ -108,10 +127,24 @@ where
                     return Ok(message);
                 }
 
-                return query_conversation_once(output, llm, store, conversation_id).await;
+                return query_conversation_once_with_registry(
+                    output,
+                    llm,
+                    store,
+                    conversation_id,
+                    registry,
+                )
+                .await;
             }
             AutomaticToolResolution::Idle => {
-                let message = query_conversation_once(output, llm, store, conversation_id).await?;
+                let message = query_conversation_once_with_registry(
+                    output,
+                    llm,
+                    store,
+                    conversation_id,
+                    registry,
+                )
+                .await?;
                 let has_tool_calls = message
                     .metadata
                     .as_ref()
@@ -136,7 +169,19 @@ pub(crate) fn prepare_query_turn(
     store: &mut Store,
     conversation_id: &ConversationId,
 ) -> Result<()> {
-    store_policy_denied_tool_results(store, conversation_id)?;
+    let registry = ToolProviderRegistry::new();
+
+    prepare_query_turn_with_registry(store, conversation_id, &registry)
+}
+
+/// Prepares the active path for a model query using a caller-owned provider
+/// registry.
+pub(crate) fn prepare_query_turn_with_registry(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+) -> Result<()> {
+    store_policy_denied_tool_results(store, conversation_id, registry)?;
     validate_query_availability(store, conversation_id)
 }
 
@@ -174,6 +219,18 @@ pub(crate) fn pending_tool_approvals(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Vec<ToolApprovalRequest>> {
+    let registry = ToolProviderRegistry::new();
+
+    pending_tool_approvals_with_registry(store, conversation_id, &registry)
+}
+
+/// Lists the next pending active-path tool call requiring approval using a
+/// caller-owned provider registry.
+pub(crate) fn pending_tool_approvals_with_registry(
+    store: &Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+) -> Result<Vec<ToolApprovalRequest>> {
     let messages = store.load_active_path(conversation_id)?;
     let Some(execution) = active_tool_execution(&messages) else {
         return Ok(Vec::new());
@@ -182,14 +239,13 @@ pub(crate) fn pending_tool_approvals(
         return Ok(Vec::new());
     };
     let policy = ToolPolicy;
-    let registry = ToolProviderRegistry::new();
     let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
 
     if let PolicyDecision::Ask { reason } = policy.decide(
         &tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(&registry, attached_tool.as_ref()),
+        attached_tool_can_execute(registry, attached_tool.as_ref()),
         approval_mode,
     ) {
         return Ok(vec![ToolApprovalRequest {
@@ -211,9 +267,9 @@ pub(crate) fn pending_tool_approvals(
 fn store_policy_denied_tool_results(
     store: &mut Store,
     conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
 ) -> Result<()> {
     let policy = ToolPolicy;
-    let registry = ToolProviderRegistry::new();
 
     loop {
         let messages = store.load_active_path(conversation_id)?;
@@ -229,7 +285,7 @@ fn store_policy_denied_tool_results(
         let PolicyDecision::Deny { reason } = policy.decide(
             &tool_call,
             attached_tool.as_ref(),
-            attached_tool_can_execute(&registry, attached_tool.as_ref()),
+            attached_tool_can_execute(registry, attached_tool.as_ref()),
             approval_mode,
         ) else {
             return Ok(());

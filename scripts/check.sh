@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 # Full local/free verification path. This must not call Bifrost or a model
 # provider.
 cargo test
+cargo clippy --all-targets -- -D warnings
 cargo build --release
 
 target/release/windie --version

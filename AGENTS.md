@@ -138,6 +138,10 @@ Allowed in the current scope:
 - Unified tool provider layer for built-ins, future MCP providers, and future
   plugins.
 - Windie-native `run_shell` provider tool execution with explicit approval.
+- Code-approved MCP provider tools through the same attached-tool and approval
+  boundary.
+- Conversation-level manual or full-access approval mode for attached executable
+  tools.
 - Tool result persistence as `role: tool` messages linked to provider tool-call
   IDs.
 - Model-facing context construction.
@@ -159,9 +163,10 @@ Not in scope yet:
 - Desktop UI.
 - Production browser UI.
 - Voice UI.
-- Agentic tool use.
+- Open-ended autonomous agent loops outside explicit query, approval, and
+  full-access primitives.
 - Browser use.
-- Computer use.
+- Production/general computer use outside code-approved developer MCP providers.
 - Plugin systems.
 - Production web dashboard.
 - General config files beyond the explicit Bifrost `.env` provider-key file.
@@ -170,6 +175,7 @@ Not in scope yet:
 - Automatic history compaction.
 - Memory systems beyond persisted conversation messages and future compaction checkpoints.
 - Killing Bifrost automatically on Windie exit.
+- User-configurable arbitrary MCP servers.
 
 The CLI should be boring, explicit, and composable. Future TUI, desktop,
 browser, voice, SDK, background worker, plugin, and wakeup clients should
@@ -200,7 +206,7 @@ src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
 src/llm.rs           Bifrost/OpenAI-compatible HTTP client
-src/mcp.rs           MCP stdio JSON-RPC client
+src/mcp.rs           MCP stdio JSON-RPC client and session pool
 src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
@@ -241,6 +247,10 @@ Keep boundaries strict:
 - Only `tool.rs` should own tool provider, attachment, approval, and execution
   result data shared across runtime, output, policy, store, and executors.
 - `main.rs` should stay small and only wire components together.
+
+Schema compatibility is not a current goal. `store.rs` should create the
+current schema for fresh databases and reject unsupported older or newer schema
+versions clearly instead of carrying partial legacy migrations.
 
 ## Teaching Requirement
 

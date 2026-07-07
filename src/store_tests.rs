@@ -105,6 +105,41 @@ fn rejects_newer_database_schema_version() {
 }
 
 #[test]
+fn rejects_older_database_schema_version() {
+    let store = Store::open_memory().unwrap();
+    let older_version = DATABASE_SCHEMA_VERSION - 1;
+    store
+        .connection
+        .pragma_update(None, "user_version", older_version)
+        .unwrap();
+
+    let error = store.migrate().unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "database schema version {older_version} is older than supported version {DATABASE_SCHEMA_VERSION}; remove the old Windie database or recreate it"
+        )
+    );
+}
+
+#[test]
+fn rejects_existing_unversioned_database_schema() {
+    let store = Store::open_memory().unwrap();
+    store
+        .connection
+        .pragma_update(None, "user_version", 0)
+        .unwrap();
+
+    let error = store.migrate().unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "existing unversioned Windie database is not supported; remove the old Windie database or recreate it"
+    );
+}
+
+#[test]
 fn creates_conversation_with_unique_id() {
     let store = Store::open_memory().unwrap();
 
@@ -494,6 +529,34 @@ fn saves_updates_and_removes_tool_schemas() {
         .remove_tool_schema(&conversation_id, &ToolSchemaName::new("shell"))
         .unwrap();
 
+    assert!(
+        store
+            .load_tool_schemas(&conversation_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn batch_attached_tool_insert_is_atomic() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.get_or_create_default_conversation().unwrap();
+    let first = AttachedTool::manual(ToolSchema {
+        name: ToolSchemaName::new("first_tool"),
+        description: "First tool".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    });
+    let duplicate = AttachedTool::manual(ToolSchema {
+        name: ToolSchemaName::new("first_tool"),
+        description: "Duplicate tool".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    });
+
+    let error = store
+        .insert_attached_tools(&conversation_id, &[first, duplicate])
+        .unwrap_err();
+
+    assert!(error.to_string().contains("failed to attach tools"));
     assert!(
         store
             .load_tool_schemas(&conversation_id)

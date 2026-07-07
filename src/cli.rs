@@ -1507,8 +1507,8 @@ mod tests {
             Command::BenchCompare {
                 baseline_path,
                 current_path,
-            } if baseline_path == PathBuf::from("baseline.json")
-                && current_path == PathBuf::from("current.json")
+            } if baseline_path == std::path::Path::new("baseline.json")
+                && current_path == std::path::Path::new("current.json")
         ));
     }
 
