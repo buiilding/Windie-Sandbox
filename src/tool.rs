@@ -99,6 +99,43 @@ impl std::fmt::Display for ToolProviderKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Conversation-level default for tool execution approval.
+///
+/// The mode only applies after the requested model-facing tool is attached to
+/// the conversation and backed by a registered provider. Unattached tools and
+/// missing executors are still denied by policy.
+pub enum ToolApprovalMode {
+    Manual,
+    AutoApproveAttached,
+}
+
+impl ToolApprovalMode {
+    /// Converts persisted approval mode text into the typed enum.
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "auto_approve_attached" => Some(Self::AutoApproveAttached),
+            _ => None,
+        }
+    }
+
+    /// Returns the stable storage/API representation.
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::AutoApproveAttached => "auto_approve_attached",
+        }
+    }
+}
+
+impl std::fmt::Display for ToolApprovalMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_storage())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Pointer from a model-facing tool schema to the provider tool that executes
 /// it.

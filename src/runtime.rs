@@ -78,6 +78,55 @@ where
     })
 }
 
+/// Runs assistant turns while policy can resolve tool calls automatically.
+///
+/// Manual approval remains an explicit boundary: when policy asks for approval,
+/// this function returns the assistant tool-call message that created the
+/// pending approval. When policy denies or allows a pending call, runtime stores
+/// the required `role: tool` result and continues toward the next assistant
+/// response.
+pub(crate) async fn query_conversation_resolving_automatic_tools<O, L>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+{
+    let mut last_assistant_message = None;
+
+    loop {
+        match resolve_next_automatic_tool_call_with_registry(store, conversation_id, registry)
+            .await?
+        {
+            AutomaticToolResolution::Resolved => {}
+            AutomaticToolResolution::WaitingForApproval => {
+                if let Some(message) = last_assistant_message {
+                    return Ok(message);
+                }
+
+                return query_conversation_once(output, llm, store, conversation_id).await;
+            }
+            AutomaticToolResolution::Idle => {
+                let message = query_conversation_once(output, llm, store, conversation_id).await?;
+                let has_tool_calls = message
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|metadata| !metadata.tool_calls.is_empty());
+
+                if !has_tool_calls {
+                    return Ok(message);
+                }
+
+                last_assistant_message = Some(message);
+            }
+        }
+    }
+}
+
 /// Prepares the active path for a model query.
 ///
 /// Policy-denied tool calls have no user decision to wait for, so Windie records
@@ -135,11 +184,13 @@ pub(crate) fn pending_tool_approvals(
     let policy = ToolPolicy;
     let registry = ToolProviderRegistry::new();
     let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
+    let approval_mode = store.tool_approval_mode(conversation_id)?;
 
     if let PolicyDecision::Ask { reason } = policy.decide(
         &tool_call,
         attached_tool.as_ref(),
         attached_tool_can_execute(&registry, attached_tool.as_ref()),
+        approval_mode,
     ) {
         return Ok(vec![ToolApprovalRequest {
             assistant_message_id: execution.assistant_message_id,
@@ -173,11 +224,13 @@ fn store_policy_denied_tool_results(
             return Ok(());
         };
         let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
+        let approval_mode = store.tool_approval_mode(conversation_id)?;
 
         let PolicyDecision::Deny { reason } = policy.decide(
             &tool_call,
             attached_tool.as_ref(),
             attached_tool_can_execute(&registry, attached_tool.as_ref()),
+            approval_mode,
         ) else {
             return Ok(());
         };
@@ -189,6 +242,67 @@ fn store_policy_denied_tool_results(
             &result,
         )?;
     }
+}
+
+/// Result of trying to resolve one pending tool call without user input.
+enum AutomaticToolResolution {
+    Idle,
+    WaitingForApproval,
+    Resolved,
+}
+
+/// Resolves the next pending tool call when policy does not need user input.
+///
+/// Denied calls become failed `role: tool` results. Auto-approved attached
+/// calls execute through the provider registry and then become normal tool
+/// results. Approval-required calls are left untouched so clients can show the
+/// approval request.
+async fn resolve_next_automatic_tool_call_with_registry(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+) -> Result<AutomaticToolResolution> {
+    let messages = store.load_active_path(conversation_id)?;
+    let Some(execution) = active_tool_execution(&messages) else {
+        return Ok(AutomaticToolResolution::Idle);
+    };
+    let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
+        return Ok(AutomaticToolResolution::Idle);
+    };
+
+    let pending = PendingToolCall {
+        result_parent_message_id: execution.result_parent_message_id,
+        tool_call,
+    };
+    let policy = ToolPolicy;
+    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let approval_mode = store.tool_approval_mode(conversation_id)?;
+    let result = match policy.decide(
+        &pending.tool_call,
+        attached_tool.as_ref(),
+        attached_tool_can_execute(registry, attached_tool.as_ref()),
+        approval_mode,
+    ) {
+        PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
+            pending.tool_call.id.clone(),
+            pending.tool_call.name(),
+            reason,
+        ),
+        PolicyDecision::Allow => {
+            execute_pending_tool_call_with_registry(&pending, attached_tool.as_ref(), registry)
+                .await?
+        }
+        PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
+    };
+
+    store_tool_result(
+        store,
+        conversation_id,
+        &pending.result_parent_message_id,
+        &result,
+    )?;
+
+    Ok(AutomaticToolResolution::Resolved)
 }
 
 /// One pending tool call plus the message that should parent its result.
@@ -302,25 +416,20 @@ pub(crate) async fn approve_tool_call_with_registry(
     let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
     let policy = ToolPolicy;
     let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let approval_mode = store.tool_approval_mode(conversation_id)?;
     let result = match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
         attached_tool_can_execute(registry, attached_tool.as_ref()),
+        approval_mode,
     ) {
         PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
             pending.tool_call.id.clone(),
             pending.tool_call.name(),
             reason,
         ),
-        PolicyDecision::Ask { .. } => {
-            let Some(attached_tool) = attached_tool.as_ref() else {
-                return Err(error::invalid_request(format!(
-                    "Tool is not attached: {}",
-                    pending.tool_call.name()
-                )));
-            };
-            registry
-                .call_tool(attached_tool, &pending.tool_call)
+        PolicyDecision::Allow | PolicyDecision::Ask { .. } => {
+            execute_pending_tool_call_with_registry(&pending, attached_tool.as_ref(), registry)
                 .await?
         }
     };
@@ -333,6 +442,22 @@ pub(crate) async fn approve_tool_call_with_registry(
     )?;
 
     Ok(result)
+}
+
+/// Executes one pending tool call through its attached provider mapping.
+async fn execute_pending_tool_call_with_registry(
+    pending: &PendingToolCall,
+    attached_tool: Option<&AttachedTool>,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
+    let Some(attached_tool) = attached_tool else {
+        return Err(error::invalid_request(format!(
+            "Tool is not attached: {}",
+            pending.tool_call.name()
+        )));
+    };
+
+    registry.call_tool(attached_tool, &pending.tool_call).await
 }
 
 /// Stores an explicit rejection for one pending tool call.

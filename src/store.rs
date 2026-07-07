@@ -22,8 +22,8 @@ use crate::conversation::{
 };
 use crate::error;
 use crate::tool::{
-    AttachedTool, ProviderToolName, ToolAnnotations, ToolPermission, ToolProviderId,
-    ToolProviderKind, ToolProviderRef,
+    AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,
+    ToolProviderId, ToolProviderKind, ToolProviderRef,
 };
 
 /// Decodes message roles from SQLite into the typed runtime role.
@@ -43,7 +43,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 6;
+const DATABASE_SCHEMA_VERSION: i32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -171,6 +171,7 @@ impl Store {
                     title TEXT,
                     active_message_id TEXT,
                     system_prompt TEXT,
+                    tool_approval_mode TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -304,10 +305,18 @@ impl Store {
         self.connection
             .execute(
                 "
-                INSERT INTO conversations (id, title, active_message_id, created_at, updated_at)
-                VALUES (?1, NULL, NULL, ?2, ?2)
+                INSERT INTO conversations (
+                    id,
+                    title,
+                    active_message_id,
+                    system_prompt,
+                    tool_approval_mode,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, NULL, NULL, NULL, ?2, ?3, ?3)
                 ",
-                params![id.as_str(), now],
+                params![id.as_str(), ToolApprovalMode::Manual.as_storage(), now],
             )
             .context("failed to create conversation")?;
 
@@ -323,10 +332,22 @@ impl Store {
         self.connection
             .execute(
                 "
-                INSERT OR IGNORE INTO conversations (id, title, active_message_id, created_at, updated_at)
-                VALUES (?1, NULL, NULL, ?2, ?2)
+                INSERT OR IGNORE INTO conversations (
+                    id,
+                    title,
+                    active_message_id,
+                    system_prompt,
+                    tool_approval_mode,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, NULL, NULL, NULL, ?2, ?3, ?3)
                 ",
-                params![DEFAULT_CONVERSATION_ID, now],
+                params![
+                    DEFAULT_CONVERSATION_ID,
+                    ToolApprovalMode::Manual.as_storage(),
+                    now
+                ],
             )
             .context("failed to create default conversation")?;
 
@@ -415,6 +436,52 @@ impl Store {
             .optional()
             .context("failed to load system prompt")
             .map(Option::flatten)
+    }
+
+    /// Loads the conversation default for tool-call approval.
+    pub fn tool_approval_mode(&self, conversation_id: &ConversationId) -> Result<ToolApprovalMode> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let value = self
+            .connection
+            .query_row(
+                "SELECT tool_approval_mode FROM conversations WHERE id = ?1",
+                params![conversation_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .context("failed to load tool approval mode")?;
+
+        ToolApprovalMode::from_storage(&value)
+            .ok_or_else(|| anyhow!("unknown tool approval mode: {value}"))
+    }
+
+    /// Sets the conversation default for future tool-call approvals.
+    pub fn set_tool_approval_mode(
+        &mut self,
+        conversation_id: &ConversationId,
+        mode: ToolApprovalMode,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start tool approval mode transaction")?;
+
+        transaction
+            .execute(
+                "UPDATE conversations SET tool_approval_mode = ?1 WHERE id = ?2",
+                params![mode.as_storage(), conversation_id.as_str()],
+            )
+            .context("failed to save tool approval mode")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit tool approval mode update")?;
+
+        Ok(())
     }
 
     /// Sets or replaces the conversation-level system prompt.
@@ -1423,6 +1490,7 @@ impl Store {
         let source_messages = self
             .load_path_to_message(conversation_id, message_id)
             .context("failed to load messages for conversation fork")?;
+        let source_tool_approval_mode = self.tool_approval_mode(conversation_id)?;
         let forked_conversation_id = ConversationId::new(Uuid::new_v4().to_string());
         let mut message_id_map = HashMap::new();
         let now = now_millis()?;
@@ -1434,10 +1502,22 @@ impl Store {
         transaction
             .execute(
                 "
-                INSERT INTO conversations (id, title, active_message_id, created_at, updated_at)
-                VALUES (?1, NULL, NULL, ?2, ?2)
+                INSERT INTO conversations (
+                    id,
+                    title,
+                    active_message_id,
+                    system_prompt,
+                    tool_approval_mode,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, NULL, NULL, NULL, ?2, ?3, ?3)
                 ",
-                params![forked_conversation_id.as_str(), now],
+                params![
+                    forked_conversation_id.as_str(),
+                    source_tool_approval_mode.as_storage(),
+                    now
+                ],
             )
             .context("failed to create forked conversation")?;
 

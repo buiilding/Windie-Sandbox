@@ -10,6 +10,7 @@ use crate::perf::{
     PerformanceReport, PerformanceSummary,
 };
 use crate::store::Compaction;
+use crate::tool::ToolApprovalMode;
 use crate::tool_provider::BuiltInToolProvider;
 
 #[test]
@@ -297,6 +298,7 @@ fn serializes_inspection_report_with_runtime_state() {
         Some(&MessageId::new("assistant-id")),
         "anthropic/claude-3-5-haiku",
         Some("You are concise.".to_string()),
+        ToolApprovalMode::Manual,
         vec![tool_schema],
         vec![
             Message {
@@ -364,6 +366,7 @@ fn serializes_inspection_report_with_runtime_state() {
     assert_eq!(value["active_message_id"], "assistant-id");
     assert_eq!(value["model"], "anthropic/claude-3-5-haiku");
     assert_eq!(value["system_prompt"], "You are concise.");
+    assert_eq!(value["tool_approval_mode"], "manual");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
     assert_eq!(value["messages"][0]["parts"][0]["type"], "text");
     assert_eq!(value["messages"][0]["parts"][1]["type"], "image");

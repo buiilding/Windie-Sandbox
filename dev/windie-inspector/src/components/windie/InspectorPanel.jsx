@@ -55,6 +55,7 @@ export default function InspectorPanel() {
     selectedNodeId,
     setSelectedNodeId,
     setSystemPrompt,
+    setToolApprovalMode,
     setActivePathToLeaf,
     forkFromMessage,
     truncateAfter,
@@ -121,6 +122,43 @@ export default function InspectorPanel() {
           <KV k="nodes" v={Object.keys(activeConv.nodes).length} />
           <KV k="branches" v={Object.values(activeConv.nodes).filter((n) => n.childrenIds.length > 1).length} />
           <KV k="updated" v={new Date(activeConv.updatedAt).toLocaleString()} />
+          <div className="flex items-center gap-2 py-1 text-[11px]">
+            <span className="text-muted-foreground font-mono uppercase tracking-widest w-24 shrink-0">
+              tool access
+            </span>
+            <div className="grid grid-cols-2 border border-border">
+              <button
+                type="button"
+                data-testid="tool-approval-mode-manual"
+                onClick={() => {
+                  setToolApprovalMode(activeConv.id, "manual");
+                  toast.message("tool access set", { description: "manual" });
+                }}
+                className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest ${
+                  activeConv.toolApprovalMode === "manual"
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:bg-surface-hover"
+                }`}
+              >
+                manual
+              </button>
+              <button
+                type="button"
+                data-testid="tool-approval-mode-auto"
+                onClick={() => {
+                  setToolApprovalMode(activeConv.id, "auto_approve_attached");
+                  toast.message("tool access set", { description: "full access" });
+                }}
+                className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest border-l border-border ${
+                  activeConv.toolApprovalMode === "auto_approve_attached"
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:bg-surface-hover"
+                }`}
+              >
+                full access
+              </button>
+            </div>
+          </div>
           <div className="mt-1 flex flex-wrap gap-1">
             {(activeConv.tags || []).map((t) => (
               <span

@@ -35,7 +35,8 @@ use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{
-    ProviderToolName, ToolApprovalRequest, ToolDefinition, ToolExecutionResult, ToolProviderId,
+    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
+    ToolProviderId,
 };
 use crate::tool_provider::ToolProviderRegistry;
 
@@ -117,6 +118,10 @@ fn router(state: ApiState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/system-prompt",
             patch(set_system_prompt).delete(remove_system_prompt),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/tool-approval-mode",
+            patch(set_tool_approval_mode),
         )
         .route(
             "/api/conversations/{conversation_id}/tool-schemas",
@@ -691,6 +696,34 @@ async fn remove_system_prompt(
 }
 
 #[derive(Debug, Deserialize)]
+/// Request body for setting the conversation-level tool approval mode.
+struct ToolApprovalModeRequest {
+    mode: ToolApprovalMode,
+}
+
+#[derive(Debug, Serialize)]
+/// Response for tool approval mode mutation.
+struct ToolApprovalModeResponse {
+    tool_approval_mode: ToolApprovalMode,
+}
+
+/// Sets the conversation default for attached tool approvals.
+async fn set_tool_approval_mode(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<ToolApprovalModeRequest>,
+) -> ApiResult<ToolApprovalModeResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let mut store = open_store(&state)?;
+
+    operation::set_tool_approval_mode(&mut store, &conversation_id, request.mode)?;
+
+    Ok(Json(ToolApprovalModeResponse {
+        tool_approval_mode: store.tool_approval_mode(&conversation_id)?,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
 /// Request body for creating or updating a tool schema.
 struct ToolSchemaRequest {
     name: String,
@@ -950,13 +983,14 @@ async fn query(
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
     let model = request.model.unwrap_or_else(|| state.model.clone());
-    let message = operation::query_conversation(
+    let message = operation::query_conversation_with_registry(
         &ApiOutput,
         &mut store,
         &conversation_id,
         GatewayUrl::new(state.gateway_url.clone()),
         crate::llm::BaseUrl::new(state.base_url.clone()),
         ModelName::new(model),
+        state.tool_registry.as_ref(),
     )
     .await?;
 
@@ -1314,6 +1348,18 @@ mod tests {
                 .unwrap(),
         )
         .await;
+        let tool_mode = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::PATCH,
+                    &format!("/api/conversations/{conversation_id}/tool-approval-mode"),
+                    Some(json!({"mode":"auto_approve_attached"})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(tool_mode["tool_approval_mode"], "auto_approve_attached");
         response_json(
             app.clone()
                 .oneshot(authed_request(
@@ -1342,6 +1388,7 @@ mod tests {
         .await;
 
         assert_eq!(inspected["system_prompt"], "Use short answers.");
+        assert_eq!(inspected["tool_approval_mode"], "auto_approve_attached");
         assert_eq!(inspected["messages"][0]["content"], "hello from api");
         assert_eq!(inspected["active_path"][0]["content"], "hello from api");
         assert_eq!(inspected["model_context"][0]["role"], "system");

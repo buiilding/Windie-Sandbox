@@ -8,6 +8,7 @@ use crate::conversation::{
     Message, MessageMetadata, ToolCall, ToolCallId, ToolSchema, ToolSchemaName,
 };
 use crate::llm::{AssistantResponse, FinishReason};
+use crate::tool::ToolApprovalMode;
 
 struct NoopOutput;
 
@@ -395,6 +396,45 @@ async fn query_approve_query_composes_shell_tool_flow() {
     assert_eq!(second_turn_messages.len(), 3);
     assert_eq!(second_turn_messages[2].role, Role::Tool);
     assert!(second_turn_messages[2].content.contains("windie-shell"));
+}
+
+#[tokio::test]
+async fn auto_approval_executes_tool_and_queries_again() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    attach_run_shell_schema(&mut store, &conversation_id);
+    store
+        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
+        .unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "list files", None)
+        .unwrap();
+    let llm = ToolThenReplyLlm::new();
+    let registry = ToolProviderRegistry::new();
+
+    let assistant_message = query_conversation_resolving_automatic_tools(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        &conversation_id,
+        &registry,
+    )
+    .await
+    .unwrap();
+    let messages = store.load_active_path(&conversation_id).unwrap();
+    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let second_turn_messages = llm.second_turn_messages.lock().unwrap();
+
+    assert_eq!(assistant_message.role, Role::Assistant);
+    assert_eq!(assistant_message.content, "done");
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[1].role, Role::Assistant);
+    assert_eq!(messages[2].role, Role::Tool);
+    assert!(messages[2].content.contains("windie-shell"));
+    assert_eq!(messages[3].role, Role::Assistant);
+    assert!(approvals.is_empty());
+    assert_eq!(second_turn_messages.len(), 3);
+    assert_eq!(second_turn_messages[2].role, Role::Tool);
 }
 
 #[tokio::test]

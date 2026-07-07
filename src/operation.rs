@@ -20,15 +20,16 @@ use crate::conversation::{
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::{ImageInput, read_image_input, validate_image_input_bytes};
-use crate::llm::{self, BaseUrl, BifrostClient, ModelInfo, ModelName, RuntimeLlm};
+use crate::llm::{self, BaseUrl, BifrostClient, ModelInfo, ModelName};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
     approve_tool_call, approve_tool_call_with_registry, deny_tool_call, pending_tool_approvals,
-    query_conversation_once as runtime_query_conversation_once,
+    query_conversation_resolving_automatic_tools,
 };
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
-    ProviderToolName, ToolApprovalRequest, ToolDefinition, ToolExecutionResult, ToolProviderId,
+    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
+    ToolProviderId,
 };
 use crate::tool_provider::ToolProviderRegistry;
 
@@ -60,6 +61,7 @@ pub struct InspectionReport {
     active_message_id: Option<String>,
     model: String,
     system_prompt: Option<String>,
+    tool_approval_mode: ToolApprovalMode,
     tool_schemas: Vec<ToolSchema>,
     messages: Vec<InspectionMessage>,
     active_path: Vec<InspectionMessage>,
@@ -75,6 +77,7 @@ impl InspectionReport {
         active_message_id: Option<&MessageId>,
         model: &str,
         system_prompt: Option<String>,
+        tool_approval_mode: ToolApprovalMode,
         tool_schemas: Vec<ToolSchema>,
         messages: Vec<Message>,
         active_path: Vec<Message>,
@@ -86,6 +89,7 @@ impl InspectionReport {
             active_message_id: active_message_id.map(|id| id.as_str().to_string()),
             model: model.to_string(),
             system_prompt,
+            tool_approval_mode,
             tool_schemas,
             messages: inspection_messages(messages),
             active_path: inspection_messages(active_path),
@@ -240,6 +244,7 @@ pub fn inspect_conversation(
     model: &ModelName,
 ) -> Result<InspectionReport> {
     let active_message_id = store.active_message_id(conversation_id)?;
+    let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
     let messages = store.load_message_tree(conversation_id)?;
     let tool_schemas = store.load_tool_schemas(conversation_id)?;
     let context_parts = ContextBuilder::load_parts(store, conversation_id)?;
@@ -254,6 +259,7 @@ pub fn inspect_conversation(
         active_message_id.as_ref(),
         model.as_str(),
         context_parts.system_prompt,
+        tool_approval_mode,
         tool_schemas,
         messages,
         context_parts.active_path,
@@ -359,6 +365,15 @@ pub fn set_system_prompt(
 /// Removes the conversation-level system prompt.
 pub fn remove_system_prompt(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
     store.remove_system_prompt(conversation_id)
+}
+
+/// Sets the conversation default for attached tool approval.
+pub fn set_tool_approval_mode(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    mode: ToolApprovalMode,
+) -> Result<()> {
+    store.set_tool_approval_mode(conversation_id, mode)
 }
 
 /// Lists provider tools that can be attached to conversations.
@@ -467,31 +482,12 @@ pub fn list_tool_approvals(
     pending_tool_approvals(store, conversation_id)
 }
 
-/// Runs one explicit model query turn for a conversation.
-///
-/// This operation is the shared CLI/API entrypoint for one model request. The
-/// runtime query primitive prepares the active path before provider context is
-/// built. This operation does not loop through tool calls; callers compose
-/// approval, denial, and later query turns as separate explicit operations.
-pub async fn query_conversation_once<O, L>(
-    output: &O,
-    llm: &L,
-    store: &mut Store,
-    conversation_id: &ConversationId,
-) -> Result<Message>
-where
-    O: RuntimeOutput,
-    L: RuntimeLlm,
-{
-    runtime_query_conversation_once(output, llm, store, conversation_id).await
-}
-
-/// Runs the shared CLI/API query sequence for one model request.
+/// Runs the shared CLI/API query sequence for the next assistant response.
 ///
 /// Clients pass runtime settings in, but this operation owns the repeated
 /// sequence: require the local gateway, construct the OpenAI-compatible Bifrost
-/// client, then run one runtime query turn. Runtime still owns active-path
-/// preparation and tool-result validation inside `query_conversation_once`.
+/// client, then let runtime auto-resolve denied or auto-approved tools until it
+/// reaches a normal assistant message or a manual approval boundary.
 pub async fn query_conversation<O>(
     output: &O,
     store: &mut Store,
@@ -505,8 +501,33 @@ where
 {
     require_gateway_running(gateway_url).await?;
     let llm = BifrostClient::new(base_url, model);
+    let registry = ToolProviderRegistry::new();
 
-    query_conversation_once(output, &llm, store, conversation_id).await
+    query_conversation_resolving_automatic_tools(output, &llm, store, conversation_id, &registry)
+        .await
+}
+
+/// Runs the shared query sequence with a caller-owned provider registry.
+///
+/// Long-lived clients such as the API server use this path so auto-approved MCP
+/// calls reuse the same registry/session behavior as explicit approvals.
+pub async fn query_conversation_with_registry<O>(
+    output: &O,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+    model: ModelName,
+    registry: &ToolProviderRegistry,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+{
+    require_gateway_running(gateway_url).await?;
+    let llm = BifrostClient::new(base_url, model);
+
+    query_conversation_resolving_automatic_tools(output, &llm, store, conversation_id, registry)
+        .await
 }
 
 /// Executes one approved pending tool call and persists its result.

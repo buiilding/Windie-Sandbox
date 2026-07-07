@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::conversation::{ToolCall, ToolSchema, ToolSchemaName};
-use crate::tool::{AttachedTool, ToolPermission};
+use crate::tool::{AttachedTool, ToolApprovalMode, ToolPermission};
 use crate::tool_provider::ToolProviderRegistry;
 
 #[test]
@@ -20,7 +20,12 @@ fn attached_run_shell_requires_approval() {
         .unwrap()
         .attached_tool();
 
-    let decision = policy.decide(&tool_call, Some(&attached_tool), true);
+    let decision = policy.decide(
+        &tool_call,
+        Some(&attached_tool),
+        true,
+        ToolApprovalMode::Manual,
+    );
 
     assert_eq!(
         decision,
@@ -35,7 +40,7 @@ fn detached_tool_is_denied() {
     let policy = ToolPolicy;
     let tool_call = ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#);
 
-    let decision = policy.decide(&tool_call, None, false);
+    let decision = policy.decide(&tool_call, None, false, ToolApprovalMode::Manual);
 
     assert_eq!(
         decision,
@@ -55,7 +60,12 @@ fn attached_unknown_tool_executor_is_denied() {
         parameters: serde_json::json!({"type":"object"}),
     });
 
-    let decision = policy.decide(&tool_call, Some(&attached_tool), false);
+    let decision = policy.decide(
+        &tool_call,
+        Some(&attached_tool),
+        false,
+        ToolApprovalMode::Manual,
+    );
 
     assert_eq!(
         decision,
@@ -76,12 +86,86 @@ fn attached_non_shell_tool_requires_generic_approval() {
     });
     attached_tool.permissions = vec![ToolPermission::ExternalProcess];
 
-    let decision = policy.decide(&tool_call, Some(&attached_tool), true);
+    let decision = policy.decide(
+        &tool_call,
+        Some(&attached_tool),
+        true,
+        ToolApprovalMode::Manual,
+    );
 
     assert_eq!(
         decision,
         PolicyDecision::Ask {
             reason: "tool requires approval".to_string()
+        }
+    );
+}
+
+#[test]
+fn auto_approve_attached_allows_executable_tool() {
+    let policy = ToolPolicy;
+    let tool_call = ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#);
+    let registry = ToolProviderRegistry::new();
+    let attached_tool = registry
+        .find_tool(
+            &crate::tool::ToolProviderId::new("windie"),
+            &crate::tool::ProviderToolName::new("run_shell"),
+        )
+        .unwrap()
+        .unwrap()
+        .attached_tool();
+
+    let decision = policy.decide(
+        &tool_call,
+        Some(&attached_tool),
+        true,
+        ToolApprovalMode::AutoApproveAttached,
+    );
+
+    assert_eq!(decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn auto_approve_attached_still_denies_detached_tool() {
+    let policy = ToolPolicy;
+    let tool_call = ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#);
+
+    let decision = policy.decide(
+        &tool_call,
+        None,
+        false,
+        ToolApprovalMode::AutoApproveAttached,
+    );
+
+    assert_eq!(
+        decision,
+        PolicyDecision::Deny {
+            reason: "Tool is not attached: run_shell".to_string()
+        }
+    );
+}
+
+#[test]
+fn auto_approve_attached_still_denies_unknown_executor() {
+    let policy = ToolPolicy;
+    let tool_call = ToolCall::function("call_1", "unknown", "{}");
+    let attached_tool = AttachedTool::manual(ToolSchema {
+        name: ToolSchemaName::new("unknown"),
+        description: "Unknown tool".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    });
+
+    let decision = policy.decide(
+        &tool_call,
+        Some(&attached_tool),
+        false,
+        ToolApprovalMode::AutoApproveAttached,
+    );
+
+    assert_eq!(
+        decision,
+        PolicyDecision::Deny {
+            reason: "unknown tool: unknown".to_string()
         }
     );
 }

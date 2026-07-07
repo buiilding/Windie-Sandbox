@@ -248,6 +248,17 @@ export function WindieProvider({ children }) {
     [runMutation]
   );
 
+  const setToolApprovalMode = useCallback(
+    (convId, mode) =>
+      runMutation(() =>
+        apiRequest(`/api/conversations/${convId}/tool-approval-mode`, {
+          method: "PATCH",
+          body: JSON.stringify({ mode }),
+        })
+      ),
+    [runMutation]
+  );
+
   const addToolSchema = useCallback(
     (convId, toolSchema) =>
       runMutation(() =>
@@ -449,22 +460,32 @@ export function WindieProvider({ children }) {
 
   const approveToolCall = useCallback(
     (convId, toolCallId) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/approvals/${toolCallId}/approve`, {
+      runMutation(async () => {
+        const result = await apiRequest(`/api/conversations/${convId}/approvals/${toolCallId}/approve`, {
           method: "POST",
-        })
-      ),
-    [runMutation]
+        });
+        await apiRequest(`/api/conversations/${convId}/query`, {
+          method: "POST",
+          body: JSON.stringify({ model: modelOverride }),
+        });
+        return result;
+      }),
+    [modelOverride, runMutation]
   );
 
   const denyToolCall = useCallback(
     (convId, toolCallId) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/approvals/${toolCallId}/deny`, {
+      runMutation(async () => {
+        const result = await apiRequest(`/api/conversations/${convId}/approvals/${toolCallId}/deny`, {
           method: "POST",
-        })
-      ),
-    [runMutation]
+        });
+        await apiRequest(`/api/conversations/${convId}/query`, {
+          method: "POST",
+          body: JSON.stringify({ model: modelOverride }),
+        });
+        return result;
+      }),
+    [modelOverride, runMutation]
   );
 
   const value = {
@@ -499,6 +520,7 @@ export function WindieProvider({ children }) {
     renameConversation,
     deleteConversation,
     setSystemPrompt,
+    setToolApprovalMode,
     addToolSchema,
     addToolSchemas,
     removeToolSchema,

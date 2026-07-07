@@ -2,15 +2,17 @@
 //!
 //! This module decides whether a model-requested tool call may execute. The
 //! first policy is intentionally small: detached tools are denied, attached
-//! tools with no registered executor are denied, and every executable local
-//! tool asks for explicit user approval.
+//! tools with no registered executor are denied, and executable local tools
+//! either ask for explicit user approval or run under a conversation-level
+//! auto-approval mode.
 
 use crate::conversation::ToolCall;
-use crate::tool::{AttachedTool, ToolPermission};
+use crate::tool::{AttachedTool, ToolApprovalMode, ToolPermission};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Policy decision for one model-requested tool call.
 pub enum PolicyDecision {
+    Allow,
     Ask { reason: String },
     Deny { reason: String },
 }
@@ -31,6 +33,7 @@ impl ToolPolicy {
         tool_call: &ToolCall,
         attached_tool: Option<&AttachedTool>,
         provider_can_execute: bool,
+        approval_mode: ToolApprovalMode,
     ) -> PolicyDecision {
         let name = tool_call.name();
 
@@ -44,6 +47,10 @@ impl ToolPolicy {
             return PolicyDecision::Deny {
                 reason: format!("unknown tool: {name}"),
             };
+        }
+
+        if approval_mode == ToolApprovalMode::AutoApproveAttached {
+            return PolicyDecision::Allow;
         }
 
         if attached_tool

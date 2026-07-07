@@ -4,6 +4,7 @@ use super::*;
 use crate::conversation::{
     MessagePart, ToolCall, ToolSchema, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart,
 };
+use crate::tool::ToolApprovalMode;
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
     UnsavedMessagePart::Text(text.to_string())
@@ -104,54 +105,6 @@ fn rejects_newer_database_schema_version() {
 }
 
 #[test]
-fn migrates_active_message_id_for_existing_database() {
-    let path =
-        std::env::temp_dir().join(format!("windie-migration-test-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    connection
-        .execute_batch(
-            "
-            CREATE TABLE conversations (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE messages (
-                id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                parent_message_id TEXT,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                metadata TEXT,
-                created_at INTEGER NOT NULL
-            );
-
-            INSERT INTO conversations (id, title, created_at, updated_at)
-            VALUES ('conversation-id', NULL, 1, 3);
-            INSERT INTO messages (id, conversation_id, parent_message_id, role, content, metadata, created_at)
-            VALUES ('first-id', 'conversation-id', NULL, 'user', 'one', NULL, 1);
-            INSERT INTO messages (id, conversation_id, parent_message_id, role, content, metadata, created_at)
-            VALUES ('second-id', 'conversation-id', 'first-id', 'assistant', 'two', NULL, 2);
-            PRAGMA user_version = 1;
-            ",
-        )
-        .unwrap();
-    drop(connection);
-
-    let store = Store::open_at(&path).unwrap();
-    let active_message_id = store
-        .active_message_id(&ConversationId::new("conversation-id"))
-        .unwrap();
-
-    assert_eq!(active_message_id.as_deref(), Some("second-id"));
-
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
 fn creates_conversation_with_unique_id() {
     let store = Store::open_memory().unwrap();
 
@@ -159,6 +112,30 @@ fn creates_conversation_with_unique_id() {
     let second_id = store.create_conversation().unwrap();
 
     assert_ne!(first_id, second_id);
+}
+
+#[test]
+fn new_conversation_defaults_to_manual_tool_approval() {
+    let store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+
+    let mode = store.tool_approval_mode(&conversation_id).unwrap();
+
+    assert_eq!(mode, ToolApprovalMode::Manual);
+}
+
+#[test]
+fn set_tool_approval_mode_persists() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+
+    store
+        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
+        .unwrap();
+
+    let mode = store.tool_approval_mode(&conversation_id).unwrap();
+
+    assert_eq!(mode, ToolApprovalMode::AutoApproveAttached);
 }
 
 #[test]
