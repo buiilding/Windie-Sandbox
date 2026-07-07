@@ -50,7 +50,7 @@ impl ToolPolicy {
         }
 
         if approval_mode == ToolApprovalMode::AutoApproveAttached {
-            return PolicyDecision::Allow;
+            return full_access_decision(attached_tool);
         }
 
         if attached_tool
@@ -66,6 +66,15 @@ impl ToolPolicy {
             }
         }
     }
+}
+
+/// Applies conversation-level full access after attachment and executor checks.
+///
+/// Full access intentionally allows every attached executable tool. The earlier
+/// attachment and provider checks still deny tools the conversation did not opt
+/// into, raw/manual schemas without executors, and unavailable providers.
+fn full_access_decision(_attached_tool: &AttachedTool) -> PolicyDecision {
+    PolicyDecision::Allow
 }
 
 #[cfg(test)]
