@@ -112,10 +112,11 @@ export default function Composer() {
 
   const submit = async () => {
     if (!hasSendContent || streaming) return;
+    const sentText = text;
     const sentAttachments = attachments;
-    await sendMessage(activeConv.id, text, { modelOverride, attachments: sentAttachments });
     setText("");
     clearAttachments();
+    await sendMessage(activeConv.id, sentText, { modelOverride, attachments: sentAttachments });
   };
 
   const continueQuery = () => {
