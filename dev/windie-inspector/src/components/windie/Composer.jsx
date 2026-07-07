@@ -8,8 +8,19 @@ import {
   Square,
   Play,
   RefreshCw,
+  Image as ImageIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+
+function attachmentId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatBytes(bytes = 0) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}mb`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)}kb`;
+  return `${bytes}b`;
+}
 
 export default function Composer() {
   const {
@@ -25,10 +36,11 @@ export default function Composer() {
     refreshModels,
   } = useWindie();
   const [text, setText] = useState("");
-  const [imagePath, setImagePath] = useState("");
+  const [attachments, setAttachments] = useState([]);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   const taRef = useRef(null);
+  const attachmentsRef = useRef([]);
 
   useEffect(() => {
     if (taRef.current) {
@@ -37,16 +49,73 @@ export default function Composer() {
     }
   }, [text]);
 
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  useEffect(
+    () => () => {
+      attachmentsRef.current.forEach((attachment) => {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      });
+    },
+    []
+  );
+
   const currentModel = modelOverride || activeConv?.model;
   const filteredModels = models.filter((model) =>
     model.id.toLowerCase().includes(modelSearch.trim().toLowerCase())
   );
+  const hasSendContent = Boolean(text.trim() || attachments.length);
 
-  const submit = () => {
-    if (!text.trim() || streaming) return;
-    sendMessage(activeConv.id, text, { modelOverride, imagePath });
+  const clearAttachments = () => {
+    setAttachments((current) => {
+      current.forEach((attachment) => {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      });
+      return [];
+    });
+  };
+
+  const removeAttachment = (attachmentIdToRemove) => {
+    setAttachments((current) =>
+      current.filter((attachment) => {
+        if (attachment.id !== attachmentIdToRemove) return true;
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+        return false;
+      })
+    );
+  };
+
+  const handlePaste = (event) => {
+    const pastedImages = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+
+    if (pastedImages.length === 0) return;
+
+    event.preventDefault();
+    setAttachments((current) => [
+      ...current,
+      ...pastedImages.map((file) => ({
+        id: attachmentId(),
+        source: "clipboard",
+        file,
+        name: file.name || "clipboard image",
+        mimeType: file.type || "image/png",
+        size: file.size || 0,
+        previewUrl: URL.createObjectURL(file),
+      })),
+    ]);
+  };
+
+  const submit = async () => {
+    if (!hasSendContent || streaming) return;
+    const sentAttachments = attachments;
+    await sendMessage(activeConv.id, text, { modelOverride, attachments: sentAttachments });
     setText("");
-    setImagePath("");
+    clearAttachments();
   };
 
   const continueQuery = () => {
@@ -67,6 +136,7 @@ export default function Composer() {
             data-testid="composer-textarea"
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onPaste={handlePaste}
             onKeyDown={(e) => {
               if (
                 e.key === "Enter" &&
@@ -82,34 +152,66 @@ export default function Composer() {
             className="w-full bg-transparent outline-none resize-none font-mono text-[13px] leading-relaxed placeholder:text-muted-foreground/60"
           />
 
+          {attachments.length > 0 && (
+            <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+              {attachments.map((attachment) => (
+                <div
+                  key={attachment.id}
+                  className="w-40 shrink-0 border border-border bg-surface/40 p-1"
+                >
+                  <div className="h-20 border border-border/60 bg-background flex items-center justify-center overflow-hidden">
+                    {attachment.previewUrl ? (
+                      <img
+                        src={attachment.previewUrl}
+                        alt={attachment.name || "attachment"}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <ImageIcon className="size-5 text-muted-foreground" />
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5 min-w-0">
+                    <ImageIcon className="size-3 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground">
+                      {attachment.source === "path"
+                        ? attachment.path
+                        : `${attachment.mimeType} · ${formatBytes(attachment.size)}`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(attachment.id)}
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
+                      aria-label="remove attachment"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="mt-2 flex items-center gap-2">
             <button
               data-testid="composer-attach-image"
               onClick={() => {
-                if (imagePath) {
-                  setImagePath("");
-                  return;
-                }
                 const nextPath = window.prompt("Local image path");
-                if (nextPath?.trim()) setImagePath(nextPath.trim());
+                if (nextPath?.trim()) {
+                  setAttachments((current) => [
+                    ...current,
+                    {
+                      id: attachmentId(),
+                      source: "path",
+                      path: nextPath.trim(),
+                      name: nextPath.trim().split("/").pop() || "image path",
+                    },
+                  ]);
+                }
               }}
-              className={`h-7 px-2 flex items-center gap-1.5 border transition-colors font-mono text-[11px] uppercase tracking-widest ${
-                imagePath
-                  ? "border-[hsl(var(--accent))] text-[hsl(var(--accent))] bg-[hsl(var(--accent))]/10"
-                  : "border-border text-muted-foreground hover:bg-surface-hover"
-              }`}
+              className="h-7 px-2 flex items-center gap-1.5 border border-border text-muted-foreground hover:bg-surface-hover transition-colors font-mono text-[11px] uppercase tracking-widest"
             >
               <Paperclip className="size-3.5" strokeWidth={1.75} />
-              {imagePath ? "image path set" : "attach image"}
-              {imagePath && (
-                <X
-                  className="size-3 ml-1"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setImagePath("");
-                  }}
-                />
-              )}
+              attach image
             </button>
 
             <div className="relative">
@@ -243,11 +345,11 @@ export default function Composer() {
           <button
             data-testid="composer-send"
             onClick={submit}
-            disabled={streaming || !text.trim()}
+            disabled={streaming || !hasSendContent}
             className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
               streaming
                 ? "border-[hsl(var(--accent))] text-[hsl(var(--accent))] cursor-not-allowed"
-                : text.trim()
+                : hasSendContent
                   ? "border-foreground bg-foreground text-background hover:opacity-90"
                   : "border-border text-muted-foreground cursor-not-allowed"
             }`}

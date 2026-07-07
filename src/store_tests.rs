@@ -614,6 +614,47 @@ fn saves_and_loads_image_message_parts() {
 }
 
 #[test]
+fn loads_image_asset_only_for_owning_conversation() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation().unwrap();
+    let other_conversation_id = store.create_conversation().unwrap();
+
+    store
+        .insert_message_with_parts(
+            &conversation_id,
+            None,
+            Role::User,
+            "image",
+            &[
+                unsaved_text("image"),
+                unsaved_image("image/png", &[1, 2, 3]),
+            ],
+            None,
+        )
+        .unwrap();
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    let image_asset_id = match &messages[0].parts[1] {
+        MessagePart::Image(image) => image.asset_id.clone(),
+        _ => panic!("expected image part"),
+    };
+
+    let image = store
+        .load_conversation_image_asset(&conversation_id, &image_asset_id)
+        .unwrap();
+    assert_eq!(image.mime_type, "image/png");
+    assert_eq!(image.bytes, vec![1, 2, 3]);
+
+    let error = store
+        .load_conversation_image_asset(&other_conversation_id, &image_asset_id)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("image asset does not exist in conversation: {image_asset_id}")
+    );
+}
+
+#[test]
 fn saves_and_loads_tool_message_parts() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.get_or_create_default_conversation().unwrap();

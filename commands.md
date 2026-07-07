@@ -85,6 +85,7 @@ POST   /api/conversations/{conversation_id}/activate
 POST   /api/conversations/{conversation_id}/messages
 PATCH  /api/conversations/{conversation_id}/messages/{message_id}
 DELETE /api/conversations/{conversation_id}/messages/{message_id}
+GET    /api/conversations/{conversation_id}/images/{asset_id}
 PATCH  /api/conversations/{conversation_id}/system-prompt
 DELETE /api/conversations/{conversation_id}/system-prompt
 POST   /api/conversations/{conversation_id}/tools
@@ -441,9 +442,8 @@ windie query <conversation_id> --model ollama/llama3.2
 windie models
 ```
 
-List models Bifrost reports as supporting streamed Responses requests. This is
-the model class Windie's current `query` path can use because Windie sends
-OpenAI-compatible `/v1/responses` requests with streaming enabled.
+List models Bifrost reports through its OpenAI-compatible `/v1/models`
+endpoint.
 
 Requires the local Bifrost gateway to already be running. This command is
 read-only: it does not start, stop, restart, or reconfigure Bifrost.

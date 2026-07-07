@@ -956,6 +956,51 @@ impl Store {
         Ok(())
     }
 
+    /// Loads one image asset only when it is referenced by the conversation.
+    ///
+    /// Conversation APIs use this as the binary transfer boundary for image
+    /// parts. The `message_parts` link keeps ownership scoped to messages in
+    /// the requested conversation, so clients cannot fetch an arbitrary asset by
+    /// guessing an image ID from another conversation.
+    pub fn load_conversation_image_asset(
+        &self,
+        conversation_id: &ConversationId,
+        image_asset_id: &ImageAssetId,
+    ) -> Result<ImagePart> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        self.connection
+            .query_row(
+                "
+                SELECT image_assets.id, image_assets.mime_type, image_assets.bytes
+                FROM image_assets
+                WHERE image_assets.id = ?2
+                  AND EXISTS (
+                      SELECT 1
+                      FROM message_parts
+                      JOIN messages ON messages.id = message_parts.message_id
+                      WHERE messages.conversation_id = ?1
+                        AND message_parts.image_asset_id = image_assets.id
+                  )
+                ",
+                params![conversation_id.as_str(), image_asset_id.as_str()],
+                |row| {
+                    Ok(ImagePart {
+                        asset_id: ImageAssetId::new(row.get::<_, String>(0)?),
+                        mime_type: row.get(1)?,
+                        bytes: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to load conversation image asset")?
+            .ok_or_else(|| {
+                error::not_found(format!(
+                    "image asset does not exist in conversation: {image_asset_id}"
+                ))
+            })
+    }
+
     /// Inserts a new message and updates the conversation timestamp in one
     /// transaction.
     ///

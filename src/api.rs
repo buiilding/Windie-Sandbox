@@ -16,6 +16,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -23,8 +24,8 @@ use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCall, ToolCallId,
-    ToolSchema, ToolSchemaName,
+    ConversationId, ImageAssetId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCall,
+    ToolCallId, ToolSchema, ToolSchemaName,
 };
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
@@ -105,6 +106,10 @@ fn router(state: ApiState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/messages/{message_id}",
             patch(update_message).delete(remove_message),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/images/{asset_id}",
+            get(get_conversation_image),
         )
         .route(
             "/api/conversations/{conversation_id}/system-prompt",
@@ -497,6 +502,7 @@ struct InsertMessageRequest {
 enum InsertMessagePart {
     Text { text: String },
     Image { path: PathBuf },
+    ImageData { mime_type: String, data: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -541,7 +547,13 @@ fn normalize_insert_parts(
         .into_iter()
         .map(|part| match part {
             InsertMessagePart::Text { text } => Ok(MessageInputPart::Text(text)),
-            InsertMessagePart::Image { path } => Ok(MessageInputPart::Image(path)),
+            InsertMessagePart::Image { path } => Ok(MessageInputPart::ImagePath(path)),
+            InsertMessagePart::ImageData { mime_type, data } => {
+                let bytes = STANDARD.decode(data).map_err(|_| {
+                    error::invalid_request("image_data must contain valid base64 data")
+                })?;
+                Ok(MessageInputPart::ImageBytes { mime_type, bytes })
+            }
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -592,6 +604,24 @@ async fn remove_message(
     operation::remove_message(&mut store, &conversation_id, &message_id)?;
 
     Ok(Json(DeletedResponse { deleted: true }))
+}
+
+/// Returns durable image bytes for an image part in one conversation.
+async fn get_conversation_image(
+    State(state): State<ApiState>,
+    Path((conversation_id, asset_id)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let asset_id = ImageAssetId::new(asset_id);
+    let store = open_store(&state)?;
+    let image = store.load_conversation_image_asset(&conversation_id, &asset_id)?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, image.mime_type)
+        .body(axum::body::Body::from(image.bytes))
+        .context("failed to build image response")
+        .map_err(ApiError::from)
 }
 
 #[derive(Debug, Serialize)]
@@ -1093,6 +1123,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conversation_image_route_returns_scoped_image_bytes() {
+        let db_path = temp_database_path();
+        let conversation_id = {
+            let mut store = Store::open_at(&db_path).unwrap();
+            let conversation_id = store.create_conversation().unwrap();
+            store
+                .insert_message_with_parts(
+                    &conversation_id,
+                    None,
+                    Role::User,
+                    "image",
+                    &[
+                        crate::conversation::UnsavedMessagePart::Text("image".to_string()),
+                        crate::conversation::UnsavedMessagePart::Image(
+                            crate::conversation::UnsavedImagePart {
+                                mime_type: "image/png".to_string(),
+                                bytes: vec![1, 2, 3],
+                            },
+                        ),
+                    ],
+                    None,
+                )
+                .unwrap();
+            conversation_id
+        };
+        let asset_id = {
+            let store = Store::open_at(&db_path).unwrap();
+            let messages = store.load_messages(&conversation_id).unwrap();
+            match &messages[0].parts[1] {
+                MessagePart::Image(image) => image.asset_id.as_str().to_string(),
+                _ => panic!("expected image part"),
+            }
+        };
+        let app = test_app(db_path.clone());
+
+        let response = app
+            .oneshot(authed_request(
+                Method::GET,
+                &format!("/api/conversations/{conversation_id}/images/{asset_id}"),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], "image/png");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], &[1, 2, 3]);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn insert_tool_role_message_returns_raw_error() {
         let db_path = temp_database_path();
         let app = test_app(db_path.clone());
@@ -1121,6 +1204,59 @@ mod tests {
             body["error"],
             "role: tool messages must be created through approve or deny"
         );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn insert_message_accepts_image_data_part() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+
+        response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::POST,
+                    &format!("/api/conversations/{conversation_id}/messages"),
+                    Some(json!({
+                        "role": "user",
+                        "parts": [
+                            {"type": "text", "text": "clipboard image"},
+                            {
+                                "type": "image_data",
+                                "mime_type": "image/png",
+                                "data": "iVBORw0KGgo="
+                            }
+                        ]
+                    })),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        let report = response_json(
+            app.oneshot(authed_request(
+                Method::GET,
+                &format!("/api/conversations/{conversation_id}"),
+                None,
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        let parts = report["messages"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts[1]["type"], "image");
+        assert_eq!(parts[1]["mime_type"], "image/png");
+        assert_eq!(parts[1]["byte_count"], 8);
+
         let _ = fs::remove_file(db_path);
     }
 

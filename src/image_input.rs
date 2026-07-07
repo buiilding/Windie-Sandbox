@@ -40,6 +40,26 @@ pub fn read_image_input(path: &Path) -> Result<ImageInput> {
     Ok(ImageInput { mime_type, bytes })
 }
 
+/// Validates already-loaded image bytes from a trusted client boundary.
+///
+/// Clipboard image uploads arrive through the localhost API as bytes rather than
+/// paths. They still use the same supported MIME set, byte limit, and header
+/// checks as path-based image input before storage copies them into SQLite.
+pub fn validate_image_input_bytes(mime_type: &str, bytes: &[u8]) -> Result<()> {
+    if !supported_image_mime_type(mime_type) {
+        return Err(anyhow!("unsupported image type: {mime_type}"));
+    }
+    if bytes.len() as u64 > MAX_IMAGE_INPUT_BYTES {
+        return Err(anyhow!(
+            "image is too large: {} bytes exceeds {} bytes",
+            bytes.len(),
+            MAX_IMAGE_INPUT_BYTES
+        ));
+    }
+
+    validate_image_header(mime_type, bytes).context("invalid image header")
+}
+
 /// Infers the small set of image MIME types Windie can send to Bifrost.
 fn image_mime_type(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -52,6 +72,14 @@ fn image_mime_type(path: &Path) -> Option<String> {
     };
 
     Some(mime_type.to_string())
+}
+
+/// Returns whether Windie can send the MIME type to Bifrost.
+fn supported_image_mime_type(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    )
 }
 
 /// Verifies that bytes match the selected image MIME type.
@@ -100,6 +128,20 @@ mod tests {
             vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn validates_loaded_image_bytes() {
+        let bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+        validate_image_input_bytes("image/png", &bytes).unwrap();
+    }
+
+    #[test]
+    fn rejects_loaded_image_bytes_with_unsupported_mime_type() {
+        let error = validate_image_input_bytes("image/bmp", &[1, 2, 3]).unwrap_err();
+
+        assert!(error.to_string().contains("unsupported image type"));
     }
 
     #[test]

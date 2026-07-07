@@ -343,7 +343,7 @@ fn message_input_parts(parts: &[InsertPart]) -> Vec<MessageInputPart> {
         .iter()
         .map(|part| match part {
             InsertPart::Text(text) => MessageInputPart::Text(text.clone()),
-            InsertPart::Image(path) => MessageInputPart::Image(path.clone()),
+            InsertPart::Image(path) => MessageInputPart::ImagePath(path.clone()),
         })
         .collect()
 }

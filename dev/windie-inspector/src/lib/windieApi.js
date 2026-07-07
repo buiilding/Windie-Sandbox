@@ -43,6 +43,31 @@ export async function apiRequest(path, options = {}) {
   return body;
 }
 
+export async function fetchImageAsset(conversationId, assetId) {
+  const token = apiToken();
+  const response = await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/images/${encodeURIComponent(assetId)}`,
+    {
+      headers: {
+        ...(token ? { "X-Windie-Api-Token": token } : {}),
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+    throw new Error(body?.error || `Windie image request failed: ${response.status}`);
+  }
+
+  return response.blob();
+}
+
 export async function listModels() {
   const body = await apiRequest("/api/models");
   return (body.models || []).map((model) => ({
@@ -80,7 +105,7 @@ export function conversationFromInspection(report, fallback) {
       id: message.id,
       parentId: message.parent_message_id || null,
       childrenIds: [],
-      message: messageFromApi(message, report.model),
+      message: messageFromApi(message, report.model, report.conversation_id),
     };
   }
 
@@ -120,8 +145,8 @@ export function conversationFromInspection(report, fallback) {
   };
 }
 
-function messageFromApi(message, model) {
-  const parts = partsFromApi(message);
+function messageFromApi(message, model, conversationId) {
+  const parts = partsFromApi(message, conversationId);
   return {
     role: message.role,
     parts,
@@ -131,7 +156,7 @@ function messageFromApi(message, model) {
   };
 }
 
-function partsFromApi(message) {
+function partsFromApi(message, conversationId) {
   if (message.parts?.length) {
     return message.parts.map((part) => {
       if (part.type === "text") {
@@ -141,6 +166,7 @@ function partsFromApi(message) {
         type: "image",
         alt: `${part.asset_id || "image"} · ${part.mime_type || "image"} · ${part.byte_count || 0}b`,
         assetId: part.asset_id,
+        conversationId,
         mimeType: part.mime_type,
         byteCount: part.byte_count,
       };

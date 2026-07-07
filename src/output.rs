@@ -600,7 +600,7 @@ fn help_lines() -> Vec<String> {
         "  windie exits successfully without runtime action.",
         "  windie api starts the localhost developer API server.",
         "  windie tools lists provider tools available to attach to conversations.",
-        "  windie models lists Responses-stream-capable models from the currently running Bifrost gateway.",
+        "  windie models lists models from the currently running Bifrost gateway.",
         "  windie bench <conversation_id> measures active path, tree, tool schema load, and context build.",
         "  windie bench runtime measures provider-free runtime and write-path primitives.",
         "  windie bench <conversation_id> --json writes a persistent benchmark artifact to stdout.",

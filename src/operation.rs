@@ -19,10 +19,8 @@ use crate::conversation::{
 };
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
-use crate::image_input::{ImageInput, read_image_input};
-use crate::llm::{
-    self, BaseUrl, BifrostClient, ModelInfo, ModelName, ModelRequestType, RuntimeLlm,
-};
+use crate::image_input::{ImageInput, read_image_input, validate_image_input_bytes};
+use crate::llm::{self, BaseUrl, BifrostClient, ModelInfo, ModelName, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
     approve_tool_call, deny_tool_call, pending_tool_approvals,
@@ -36,12 +34,14 @@ use crate::tool_provider::ToolProviderRegistry;
 
 /// One ordered message part accepted by client-facing insert operations.
 ///
-/// Text parts are stored directly. Image parts are local file paths that Windie
-/// reads through `image_input.rs` before copying the bytes into SQLite.
+/// Text parts are stored directly. Path images are read through `image_input.rs`;
+/// byte images arrive from local clients such as clipboard paste. Both image
+/// forms are validated before storage copies bytes into SQLite.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageInputPart {
     Text(String),
-    Image(PathBuf),
+    ImagePath(PathBuf),
+    ImageBytes { mime_type: String, bytes: Vec<u8> },
 }
 
 /// Full message tree plus the selected active node.
@@ -211,7 +211,7 @@ pub async fn require_gateway_running(gateway_url: GatewayUrl) -> Result<()> {
 pub async fn list_models(gateway_url: GatewayUrl, base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
     require_gateway_running(gateway_url).await?;
 
-    llm::list_models(base_url, Some(ModelRequestType::ResponsesStream)).await
+    llm::list_models(base_url).await
 }
 
 /// Loads the active path shown by the CLI and inspector.
@@ -278,9 +278,12 @@ pub fn insert_message(
     }
 
     let parent_message_id = store.active_message_id(conversation_id)?;
-    let has_image = parts
-        .iter()
-        .any(|part| matches!(part, MessageInputPart::Image(_)));
+    let has_image = parts.iter().any(|part| {
+        matches!(
+            part,
+            MessageInputPart::ImagePath(_) | MessageInputPart::ImageBytes { .. }
+        )
+    });
     let has_multiple_parts = parts.len() > 1;
     let content = insert_content(parts);
 
@@ -534,7 +537,14 @@ enum LoadedInsertPart {
 fn load_insert_part(part: &MessageInputPart) -> Result<LoadedInsertPart> {
     match part {
         MessageInputPart::Text(text) => Ok(LoadedInsertPart::Text(text.clone())),
-        MessageInputPart::Image(path) => read_image_input(path).map(LoadedInsertPart::Image),
+        MessageInputPart::ImagePath(path) => read_image_input(path).map(LoadedInsertPart::Image),
+        MessageInputPart::ImageBytes { mime_type, bytes } => {
+            validate_image_input_bytes(mime_type, bytes)?;
+            Ok(LoadedInsertPart::Image(ImageInput {
+                mime_type: mime_type.clone(),
+                bytes: bytes.clone(),
+            }))
+        }
     }
 }
 
@@ -556,7 +566,7 @@ fn validate_insert_parts(parts: &[MessageInputPart]) -> Result<()> {
 fn empty_text_part(part: &MessageInputPart) -> bool {
     match part {
         MessageInputPart::Text(text) => text.is_empty(),
-        MessageInputPart::Image(_) => false,
+        MessageInputPart::ImagePath(_) | MessageInputPart::ImageBytes { .. } => false,
     }
 }
 
@@ -566,7 +576,7 @@ fn insert_content(parts: &[MessageInputPart]) -> String {
         .iter()
         .filter_map(|part| match part {
             MessageInputPart::Text(text) => Some(text.as_str()),
-            MessageInputPart::Image(_) => None,
+            MessageInputPart::ImagePath(_) | MessageInputPart::ImageBytes { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -637,7 +647,7 @@ mod tests {
             Role::User,
             &[
                 MessageInputPart::Text("first".to_string()),
-                MessageInputPart::Image(image_path.clone()),
+                MessageInputPart::ImagePath(image_path.clone()),
             ],
         )
         .unwrap();
@@ -646,6 +656,30 @@ mod tests {
         assert_eq!(messages[0].content, "first");
         assert_eq!(messages[0].parts.len(), 2);
         fs::remove_file(image_path).unwrap();
+    }
+
+    #[test]
+    fn inserts_loaded_image_bytes() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store).unwrap();
+
+        insert_message(
+            &mut store,
+            &conversation_id,
+            Role::User,
+            &[
+                MessageInputPart::Text("clipboard".to_string()),
+                MessageInputPart::ImageBytes {
+                    mime_type: "image/png".to_string(),
+                    bytes: vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+                },
+            ],
+        )
+        .unwrap();
+
+        let messages = active_path(&store, &conversation_id).unwrap();
+        assert_eq!(messages[0].content, "clipboard");
+        assert_eq!(messages[0].parts.len(), 2);
     }
 
     #[test]

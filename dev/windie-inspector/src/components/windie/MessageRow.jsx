@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
+import { fetchImageAsset } from "@/lib/windieApi";
 import { ROLE_TOKENS } from "@/lib/mockData";
 import {
   GitBranch,
@@ -121,6 +122,67 @@ function MetadataLanes({ metadata }) {
   }
   if (!lanes.length) return null;
   return <div className="mt-3 space-y-1.5">{lanes}</div>;
+}
+
+function MessageImagePreview({ image, testId }) {
+  const [objectUrl, setObjectUrl] = useState(image.url || "");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (image.url) {
+      setObjectUrl(image.url);
+      setFailed(false);
+      return undefined;
+    }
+    if (!image.assetId || !image.conversationId) {
+      setObjectUrl("");
+      setFailed(false);
+      return undefined;
+    }
+
+    let active = true;
+    let nextObjectUrl = "";
+    setObjectUrl("");
+    setFailed(false);
+
+    fetchImageAsset(image.conversationId, image.assetId)
+      .then((blob) => {
+        if (!active) return;
+        nextObjectUrl = URL.createObjectURL(blob);
+        setObjectUrl(nextObjectUrl);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+
+    return () => {
+      active = false;
+      if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl);
+    };
+  }, [image.url, image.assetId, image.conversationId]);
+
+  return (
+    <div
+      className="border border-border p-1 max-w-[280px]"
+      data-testid={testId}
+    >
+      {objectUrl && !failed ? (
+        <img
+          src={objectUrl}
+          alt={image.alt || "attachment"}
+          className="max-h-40 object-cover"
+        />
+      ) : (
+        <div className="h-20 w-48 flex items-center justify-center bg-surface text-muted-foreground">
+          <ImageIcon className="size-5" />
+        </div>
+      )}
+      <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+        <ImageIcon className="size-3" />
+        <span className="truncate">{image.alt || "attachment"}</span>
+      </div>
+    </div>
+  );
 }
 
 export default function MessageRow({ node, index, isLast }) {
@@ -254,27 +316,11 @@ export default function MessageRow({ node, index, isLast }) {
               {imageParts.length > 0 && (
                 <div className="mt-3 flex gap-2 flex-wrap">
                   {imageParts.map((img, i) => (
-                    <div
+                    <MessageImagePreview
                       key={i}
-                      className="border border-border p-1 max-w-[280px]"
-                      data-testid={`msg-image-${node.id}-${i}`}
-                    >
-                      {img.url ? (
-                        <img
-                          src={img.url}
-                          alt={img.alt || "attachment"}
-                          className="max-h-40 object-cover"
-                        />
-                      ) : (
-                        <div className="h-20 w-48 flex items-center justify-center bg-surface text-muted-foreground">
-                          <ImageIcon className="size-5" />
-                        </div>
-                      )}
-                      <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
-                        <ImageIcon className="size-3" />
-                        <span className="truncate">{img.alt || "attachment"}</span>
-                      </div>
-                    </div>
+                      image={img}
+                      testId={`msg-image-${node.id}-${i}`}
+                    />
                   ))}
                 </div>
               )}
