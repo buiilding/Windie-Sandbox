@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useWindie } from "@/context/WindieContext";
 import { fetchImageAsset } from "@/lib/windieApi";
 import { ROLE_TOKENS } from "@/lib/mockData";
@@ -185,6 +187,30 @@ function MessageImagePreview({ image, testId }) {
   );
 }
 
+function MessageMarkdown({ text, isStreaming }) {
+  return (
+    <div className="windie-markdown text-sm leading-relaxed font-sans">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        skipHtml
+        components={{
+          a: ({ node: _node, ...props }) => (
+            <a
+              {...props}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => event.stopPropagation()}
+            />
+          ),
+        }}
+      >
+        {text || ""}
+      </ReactMarkdown>
+      {isStreaming && <span className="windie-caret" />}
+    </div>
+  );
+}
+
 export default function MessageRow({ node, index, isLast }) {
   const {
     selectedNodeId,
@@ -307,10 +333,7 @@ export default function MessageRow({ node, index, isLast }) {
                   {textPart?.text}
                 </div>
               ) : (
-                <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
-                  {textPart?.text}
-                  {isStreaming && <span className="windie-caret" />}
-                </div>
+                <MessageMarkdown text={textPart?.text} isStreaming={isStreaming} />
               )}
 
               {imageParts.length > 0 && (

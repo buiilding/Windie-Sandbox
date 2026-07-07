@@ -141,6 +141,93 @@ code,
     animation: windie-blink 1s steps(1) infinite;
 }
 
+.windie-markdown {
+    overflow-wrap: anywhere;
+}
+
+.windie-markdown > * + * {
+    margin-top: 0.65rem;
+}
+
+.windie-markdown p {
+    margin: 0;
+}
+
+.windie-markdown ul,
+.windie-markdown ol {
+    margin: 0;
+    padding-left: 1.25rem;
+}
+
+.windie-markdown ul {
+    list-style: disc;
+}
+
+.windie-markdown ol {
+    list-style: decimal;
+}
+
+.windie-markdown li + li {
+    margin-top: 0.2rem;
+}
+
+.windie-markdown blockquote {
+    margin: 0;
+    padding-left: 0.75rem;
+    border-left: 2px solid hsl(var(--border));
+    color: hsl(var(--muted-foreground));
+}
+
+.windie-markdown code {
+    padding: 0.08rem 0.25rem;
+    background: hsl(var(--surface));
+    border: 1px solid hsl(var(--border));
+    font-size: 0.82em;
+}
+
+.windie-markdown pre {
+    margin: 0;
+    padding: 0.7rem;
+    overflow-x: auto;
+    background: hsl(var(--surface));
+    border: 1px solid hsl(var(--border));
+}
+
+.windie-markdown pre code {
+    padding: 0;
+    background: transparent;
+    border: 0;
+    font-size: 0.78rem;
+    white-space: pre;
+}
+
+.windie-markdown a {
+    color: hsl(var(--accent));
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.windie-markdown table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+
+.windie-markdown th,
+.windie-markdown td {
+    padding: 0.35rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    text-align: left;
+    vertical-align: top;
+}
+
+.windie-markdown th {
+    background: hsl(var(--surface));
+    font-weight: 600;
+}
+
 /* Grid background lines */
 .windie-grid-bg {
     background-image:

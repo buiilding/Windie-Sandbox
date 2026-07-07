@@ -66,9 +66,6 @@ export default function InspectorPanel() {
     approvals,
     approveToolCall,
     denyToolCall,
-    contextPreviewOpen,
-    setContextPreviewOpen,
-    modelOverride,
     availableToolSchemas,
     addToolSchema,
     addToolSchemas,
@@ -80,6 +77,7 @@ export default function InspectorPanel() {
   const [pendingToolActionKeys, setPendingToolActionKeys] = useState([]);
   const [collapsedToolProviderIds, setCollapsedToolProviderIds] = useState([]);
   const pendingToolActionKeysRef = useRef(new Set());
+  const initializedToolProviderIdsRef = useRef(new Set());
 
   useEffect(() => {
     setSysDraft(activeConv?.systemPrompt || "");
@@ -128,16 +126,19 @@ export default function InspectorPanel() {
     [availableToolSchemas]
   );
 
-  const runtimeRequestPreview = useMemo(() => {
-    if (!activeConv) return null;
-    return {
-      model: modelOverride || activeConv.model,
-      system_prompt: activeConv.systemPrompt || null,
-      messages: activeConv.modelContext || [],
-      tools: toolSchemas,
-      latest_compaction: activeConv.latestCompaction || null,
-    };
-  }, [activeConv, modelOverride, toolSchemas]);
+  useEffect(() => {
+    const unseenProviderIds = groupedToolSchemas
+      .map((group) => group.providerId)
+      .filter((providerId) => !initializedToolProviderIdsRef.current.has(providerId));
+    if (unseenProviderIds.length === 0) return;
+
+    for (const providerId of unseenProviderIds) {
+      initializedToolProviderIdsRef.current.add(providerId);
+    }
+    setCollapsedToolProviderIds((current) => [
+      ...new Set([...current, ...unseenProviderIds]),
+    ]);
+  }, [groupedToolSchemas]);
 
   if (!activeConv) return null;
 
@@ -211,7 +212,7 @@ export default function InspectorPanel() {
         </Section>
 
         {/* Active Path */}
-        <Section title="active path" testId="inspector-section-active-path">
+        <Section title="active path" testId="inspector-section-active-path" defaultOpen={false}>
           <div className="font-mono text-[10px] text-muted-foreground mb-1.5">
             {activeConv.activePath.length} nodes
           </div>
@@ -250,6 +251,7 @@ export default function InspectorPanel() {
         <Section
           title="system prompt"
           testId="inspector-section-system-prompt"
+          defaultOpen={false}
           right={
             !editingSys && (
               <span
@@ -298,39 +300,6 @@ export default function InspectorPanel() {
           ) : (
             <div className="font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap border-l-2 border-muted-foreground/40 pl-2 py-1">
               {activeConv.systemPrompt}
-            </div>
-          )}
-        </Section>
-
-        {/* Model request preview toggle */}
-        <Section
-          title="runtime request preview"
-          testId="inspector-section-request-preview"
-          right={
-            <span
-              data-testid="inspector-toggle-preview"
-              onClick={(e) => {
-                e.stopPropagation();
-                setContextPreviewOpen(!contextPreviewOpen);
-              }}
-              className={`px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-widest border ${
-                contextPreviewOpen
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border"
-              }`}
-            >
-              {contextPreviewOpen ? "expanded" : "collapsed"}
-            </span>
-          }
-        >
-          {contextPreviewOpen ? (
-            <pre className="font-mono text-[10px] leading-relaxed text-muted-foreground bg-surface/60 border border-border p-2 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap">
-              {JSON.stringify(runtimeRequestPreview, null, 2)}
-            </pre>
-          ) : (
-            <div className="font-mono text-[11px] text-muted-foreground">
-              {runtimeRequestPreview?.messages.length} msgs · {runtimeRequestPreview?.tools.length}{" "}
-              tools · api context
             </div>
           )}
         </Section>
@@ -405,41 +374,6 @@ export default function InspectorPanel() {
                 </button>
               </div>
 
-              {/* Metadata lanes summary */}
-              {selectedNode.message.metadata && (
-                <div className="mt-3 space-y-1">
-                  <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                    metadata lanes
-                  </div>
-                  <div className="grid grid-cols-2 gap-1 font-mono text-[10px]">
-                    <MetaLane
-                      k="tool_calls"
-                      v={selectedNode.message.metadata.toolCalls?.length || 0}
-                      color="var(--tool-call)"
-                    />
-                    <MetaLane
-                      k="reasoning"
-                      v={selectedNode.message.metadata.reasoning ? "•" : "—"}
-                      color="var(--reasoning)"
-                    />
-                    <MetaLane
-                      k="refusal"
-                      v={selectedNode.message.metadata.refusal ? "•" : "—"}
-                      color="var(--refusal)"
-                    />
-                    <MetaLane
-                      k="annotations"
-                      v={selectedNode.message.metadata.annotations?.length || 0}
-                      color="var(--annotation)"
-                    />
-                    <MetaLane
-                      k="audio"
-                      v={selectedNode.message.metadata.audio ? "•" : "—"}
-                      color="var(--audio)"
-                    />
-                  </div>
-                </div>
-              )}
             </>
           )}
         </Section>
@@ -448,7 +382,7 @@ export default function InspectorPanel() {
         <Section
           title={`approvals · ${approvals.length}`}
           testId="inspector-section-approvals"
-          defaultOpen={approvals.length > 0}
+          defaultOpen={true}
         >
           {approvals.length === 0 ? (
             <div className="font-mono text-[11px] text-muted-foreground">
@@ -724,21 +658,4 @@ function formatArguments(value) {
   } catch {
     return value;
   }
-}
-
-function MetaLane({ k, v, color }) {
-  return (
-    <div
-      className="border-l-2 pl-1.5 py-0.5"
-      style={{ borderColor: `hsl(${color})` }}
-    >
-      <div
-        className="uppercase tracking-widest text-[9px]"
-        style={{ color: `hsl(${color})` }}
-      >
-        {k}
-      </div>
-      <div className="text-foreground">{v}</div>
-    </div>
-  );
 }
