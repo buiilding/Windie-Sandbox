@@ -10,8 +10,10 @@ use crate::perf::{
     PerformanceReport, PerformanceSummary,
 };
 use crate::store::Compaction;
-use crate::tool::ToolApprovalMode;
-use crate::tool_provider::BuiltInToolProvider;
+use crate::tool::{
+    ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolDefinition, ToolPermission,
+    ToolProviderId, ToolProviderKind, ToolProviderRef,
+};
 
 #[test]
 fn formats_empty_conversations() {
@@ -79,14 +81,26 @@ fn formats_help_lines() {
 
 #[test]
 fn formats_available_tool_schemas() {
-    let tools = BuiltInToolProvider.list_tools();
-    let lines = available_tool_lines(&tools);
+    let tool = ToolDefinition {
+        schema_name: ToolSchemaName::new("desktop_commander__read_file"),
+        display_name: "Desktop Commander read_file".to_string(),
+        description: "Read a file through Desktop Commander.".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            ToolProviderId::new("desktop-commander"),
+            ProviderToolName::new("read_file"),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: vec![ToolPermission::ExternalProcess],
+        annotations: ToolAnnotations::default(),
+    };
+    let lines = available_tool_lines(&[tool]);
 
     assert_eq!(
         lines,
         vec![
             "tools",
-            "windie/run_shell  run_shell  Run a bounded local shell command after explicit user approval."
+            "desktop-commander/read_file  desktop_commander__read_file  Read a file through Desktop Commander."
         ]
     );
 }

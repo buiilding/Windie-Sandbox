@@ -18,7 +18,6 @@ mod output;
 mod perf;
 mod policy;
 mod runtime;
-mod shell;
 mod store;
 mod tool;
 mod tool_provider;

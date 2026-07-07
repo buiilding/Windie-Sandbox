@@ -1,14 +1,31 @@
 //! Tests for runtime flow coordination.
 
 use anyhow::{Result, anyhow};
+use std::fs;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::conversation::{
     Message, MessageMetadata, ToolCall, ToolCallId, ToolSchema, ToolSchemaName,
 };
 use crate::llm::{AssistantResponse, FinishReason};
-use crate::tool::ToolApprovalMode;
+use crate::mcp::McpCommand;
+use crate::tool::{
+    ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission, ToolProviderId,
+    ToolProviderKind, ToolProviderRef,
+};
+use crate::tool_provider::ToolProviderRegistry;
+
+const TEST_PROVIDER_ID: &str = "desktop-commander";
+const TEST_PROVIDER_PREFIX: &str = "desktop_commander";
+const TEST_PROVIDER_DISPLAY_NAME: &str = "Desktop Commander";
+const TEST_PROVIDER_TOOL_NAME: &str = "read_file";
+const TEST_TOOL_SCHEMA_NAME: &str = "desktop_commander__read_file";
+const TEST_TOOL_RESULT: &str = "test-mcp-output";
+
+static TEMP_MCP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct NoopOutput;
 
@@ -161,7 +178,7 @@ impl RuntimeLlm for ToolCallLlm {
             metadata: MessageMetadata {
                 tool_calls: vec![ToolCall::function(
                     "call_123",
-                    "run_shell",
+                    TEST_TOOL_SCHEMA_NAME,
                     r#"{"command":"ls"}"#,
                 )],
                 ..Default::default()
@@ -194,9 +211,9 @@ impl RuntimeLlm for UnknownToolCallLlm {
     }
 }
 
-struct UnknownThenShellToolCallLlm;
+struct UnknownThenProviderToolCallLlm;
 
-impl RuntimeLlm for UnknownThenShellToolCallLlm {
+impl RuntimeLlm for UnknownThenProviderToolCallLlm {
     async fn stream<F>(
         &self,
         _messages: &[Message],
@@ -211,7 +228,11 @@ impl RuntimeLlm for UnknownThenShellToolCallLlm {
             metadata: MessageMetadata {
                 tool_calls: vec![
                     ToolCall::function("call_unknown", "unknown_tool", "{}"),
-                    ToolCall::function("call_shell", "run_shell", r#"{"command":"printf ok"}"#),
+                    ToolCall::function(
+                        "call_provider",
+                        TEST_TOOL_SCHEMA_NAME,
+                        r#"{"command":"printf ok"}"#,
+                    ),
                 ],
                 ..Default::default()
             },
@@ -253,7 +274,7 @@ impl RuntimeLlm for ToolThenReplyLlm {
                 metadata: MessageMetadata {
                     tool_calls: vec![ToolCall::function(
                         "call_123",
-                        "run_shell",
+                        TEST_TOOL_SCHEMA_NAME,
                         r#"{"command":"printf windie-shell"}"#,
                     )],
                     ..Default::default()
@@ -362,7 +383,7 @@ async fn query_conversation_passes_tool_schemas_to_llm() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     let tool_schema = ToolSchema {
-        name: ToolSchemaName::new("run_shell"),
+        name: ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
         description: "Run a shell command".to_string(),
         parameters: serde_json::json!({"type":"object"}),
     };
@@ -382,22 +403,28 @@ async fn query_conversation_passes_tool_schemas_to_llm() {
 }
 
 #[tokio::test]
-async fn query_approve_query_composes_shell_tool_flow() {
+async fn query_approve_query_composes_provider_tool_flow() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
     let llm = ToolThenReplyLlm::new();
+    let registry = test_mcp_registry();
 
     let tool_call_message =
         query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
             .await
             .unwrap();
-    let result = approve_tool_call(&mut store, &conversation_id, &ToolCallId::new("call_123"))
-        .await
-        .unwrap();
+    let result = approve_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &ToolCallId::new("call_123"),
+        &registry,
+    )
+    .await
+    .unwrap();
     let assistant_message =
         query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
             .await
@@ -419,7 +446,7 @@ async fn query_approve_query_composes_shell_tool_flow() {
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[1].role, Role::Assistant);
     assert_eq!(messages[2].role, Role::Tool);
-    assert!(messages[2].content.contains("windie-shell"));
+    assert!(messages[2].content.contains(TEST_TOOL_RESULT));
     assert_eq!(
         messages[2]
             .metadata
@@ -431,14 +458,14 @@ async fn query_approve_query_composes_shell_tool_flow() {
     assert_eq!(messages[3].role, Role::Assistant);
     assert_eq!(second_turn_messages.len(), 3);
     assert_eq!(second_turn_messages[2].role, Role::Tool);
-    assert!(second_turn_messages[2].content.contains("windie-shell"));
+    assert!(second_turn_messages[2].content.contains(TEST_TOOL_RESULT));
 }
 
 #[tokio::test]
 async fn auto_approval_executes_tool_and_queries_again() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
         .unwrap();
@@ -446,7 +473,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
     let llm = ToolThenReplyLlm::new();
-    let registry = ToolProviderRegistry::new();
+    let registry = test_mcp_registry();
 
     let assistant_message = query_conversation_resolving_automatic_tools(
         &NoopOutput,
@@ -466,7 +493,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[1].role, Role::Assistant);
     assert_eq!(messages[2].role, Role::Tool);
-    assert!(messages[2].content.contains("windie-shell"));
+    assert!(messages[2].content.contains(TEST_TOOL_RESULT));
     assert_eq!(messages[3].role, Role::Assistant);
     assert!(approvals.is_empty());
     assert_eq!(second_turn_messages.len(), 3);
@@ -477,7 +504,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
 async fn auto_approval_emits_persisted_runtime_events() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
         .unwrap();
@@ -485,7 +512,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
     let llm = ToolThenReplyLlm::new();
-    let registry = ToolProviderRegistry::new();
+    let registry = test_mcp_registry();
     let events = RecordingRuntimeEvents::new();
 
     query_conversation_resolving_automatic_tools_with_events(
@@ -516,7 +543,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
 async fn query_conversation_once_saves_tool_calls_without_executing() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
@@ -531,7 +558,7 @@ async fn query_conversation_once_saves_tool_calls_without_executing() {
     assert!(messages[1].content.is_empty());
     assert_eq!(metadata.tool_calls.len(), 1);
     assert_eq!(metadata.tool_calls[0].id.as_str(), "call_123");
-    assert_eq!(metadata.tool_calls[0].name(), "run_shell");
+    assert_eq!(metadata.tool_calls[0].name(), TEST_TOOL_SCHEMA_NAME);
     assert_eq!(metadata.tool_calls[0].arguments(), r#"{"command":"ls"}"#);
 }
 
@@ -572,7 +599,7 @@ async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
 }
 
 #[tokio::test]
-async fn detached_shell_tool_call_is_auto_denied() {
+async fn detached_tool_call_is_auto_denied() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     store
@@ -590,17 +617,17 @@ async fn detached_shell_tool_call_is_auto_denied() {
     assert!(
         messages[2]
             .content
-            .contains("Tool is not attached: run_shell")
+            .contains("Tool is not attached: desktop_commander__read_file")
     );
     assert!(approvals.is_empty());
     validate_query_availability(&store, &conversation_id).unwrap();
 }
 
 #[test]
-fn removed_shell_schema_makes_existing_pending_call_policy_denied() {
+fn removed_tool_schema_makes_existing_pending_call_policy_denied() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
@@ -613,7 +640,7 @@ fn removed_shell_schema_makes_existing_pending_call_policy_denied() {
             Some(&MessageMetadata {
                 tool_calls: vec![ToolCall::function(
                     "call_123",
-                    "run_shell",
+                    TEST_TOOL_SCHEMA_NAME,
                     r#"{"command":"ls"}"#,
                 )],
                 ..Default::default()
@@ -621,7 +648,10 @@ fn removed_shell_schema_makes_existing_pending_call_policy_denied() {
         )
         .unwrap();
     store
-        .remove_tool_schema(&conversation_id, &ToolSchemaName::new("run_shell"))
+        .remove_tool_schema(
+            &conversation_id,
+            &ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
+        )
         .unwrap();
 
     prepare_query_turn(&mut store, &conversation_id).unwrap();
@@ -632,7 +662,7 @@ fn removed_shell_schema_makes_existing_pending_call_policy_denied() {
     assert!(
         messages[2]
             .content
-            .contains("Tool is not attached: run_shell")
+            .contains("Tool is not attached: desktop_commander__read_file")
     );
     assert!(approvals.is_empty());
 }
@@ -642,14 +672,14 @@ async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() 
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
     attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     store
         .insert_message(&conversation_id, None, Role::User, "use tools", None)
         .unwrap();
 
     query_conversation_once(
         &NoopOutput,
-        &UnknownThenShellToolCallLlm,
+        &UnknownThenProviderToolCallLlm,
         &mut store,
         &conversation_id,
     )
@@ -662,7 +692,7 @@ async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() 
     assert_eq!(messages[2].role, Role::Tool);
     assert!(messages[2].content.contains("unknown tool: unknown_tool"));
     assert_eq!(approvals.len(), 1);
-    assert_eq!(approvals[0].tool_call.id.as_str(), "call_shell");
+    assert_eq!(approvals[0].tool_call.id.as_str(), "call_provider");
 }
 
 #[tokio::test]
@@ -707,10 +737,10 @@ async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_que
 }
 
 #[tokio::test]
-async fn pending_tool_approvals_lists_pending_shell_calls() {
+async fn pending_tool_approvals_lists_pending_provider_calls() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
@@ -723,7 +753,7 @@ async fn pending_tool_approvals_lists_pending_shell_calls() {
             Some(&MessageMetadata {
                 tool_calls: vec![ToolCall::function(
                     "call_123",
-                    "run_shell",
+                    TEST_TOOL_SCHEMA_NAME,
                     r#"{"command":"printf approved"}"#,
                 )],
                 ..Default::default()
@@ -735,8 +765,8 @@ async fn pending_tool_approvals_lists_pending_shell_calls() {
 
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].tool_call.id.as_str(), "call_123");
-    assert_eq!(approvals[0].tool_call.name(), "run_shell");
-    assert_eq!(approvals[0].reason, "shell tool requires approval");
+    assert_eq!(approvals[0].tool_call.name(), TEST_TOOL_SCHEMA_NAME);
+    assert_eq!(approvals[0].reason, "tool requires approval");
 }
 
 #[tokio::test]
@@ -755,7 +785,7 @@ async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
             Some(&MessageMetadata {
                 tool_calls: vec![ToolCall::function(
                     "call_inactive",
-                    "run_shell",
+                    TEST_TOOL_SCHEMA_NAME,
                     r#"{"command":"printf inactive"}"#,
                 )],
                 ..Default::default()
@@ -790,10 +820,10 @@ async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
 }
 
 #[tokio::test]
-async fn approve_tool_call_executes_shell_and_stores_tool_result() {
+async fn approve_tool_call_executes_provider_and_stores_tool_result() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation().unwrap();
-    attach_run_shell_schema(&mut store, &conversation_id);
+    attach_test_mcp_tool(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
@@ -806,7 +836,7 @@ async fn approve_tool_call_executes_shell_and_stores_tool_result() {
             Some(&MessageMetadata {
                 tool_calls: vec![ToolCall::function(
                     "call_123",
-                    "run_shell",
+                    TEST_TOOL_SCHEMA_NAME,
                     r#"{"command":"printf approved"}"#,
                 )],
                 ..Default::default()
@@ -814,16 +844,22 @@ async fn approve_tool_call_executes_shell_and_stores_tool_result() {
         )
         .unwrap();
 
-    let result = approve_tool_call(&mut store, &conversation_id, &ToolCallId::new("call_123"))
-        .await
-        .unwrap();
+    let registry = test_mcp_registry();
+    let result = approve_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &ToolCallId::new("call_123"),
+        &registry,
+    )
+    .await
+    .unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
     let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
 
     assert!(result.success);
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[2].role, Role::Tool);
-    assert!(messages[2].content.contains("approved"));
+    assert!(messages[2].content.contains(TEST_TOOL_RESULT));
     assert_eq!(
         messages[2]
             .metadata
@@ -851,7 +887,7 @@ fn deny_tool_call_stores_rejected_tool_result() {
             Some(&MessageMetadata {
                 tool_calls: vec![ToolCall::function(
                     "call_123",
-                    "run_shell",
+                    TEST_TOOL_SCHEMA_NAME,
                     r#"{"command":"printf denied"}"#,
                 )],
                 ..Default::default()
@@ -887,15 +923,16 @@ async fn multi_tool_approvals_store_results_as_linear_chain() {
     let conversation_id = store.create_conversation().unwrap();
     let (assistant_id, first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
+    let registry = test_mcp_registry();
 
-    approve_tool_call(&mut store, &conversation_id, &first_call_id)
+    approve_tool_call_with_registry(&mut store, &conversation_id, &first_call_id, &registry)
         .await
         .unwrap();
     let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].tool_call.id.as_str(), "call_2");
 
-    approve_tool_call(&mut store, &conversation_id, &second_call_id)
+    approve_tool_call_with_registry(&mut store, &conversation_id, &second_call_id, &registry)
         .await
         .unwrap();
     let llm = CapturingLlm::new();
@@ -969,12 +1006,13 @@ async fn query_rejects_until_all_tool_calls_have_results() {
     let conversation_id = store.create_conversation().unwrap();
     let (_assistant_id, first_call_id, _second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
+    let registry = test_mcp_registry();
 
     let first_error =
         query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
             .await
             .unwrap_err();
-    approve_tool_call(&mut store, &conversation_id, &first_call_id)
+    approve_tool_call_with_registry(&mut store, &conversation_id, &first_call_id, &registry)
         .await
         .unwrap();
     let second_error =
@@ -1028,7 +1066,7 @@ fn insert_multi_tool_call_assistant(
     store: &mut Store,
     conversation_id: &ConversationId,
 ) -> (MessageId, ToolCallId, ToolCallId) {
-    attach_run_shell_schema(store, conversation_id);
+    attach_test_mcp_tool(store, conversation_id);
     let user_id = store
         .insert_message(conversation_id, None, Role::User, "run commands", None)
         .unwrap();
@@ -1042,8 +1080,16 @@ fn insert_multi_tool_call_assistant(
             "",
             Some(&MessageMetadata {
                 tool_calls: vec![
-                    ToolCall::function("call_1", "run_shell", r#"{"command":"printf first"}"#),
-                    ToolCall::function("call_2", "run_shell", r#"{"command":"printf second"}"#),
+                    ToolCall::function(
+                        "call_1",
+                        TEST_TOOL_SCHEMA_NAME,
+                        r#"{"command":"printf first"}"#,
+                    ),
+                    ToolCall::function(
+                        "call_2",
+                        TEST_TOOL_SCHEMA_NAME,
+                        r#"{"command":"printf second"}"#,
+                    ),
                 ],
                 ..Default::default()
             }),
@@ -1053,20 +1099,86 @@ fn insert_multi_tool_call_assistant(
     (assistant_id, first_call_id, second_call_id)
 }
 
-fn attach_run_shell_schema(store: &mut Store, conversation_id: &ConversationId) {
-    let registry = crate::tool_provider::ToolProviderRegistry::new();
-    let attached_tool = registry
-        .find_tool(
-            &crate::tool::ToolProviderId::new("windie"),
-            &crate::tool::ProviderToolName::new("run_shell"),
-        )
-        .unwrap()
-        .unwrap()
-        .attached_tool();
-
+fn attach_test_mcp_tool(store: &mut Store, conversation_id: &ConversationId) {
     store
-        .insert_attached_tool(conversation_id, &attached_tool)
+        .insert_attached_tool(conversation_id, &test_tool_definition().attached_tool())
         .unwrap();
+}
+
+fn test_mcp_registry() -> ToolProviderRegistry {
+    ToolProviderRegistry::with_test_mcp_provider(
+        TEST_PROVIDER_ID,
+        TEST_PROVIDER_PREFIX,
+        TEST_PROVIDER_DISPLAY_NAME,
+        test_mcp_command(),
+        vec![test_tool_definition()],
+    )
+}
+
+fn test_tool_definition() -> crate::tool::ToolDefinition {
+    crate::tool::ToolDefinition {
+        schema_name: ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
+        display_name: "Desktop Commander read_file".to_string(),
+        description: "Read a file through Desktop Commander.".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            ToolProviderId::new(TEST_PROVIDER_ID),
+            ProviderToolName::new(TEST_PROVIDER_TOOL_NAME),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: vec![ToolPermission::ExternalProcess],
+        annotations: ToolAnnotations::default(),
+    }
+}
+
+fn test_mcp_command() -> McpCommand {
+    let path = write_test_mcp_server();
+    let program = Box::leak(path.into_boxed_str());
+
+    McpCommand {
+        program,
+        args: &[],
+        env: &[],
+    }
+}
+
+fn write_test_mcp_server() -> String {
+    use std::os::unix::fs::PermissionsExt;
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let counter = TEMP_MCP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "windie-runtime-test-mcp-{}-{nanos}-{counter}.sh",
+        std::process::id()
+    ));
+    let script = format!(
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"windie-test-mcp","version":"0"}}}}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"{tool_name}","description":"Test tool","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"content":[{{"type":"text","text":"{tool_result}"}}],"isError":false}}}}'
+      ;;
+  esac
+done
+"#,
+        tool_name = TEST_PROVIDER_TOOL_NAME,
+        tool_result = TEST_TOOL_RESULT
+    );
+    fs::write(&path, script).unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&path, permissions).unwrap();
+
+    path.to_string_lossy().into_owned()
 }
 
 fn attach_tool_schema(store: &mut Store, conversation_id: &ConversationId, name: &str) {

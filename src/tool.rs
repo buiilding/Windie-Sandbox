@@ -1,9 +1,9 @@
 //! Tool domain types.
 //!
 //! This module owns the typed contracts shared by tool catalog, attachment,
-//! policy, runtime approval, and provider execution. A tool provider can be a
-//! Windie built-in, an MCP server, or a future plugin. Runtime code should pass
-//! through these types instead of branching on one concrete executor.
+//! policy, runtime approval, and provider execution. A tool provider can be an
+//! approved MCP server or a future plugin. Runtime code should pass through
+//! these types instead of branching on one concrete executor.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,7 +15,7 @@ use crate::conversation::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Stable identifier for one tool provider.
 ///
-/// Examples are `windie`, `cua-driver`, or a future plugin package ID. The ID
+/// Examples are `cua-driver`, `desktop-commander`, or a future plugin package ID. The ID
 /// names the execution provider, not the model-facing function name.
 pub struct ToolProviderId(String);
 
@@ -67,7 +67,6 @@ impl std::fmt::Display for ProviderToolName {
 #[serde(rename_all = "snake_case")]
 /// Kind of execution provider behind an attached tool.
 pub enum ToolProviderKind {
-    BuiltIn,
     Mcp,
     Plugin,
 }
@@ -76,7 +75,6 @@ impl ToolProviderKind {
     /// Converts persisted provider kind text into the typed enum.
     pub fn from_storage(value: &str) -> Option<Self> {
         match value {
-            "built_in" => Some(Self::BuiltIn),
             "mcp" => Some(Self::Mcp),
             "plugin" => Some(Self::Plugin),
             _ => None,
@@ -86,7 +84,6 @@ impl ToolProviderKind {
     /// Returns the stable storage representation.
     pub fn as_storage(self) -> &'static str {
         match self {
-            Self::BuiltIn => "built_in",
             Self::Mcp => "mcp",
             Self::Plugin => "plugin",
         }
@@ -164,7 +161,6 @@ impl ToolProviderRef {
 #[serde(rename_all = "snake_case")]
 /// Permission lane used by policy before a provider execution.
 pub enum ToolPermission {
-    LocalShell,
     ExternalProcess,
     PluginCode,
 }
@@ -283,21 +279,6 @@ pub struct ToolExecutionResult {
 }
 
 impl ToolExecutionResult {
-    /// Creates a successful tool result with model-facing content.
-    pub fn success(
-        tool_call_id: ToolCallId,
-        tool_name: impl Into<String>,
-        content: String,
-    ) -> Self {
-        Self {
-            tool_call_id,
-            tool_name: tool_name.into(),
-            content,
-            parts: Vec::new(),
-            success: true,
-        }
-    }
-
     /// Creates a successful rich tool result with ordered model-facing parts.
     pub fn success_with_parts(
         tool_call_id: ToolCallId,

@@ -3,22 +3,16 @@
 use super::*;
 
 use crate::conversation::{ToolCall, ToolSchema, ToolSchemaName};
-use crate::tool::{AttachedTool, ToolApprovalMode, ToolPermission};
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool::{
+    AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,
+    ToolProviderId, ToolProviderKind, ToolProviderRef,
+};
 
 #[test]
-fn attached_run_shell_requires_approval() {
+fn attached_executable_tool_requires_approval() {
     let policy = ToolPolicy;
-    let tool_call = ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#);
-    let registry = ToolProviderRegistry::new();
-    let attached_tool = registry
-        .find_tool(
-            &crate::tool::ToolProviderId::new("windie"),
-            &crate::tool::ProviderToolName::new("run_shell"),
-        )
-        .unwrap()
-        .unwrap()
-        .attached_tool();
+    let tool_call = ToolCall::function("call_1", "desktop_commander__read_file", "{}");
+    let attached_tool = test_attached_mcp_tool("desktop_commander__read_file", "read_file");
 
     let decision = policy.decide(
         &tool_call,
@@ -30,7 +24,7 @@ fn attached_run_shell_requires_approval() {
     assert_eq!(
         decision,
         PolicyDecision::Ask {
-            reason: "shell tool requires approval".to_string()
+            reason: "tool requires approval".to_string()
         }
     );
 }
@@ -104,16 +98,8 @@ fn attached_non_shell_tool_requires_generic_approval() {
 #[test]
 fn auto_approve_attached_allows_executable_tool() {
     let policy = ToolPolicy;
-    let tool_call = ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#);
-    let registry = ToolProviderRegistry::new();
-    let attached_tool = registry
-        .find_tool(
-            &crate::tool::ToolProviderId::new("windie"),
-            &crate::tool::ProviderToolName::new("run_shell"),
-        )
-        .unwrap()
-        .unwrap()
-        .attached_tool();
+    let tool_call = ToolCall::function("call_1", "desktop_commander__read_file", "{}");
+    let attached_tool = test_attached_mcp_tool("desktop_commander__read_file", "read_file");
 
     let decision = policy.decide(
         &tool_call,
@@ -143,6 +129,21 @@ fn auto_approve_attached_still_denies_detached_tool() {
             reason: "Tool is not attached: run_shell".to_string()
         }
     );
+}
+
+fn test_attached_mcp_tool(schema_name: &str, provider_tool_name: &str) -> AttachedTool {
+    AttachedTool {
+        schema_name: ToolSchemaName::new(schema_name),
+        description: "Test MCP tool".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            ToolProviderId::new("desktop-commander"),
+            ProviderToolName::new(provider_tool_name),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: vec![ToolPermission::ExternalProcess],
+        annotations: ToolAnnotations::default(),
+    }
 }
 
 #[test]

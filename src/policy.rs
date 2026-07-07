@@ -7,7 +7,7 @@
 //! auto-approval mode.
 
 use crate::conversation::ToolCall;
-use crate::tool::{AttachedTool, ToolApprovalMode, ToolPermission};
+use crate::tool::{AttachedTool, ToolApprovalMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Policy decision for one model-requested tool call.
@@ -18,7 +18,7 @@ pub enum PolicyDecision {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-/// Minimal Windie-native policy for local tool execution.
+/// Minimal Windie policy for provider-backed tool execution.
 pub struct ToolPolicy;
 
 impl ToolPolicy {
@@ -53,17 +53,8 @@ impl ToolPolicy {
             return full_access_decision(attached_tool);
         }
 
-        if attached_tool
-            .permissions
-            .contains(&ToolPermission::LocalShell)
-        {
-            PolicyDecision::Ask {
-                reason: "shell tool requires approval".to_string(),
-            }
-        } else {
-            PolicyDecision::Ask {
-                reason: "tool requires approval".to_string(),
-            }
+        PolicyDecision::Ask {
+            reason: "tool requires approval".to_string(),
         }
     }
 }

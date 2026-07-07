@@ -1339,6 +1339,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
 
+    use crate::mcp::McpCommand;
+    use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
+
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[tokio::test]
@@ -1768,7 +1771,10 @@ mod tests {
     #[tokio::test]
     async fn batch_attach_tools_route_attaches_provider_tools() {
         let db_path = temp_database_path();
-        let app = test_app(db_path.clone());
+        let app = test_app_with_tool_registry(
+            db_path.clone(),
+            Arc::new(registry_with_cached_test_tool()),
+        );
         let created = response_json(
             app.clone()
                 .oneshot(authed_request(Method::POST, "/api/conversations", None))
@@ -1786,8 +1792,8 @@ mod tests {
                     Some(json!({
                         "tools": [
                             {
-                                "provider_id": "windie",
-                                "tool_name": "run_shell"
+                                "provider_id": "desktop-commander",
+                                "tool_name": "read_file"
                             }
                         ]
                     })),
@@ -1807,8 +1813,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(attached["names"], json!(["run_shell"]));
-        assert_eq!(inspected["tool_schemas"][0]["name"], "run_shell");
+        assert_eq!(attached["names"], json!(["desktop_commander__read_file"]));
+        assert_eq!(
+            inspected["tool_schemas"][0]["name"],
+            "desktop_commander__read_file"
+        );
         let _ = fs::remove_file(db_path);
     }
 
@@ -1984,6 +1993,20 @@ mod tests {
         })
     }
 
+    fn test_app_with_tool_registry(
+        store_path: PathBuf,
+        tool_registry: Arc<ToolProviderRegistry>,
+    ) -> Router {
+        router(ApiState {
+            gateway_url: "http://localhost:8080".to_string(),
+            base_url: "http://localhost:8080/v1".to_string(),
+            model: "openai/test".to_string(),
+            api_token: "test-token".to_string(),
+            store_path: Some(store_path),
+            tool_registry,
+        })
+    }
+
     fn authed_request(method: Method, uri: &str, body: Option<Value>) -> HttpRequest<Body> {
         let mut builder = HttpRequest::builder()
             .method(method)
@@ -2013,6 +2036,36 @@ mod tests {
     async fn response_json_body(response: Response) -> Value {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn registry_with_cached_test_tool() -> ToolProviderRegistry {
+        ToolProviderRegistry::with_test_mcp_provider(
+            "desktop-commander",
+            "desktop_commander",
+            "Desktop Commander",
+            McpCommand {
+                program: "windie-test-unused-mcp-provider",
+                args: &[],
+                env: &[],
+            },
+            vec![desktop_commander_read_file_definition()],
+        )
+    }
+
+    fn desktop_commander_read_file_definition() -> ToolDefinition {
+        ToolDefinition {
+            schema_name: ToolSchemaName::new("desktop_commander__read_file"),
+            display_name: "Desktop Commander read_file".to_string(),
+            description: "Read a file through Desktop Commander.".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("desktop-commander"),
+                ProviderToolName::new("read_file"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        }
     }
 
     fn insert_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {

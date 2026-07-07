@@ -60,7 +60,7 @@ The future direction includes:
 
 - local AI interaction through clean clients
 - dynamic conversation/session manipulation such as insert, remove, truncate, forks.
-- local shell execution with explicit permission boundaries
+- local tool execution with explicit permission boundaries
 - browser-use and computer-use as local capabilities
 - user-controlled memory and workspace context
 - clear approval policy for risky actions
@@ -77,7 +77,7 @@ permissions, tools, provider behavior, and persistence boundaries.
 
 Avoid hidden side effects. Runtime actions should flow through explicit
 components and clear permission boundaries. Future OS-level capabilities such as
-shell execution, browser-use, computer-use, file access, wakeups, and memory must
+tool execution, browser-use, computer-use, file access, wakeups, and memory must
 be inspectable and controllable.
 
 Engineers should be able to understand, test, and replace each component without
@@ -135,9 +135,8 @@ Allowed in the current scope:
 - Conversation-level attached tool persistence and model request serialization.
 - Typed assistant metadata lanes for tool calls, reasoning, refusal, audio, and
   annotations.
-- Unified tool provider layer for built-ins, future MCP providers, and future
+- Unified tool provider layer for code-approved MCP providers and future
   plugins.
-- Windie-native `run_shell` provider tool execution with explicit approval.
 - Code-approved MCP provider tools through the same attached-tool and approval
   boundary.
 - Conversation-level manual or full-access approval mode for attached executable
@@ -210,8 +209,6 @@ src/mcp.rs           MCP stdio JSON-RPC client and session pool
 src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
-src/shell.rs         Windie built-in run_shell executor details
-src/shell_tests.rs   Windie built-in run_shell executor tests
 src/tool.rs          tool provider, attachment, approval, and execution result types
 src/tool_provider.rs tool provider registry and dispatch
 src/store.rs         SQLite persistence
@@ -239,9 +236,8 @@ Keep boundaries strict:
   protocol boundaries.
 - Only `perf.rs` should own benchmark timing logic.
 - Only `runtime.rs` should coordinate query-like runtime flows.
-- Only `shell.rs` should own local shell command execution details.
 - Only `tool_provider.rs` should own provider catalog and execution dispatch
-  across built-ins, future MCP providers, and future plugins.
+  across code-approved MCP providers and future plugins.
 - Only `store.rs` should own persisted message history, attached tools, and
   know about SQLite tables and queries.
 - Only `tool.rs` should own tool provider, attachment, approval, and execution

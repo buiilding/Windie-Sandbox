@@ -890,6 +890,8 @@ fn insert_content(parts: &[MessageInputPart]) -> String {
 mod tests {
     use super::*;
     use crate::conversation::{MessageMetadata, ToolCall};
+    use crate::mcp::McpCommand;
+    use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1058,29 +1060,33 @@ mod tests {
     fn attaches_available_provider_tool() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store).unwrap();
-        let registry = ToolProviderRegistry::new();
-        let run_shell = registry
+        let registry = registry_with_cached_test_tool();
+        let read_file = registry
             .find_tool(
-                &ToolProviderId::new("windie"),
-                &ProviderToolName::new("run_shell"),
+                &ToolProviderId::new("desktop-commander"),
+                &ProviderToolName::new("read_file"),
             )
             .unwrap()
             .unwrap();
 
-        let schema_name = attach_tool(
+        let schema_name = attach_tool_with_registry(
             &mut store,
             &conversation_id,
-            &ToolProviderId::new("windie"),
-            &ProviderToolName::new("run_shell"),
+            &ToolProviderId::new("desktop-commander"),
+            &ProviderToolName::new("read_file"),
+            &registry,
         )
         .unwrap();
         let attached_tools = store.load_attached_tools(&conversation_id).unwrap();
 
-        assert_eq!(run_shell.schema_name, schema_name);
-        assert_eq!(schema_name.as_str(), "run_shell");
+        assert_eq!(read_file.schema_name, schema_name);
+        assert_eq!(schema_name.as_str(), "desktop_commander__read_file");
         assert_eq!(attached_tools.len(), 1);
-        assert_eq!(attached_tools[0].provider.provider_id.as_str(), "windie");
-        assert_eq!(attached_tools[0].provider.tool_name.as_str(), "run_shell");
+        assert_eq!(
+            attached_tools[0].provider.provider_id.as_str(),
+            "desktop-commander"
+        );
+        assert_eq!(attached_tools[0].provider.tool_name.as_str(), "read_file");
     }
 
     #[test]
@@ -1088,13 +1094,13 @@ mod tests {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store).unwrap();
 
-        let registry = ToolProviderRegistry::new();
+        let registry = registry_with_cached_test_tool();
         let schema_names = attach_tools_with_registry(
             &mut store,
             &conversation_id,
             &[ToolAttachmentInput::new(
-                ToolProviderId::new("windie"),
-                ProviderToolName::new("run_shell"),
+                ToolProviderId::new("desktop-commander"),
+                ProviderToolName::new("read_file"),
             )],
             &registry,
         )
@@ -1102,10 +1108,13 @@ mod tests {
         let attached_tools = store.load_attached_tools(&conversation_id).unwrap();
 
         assert_eq!(schema_names.len(), 1);
-        assert_eq!(schema_names[0].as_str(), "run_shell");
+        assert_eq!(schema_names[0].as_str(), "desktop_commander__read_file");
         assert_eq!(attached_tools.len(), 1);
-        assert_eq!(attached_tools[0].provider.provider_id.as_str(), "windie");
-        assert_eq!(attached_tools[0].provider.tool_name.as_str(), "run_shell");
+        assert_eq!(
+            attached_tools[0].provider.provider_id.as_str(),
+            "desktop-commander"
+        );
+        assert_eq!(attached_tools[0].provider.tool_name.as_str(), "read_file");
     }
 
     #[test]
@@ -1181,64 +1190,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn approve_tool_persists_tool_result() {
-        let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store).unwrap();
-        attach_tool(
-            &mut store,
-            &conversation_id,
-            &ToolProviderId::new("windie"),
-            &ProviderToolName::new("run_shell"),
-        )
-        .unwrap();
-        let user_id = store
-            .insert_message(&conversation_id, None, Role::User, "run command", None)
-            .unwrap();
-        store
-            .insert_message(
-                &conversation_id,
-                Some(&user_id),
-                Role::Assistant,
-                "",
-                Some(&MessageMetadata {
-                    tool_calls: vec![ToolCall::function(
-                        "call_approve",
-                        "run_shell",
-                        r#"{"command":"printf ok"}"#,
-                    )],
-                    ..Default::default()
-                }),
-            )
-            .unwrap();
-
-        let approvals = list_tool_approvals(&store, &conversation_id).unwrap();
-        assert_eq!(approvals.len(), 1);
-
-        let result = approve_tool(
-            &mut store,
-            &conversation_id,
-            &ToolCallId::new("call_approve"),
-        )
-        .await
-        .unwrap();
-        let messages = store.load_active_path(&conversation_id).unwrap();
-
-        assert!(result.success);
-        assert!(result.content.contains("ok"));
-        assert_eq!(messages.last().unwrap().role, Role::Tool);
-        assert_eq!(
-            messages
-                .last()
-                .unwrap()
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.tool_call_id.as_ref())
-                .map(ToolCallId::as_str),
-            Some("call_approve")
-        );
-    }
-
     fn temp_image_path(extension: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1250,5 +1201,35 @@ mod tests {
             "windie-operation-{}-{nanos}-{counter}.{extension}",
             std::process::id()
         ))
+    }
+
+    fn registry_with_cached_test_tool() -> ToolProviderRegistry {
+        ToolProviderRegistry::with_test_mcp_provider(
+            "desktop-commander",
+            "desktop_commander",
+            "Desktop Commander",
+            McpCommand {
+                program: "windie-test-unused-mcp-provider",
+                args: &[],
+                env: &[],
+            },
+            vec![desktop_commander_read_file_definition()],
+        )
+    }
+
+    fn desktop_commander_read_file_definition() -> ToolDefinition {
+        ToolDefinition {
+            schema_name: ToolSchemaName::new("desktop_commander__read_file"),
+            display_name: "Desktop Commander read_file".to_string(),
+            description: "Read a file through Desktop Commander.".to_string(),
+            parameters: serde_json::json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("desktop-commander"),
+                ProviderToolName::new("read_file"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        }
     }
 }

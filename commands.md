@@ -112,20 +112,20 @@ This is a catalog, not a permission grant. Provider availability does not grant
 model access and does not authorize execution. A client can show these tools to
 the user, then explicitly attach one to a conversation.
 
-Windie currently includes two approved providers:
+Windie currently includes code-approved MCP providers:
 
 ```text
-windie       built-in provider for run_shell
-cua-driver   MCP provider launched with `cua-driver mcp`
+cua-driver          MCP provider launched with `cua-driver mcp`
+desktop-commander   MCP provider launched with `desktop-commander`
 ```
 
-Windie does not install CUA. `cua-driver` must already be installed and
-available on `PATH`. If it is missing, provider listing or execution returns the
-raw process-start error.
+Windie does not install provider binaries. The provider command must already be
+available on `PATH`. If it is missing, provider listing or execution returns
+the raw process-start error.
 
 ```text
-windie attach <conversation_id> tool windie run_shell
 windie attach <conversation_id> tool cua-driver click
+windie attach <conversation_id> tool desktop-commander read_file
 ```
 
 Attach one provider tool to a conversation. Attached tools are the schemas sent
@@ -136,7 +136,7 @@ attaching CUA's `click` tool stores and sends the schema as
 `cua_driver__click`, while Windie still executes provider tool `click`.
 
 ```text
-windie detach <conversation_id> tool run_shell
+windie detach <conversation_id> tool cua_driver__click
 ```
 
 Detach one model-facing tool schema from a conversation. Past tool-call and
@@ -276,7 +276,7 @@ Remove the conversation-level system prompt without changing messages.
 ## Raw Tool Schemas
 
 ```text
-windie insert <conversation_id> toolschema --name run_shell --description "Run a shell command" --parameters '{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}'
+windie insert <conversation_id> toolschema --name test_tool --description "Developer test tool" --parameters '{"type":"object","properties":{"value":{"type":"string"}}}'
 ```
 
 Insert one raw conversation-level tool schema.
@@ -290,7 +290,7 @@ description must contain non-whitespace text. `--parameters` must be a JSON
 object.
 
 ```text
-windie update <conversation_id> toolschema run_shell --name run_shell --description "Run a shell command on the local machine" --parameters '{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}'
+windie update <conversation_id> toolschema test_tool --name test_tool --description "Updated developer test tool" --parameters '{"type":"object","properties":{"value":{"type":"string"}}}'
 ```
 
 Update one existing raw tool schema. The final `--name` value is the stored name
@@ -298,7 +298,7 @@ after the update. Updating through this command keeps the row on the manual
 provider path.
 
 ```text
-windie rm <conversation_id> toolschema run_shell
+windie rm <conversation_id> toolschema test_tool
 ```
 
 Remove one conversation-level tool schema.
@@ -403,8 +403,9 @@ matching tool-call ID.
 windie approve <conversation_id> <tool_call_id>
 ```
 
-Execute one pending approved tool call and store the result as a `role: tool`
-message. For now, only `run_shell` has a real executor.
+Execute one pending approved provider tool call and store the result as a
+`role: tool` message. Raw/manual schemas do not have executors and are denied
+by policy.
 
 ```text
 windie deny <conversation_id> <tool_call_id>

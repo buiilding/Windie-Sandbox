@@ -3,7 +3,7 @@
 //! This module is the execution boundary for tool providers. Runtime asks this
 //! registry which tools are available and asks it to execute an approved tool
 //! call through the provider reference stored on the conversation attachment.
-//! Built-ins, MCP servers, and future plugins should enter runtime through this
+//! Approved MCP servers and future plugins should enter runtime through this
 //! same registry shape.
 
 use std::collections::HashMap;
@@ -19,14 +19,11 @@ use serde_json::{Value, json};
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
 use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
-use crate::shell::ShellExecutor;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolExecutionResult,
     ToolPermission, ToolProviderId, ToolProviderKind, ToolProviderRef,
 };
 
-const WINDIE_PROVIDER_ID: &str = "windie";
-const RUN_SHELL_TOOL_NAME: &str = "run_shell";
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 
 #[derive(Debug, Clone)]
@@ -36,7 +33,6 @@ const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 /// not branch on shell, MCP, or plugin details; it resolves the conversation's
 /// attached tool to a provider reference and calls this registry.
 pub struct ToolProviderRegistry {
-    built_in: BuiltInToolProvider,
     mcp_providers: Vec<McpToolProvider>,
     mcp_session_pool: Option<McpSessionPool>,
     catalog_cache: Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>>,
@@ -68,7 +64,7 @@ impl ToolProviderRegistry {
     /// catalogs loaded here are cached for later attachment requests in the same
     /// process.
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
-        let mut tools = self.built_in.list_tools();
+        let mut tools = Vec::new();
         for provider in &self.mcp_providers {
             if let Ok(provider_tools) = self.list_provider_tools(provider.id()) {
                 tools.extend(provider_tools);
@@ -85,9 +81,6 @@ impl ToolProviderRegistry {
     /// method caches successful catalog loads and lets later attachment
     /// resolution reuse the backend-owned schema copy.
     pub fn list_provider_tools(&self, provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
-        if provider_id.as_str() == WINDIE_PROVIDER_ID {
-            return Ok(self.built_in.list_tools());
-        }
         if let Some(tools) = self.cached_provider_tools(provider_id)? {
             return Ok(tools);
         }
@@ -117,9 +110,6 @@ impl ToolProviderRegistry {
     /// tool.
     pub fn can_execute(&self, attached_tool: &AttachedTool) -> bool {
         match attached_tool.provider.kind {
-            ToolProviderKind::BuiltIn => {
-                attached_tool.provider.provider_id.as_str() == WINDIE_PROVIDER_ID
-            }
             ToolProviderKind::Mcp => self
                 .mcp_provider(&attached_tool.provider.provider_id)
                 .is_some(),
@@ -134,7 +124,6 @@ impl ToolProviderRegistry {
         tool_call: &ToolCall,
     ) -> Result<ToolExecutionResult> {
         match attached_tool.provider.kind {
-            ToolProviderKind::BuiltIn => self.built_in.call_tool(attached_tool, tool_call).await,
             ToolProviderKind::Mcp => {
                 let Some(provider) = self.mcp_provider(&attached_tool.provider.provider_id) else {
                     return Err(error::invalid_request(format!(
@@ -189,12 +178,41 @@ impl ToolProviderRegistry {
 
         Ok(())
     }
+
+    /// Builds a test registry with one fake MCP provider and an already-loaded
+    /// catalog.
+    ///
+    /// Runtime tests use this to exercise provider dispatch without depending
+    /// on user-installed MCP binaries.
+    #[cfg(test)]
+    pub(crate) fn with_test_mcp_provider(
+        provider_id: &'static str,
+        schema_prefix: &'static str,
+        display_name: &'static str,
+        command: McpCommand,
+        tools: Vec<ToolDefinition>,
+    ) -> Self {
+        let provider_id_value = ToolProviderId::new(provider_id);
+        let catalog_cache = Arc::new(Mutex::new(HashMap::from([(provider_id_value, tools)])));
+
+        Self {
+            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                provider_id,
+                schema_prefix,
+                display_name,
+                command,
+                shutdown_command: None,
+                setup: None,
+            })],
+            mcp_session_pool: None,
+            catalog_cache,
+        }
+    }
 }
 
 impl Default for ToolProviderRegistry {
     fn default() -> Self {
         Self {
-            built_in: BuiltInToolProvider,
             mcp_providers: APPROVED_MCP_PROVIDERS
                 .iter()
                 .copied()
@@ -203,74 +221,6 @@ impl Default for ToolProviderRegistry {
             mcp_session_pool: None,
             catalog_cache: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-/// Provider for Windie-native tools compiled into the local runtime.
-pub struct BuiltInToolProvider;
-
-impl BuiltInToolProvider {
-    /// Lists Windie's built-in provider tools.
-    pub fn list_tools(&self) -> Vec<ToolDefinition> {
-        vec![run_shell_tool_definition()]
-    }
-
-    /// Executes one built-in provider tool.
-    async fn call_tool(
-        &self,
-        attached_tool: &AttachedTool,
-        tool_call: &ToolCall,
-    ) -> Result<ToolExecutionResult> {
-        if attached_tool.provider.provider_id.as_str() != WINDIE_PROVIDER_ID
-            || attached_tool.provider.tool_name.as_str() != RUN_SHELL_TOOL_NAME
-            || tool_call.name() != attached_tool.schema_name.as_str()
-        {
-            return Err(error::invalid_request(format!(
-                "unknown tool: {}",
-                tool_call.name()
-            )));
-        }
-
-        Ok(ShellExecutor::default().execute_tool_call(tool_call).await)
-    }
-}
-
-/// Builds the provider-backed definition for Windie's bounded shell executor.
-fn run_shell_tool_definition() -> ToolDefinition {
-    ToolDefinition {
-        schema_name: ToolSchemaName::new(RUN_SHELL_TOOL_NAME),
-        display_name: "Run shell".to_string(),
-        description: "Run a bounded local shell command after explicit user approval.".to_string(),
-        parameters: json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to run through the user's default shell."
-                },
-                "cwd": {
-                    "type": "string",
-                    "description": "Optional working directory for the command."
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "Optional timeout in milliseconds, capped by Windie."
-                }
-            },
-            "required": ["command"]
-        }),
-        provider: ToolProviderRef::new(
-            ToolProviderId::new(WINDIE_PROVIDER_ID),
-            ProviderToolName::new(RUN_SHELL_TOOL_NAME),
-            ToolProviderKind::BuiltIn,
-        ),
-        permissions: vec![ToolPermission::LocalShell],
-        annotations: ToolAnnotations {
-            title: Some("Run shell".to_string()),
-            read_only: Some(false),
-        },
     }
 }
 
@@ -917,7 +867,6 @@ mod tests {
             .unwrap()
             .insert(provider_id.clone(), vec![tool.clone()]);
         let registry = ToolProviderRegistry {
-            built_in: BuiltInToolProvider,
             mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
                 provider_id: "missing-mcp",
                 schema_prefix: "missing_mcp",
@@ -942,30 +891,47 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_mcp_provider_does_not_hide_builtin_tools() {
+    fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
+        let available_provider_id = ToolProviderId::new("available-mcp");
+        let available_tool = cached_test_tool(available_provider_id.as_str(), "cached_tool");
+        let catalog_cache = test_cache();
+        catalog_cache
+            .lock()
+            .unwrap()
+            .insert(available_provider_id, vec![available_tool.clone()]);
         let registry = ToolProviderRegistry {
-            built_in: BuiltInToolProvider,
-            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
-                provider_id: "missing-mcp",
-                schema_prefix: "missing_mcp",
-                display_name: "Missing MCP",
-                command: McpCommand {
-                    program: "windie-missing-mcp-provider",
-                    args: &[],
-                    env: &[],
-                },
-                shutdown_command: None,
-                setup: None,
-            })],
+            mcp_providers: vec![
+                McpToolProvider::new(McpProviderDefinition {
+                    provider_id: "available-mcp",
+                    schema_prefix: "available_mcp",
+                    display_name: "Available MCP",
+                    command: McpCommand {
+                        program: "windie-missing-mcp-provider",
+                        args: &[],
+                        env: &[],
+                    },
+                    shutdown_command: None,
+                    setup: None,
+                }),
+                McpToolProvider::new(McpProviderDefinition {
+                    provider_id: "missing-mcp",
+                    schema_prefix: "missing_mcp",
+                    display_name: "Missing MCP",
+                    command: McpCommand {
+                        program: "windie-missing-mcp-provider",
+                        args: &[],
+                        env: &[],
+                    },
+                    shutdown_command: None,
+                    setup: None,
+                }),
+            ],
             mcp_session_pool: None,
-            catalog_cache: test_cache(),
+            catalog_cache,
         };
 
         let tools = registry.list_available_tools().unwrap();
 
-        assert!(tools.iter().any(|tool| {
-            tool.provider.provider_id.as_str() == "windie"
-                && tool.provider.tool_name.as_str() == "run_shell"
-        }));
+        assert_eq!(tools, vec![available_tool]);
     }
 }

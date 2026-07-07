@@ -25,8 +25,10 @@ use crate::llm::{BaseUrl, BifrostClient, ModelName};
 use crate::mcp::{self, McpCommand};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
 use crate::store::Store;
-use crate::tool::{ProviderToolName, ToolProviderId};
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool::{
+    ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
+    ToolProviderKind, ToolProviderRef,
+};
 
 const BENCH_PROMPT: &str = "Reply with exactly: ok";
 const SCALE_PATH_MESSAGES: usize = 100;
@@ -35,6 +37,9 @@ const TOOL_CHAIN_RESULTS: usize = 10;
 const BRANCH_CHILDREN: usize = 100;
 const LARGE_TRUNCATE_DESCENDANTS: usize = 100;
 const IMAGE_PART_MESSAGES: usize = 10;
+const TEST_PROVIDER_ID: &str = "desktop-commander";
+const TEST_PROVIDER_TOOL_NAME: &str = "read_file";
+const TEST_TOOL_SCHEMA_NAME: &str = "desktop_commander__read_file";
 const FAKE_MCP_SCRIPT: &str = r#"while IFS= read -r line; do
 case "$line" in
 *'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"windie-fake-mcp","version":"0"}}}' ;;
@@ -769,11 +774,11 @@ fn benchmark_prepare_query_turn() -> Result<Duration> {
 fn benchmark_pending_tool_approval_scan() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-scan", |store| {
         let conversation_id = store.create_conversation()?;
-        attach_run_shell_tool(store, &conversation_id)?;
+        attach_test_mcp_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use tools")?;
         let metadata = tool_call_metadata(vec![
-            tool_call(0, "call_1", "run_shell"),
-            tool_call(1, "call_2", "run_shell"),
+            tool_call(0, "call_1", "desktop_commander__read_file"),
+            tool_call(1, "call_2", "desktop_commander__read_file"),
         ]);
         store.insert_message(
             &conversation_id,
@@ -797,7 +802,7 @@ fn benchmark_tool_result_insert() -> Result<Duration> {
     with_runtime_store("tool-result-insert", |store| {
         let conversation_id = store.create_conversation()?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
-        let call = tool_call(0, "call_1", "run_shell");
+        let call = tool_call(0, "call_1", "desktop_commander__read_file");
         let assistant_id = store.insert_message(
             &conversation_id,
             Some(&user_id),
@@ -821,7 +826,7 @@ fn benchmark_deny_tool_result_persist() -> Result<Duration> {
     with_runtime_store("deny-tool-result-persist", |store| {
         let conversation_id = store.create_conversation()?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
-        let call = tool_call(0, "call_1", "run_shell");
+        let call = tool_call(0, "call_1", "desktop_commander__read_file");
         store.insert_message(
             &conversation_id,
             Some(&user_id),
@@ -888,8 +893,8 @@ fn benchmark_context_after_tool_chain() -> Result<RuntimeContextBenchmark> {
     with_runtime_store("context-after-tool-chain", |store| {
         let conversation_id = store.create_conversation()?;
         let user_id = insert_user_message(store, &conversation_id, None, "use tools")?;
-        let first_call = tool_call(0, "call_1", "run_shell");
-        let second_call = tool_call(1, "call_2", "run_shell");
+        let first_call = tool_call(0, "call_1", "desktop_commander__read_file");
+        let second_call = tool_call(1, "call_2", "desktop_commander__read_file");
         let assistant_id = store.insert_message(
             &conversation_id,
             Some(&user_id),
@@ -941,9 +946,10 @@ fn benchmark_active_path_load(message_count: usize) -> Result<Duration> {
 fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-long-path", |store| {
         let conversation_id = store.create_conversation()?;
-        attach_run_shell_tool(store, &conversation_id)?;
+        attach_test_mcp_tool(store, &conversation_id)?;
         let parent_id = create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
-        let metadata = tool_call_metadata(vec![tool_call(0, "call_1", "run_shell")]);
+        let metadata =
+            tool_call_metadata(vec![tool_call(0, "call_1", "desktop_commander__read_file")]);
         store.insert_message(
             &conversation_id,
             parent_id.as_ref(),
@@ -965,10 +971,16 @@ fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
 fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-deep-chain", |store| {
         let conversation_id = store.create_conversation()?;
-        attach_run_shell_tool(store, &conversation_id)?;
+        attach_test_mcp_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use many tools")?;
         let tool_calls = (0..TOOL_CHAIN_RESULTS)
-            .map(|index| tool_call(index as u16, &format!("call_{index}"), "run_shell"))
+            .map(|index| {
+                tool_call(
+                    index as u16,
+                    &format!("call_{index}"),
+                    "desktop_commander__read_file",
+                )
+            })
             .collect::<Vec<_>>();
         let assistant_id = store.insert_message(
             &conversation_id,
@@ -1019,9 +1031,10 @@ fn benchmark_prepare_query_completed_tool_chain() -> Result<Duration> {
 fn benchmark_prepare_query_requires_approval() -> Result<Duration> {
     with_runtime_store("prepare-query-requires-approval", |store| {
         let conversation_id = store.create_conversation()?;
-        attach_run_shell_tool(store, &conversation_id)?;
+        attach_test_mcp_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
-        let metadata = tool_call_metadata(vec![tool_call(0, "call_1", "run_shell")]);
+        let metadata =
+            tool_call_metadata(vec![tool_call(0, "call_1", "desktop_commander__read_file")]);
         store.insert_message(
             &conversation_id,
             Some(&user_id),
@@ -1249,20 +1262,15 @@ fn benchmark_context_with_image_parts() -> Result<Duration> {
 fn benchmark_provider_tool_attach_load() -> Result<Duration> {
     with_runtime_store("provider-tool-attach-load", |store| {
         let conversation_id = store.create_conversation()?;
-        let registry = ToolProviderRegistry::new();
+        let definition = test_tool_definition();
 
         let started = Instant::now();
-        let definition = registry
-            .find_tool(
-                &ToolProviderId::new("windie"),
-                &ProviderToolName::new("run_shell"),
-            )?
-            .ok_or_else(|| anyhow::anyhow!("run_shell provider tool is not registered"))?;
         store.insert_attached_tool(&conversation_id, &definition.attached_tool())?;
         let attached_tool = store
             .load_attached_tool(&conversation_id, &definition.schema_name)?
-            .ok_or_else(|| anyhow::anyhow!("attached run_shell tool was not stored"))?;
-        let can_execute = registry.can_execute(&attached_tool);
+            .ok_or_else(|| anyhow::anyhow!("attached test provider tool was not stored"))?;
+        let can_execute = attached_tool.provider.kind == ToolProviderKind::Mcp
+            && attached_tool.provider.provider_id.as_str() == TEST_PROVIDER_ID;
         let duration = started.elapsed();
         debug_assert!(can_execute);
 
@@ -1327,22 +1335,30 @@ fn insert_user_message(
     )
 }
 
-/// Attaches Windie's built-in shell tool to a benchmark conversation.
+/// Attaches a test MCP provider tool to a benchmark conversation.
 ///
 /// Runtime approval benchmarks need the same provider-backed attachment that
 /// real conversations use; otherwise policy would measure the detached-tool
 /// denial path instead of the approval path.
-fn attach_run_shell_tool(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    let registry = ToolProviderRegistry::new();
-    let definition = registry
-        .find_tool(
-            &ToolProviderId::new("windie"),
-            &ProviderToolName::new("run_shell"),
-        )
-        .context("failed to load built-in provider tools")?
-        .ok_or_else(|| anyhow::anyhow!("run_shell provider tool is not registered"))?;
+fn attach_test_mcp_tool(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
+    store.insert_attached_tool(conversation_id, &test_tool_definition().attached_tool())
+}
 
-    store.insert_attached_tool(conversation_id, &definition.attached_tool())
+/// Builds the provider-backed test tool used by runtime benchmarks.
+fn test_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        schema_name: crate::conversation::ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
+        display_name: "Desktop Commander read_file".to_string(),
+        description: "Read a file through Desktop Commander.".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            ToolProviderId::new(TEST_PROVIDER_ID),
+            ProviderToolName::new(TEST_PROVIDER_TOOL_NAME),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: vec![ToolPermission::ExternalProcess],
+        annotations: ToolAnnotations::default(),
+    }
 }
 
 /// Creates a linear active path with alternating user and assistant messages.
@@ -1380,7 +1396,13 @@ fn create_completed_tool_chain(
 ) -> Result<MessageId> {
     let user_id = insert_user_message(store, conversation_id, None, "use tools")?;
     let tool_calls = (0..result_count)
-        .map(|index| tool_call(index as u16, &format!("call_{index}"), "run_shell"))
+        .map(|index| {
+            tool_call(
+                index as u16,
+                &format!("call_{index}"),
+                "desktop_commander__read_file",
+            )
+        })
         .collect::<Vec<_>>();
     let assistant_id = store.insert_message(
         conversation_id,
