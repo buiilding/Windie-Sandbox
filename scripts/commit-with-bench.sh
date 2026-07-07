@@ -14,7 +14,7 @@ USAGE
 }
 
 perf_dir="${WINDIE_PERF_DIR:-.windie/perf}"
-runs="${WINDIE_BENCH_RUNS:-5}"
+runs="${WINDIE_BENCH_RUNS:-100}"
 windie_bin="$PWD/target/release/windie"
 baseline_report="$perf_dir/baseline.json"
 current_report="$perf_dir/current.json"
