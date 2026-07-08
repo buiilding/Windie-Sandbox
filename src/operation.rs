@@ -21,12 +21,15 @@ use crate::conversation::{
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::{ImageInput, read_image_input, validate_image_input_bytes};
-use crate::llm::{self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName};
+use crate::llm::{
+    self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName, ModelParameter,
+    ModelParameterOption, PromptCacheRequest, ReasoningRequest,
+};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
-    PendingToolExecution, RuntimeEventSink, approve_tool_call, deny_pending_tool_call,
-    deny_tool_call, execute_pending_tool_call, load_pending_tool_call, pending_tool_approvals,
-    pending_tool_approvals_with_registry, prepare_pending_tool_execution,
+    PendingToolExecution, RuntimeEventSink, RuntimeModelRequest, approve_tool_call,
+    deny_pending_tool_call, deny_tool_call, execute_pending_tool_call, load_pending_tool_call,
+    pending_tool_approvals, pending_tool_approvals_with_registry, prepare_pending_tool_execution,
     query_conversation_resolving_automatic_tools,
     query_conversation_resolving_automatic_tools_with_events, store_pending_tool_result,
 };
@@ -89,6 +92,35 @@ impl InputTokenCountContext {
     pub fn source(&self) -> InputTokenCountSource {
         self.source
     }
+}
+
+#[derive(Debug, Serialize)]
+/// Normalized model-parameter metadata used by developer clients.
+///
+/// Bifrost returns a richer raw parameter schema. Windie extracts only the
+/// effort selector needed for runtime query controls and preserves the raw
+/// response for inspection/debugging.
+pub struct ModelRuntimeParameters {
+    model: String,
+    supports_reasoning: bool,
+    supports_prompt_caching: bool,
+    reasoning: Option<ReasoningParameter>,
+    raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Effort selector derived from Bifrost model parameters.
+pub struct ReasoningParameter {
+    source: ReasoningParameterSource,
+    options: Vec<ModelParameterOption>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Bifrost parameter source used to build a normalized effort selector.
+pub enum ReasoningParameterSource {
+    ReasoningEffort,
+    OutputConfigEffort,
 }
 
 #[derive(Debug, Serialize)]
@@ -285,6 +317,82 @@ pub async fn list_models(gateway_url: GatewayUrl, base_url: BaseUrl) -> Result<V
     require_gateway_running(gateway_url).await?;
 
     llm::list_models(base_url).await
+}
+
+/// Loads model-parameter metadata for one selected model.
+///
+/// This keeps Bifrost as the source of model capability truth. Windie only
+/// normalizes Bifrost's effort parameter into the small shape the inspector
+/// needs to render the reasoning dropdown.
+pub async fn model_runtime_parameters(
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+    model: &ModelName,
+) -> Result<ModelRuntimeParameters> {
+    require_gateway_running(gateway_url).await?;
+
+    let parameters = llm::model_parameters(base_url, model).await?;
+    let reasoning = reasoning_parameter(&parameters.model_parameters);
+
+    Ok(ModelRuntimeParameters {
+        model: model.as_str().to_string(),
+        supports_reasoning: parameters.supports_reasoning.unwrap_or(false) || reasoning.is_some(),
+        supports_prompt_caching: parameters.supports_prompt_caching.unwrap_or(false),
+        reasoning,
+        raw: parameters.raw,
+    })
+}
+
+/// Extracts an effort selector from Bifrost model-parameter metadata.
+fn reasoning_parameter(parameters: &[ModelParameter]) -> Option<ReasoningParameter> {
+    parameters
+        .iter()
+        .find(|parameter| parameter.id == "reasoning_effort" && !parameter.options.is_empty())
+        .map(|parameter| ReasoningParameter {
+            source: ReasoningParameterSource::ReasoningEffort,
+            options: parameter.options.clone(),
+        })
+        .or_else(|| {
+            parameters
+                .iter()
+                .find(|parameter| {
+                    parameter.id == "output_config"
+                        && parameter.accessor_key.as_deref() == Some("effort")
+                        && !parameter.options.is_empty()
+                })
+                .map(|parameter| ReasoningParameter {
+                    source: ReasoningParameterSource::OutputConfigEffort,
+                    options: parameter.options.clone(),
+                })
+        })
+}
+
+/// Builds an optional provider prompt-cache request for one conversation turn.
+///
+/// Bifrost owns model capability metadata. Windie asks for that metadata before
+/// a query and only creates a cache hint when the selected model explicitly
+/// reports prompt-cache support. Metadata lookup failure is treated as
+/// unsupported so prompt caching remains additive and does not block normal
+/// queries for custom or older Bifrost model entries.
+async fn prompt_cache_request(
+    base_url: BaseUrl,
+    model: &ModelName,
+    conversation_id: &ConversationId,
+) -> Option<PromptCacheRequest> {
+    let parameters = llm::model_parameters(base_url, model).await.ok()?;
+    if !parameters.supports_prompt_caching.unwrap_or(false) {
+        return None;
+    }
+
+    Some(conversation_prompt_cache_request(conversation_id))
+}
+
+/// Creates the stable prompt-cache identity for one Windie conversation.
+fn conversation_prompt_cache_request(conversation_id: &ConversationId) -> PromptCacheRequest {
+    PromptCacheRequest {
+        key: format!("windie:{}", conversation_id.as_str()),
+        retention: Some("24h".to_string()),
+    }
 }
 
 /// Builds the current model-facing input-token context for one conversation.
@@ -734,17 +842,28 @@ pub async fn query_conversation<O>(
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model_override: Option<ModelName>,
+    reasoning: Option<ReasoningRequest>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
 {
     require_gateway_running(gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, model_override)?;
+    let reasoning = reasoning_request_for_model(&model, reasoning);
+    let prompt_cache = prompt_cache_request(base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(base_url, model);
     let registry = ToolProviderRegistry::new();
 
-    query_conversation_resolving_automatic_tools(output, &llm, store, conversation_id, &registry)
-        .await
+    query_conversation_resolving_automatic_tools(
+        output,
+        &llm,
+        store,
+        conversation_id,
+        &registry,
+        reasoning.as_ref(),
+        prompt_cache.as_ref(),
+    )
+    .await
 }
 
 /// Runs the shared query sequence with a caller-owned provider registry.
@@ -755,20 +874,28 @@ pub async fn query_conversation_with_registry<O>(
     output: &O,
     store: &mut Store,
     conversation_id: &ConversationId,
-    gateway_url: GatewayUrl,
-    base_url: BaseUrl,
-    model_override: Option<ModelName>,
-    registry: &ToolProviderRegistry,
+    runtime: QueryStreamRuntime<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
 {
-    require_gateway_running(gateway_url).await?;
-    let model = resolve_conversation_model(store, conversation_id, model_override)?;
-    let llm = BifrostClient::new(base_url, model);
+    require_gateway_running(runtime.gateway_url).await?;
+    let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
+    let reasoning = reasoning_request_for_model(&model, runtime.reasoning);
+    let prompt_cache =
+        prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
+    let llm = BifrostClient::new(runtime.base_url, model);
 
-    query_conversation_resolving_automatic_tools(output, &llm, store, conversation_id, registry)
-        .await
+    query_conversation_resolving_automatic_tools(
+        output,
+        &llm,
+        store,
+        conversation_id,
+        runtime.registry,
+        reasoning.as_ref(),
+        prompt_cache.as_ref(),
+    )
+    .await
 }
 
 /// Provider/runtime inputs needed to execute a streamed query.
@@ -780,6 +907,7 @@ pub struct QueryStreamRuntime<'a> {
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model_override: Option<ModelName>,
+    reasoning: Option<ReasoningRequest>,
     registry: &'a ToolProviderRegistry,
 }
 
@@ -790,12 +918,14 @@ impl<'a> QueryStreamRuntime<'a> {
         gateway_url: GatewayUrl,
         base_url: BaseUrl,
         model_override: Option<ModelName>,
+        reasoning: Option<ReasoningRequest>,
         registry: &'a ToolProviderRegistry,
     ) -> Self {
         Self {
             gateway_url,
             base_url,
             model_override,
+            reasoning,
             registry,
         }
     }
@@ -820,6 +950,9 @@ where
 {
     require_gateway_running(runtime.gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
+    let reasoning = reasoning_request_for_model(&model, runtime.reasoning);
+    let prompt_cache =
+        prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
 
     query_conversation_resolving_automatic_tools_with_events(
@@ -829,8 +962,32 @@ where
         conversation_id,
         runtime.registry,
         events,
+        RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
     )
     .await
+}
+
+/// Converts a client-selected reasoning setting into the request Windie should
+/// send for one concrete model.
+///
+/// The UI only chooses a reasoning effort from Bifrost metadata. OpenAI
+/// Responses models need an additional `summary` request before they stream
+/// visible reasoning-summary deltas, so Windie adds that provider request
+/// detail here instead of teaching every client about OpenAI-specific fields.
+fn reasoning_request_for_model(
+    model: &ModelName,
+    reasoning: Option<ReasoningRequest>,
+) -> Option<ReasoningRequest> {
+    let mut reasoning = reasoning.filter(|reasoning| !reasoning.is_empty())?;
+
+    if model.as_str().starts_with("openai/")
+        && reasoning.effort.is_some()
+        && reasoning.summary.is_none()
+    {
+        reasoning.summary = Some("auto".to_string());
+    }
+
+    Some(reasoning)
 }
 
 /// Executes one approved pending tool call and persists its result.
@@ -1012,6 +1169,74 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id.as_ref(), Some(&message_id));
         assert_eq!(messages[0].content, "hello");
+    }
+
+    #[test]
+    fn builds_conversation_prompt_cache_request() {
+        let conversation_id = ConversationId::new("conversation-id");
+
+        let prompt_cache = conversation_prompt_cache_request(&conversation_id);
+
+        assert_eq!(prompt_cache.key, "windie:conversation-id");
+        assert_eq!(prompt_cache.retention.as_deref(), Some("24h"));
+    }
+
+    #[test]
+    fn openai_reasoning_effort_requests_visible_summary() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("openai/gpt-5.5"),
+            Some(ReasoningRequest {
+                effort: Some("high".to_string()),
+                summary: None,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(reasoning.summary.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn openai_reasoning_preserves_explicit_summary() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("openai/gpt-5.5"),
+            Some(ReasoningRequest {
+                effort: Some("high".to_string()),
+                summary: Some("detailed".to_string()),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(reasoning.summary.as_deref(), Some("detailed"));
+    }
+
+    #[test]
+    fn anthropic_reasoning_does_not_request_openai_summary() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("anthropic/claude-fable-5"),
+            Some(ReasoningRequest {
+                effort: Some("high".to_string()),
+                summary: None,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(reasoning.summary, None);
+    }
+
+    #[test]
+    fn empty_reasoning_request_stays_absent() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("openai/gpt-5.5"),
+            Some(ReasoningRequest {
+                effort: None,
+                summary: None,
+            }),
+        );
+
+        assert_eq!(reasoning, None);
     }
 
     #[test]

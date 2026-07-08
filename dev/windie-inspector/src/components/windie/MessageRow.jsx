@@ -126,6 +126,60 @@ function MetadataLanes({ metadata }) {
   return <div className="mt-3 space-y-1.5">{lanes}</div>;
 }
 
+function PendingMetadataLanes({ pendingAssistant }) {
+  const toolCalls = Object.entries(pendingAssistant.toolCalls || {}).map(
+    ([index, call]) => ({ index, ...call })
+  );
+  const lanes = [];
+
+  if (toolCalls.length) {
+    lanes.push(
+      <div
+        key="tc"
+        className="border-l-2 border-[hsl(var(--tool-call))] pl-2 py-1 bg-[hsl(var(--tool-call))]/5"
+      >
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--tool-call))]">
+          tool_calls · {toolCalls.length}
+        </div>
+        {toolCalls.map((tc) => (
+          <div key={tc.id || tc.index} className="mt-1 font-mono text-[11px]">
+            <span className="text-[hsl(var(--tool-call))]">
+              {tc.name || "function_call"}
+            </span>
+            <span className="text-muted-foreground">
+              {tc.id ? ` · ${tc.id}` : ""}
+            </span>
+            {tc.argumentsText ? (
+              <pre className="mt-1 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                {tc.argumentsText}
+              </pre>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (pendingAssistant.reasoning) {
+    lanes.push(
+      <div
+        key="rs"
+        className="border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5"
+      >
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))]">
+          reasoning
+        </div>
+        <div className="mt-0.5 text-xs text-muted-foreground italic leading-relaxed">
+          {pendingAssistant.reasoning}
+        </div>
+      </div>
+    );
+  }
+
+  if (!lanes.length) return null;
+  return <div className="mt-3 space-y-1.5">{lanes}</div>;
+}
+
 function MessageImagePreview({ image, testId }) {
   const [objectUrl, setObjectUrl] = useState(image.url || "");
   const [failed, setFailed] = useState(false);
@@ -206,7 +260,39 @@ function MessageMarkdown({ text, isStreaming }) {
       >
         {text || ""}
       </ReactMarkdown>
-      {isStreaming && <span className="windie-caret" />}
+    </div>
+  );
+}
+
+/**
+ * Live assistant preview row rendered from ephemeral `assistant_delta` text.
+ *
+ * This row has no store-backed node: it exists only while a query streams and
+ * is replaced by the durable persisted message once `assistant_message_saved`
+ * arrives. It intentionally omits selection, edit, fork, and tree actions
+ * because there is no message id to act on yet.
+ */
+export function PendingAssistantRow({ pendingAssistant, index }) {
+  return (
+    <div
+      data-testid="msg-row-pending-assistant"
+      className="relative border-b border-border py-3.5 px-6"
+    >
+      <div className="flex items-start gap-3">
+        <div className="w-16 shrink-0 pt-0.5">
+          <RoleBadge role="assistant" />
+          <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">
+            #{String(index).padStart(2, "0")}
+          </div>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            <span className="text-foreground/70">streaming</span>
+          </div>
+          <MessageMarkdown text={pendingAssistant.text} isStreaming />
+          <PendingMetadataLanes pendingAssistant={pendingAssistant} />
+        </div>
+      </div>
     </div>
   );
 }

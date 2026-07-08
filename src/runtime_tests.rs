@@ -10,7 +10,9 @@ use super::*;
 use crate::conversation::{
     Message, MessageMetadata, ToolCall, ToolCallId, ToolSchema, ToolSchemaName,
 };
-use crate::llm::{AssistantResponse, FinishReason};
+use crate::llm::{
+    AssistantResponse, FinishReason, LlmStreamEvent, PromptCacheRequest, ReasoningRequest,
+};
 use crate::mcp::McpCommand;
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission, ToolProviderId,
@@ -84,10 +86,12 @@ impl RuntimeLlm for FailingLlm {
         &self,
         _messages: &[Message],
         _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
         _handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         Err(anyhow!("llm failed"))
     }
@@ -116,14 +120,16 @@ impl RuntimeLlm for CapturingLlm {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
         mut handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         *self.messages.lock().unwrap() = messages.to_vec();
         *self.tools.lock().unwrap() = tools.to_vec();
-        handle_delta("captured")?;
+        handle_delta(LlmStreamEvent::AssistantDelta("captured"))?;
 
         Ok(AssistantResponse {
             content: "captured".to_string(),
@@ -146,12 +152,14 @@ impl RuntimeLlm for ReplyLlm {
         &self,
         _messages: &[Message],
         _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
         mut handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
-        handle_delta(&self.reply)?;
+        handle_delta(LlmStreamEvent::AssistantDelta(&self.reply))?;
 
         Ok(AssistantResponse {
             content: self.reply.clone(),
@@ -168,10 +176,12 @@ impl RuntimeLlm for ToolCallLlm {
         &self,
         _messages: &[Message],
         _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
         _handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         Ok(AssistantResponse {
             content: String::new(),
@@ -195,10 +205,12 @@ impl RuntimeLlm for UnknownToolCallLlm {
         &self,
         _messages: &[Message],
         _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
         _handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         Ok(AssistantResponse {
             content: String::new(),
@@ -218,10 +230,12 @@ impl RuntimeLlm for UnknownThenProviderToolCallLlm {
         &self,
         _messages: &[Message],
         _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
         _handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         Ok(AssistantResponse {
             content: String::new(),
@@ -260,10 +274,12 @@ impl RuntimeLlm for ToolThenReplyLlm {
         &self,
         messages: &[Message],
         _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
         mut handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         let mut calls = self.calls.lock().unwrap();
         *calls += 1;
@@ -284,7 +300,7 @@ impl RuntimeLlm for ToolThenReplyLlm {
         }
 
         *self.second_turn_messages.lock().unwrap() = messages.to_vec();
-        handle_delta("done")?;
+        handle_delta(LlmStreamEvent::AssistantDelta("done"))?;
 
         Ok(AssistantResponse {
             content: "done".to_string(),
@@ -481,6 +497,8 @@ async fn auto_approval_executes_tool_and_queries_again() {
         &mut store,
         &conversation_id,
         &registry,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -522,6 +540,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
         &conversation_id,
         &registry,
         &events,
+        RuntimeModelRequest::new(None, None),
     )
     .await
     .unwrap();

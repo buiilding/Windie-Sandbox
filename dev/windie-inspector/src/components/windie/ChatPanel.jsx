@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useWindie } from "@/context/WindieContext";
-import MessageRow from "@/components/windie/MessageRow";
+import MessageRow, { PendingAssistantRow } from "@/components/windie/MessageRow";
 import Composer from "@/components/windie/Composer";
 
 export default function ChatPanel() {
-  const { activeConv, activePathNodes, streaming, apiError } = useWindie();
+  const { activeConv, activePathNodes, streaming, pendingAssistant, apiError } = useWindie();
+  const activePendingAssistant =
+    pendingAssistant?.convId === activeConv?.id ? pendingAssistant : null;
   const scrollRef = useRef(null);
   const prevConvId = useRef(activeConv?.id);
 
@@ -23,7 +25,14 @@ export default function ChatPanel() {
     } else {
       el.scrollTop = el.scrollHeight;
     }
-  }, [activeConv?.id, activePathNodes.length, streaming]);
+  }, [
+    activeConv?.id,
+    activePathNodes.length,
+    streaming,
+    activePendingAssistant?.text,
+    activePendingAssistant?.reasoning,
+    activePendingAssistant?.toolCalls,
+  ]);
 
   if (!activeConv) {
     return (
@@ -67,6 +76,12 @@ export default function ChatPanel() {
             isLast={i === activePathNodes.length - 1}
           />
         ))}
+        {activePendingAssistant && (
+          <PendingAssistantRow
+            pendingAssistant={activePendingAssistant}
+            index={activePathNodes.length}
+          />
+        )}
       </div>
 
       <Composer />

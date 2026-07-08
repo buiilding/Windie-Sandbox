@@ -551,6 +551,7 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
         gateway_url(),
         base_url(),
         model,
+        None,
     )
     .await?;
 

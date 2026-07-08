@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -34,7 +34,7 @@ use crate::conversation::{
 };
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName};
+use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::runtime::RuntimeEventSink;
@@ -91,6 +91,7 @@ fn router(state: ApiState) -> Router {
         .route("/api/health", get(health))
         .route("/api/status", get(status))
         .route("/api/models", get(list_models))
+        .route("/api/model-parameters", get(model_parameters))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))
         .route("/api/gateway/start", post(start_gateway))
@@ -386,6 +387,28 @@ async fn list_models(
     Ok(Json(ModelListResponse {
         models: models.into_iter().map(ModelResponse::from).collect(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+/// Query parameters for model-parameter metadata lookup.
+struct ModelParametersQuery {
+    model: String,
+}
+
+/// Loads normalized Bifrost model-parameter metadata for one selected model.
+async fn model_parameters(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Query(query): Query<ModelParametersQuery>,
+) -> ApiResult<operation::ModelRuntimeParameters> {
+    let model = ModelName::new(query.model);
+    let parameters = operation::model_runtime_parameters(
+        GatewayUrl::new(state.gateway_url),
+        BaseUrl::new(state.base_url),
+        &model,
+    )
+    .await?;
+
+    Ok(Json(parameters))
 }
 
 #[derive(Debug, Serialize)]
@@ -1137,6 +1160,21 @@ async fn count_input_tokens(
 /// Request body for a one-shot runtime query.
 struct QueryRequest {
     model: Option<String>,
+    reasoning: Option<ReasoningRequest>,
+}
+
+impl QueryRequest {
+    /// Returns the optional model override as a typed value.
+    fn model_override(&self) -> Option<ModelName> {
+        self.model.clone().map(ModelName::new)
+    }
+
+    /// Returns a non-empty reasoning request when the client selected one.
+    fn reasoning(&self) -> Option<ReasoningRequest> {
+        self.reasoning
+            .clone()
+            .filter(|reasoning| !reasoning.is_empty())
+    }
 }
 
 /// Runs one model query against the current active path.
@@ -1147,14 +1185,12 @@ async fn query(
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
+    let runtime = query_stream_runtime(&state, request.model_override(), request.reasoning());
     let message = operation::query_conversation_with_registry(
         &ApiOutput,
         &mut store,
         &conversation_id,
-        GatewayUrl::new(state.gateway_url.clone()),
-        crate::llm::BaseUrl::new(state.base_url.clone()),
-        request.model.map(ModelName::new),
-        state.tool_registry.as_ref(),
+        runtime,
     )
     .await?;
 
@@ -1163,18 +1199,47 @@ async fn query(
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-/// One durable runtime event streamed by `query-stream`.
+/// One runtime event streamed by `query-stream`.
+///
+/// Most variants describe durable persisted state. Delta events are the
+/// exception: they carry ephemeral live model data for display only. Deltas
+/// are never persisted and clients must treat the following
+/// `AssistantMessageSaved` message as the source of truth.
 enum QueryStreamEvent {
-    AssistantMessageSaved { message_id: String },
-    ToolResultSaved { message_id: String },
-    QueryDone { message_id: Option<String> },
-    QueryError { error: String, causes: Vec<String> },
+    AssistantDelta {
+        text: String,
+    },
+    ReasoningDelta {
+        text: String,
+    },
+    ToolCallDelta {
+        index: u16,
+        id: Option<String>,
+        name: Option<String>,
+        arguments_delta: Option<String>,
+    },
+    AssistantMessageSaved {
+        message_id: String,
+    },
+    ToolResultSaved {
+        message_id: String,
+    },
+    QueryDone {
+        message_id: Option<String>,
+    },
+    QueryError {
+        error: String,
+        causes: Vec<String>,
+    },
 }
 
 impl QueryStreamEvent {
     /// Returns the SSE event name matching the JSON `type`.
     fn event_name(&self) -> &'static str {
         match self {
+            Self::AssistantDelta { .. } => "assistant_delta",
+            Self::ReasoningDelta { .. } => "reasoning_delta",
+            Self::ToolCallDelta { .. } => "tool_call_delta",
             Self::AssistantMessageSaved { .. } => "assistant_message_saved",
             Self::ToolResultSaved { .. } => "tool_result_saved",
             Self::QueryDone { .. } => "query_done",
@@ -1207,6 +1272,7 @@ enum RuntimeStreamAction {
     Query {
         conversation_id: ConversationId,
         model_override: Option<ModelName>,
+        reasoning: Option<ReasoningRequest>,
     },
     ApproveTool {
         conversation_id: ConversationId,
@@ -1218,7 +1284,10 @@ enum RuntimeStreamAction {
     },
 }
 
-/// Runs one runtime action and streams durable events to the client.
+/// Runs one runtime action and streams runtime events to the client.
+///
+/// The stream carries durable persisted-message events plus ephemeral display
+/// deltas for live assistant text, reasoning summaries, and tool calls.
 fn runtime_stream(
     state: ApiState,
     action: RuntimeStreamAction,
@@ -1231,14 +1300,18 @@ fn runtime_stream(
             let events = QueryStreamEventSink {
                 sender: sender.clone(),
             };
+            let output = QueryStreamOutput {
+                sender: sender.clone(),
+            };
             let message = match action {
                 RuntimeStreamAction::Query {
                     conversation_id,
                     model_override,
+                    reasoning,
                 } => {
-                    let runtime = query_stream_runtime(&state, model_override);
+                    let runtime = query_stream_runtime(&state, model_override, reasoning);
                     operation::query_runtime_turn(
-                        &ApiOutput,
+                        &output,
                         &events,
                         &mut store,
                         &conversation_id,
@@ -1251,9 +1324,9 @@ fn runtime_stream(
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = query_stream_runtime(&state, None);
+                    let runtime = query_stream_runtime(&state, None, None);
                     operation::approve_tool_turn(
-                        &ApiOutput,
+                        &output,
                         &events,
                         &mut store,
                         &conversation_id,
@@ -1266,9 +1339,9 @@ fn runtime_stream(
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = query_stream_runtime(&state, None);
+                    let runtime = query_stream_runtime(&state, None, None);
                     operation::deny_tool_turn(
-                        &ApiOutput,
+                        &output,
                         &events,
                         &mut store,
                         &conversation_id,
@@ -1307,11 +1380,13 @@ fn runtime_stream(
 fn query_stream_runtime<'a>(
     state: &'a ApiState,
     model_override: Option<ModelName>,
+    reasoning: Option<ReasoningRequest>,
 ) -> operation::QueryStreamRuntime<'a> {
     operation::QueryStreamRuntime::new(
         GatewayUrl::new(state.gateway_url.clone()),
         BaseUrl::new(state.base_url.clone()),
         model_override,
+        reasoning,
         state.tool_registry.as_ref(),
     )
 }
@@ -1326,7 +1401,8 @@ async fn query_stream(
         state,
         RuntimeStreamAction::Query {
             conversation_id: ConversationId::new(conversation_id),
-            model_override: request.model.map(ModelName::new),
+            model_override: request.model_override(),
+            reasoning: request.reasoning(),
         },
     )
 }
@@ -1354,13 +1430,65 @@ fn runtime_event_sse(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-/// Runtime output sink used by API query execution.
+/// Runtime output sink used by non-streaming API query execution.
+///
+/// The plain `query` endpoint returns one final JSON message, so live model
+/// deltas have nowhere to go and are intentionally dropped here.
 struct ApiOutput;
 
 impl RuntimeOutput for ApiOutput {
     fn start_assistant_message(&self) {}
 
     fn assistant_delta(&self, _text: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn end_assistant_message(&self) {}
+
+    fn assistant_tool_calls(&self, _tool_calls: &[ToolCall]) {}
+}
+
+/// Runtime output sink that forwards live model deltas to the SSE channel.
+///
+/// Used by the streaming endpoints so clients can render assistant text,
+/// reasoning summaries, and tool-call arguments as they arrive. Deltas are
+/// ephemeral display data; the persisted message emitted through
+/// `QueryStreamEventSink` remains the source of truth. Send failures are
+/// ignored because a disconnected SSE client must not fail the query.
+struct QueryStreamOutput {
+    sender: mpsc::UnboundedSender<QueryStreamEvent>,
+}
+
+impl RuntimeOutput for QueryStreamOutput {
+    fn start_assistant_message(&self) {}
+
+    fn assistant_delta(&self, text: &str) -> Result<()> {
+        let _ = self.sender.send(QueryStreamEvent::AssistantDelta {
+            text: text.to_string(),
+        });
+        Ok(())
+    }
+
+    fn reasoning_delta(&self, text: &str) -> Result<()> {
+        let _ = self.sender.send(QueryStreamEvent::ReasoningDelta {
+            text: text.to_string(),
+        });
+        Ok(())
+    }
+
+    fn tool_call_delta(
+        &self,
+        index: u16,
+        id: Option<&str>,
+        name: Option<&str>,
+        arguments_delta: Option<&str>,
+    ) -> Result<()> {
+        let _ = self.sender.send(QueryStreamEvent::ToolCallDelta {
+            index,
+            id: id.map(str::to_string),
+            name: name.map(str::to_string),
+            arguments_delta: arguments_delta.map(str::to_string),
+        });
         Ok(())
     }
 
@@ -1441,6 +1569,48 @@ mod tests {
     use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn assistant_delta_event_uses_matching_sse_name_and_json_type() {
+        let event = QueryStreamEvent::AssistantDelta {
+            text: "hello".to_string(),
+        };
+        let body = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(event.event_name(), "assistant_delta");
+        assert_eq!(body["type"], "assistant_delta");
+        assert_eq!(body["text"], "hello");
+    }
+
+    #[test]
+    fn reasoning_delta_event_uses_matching_sse_name_and_json_type() {
+        let event = QueryStreamEvent::ReasoningDelta {
+            text: "thinking".to_string(),
+        };
+        let body = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(event.event_name(), "reasoning_delta");
+        assert_eq!(body["type"], "reasoning_delta");
+        assert_eq!(body["text"], "thinking");
+    }
+
+    #[test]
+    fn tool_call_delta_event_uses_matching_sse_name_and_json_type() {
+        let event = QueryStreamEvent::ToolCallDelta {
+            index: 0,
+            id: Some("call_123".to_string()),
+            name: Some("run_shell".to_string()),
+            arguments_delta: Some(r#"{"command""#.to_string()),
+        };
+        let body = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(event.event_name(), "tool_call_delta");
+        assert_eq!(body["type"], "tool_call_delta");
+        assert_eq!(body["index"], 0);
+        assert_eq!(body["id"], "call_123");
+        assert_eq!(body["name"], "run_shell");
+        assert_eq!(body["arguments_delta"], r#"{"command""#);
+    }
 
     #[tokio::test]
     async fn health_does_not_require_token() {

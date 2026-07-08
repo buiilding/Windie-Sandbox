@@ -26,6 +26,28 @@ use crate::tool::{ToolApprovalRequest, ToolDefinition, ToolExecutionResult};
 pub(crate) trait RuntimeOutput {
     fn start_assistant_message(&self);
     fn assistant_delta(&self, text: &str) -> Result<()>;
+    /// Receives live reasoning-summary text when a provider streams it.
+    ///
+    /// The default no-op keeps CLI output unchanged. Streaming clients can
+    /// override this to show a separate reasoning lane while the final
+    /// persisted assistant metadata remains the source of truth.
+    fn reasoning_delta(&self, _text: &str) -> Result<()> {
+        Ok(())
+    }
+    /// Receives live function-call metadata or argument text.
+    ///
+    /// The default no-op keeps terminal output focused on assistant text.
+    /// Developer clients can override it to build a live tool-call lane before
+    /// the final assistant message is saved.
+    fn tool_call_delta(
+        &self,
+        _index: u16,
+        _id: Option<&str>,
+        _name: Option<&str>,
+        _arguments_delta: Option<&str>,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn end_assistant_message(&self);
     fn assistant_tool_calls(&self, tool_calls: &[ToolCall]);
 }

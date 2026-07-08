@@ -21,7 +21,7 @@ use crate::conversation::{
     UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::gateway::{BifrostGateway, GatewayUrl};
-use crate::llm::{BaseUrl, BifrostClient, ModelName};
+use crate::llm::{BaseUrl, BifrostClient, LlmStreamEvent, ModelName};
 use crate::mcp::{self, McpCommand};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
 use crate::store::Store;
@@ -1475,7 +1475,11 @@ async fn run_live_request(
     let request_started = Instant::now();
     let mut first_token = None;
     let response = llm
-        .stream(&messages, &[], |delta| {
+        .stream(&messages, &[], None, None, |event| {
+            let LlmStreamEvent::AssistantDelta(delta) = event else {
+                return Ok(());
+            };
+
             if first_token.is_none() && !delta.is_empty() {
                 first_token = Some(request_started.elapsed());
             }

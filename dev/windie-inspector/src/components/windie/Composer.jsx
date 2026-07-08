@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useWindie } from "@/context/WindieContext";
 import {
   Send,
@@ -33,10 +33,15 @@ export default function Composer() {
     modelsLoading,
     modelsError,
     refreshModels,
+    loadModelParameters,
+    activeModelParameters,
+    activeReasoning,
+    setConversationReasoningEffort,
   } = useWindie();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   const taRef = useRef(null);
   const attachmentsRef = useRef([]);
@@ -62,10 +67,32 @@ export default function Composer() {
   );
 
   const currentModel = activeConv?.model;
+  const reasoningOptions = useMemo(
+    () => activeModelParameters?.data?.reasoning?.options || [],
+    [activeModelParameters]
+  );
+  const selectedReasoningEffort = activeReasoning?.effort || "";
+  const selectedReasoningLabel = useMemo(
+    () =>
+      reasoningOptions.find((option) => option.value === selectedReasoningEffort)?.label ||
+      "model",
+    [reasoningOptions, selectedReasoningEffort]
+  );
   const filteredModels = models.filter((model) =>
     model.id.toLowerCase().includes(modelSearch.trim().toLowerCase())
   );
   const hasSendContent = Boolean(text.trim() || attachments.length);
+
+  useEffect(() => {
+    if (!activeConv || !selectedReasoningEffort) return;
+    if (reasoningOptions.some((option) => option.value === selectedReasoningEffort)) return;
+    setConversationReasoningEffort(activeConv.id, null);
+  }, [
+    activeConv,
+    reasoningOptions,
+    selectedReasoningEffort,
+    setConversationReasoningEffort,
+  ]);
 
   const clearAttachments = () => {
     setAttachments((current) => {
@@ -275,6 +302,7 @@ export default function Composer() {
                         <button
                           key={m.id}
                           data-testid={`composer-model-option-${m.id}`}
+                          onMouseEnter={() => loadModelParameters(m.id)}
                           onClick={() => {
                             if (activeConv) {
                               setConversationModel(activeConv.id, m.id).catch((error) =>
@@ -299,6 +327,54 @@ export default function Composer() {
                 </>
               )}
             </div>
+
+            {reasoningOptions.length > 0 && (
+              <div className="relative">
+                <button
+                  data-testid="composer-reasoning"
+                  type="button"
+                  onClick={() => setReasoningMenuOpen(!reasoningMenuOpen)}
+                  disabled={!activeConv || streaming}
+                  className="h-7 max-w-[260px] px-2 flex items-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[11px] uppercase tracking-widest disabled:text-muted-foreground disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                >
+                  <span className="text-muted-foreground">reasoning</span>
+                  <span className="min-w-0 truncate text-foreground normal-case">
+                    {selectedReasoningLabel}
+                  </span>
+                  <ChevronDown className="size-3" />
+                </button>
+                {reasoningMenuOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setReasoningMenuOpen(false)}
+                    />
+                    <div className="absolute bottom-full mb-1 left-0 z-20 w-[240px] max-w-[calc(100vw-3rem)] bg-popover border border-border shadow-md">
+                      <div className="px-2.5 py-1.5 border-b border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                        reasoning
+                      </div>
+                      <div className="max-h-[240px] overflow-y-auto py-1">
+                        {reasoningOptions.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => {
+                              setConversationReasoningEffort(activeConv?.id, option.value);
+                              setReasoningMenuOpen(false);
+                            }}
+                            className={`w-full text-left px-2.5 py-1.5 text-xs font-mono hover:bg-surface-hover flex items-center justify-between gap-3 ${
+                              selectedReasoningEffort === option.value ? "bg-surface" : ""
+                            }`}
+                          >
+                            <span className="min-w-0 truncate">{option.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="flex-1" />
             <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">

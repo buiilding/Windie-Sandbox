@@ -5,6 +5,7 @@ import {
   countConversationInputTokens,
   conversationFromInspection,
   conversationSummaryFromApi,
+  fetchModelParameters,
   listModels,
   setConversationModel as setConversationModelApi,
   streamApproveTool,
@@ -121,6 +122,12 @@ export function WindieProvider({ children }) {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
+  const [modelParametersById, setModelParametersById] = useState({});
+  const [reasoningByConversationId, setReasoningByConversationId] = useState({});
+  // Ephemeral live assistant preview from SSE delta events. Display-only: the
+  // persisted message that arrives via `assistant_message_saved` is the source
+  // of truth and replaces this.
+  const [pendingAssistant, setPendingAssistant] = useState(null);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -170,6 +177,33 @@ export function WindieProvider({ children }) {
       setModelsLoading(false);
     }
   }, []);
+
+  const loadModelParameters = useCallback(async (modelId) => {
+    if (!modelId) return null;
+    const existing = modelParametersById[modelId];
+    if (existing?.status === "ready") return existing.data;
+    if (existing?.status === "loading") return null;
+
+    setModelParametersById((prev) => ({
+      ...prev,
+      [modelId]: { status: "loading", data: prev[modelId]?.data || null, error: null },
+    }));
+
+    try {
+      const data = await fetchModelParameters(modelId);
+      setModelParametersById((prev) => ({
+        ...prev,
+        [modelId]: { status: "ready", data, error: null },
+      }));
+      return data;
+    } catch (error) {
+      setModelParametersById((prev) => ({
+        ...prev,
+        [modelId]: { status: "idle", data: null, error: null },
+      }));
+      return null;
+    }
+  }, [modelParametersById]);
 
   const refreshAvailableTools = useCallback(async () => {
     const body = await apiRequest("/api/tools");
@@ -340,6 +374,38 @@ export function WindieProvider({ children }) {
     models,
   ]);
 
+  useEffect(() => {
+    if (activeModelId) {
+      loadModelParameters(activeModelId);
+    }
+  }, [activeModelId, loadModelParameters]);
+
+  const activeModelParameters = useMemo(
+    () => modelParametersById[activeModelId] || null,
+    [activeModelId, modelParametersById]
+  );
+
+  const activeReasoning = useMemo(
+    () => reasoningByConversationId[activeConv?.id] || null,
+    [activeConv?.id, reasoningByConversationId]
+  );
+
+  const setConversationReasoningEffort = useCallback((convId, effort) => {
+    if (!convId) return;
+    setReasoningByConversationId((prev) => {
+      if (!effort) {
+        const next = { ...prev };
+        delete next[convId];
+        return next;
+      }
+
+      return {
+        ...prev,
+        [convId]: { effort },
+      };
+    });
+  }, []);
+
   const runMutation = useCallback(
     async (operation, options = {}) => {
       try {
@@ -400,11 +466,20 @@ export function WindieProvider({ children }) {
 
   const setConversationModel = useCallback(
     (convId, model) =>
-      runMutation(() => setConversationModelApi(convId, model), {
+      runMutation(async () => {
+        const result = await setConversationModelApi(convId, model);
+        setReasoningByConversationId((prev) => {
+          const next = { ...prev };
+          delete next[convId];
+          return next;
+        });
+        loadModelParameters(model);
+        return result;
+      }, {
         convId,
         refreshList: true,
       }),
-    [runMutation]
+    [loadModelParameters, runMutation]
   );
 
   const setToolApprovalMode = useCallback(
@@ -544,17 +619,73 @@ export function WindieProvider({ children }) {
     async (convId, stream) => {
       try {
         await stream(async ({ data }) => {
+          if (data?.type === "assistant_delta") {
+            // Ephemeral live model text. Accumulate into the pending bubble;
+            // the persisted message replaces it once saved.
+            setPendingAssistant((prev) =>
+              prev && prev.convId === convId
+                ? { ...prev, text: prev.text + (data.text || "") }
+                : { convId, text: data.text || "", reasoning: "", toolCalls: {} }
+            );
+            return;
+          }
+          if (data?.type === "reasoning_delta") {
+            setPendingAssistant((prev) =>
+              prev && prev.convId === convId
+                ? { ...prev, reasoning: (prev.reasoning || "") + (data.text || "") }
+                : {
+                    convId,
+                    text: "",
+                    reasoning: data.text || "",
+                    toolCalls: {},
+                  }
+            );
+            return;
+          }
+          if (data?.type === "tool_call_delta") {
+            setPendingAssistant((prev) => {
+              const base =
+                prev && prev.convId === convId
+                  ? prev
+                  : { convId, text: "", reasoning: "", toolCalls: {} };
+              const index = String(data.index ?? 0);
+              const existing = base.toolCalls?.[index] || {
+                id: null,
+                name: null,
+                argumentsText: "",
+              };
+
+              return {
+                ...base,
+                toolCalls: {
+                  ...(base.toolCalls || {}),
+                  [index]: {
+                    id: data.id || existing.id,
+                    name: data.name || existing.name,
+                    argumentsText:
+                      existing.argumentsText + (data.arguments_delta || ""),
+                  },
+                },
+              };
+            });
+            return;
+          }
           if (
             data?.type === "assistant_message_saved" ||
             data?.type === "tool_result_saved"
           ) {
             await loadConversation(convId);
+            // The durable message now renders from the store; drop the
+            // ephemeral preview so it is not shown twice.
+            setPendingAssistant(null);
           }
           if (data?.type === "query_done") {
             await loadConversation(convId, { countTokens: false });
+            setPendingAssistant(null);
           }
         });
       } catch (error) {
+        setPendingAssistant(null);
         await loadConversation(convId, { countTokens: false }).catch(() => {});
         throw error;
       }
@@ -565,9 +696,9 @@ export function WindieProvider({ children }) {
   const runStreamingQuery = useCallback(
     async (convId) =>
       consumeRuntimeStream(convId, (onEvent) =>
-        streamConversationQuery(convId, null, onEvent)
+        streamConversationQuery(convId, null, reasoningByConversationId[convId] || null, onEvent)
       ),
-    [consumeRuntimeStream]
+    [consumeRuntimeStream, reasoningByConversationId]
   );
 
   const sendMessage = useCallback(
@@ -618,11 +749,12 @@ export function WindieProvider({ children }) {
           const result = await apiRequest("/api/gateway/start", { method: "POST" });
           await refreshGateway();
           await refreshModels().catch(() => {});
+          if (activeModelId) await loadModelParameters(activeModelId);
           return result;
         },
         { reload: false }
       ),
-    [refreshGateway, refreshModels, runMutation]
+    [activeModelId, loadModelParameters, refreshGateway, refreshModels, runMutation]
   );
 
   const stopGateway = useCallback(
@@ -673,10 +805,14 @@ export function WindieProvider({ children }) {
     treeOverlayOpen,
     contextPreviewOpen,
     streaming,
+    pendingAssistant,
     searchQuery,
     models,
     modelsLoading,
     modelsError,
+    modelParametersById,
+    activeModelParameters,
+    activeReasoning,
     tokenMeter,
     toolSchemas: activeConv?.toolSchemas || [],
     availableToolSchemas,
@@ -690,11 +826,13 @@ export function WindieProvider({ children }) {
     setContextPreviewOpen,
     setSearchQuery,
     refreshModels,
+    loadModelParameters,
     createConversation,
     renameConversation,
     deleteConversation,
     setSystemPrompt,
     setConversationModel,
+    setConversationReasoningEffort,
     setToolApprovalMode,
     addToolSchema,
     addToolSchemas,

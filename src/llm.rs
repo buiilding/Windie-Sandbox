@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::StreamExt;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::conversation::{
@@ -80,10 +80,12 @@ pub(crate) trait RuntimeLlm {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
+        reasoning: Option<&ReasoningRequest>,
+        prompt_cache: Option<&PromptCacheRequest>,
         handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>;
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +94,27 @@ pub struct AssistantResponse {
     pub content: String,
     pub metadata: MessageMetadata,
     pub finish_reason: Option<FinishReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+/// One live event emitted while parsing a streamed assistant response.
+///
+/// These events are display-only. `AssistantStreamState` still assembles the
+/// final assistant content and metadata, and runtime persistence uses that
+/// complete response as the source of truth.
+pub enum LlmStreamEvent<'a> {
+    /// Natural-language assistant output text.
+    AssistantDelta(&'a str),
+    /// Reasoning-summary text reported by providers that expose it.
+    ReasoningDelta(&'a str),
+    /// Incremental function-call metadata or argument text.
+    ToolCallDelta {
+        index: u16,
+        id: Option<&'a str>,
+        name: Option<&'a str>,
+        arguments_delta: Option<&'a str>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,6 +138,82 @@ pub enum FinishReason {
     ToolCalls,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Optional normalized reasoning controls sent to Bifrost.
+///
+/// Windie stores no model-specific reasoning table. Clients choose a value that
+/// came from Bifrost model-parameter metadata, and `llm.rs` serializes it into
+/// the OpenAI-compatible `reasoning` object Bifrost already understands.
+pub struct ReasoningRequest {
+    /// Model-specific reasoning effort selected by the user/client.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Optional visible reasoning-summary mode for OpenAI Responses models.
+    ///
+    /// This is separate from `effort`: a model can spend hidden reasoning
+    /// tokens without returning displayable summary text unless this field is
+    /// requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+impl ReasoningRequest {
+    /// Returns whether this request would serialize any provider-facing data.
+    pub fn is_empty(&self) -> bool {
+        self.effort.is_none() && self.summary.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Provider prompt-cache hint for one model request.
+///
+/// Windie owns conversation identity, so it creates the stable cache key. The
+/// provider-specific wire mapping stays in this module: OpenAI receives
+/// `prompt_cache_key` fields, while Anthropic receives `cache_control`.
+pub struct PromptCacheRequest {
+    /// Stable provider cache key for the repeated prompt prefix.
+    pub key: String,
+    /// Optional provider retention hint. OpenAI-compatible providers use this;
+    /// Anthropic cache-control markers ignore it.
+    pub retention: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// Raw Bifrost model-parameter response for one selected model.
+///
+/// Bifrost owns the provider/model metadata. Windie keeps the raw response for
+/// inspection and extracts only the small effort selector needed by the local
+/// developer UI.
+pub struct ModelParameterInfo {
+    #[serde(default)]
+    pub model_parameters: Vec<ModelParameter>,
+    pub supports_reasoning: Option<bool>,
+    pub supports_reasoning_with_tool_calls: Option<bool>,
+    pub supports_prompt_caching: Option<bool>,
+    #[serde(skip)]
+    pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// One Bifrost model parameter description.
+pub struct ModelParameter {
+    pub id: String,
+    pub label: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    #[serde(rename = "accesorKey", alias = "accessorKey")]
+    pub accessor_key: Option<String>,
+    #[serde(default)]
+    pub options: Vec<ModelParameterOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// One selectable model-parameter option returned by Bifrost.
+pub struct ModelParameterOption {
+    pub label: String,
+    pub value: String,
+}
+
 /// HTTP client for Bifrost's OpenAI-compatible Responses endpoint.
 pub struct BifrostClient {
     http: Client,
@@ -129,7 +228,30 @@ struct ResponsesRequest<'a> {
     input: Vec<ResponsesInputItem<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ResponsesTool<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<&'a ReasoningRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_retention: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControlRequest>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+/// Anthropic-family prompt-cache control forwarded through Bifrost.
+struct CacheControlRequest {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Debug)]
+/// Provider-specific cache fields to include in one Responses request.
+struct PromptCacheFields<'a> {
+    prompt_cache_key: Option<&'a str>,
+    prompt_cache_retention: Option<&'a str>,
+    cache_control: Option<CacheControlRequest>,
 }
 
 #[derive(Debug, Serialize)]
@@ -363,15 +485,22 @@ impl BifrostClient {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
+        reasoning: Option<&ReasoningRequest>,
+        prompt_cache: Option<&PromptCacheRequest>,
         mut handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
+        let prompt_cache_fields = prompt_cache_fields(self.model.as_str(), prompt_cache);
         let request = ResponsesRequest {
             model: self.model.as_str(),
             input: responses_input(messages),
             tools: responses_tools(tools),
+            reasoning,
+            prompt_cache_key: prompt_cache_fields.prompt_cache_key,
+            prompt_cache_retention: prompt_cache_fields.prompt_cache_retention,
+            cache_control: prompt_cache_fields.cache_control,
             stream: true,
         };
 
@@ -447,6 +576,102 @@ pub async fn list_models(base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
         .context("failed to parse model list response")?;
 
     Ok(response.data)
+}
+
+/// Loads Bifrost's model-parameter metadata for one model.
+///
+/// The endpoint is Bifrost-specific management metadata, not an OpenAI
+/// compatibility route. Bifrost expects the provider-local model name, so
+/// `openai/gpt-5.5` becomes `gpt-5.5` before the request is sent.
+pub async fn model_parameters(base_url: BaseUrl, model: &ModelName) -> Result<ModelParameterInfo> {
+    let endpoint = model_parameters_endpoint(&base_url, model)?;
+    let response = Client::new()
+        .get(endpoint)
+        .send()
+        .await
+        .context("failed to send model parameter request")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!(
+            "model parameter request failed with {status}: {body}"
+        ));
+    }
+
+    let raw = response
+        .json::<serde_json::Value>()
+        .await
+        .context("failed to parse model parameter response")?;
+    let mut parameters = serde_json::from_value::<ModelParameterInfo>(raw.clone())
+        .context("failed to decode model parameter response")?;
+    parameters.raw = raw;
+
+    Ok(parameters)
+}
+
+/// Builds the Bifrost management endpoint for model parameters.
+fn model_parameters_endpoint(base_url: &BaseUrl, model: &ModelName) -> Result<Url> {
+    let api_root = base_url
+        .as_str()
+        .strip_suffix("/v1")
+        .unwrap_or_else(|| base_url.as_str());
+    let mut url = Url::parse(&format!("{api_root}/api/models/parameters"))
+        .context("failed to build model parameter endpoint")?;
+    url.query_pairs_mut()
+        .append_pair("model", provider_local_model_name(model.as_str()));
+
+    Ok(url)
+}
+
+/// Returns the provider-local model name expected by Bifrost management APIs.
+fn provider_local_model_name(model: &str) -> &str {
+    model
+        .rsplit_once('/')
+        .map(|(_, local_model)| local_model)
+        .unwrap_or(model)
+}
+
+/// Builds provider-specific prompt-cache fields for Bifrost's Responses route.
+///
+/// OpenAI and Anthropic expose different cache controls. Windie keeps one
+/// internal cache request and lets this provider HTTP boundary translate it.
+/// Unqualified or unsupported provider names intentionally serialize no cache
+/// fields because Windie cannot know the correct upstream contract.
+fn prompt_cache_fields<'a>(
+    model: &str,
+    prompt_cache: Option<&'a PromptCacheRequest>,
+) -> PromptCacheFields<'a> {
+    let Some(prompt_cache) = prompt_cache else {
+        return PromptCacheFields {
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
+        };
+    };
+
+    match provider_name(model) {
+        Some("openai") => PromptCacheFields {
+            prompt_cache_key: Some(prompt_cache.key.as_str()),
+            prompt_cache_retention: prompt_cache.retention.as_deref(),
+            cache_control: None,
+        },
+        Some("anthropic") => PromptCacheFields {
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: Some(CacheControlRequest { kind: "ephemeral" }),
+        },
+        _ => PromptCacheFields {
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
+        },
+    }
+}
+
+/// Returns the provider prefix from a Bifrost model id such as `openai/gpt-5.5`.
+fn provider_name(model: &str) -> Option<&str> {
+    model.split_once('/').map(|(provider, _)| provider)
 }
 
 /// Converts Windie's internal messages into the Responses request input array.
@@ -623,12 +848,14 @@ impl RuntimeLlm for BifrostClient {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
+        reasoning: Option<&ReasoningRequest>,
+        prompt_cache: Option<&PromptCacheRequest>,
         handle_delta: F,
     ) -> Result<AssistantResponse>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
-        BifrostClient::stream(self, messages, tools, handle_delta).await
+        BifrostClient::stream(self, messages, tools, reasoning, prompt_cache, handle_delta).await
     }
 }
 
@@ -679,7 +906,7 @@ fn process_stream_lines<F>(
     handle_delta: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(&str) -> Result<()>,
+    F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
 {
     while let Some(line_end) = buffer.find('\n') {
         let line = buffer[..line_end].trim_end_matches('\r').to_string();
@@ -698,7 +925,7 @@ fn process_final_stream_line<F>(
     handle_delta: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(&str) -> Result<()>,
+    F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
 {
     if buffer.trim().is_empty() {
         return Ok(());
@@ -715,7 +942,7 @@ fn process_stream_line<F>(
     handle_delta: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(&str) -> Result<()>,
+    F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
 {
     let Some(data) = line.strip_prefix("data:") else {
         return Ok(());
@@ -735,13 +962,13 @@ impl AssistantStreamState {
     /// Applies one Responses stream event to the accumulated assistant turn.
     fn push_event<F>(&mut self, event: ResponsesStreamEvent, handle_delta: &mut F) -> Result<()>
     where
-        F: FnMut(&str) -> Result<()>,
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         match event.kind.as_str() {
             "response.output_text.delta" => {
                 if let Some(delta) = event.delta {
-                    handle_delta(&delta)?;
                     self.content.push_str(&delta);
+                    handle_delta(LlmStreamEvent::AssistantDelta(&delta))?;
                 }
             }
             "response.output_text.done" => {
@@ -759,13 +986,24 @@ impl AssistantStreamState {
             "response.reasoning_summary_text.delta" => {
                 if let Some(reasoning) = event.delta {
                     append_optional_text(&mut self.metadata.reasoning, &reasoning);
+                    handle_delta(LlmStreamEvent::ReasoningDelta(&reasoning))?;
                 }
             }
             "response.function_call_arguments.delta" => {
                 if let Some(delta) = event.delta {
-                    self.partial_tool_call(event.output_index)
+                    let key = self.partial_tool_call_key(event.output_index);
+                    self.tool_calls
+                        .entry(key)
+                        .or_default()
                         .arguments
                         .push_str(&delta);
+                    let (id, name) = self.tool_call_snapshot(key);
+                    handle_delta(LlmStreamEvent::ToolCallDelta {
+                        index: key,
+                        id,
+                        name,
+                        arguments_delta: Some(&delta),
+                    })?;
                 }
             }
             "response.function_call_arguments.done" => {
@@ -774,8 +1012,16 @@ impl AssistantStreamState {
                 }
             }
             "response.output_item.added" | "response.output_item.done" => {
-                if let Some(item) = event.item {
-                    self.push_output_item(event.output_index, item);
+                if let Some(item) = event.item
+                    && let Some(key) = self.push_output_item(event.output_index, item)
+                {
+                    let (id, name) = self.tool_call_snapshot(key);
+                    handle_delta(LlmStreamEvent::ToolCallDelta {
+                        index: key,
+                        id,
+                        name,
+                        arguments_delta: None,
+                    })?;
                 }
             }
             "response.completed" => {
@@ -799,9 +1045,13 @@ impl AssistantStreamState {
     }
 
     /// Applies a streamed function-call item.
-    fn push_output_item(&mut self, output_index: Option<u16>, item: ResponsesStreamItem) {
+    fn push_output_item(
+        &mut self,
+        output_index: Option<u16>,
+        item: ResponsesStreamItem,
+    ) -> Option<u16> {
         if item.kind.as_deref() != Some("function_call") {
-            return;
+            return None;
         }
 
         let key = self.tool_call_key(output_index, item.call_id.as_deref().or(item.id.as_deref()));
@@ -819,6 +1069,7 @@ impl AssistantStreamState {
             partial.arguments = arguments;
         }
         self.finish_reason = Some(FinishReason::ToolCalls);
+        Some(key)
     }
 
     /// Persists provider-reported usage from terminal response events.
@@ -832,8 +1083,21 @@ impl AssistantStreamState {
 
     /// Returns the mutable partial tool call for one stream output index.
     fn partial_tool_call(&mut self, output_index: Option<u16>) -> &mut PartialToolCall {
-        let key = output_index.unwrap_or_else(|| self.next_tool_call_key());
+        let key = self.partial_tool_call_key(output_index);
         self.tool_calls.entry(key).or_default()
+    }
+
+    /// Returns the stream key for argument-only function-call events.
+    fn partial_tool_call_key(&self, output_index: Option<u16>) -> u16 {
+        output_index.unwrap_or_else(|| self.next_tool_call_key())
+    }
+
+    /// Returns current function-call identifiers for one stream key.
+    fn tool_call_snapshot(&self, key: u16) -> (Option<&str>, Option<&str>) {
+        self.tool_calls
+            .get(&key)
+            .map(|partial| (partial.id.as_deref(), partial.name.as_deref()))
+            .unwrap_or((None, None))
     }
 
     /// Finds the stream key for a function-call item.
@@ -1016,6 +1280,53 @@ mod tests {
     }
 
     #[test]
+    fn builds_model_parameters_endpoint_from_base_url() {
+        let base_url = BaseUrl::new("http://localhost:8080/v1/");
+        let model = ModelName::new("openai/gpt-5.5");
+
+        assert_eq!(
+            model_parameters_endpoint(&base_url, &model)
+                .unwrap()
+                .as_str(),
+            "http://localhost:8080/api/models/parameters?model=gpt-5.5"
+        );
+    }
+
+    #[test]
+    fn decodes_model_parameter_options() {
+        let raw = serde_json::json!({
+            "supports_reasoning": true,
+            "model_parameters": [{
+                "id": "reasoning_effort",
+                "type": "select",
+                "label": "Reasoning Effort",
+                "options": [
+                    {"label": "Low", "value": "low"},
+                    {"label": "High", "value": "high"}
+                ]
+            }]
+        });
+
+        let parameters = serde_json::from_value::<ModelParameterInfo>(raw).unwrap();
+
+        assert_eq!(parameters.supports_reasoning, Some(true));
+        assert_eq!(parameters.model_parameters[0].id, "reasoning_effort");
+        assert_eq!(
+            parameters.model_parameters[0].options,
+            vec![
+                ModelParameterOption {
+                    label: "Low".to_string(),
+                    value: "low".to_string(),
+                },
+                ModelParameterOption {
+                    label: "High".to_string(),
+                    value: "high".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn serializes_text_message_for_responses_request() {
         let messages = vec![Message {
             id: Some(MessageId::new("message-id")),
@@ -1029,6 +1340,10 @@ mod tests {
             model: "openai/gpt-4o-mini",
             input: responses_input(&messages),
             tools: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
             stream: true,
         };
 
@@ -1039,6 +1354,150 @@ mod tests {
             serde_json::json!({
                 "model": "openai/gpt-4o-mini",
                 "input": [{"type": "message", "role": "user", "content": "hello"}],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_reasoning_effort_for_responses_request() {
+        let reasoning = ReasoningRequest {
+            effort: Some("high".to_string()),
+            summary: None,
+        };
+        let request = ResponsesRequest {
+            model: "openai/gpt-5.5",
+            input: Vec::new(),
+            tools: None,
+            reasoning: Some(&reasoning),
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
+            stream: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "model": "openai/gpt-5.5",
+                "input": [],
+                "reasoning": {"effort": "high"},
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_reasoning_effort_and_summary_for_responses_request() {
+        let reasoning = ReasoningRequest {
+            effort: Some("high".to_string()),
+            summary: Some("auto".to_string()),
+        };
+        let request = ResponsesRequest {
+            model: "openai/gpt-5.5",
+            input: Vec::new(),
+            tools: None,
+            reasoning: Some(&reasoning),
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
+            stream: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "model": "openai/gpt-5.5",
+                "input": [],
+                "reasoning": {"effort": "high", "summary": "auto"},
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_openai_prompt_cache_for_responses_request() {
+        let prompt_cache = PromptCacheRequest {
+            key: "windie:conversation-id".to_string(),
+            retention: Some("24h".to_string()),
+        };
+        let prompt_cache_fields = prompt_cache_fields("openai/gpt-5.5", Some(&prompt_cache));
+        let request = ResponsesRequest {
+            model: "openai/gpt-5.5",
+            input: Vec::new(),
+            tools: None,
+            reasoning: None,
+            prompt_cache_key: prompt_cache_fields.prompt_cache_key,
+            prompt_cache_retention: prompt_cache_fields.prompt_cache_retention,
+            cache_control: prompt_cache_fields.cache_control,
+            stream: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "model": "openai/gpt-5.5",
+                "input": [],
+                "prompt_cache_key": "windie:conversation-id",
+                "prompt_cache_retention": "24h",
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_anthropic_prompt_cache_for_responses_request() {
+        let prompt_cache = PromptCacheRequest {
+            key: "windie:conversation-id".to_string(),
+            retention: Some("24h".to_string()),
+        };
+        let prompt_cache_fields =
+            prompt_cache_fields("anthropic/claude-opus-4-8", Some(&prompt_cache));
+        let request = ResponsesRequest {
+            model: "anthropic/claude-opus-4-8",
+            input: Vec::new(),
+            tools: None,
+            reasoning: None,
+            prompt_cache_key: prompt_cache_fields.prompt_cache_key,
+            prompt_cache_retention: prompt_cache_fields.prompt_cache_retention,
+            cache_control: prompt_cache_fields.cache_control,
+            stream: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "model": "anthropic/claude-opus-4-8",
+                "input": [],
+                "cache_control": {"type": "ephemeral"},
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn omits_prompt_cache_for_unsupported_provider() {
+        let prompt_cache = PromptCacheRequest {
+            key: "windie:conversation-id".to_string(),
+            retention: Some("24h".to_string()),
+        };
+        let prompt_cache_fields = prompt_cache_fields("groq/llama", Some(&prompt_cache));
+        let request = ResponsesRequest {
+            model: "groq/llama",
+            input: Vec::new(),
+            tools: None,
+            reasoning: None,
+            prompt_cache_key: prompt_cache_fields.prompt_cache_key,
+            prompt_cache_retention: prompt_cache_fields.prompt_cache_retention,
+            cache_control: prompt_cache_fields.cache_control,
+            stream: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "model": "groq/llama",
+                "input": [],
                 "stream": true
             })
         );
@@ -1069,6 +1528,10 @@ mod tests {
             model: "openai/gpt-4o-mini",
             input: responses_input(&messages),
             tools: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
             stream: true,
         };
 
@@ -1115,6 +1578,10 @@ mod tests {
             model: "openai/gpt-4o-mini",
             input: responses_input(&messages),
             tools: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
             stream: true,
         };
 
@@ -1167,6 +1634,10 @@ mod tests {
             model: "openai/gpt-4o-mini",
             input: responses_input(&messages),
             tools: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
             stream: true,
         };
 
@@ -1206,6 +1677,10 @@ mod tests {
             model: "openai/gpt-4o-mini",
             input: responses_input(&messages),
             tools: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
             stream: true,
         };
 
@@ -1248,6 +1723,10 @@ mod tests {
             model: "openai/gpt-4o-mini",
             input: responses_input(&messages),
             tools: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
             stream: true,
         };
 
@@ -1286,6 +1765,10 @@ mod tests {
             model: "openai/gpt-4o-mini",
             input: Vec::new(),
             tools: responses_tools(&tools),
+            reasoning: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            cache_control: None,
             stream: true,
         };
 
@@ -1361,8 +1844,10 @@ mod tests {
     fn parses_stream_content_delta() {
         let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
-        let mut handle_delta = |text: &str| {
-            deltas.push(text.to_string());
+        let mut handle_delta = |event: LlmStreamEvent<'_>| -> Result<()> {
+            if let LlmStreamEvent::AssistantDelta(text) = event {
+                deltas.push(text.to_string());
+            }
             Ok(())
         };
 
@@ -1380,7 +1865,13 @@ mod tests {
     #[test]
     fn parses_stream_metadata_lanes() {
         let mut state = AssistantStreamState::default();
-        let mut handle_delta = |_text: &str| Ok(());
+        let mut reasoning_deltas = Vec::new();
+        let mut handle_delta = |event: LlmStreamEvent<'_>| -> Result<()> {
+            if let LlmStreamEvent::ReasoningDelta(text) = event {
+                reasoning_deltas.push(text.to_string());
+            }
+            Ok(())
+        };
 
         process_stream_line(
             r#"data: {"type":"response.refusal.delta","refusal":"no"}"#,
@@ -1399,12 +1890,13 @@ mod tests {
 
         assert_eq!(response.metadata.refusal.as_deref(), Some("no"));
         assert_eq!(response.metadata.reasoning.as_deref(), Some("think"));
+        assert_eq!(reasoning_deltas, vec!["think"]);
     }
 
     #[test]
     fn parses_stream_usage_metadata() {
         let mut state = AssistantStreamState::default();
-        let mut handle_delta = |_text: &str| Ok(());
+        let mut handle_delta = |_event: LlmStreamEvent<'_>| -> Result<()> { Ok(()) };
 
         process_stream_line(
             r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15,"output_tokens_details":{"reasoning_tokens":1}}}}"#,
@@ -1425,7 +1917,24 @@ mod tests {
     #[test]
     fn assembles_streamed_tool_call() {
         let mut state = AssistantStreamState::default();
-        let mut handle_delta = |_text: &str| Ok(());
+        let mut tool_call_deltas = Vec::new();
+        let mut handle_delta = |event: LlmStreamEvent<'_>| -> Result<()> {
+            if let LlmStreamEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments_delta,
+            } = event
+            {
+                tool_call_deltas.push((
+                    index,
+                    id.map(str::to_string),
+                    name.map(str::to_string),
+                    arguments_delta.map(str::to_string),
+                ));
+            }
+            Ok(())
+        };
 
         process_stream_line(
             r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_123","name":"run_shell","arguments":""}}"#,
@@ -1455,6 +1964,29 @@ mod tests {
         assert_eq!(
             response.metadata.tool_calls[0].arguments(),
             r#"{"command":"ls"}"#
+        );
+        assert_eq!(
+            tool_call_deltas,
+            vec![
+                (
+                    0,
+                    Some("call_123".to_string()),
+                    Some("run_shell".to_string()),
+                    None,
+                ),
+                (
+                    0,
+                    Some("call_123".to_string()),
+                    Some("run_shell".to_string()),
+                    Some(r#"{"command""#.to_string()),
+                ),
+                (
+                    0,
+                    Some("call_123".to_string()),
+                    Some("run_shell".to_string()),
+                    Some(r#":"ls"}"#.to_string()),
+                ),
+            ]
         );
     }
 
@@ -1508,8 +2040,10 @@ mod tests {
     fn ignores_done_stream_line() {
         let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
-        let mut handle_delta = |text: &str| {
-            deltas.push(text.to_string());
+        let mut handle_delta = |event: LlmStreamEvent<'_>| -> Result<()> {
+            if let LlmStreamEvent::AssistantDelta(text) = event {
+                deltas.push(text.to_string());
+            }
             Ok(())
         };
 
@@ -1527,8 +2061,10 @@ mod tests {
             .to_string();
         let mut state = AssistantStreamState::default();
         let mut deltas = Vec::new();
-        let mut handle_delta = |text: &str| {
-            deltas.push(text.to_string());
+        let mut handle_delta = |event: LlmStreamEvent<'_>| -> Result<()> {
+            if let LlmStreamEvent::AssistantDelta(text) = event {
+                deltas.push(text.to_string());
+            }
             Ok(())
         };
 

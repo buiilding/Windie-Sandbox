@@ -70,6 +70,8 @@ Initial routes:
 ```text
 GET    /api/health
 GET    /api/status
+GET    /api/models
+GET    /api/model-parameters?model=<provider/model>
 GET    /api/tools
 GET    /api/tools/{provider_id}
 POST   /api/gateway/start
@@ -95,9 +97,38 @@ PATCH  /api/conversations/{conversation_id}/tool-schemas/{name}
 DELETE /api/conversations/{conversation_id}/tool-schemas/{name}
 POST   /api/conversations/{conversation_id}/truncate
 POST   /api/conversations/{conversation_id}/fork
+POST   /api/conversations/{conversation_id}/input-tokens
 POST   /api/conversations/{conversation_id}/query
 POST   /api/conversations/{conversation_id}/query-stream
 ```
+
+`GET /api/model-parameters` returns normalized read-only metadata for the
+selected model, including reasoning effort options and prompt-cache support
+when Bifrost reports them.
+Windie fetches the source metadata from Bifrost's
+`/api/models/parameters?model=<model>` endpoint and does not keep its own
+provider/model reasoning or caching table.
+
+`query` and `query-stream` accept an optional request-scoped reasoning override:
+
+```json
+{
+  "model": null,
+  "reasoning": {
+    "effort": "high"
+  }
+}
+```
+
+Omitting `reasoning` keeps the provider/model default for that one query.
+
+Provider prompt caching is automatic for model queries when Bifrost metadata
+reports `supports_prompt_caching: true`. Windie uses the conversation id as the
+stable cache scope. For OpenAI-qualified models, Windie sends
+`prompt_cache_key` plus `prompt_cache_retention: "24h"`. For
+Anthropic-qualified models, Windie sends `cache_control: {"type":"ephemeral"}`.
+If the model is unsupported or metadata lookup fails, Windie sends no cache
+fields and the query continues normally.
 
 The API approval routes use server-sent events. `approve` executes and stores
 the pending tool result, then continues the runtime when no later manual

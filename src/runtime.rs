@@ -13,7 +13,7 @@ use crate::conversation::{
     ConversationId, Message, MessageId, Role, ToolCall, ToolCallId, ToolSchemaName,
 };
 use crate::error;
-use crate::llm::RuntimeLlm;
+use crate::llm::{LlmStreamEvent, PromptCacheRequest, ReasoningRequest, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::policy::{PolicyDecision, ToolPolicy};
 use crate::store::Store;
@@ -34,6 +34,30 @@ pub(crate) trait RuntimeEventSink {
 pub(crate) struct NoopRuntimeEventSink;
 
 impl RuntimeEventSink for NoopRuntimeEventSink {}
+
+#[derive(Clone, Copy)]
+/// Optional model-request controls used for one provider turn.
+///
+/// Runtime does not interpret these controls. It only carries them from the
+/// operation layer to the LLM boundary so provider-specific serialization stays
+/// in `llm.rs`.
+pub(crate) struct RuntimeModelRequest<'a> {
+    reasoning: Option<&'a ReasoningRequest>,
+    prompt_cache: Option<&'a PromptCacheRequest>,
+}
+
+impl<'a> RuntimeModelRequest<'a> {
+    /// Groups optional reasoning and prompt-cache controls for one query.
+    pub(crate) fn new(
+        reasoning: Option<&'a ReasoningRequest>,
+        prompt_cache: Option<&'a PromptCacheRequest>,
+    ) -> Self {
+        Self {
+            reasoning,
+            prompt_cache,
+        }
+    }
+}
 
 /// Runs one assistant inference turn and persists the assistant message.
 ///
@@ -65,6 +89,7 @@ where
         conversation_id,
         &registry,
         &events,
+        RuntimeModelRequest::new(None, None),
     )
     .await
 }
@@ -77,6 +102,7 @@ pub(crate) async fn query_conversation_once_with_registry_and_events<O, L, E>(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &E,
+    model_request: RuntimeModelRequest<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -91,9 +117,22 @@ where
 
     output.start_assistant_message();
     let assistant_response = llm
-        .stream(&model_messages, &tool_schemas, |text| {
-            output.assistant_delta(text)
-        })
+        .stream(
+            &model_messages,
+            &tool_schemas,
+            model_request.reasoning,
+            model_request.prompt_cache,
+            |event| match event {
+                LlmStreamEvent::AssistantDelta(text) => output.assistant_delta(text),
+                LlmStreamEvent::ReasoningDelta(text) => output.reasoning_delta(text),
+                LlmStreamEvent::ToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments_delta,
+                } => output.tool_call_delta(index, id, name, arguments_delta),
+            },
+        )
         .await?;
     output.end_assistant_message();
     output.assistant_tool_calls(&assistant_response.metadata.tool_calls);
@@ -136,6 +175,8 @@ pub(crate) async fn query_conversation_resolving_automatic_tools<O, L>(
     store: &mut Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
+    reasoning: Option<&ReasoningRequest>,
+    prompt_cache: Option<&PromptCacheRequest>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -150,6 +191,7 @@ where
         conversation_id,
         registry,
         &events,
+        RuntimeModelRequest::new(reasoning, prompt_cache),
     )
     .await
 }
@@ -162,6 +204,7 @@ pub(crate) async fn query_conversation_resolving_automatic_tools_with_events<O, 
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &E,
+    model_request: RuntimeModelRequest<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -192,6 +235,7 @@ where
                     conversation_id,
                     registry,
                     events,
+                    model_request,
                 )
                 .await;
             }
@@ -203,6 +247,7 @@ where
                     conversation_id,
                     registry,
                     events,
+                    model_request,
                 )
                 .await?;
                 let has_tool_calls = message

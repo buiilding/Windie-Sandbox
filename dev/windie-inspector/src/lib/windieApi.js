@@ -97,6 +97,10 @@ export async function countConversationInputTokens(conversationId, model = null)
   };
 }
 
+export async function fetchModelParameters(model) {
+  return apiRequest(`/api/model-parameters?model=${encodeURIComponent(model)}`);
+}
+
 function parseSseBlock(block) {
   const lines = block.split(/\r?\n/);
   let event = "message";
@@ -173,10 +177,10 @@ async function streamRuntime(path, body, fallbackError, onEvent) {
   }
 }
 
-export async function streamConversationQuery(conversationId, model, onEvent) {
+export async function streamConversationQuery(conversationId, model, reasoning, onEvent) {
   return streamRuntime(
     `/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
-    { model: model || null },
+    { model: model || null, reasoning: reasoning || null },
     "Windie query stream failed",
     onEvent
   );
