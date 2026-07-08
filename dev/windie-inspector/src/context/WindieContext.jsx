@@ -7,7 +7,9 @@ import {
   conversationSummaryFromApi,
   listModels,
   setConversationModel as setConversationModelApi,
+  streamApproveTool,
   streamConversationQuery,
+  streamDenyTool,
   toolCatalogFromApi,
 } from "@/lib/windieApi";
 
@@ -538,10 +540,10 @@ export function WindieProvider({ children }) {
     [loadConversation, runMutation]
   );
 
-  const runStreamingQuery = useCallback(
-    async (convId) => {
+  const consumeRuntimeStream = useCallback(
+    async (convId, stream) => {
       try {
-        await streamConversationQuery(convId, null, async ({ data }) => {
+        await stream(async ({ data }) => {
           if (
             data?.type === "assistant_message_saved" ||
             data?.type === "tool_result_saved"
@@ -558,6 +560,14 @@ export function WindieProvider({ children }) {
       }
     },
     [loadConversation]
+  );
+
+  const runStreamingQuery = useCallback(
+    async (convId) =>
+      consumeRuntimeStream(convId, (onEvent) =>
+        streamConversationQuery(convId, null, onEvent)
+      ),
+    [consumeRuntimeStream]
   );
 
   const sendMessage = useCallback(
@@ -631,28 +641,26 @@ export function WindieProvider({ children }) {
 
   const approveToolCall = useCallback(
     (convId, toolCallId) =>
-      runMutation(async () => {
-        const result = await apiRequest(`/api/conversations/${convId}/approvals/${toolCallId}/approve`, {
-          method: "POST",
-        });
-        await loadConversation(convId);
-        await runStreamingQuery(convId);
-        return result;
-      }, { reload: false }),
-    [loadConversation, runMutation, runStreamingQuery]
+      runMutation(
+        () =>
+          consumeRuntimeStream(convId, (onEvent) =>
+            streamApproveTool(convId, toolCallId, onEvent)
+          ),
+        { reload: false }
+      ),
+    [consumeRuntimeStream, runMutation]
   );
 
   const denyToolCall = useCallback(
     (convId, toolCallId) =>
-      runMutation(async () => {
-        const result = await apiRequest(`/api/conversations/${convId}/approvals/${toolCallId}/deny`, {
-          method: "POST",
-        });
-        await loadConversation(convId);
-        await runStreamingQuery(convId);
-        return result;
-      }, { reload: false }),
-    [loadConversation, runMutation, runStreamingQuery]
+      runMutation(
+        () =>
+          consumeRuntimeStream(convId, (onEvent) =>
+            streamDenyTool(convId, toolCallId, onEvent)
+          ),
+        { reload: false }
+      ),
+    [consumeRuntimeStream, runMutation]
   );
 
   const value = {

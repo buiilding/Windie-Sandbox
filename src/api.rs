@@ -40,8 +40,7 @@ use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::runtime::RuntimeEventSink;
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{
-    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
-    ToolProviderId,
+    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
 };
 use crate::tool_provider::ToolProviderRegistry;
 
@@ -1038,56 +1037,32 @@ async fn list_approvals(
     Ok(Json(ApprovalListResponse { approvals }))
 }
 
-#[derive(Debug, Serialize)]
-/// Response for approval resolution endpoints.
-struct ToolResultResponse {
-    tool_call_id: String,
-    tool_name: String,
-    content: String,
-    success: bool,
-}
-
-impl From<ToolExecutionResult> for ToolResultResponse {
-    fn from(result: ToolExecutionResult) -> Self {
-        Self {
-            tool_call_id: result.tool_call_id.as_str().to_string(),
-            tool_name: result.tool_name,
-            content: result.content,
-            success: result.success,
-        }
-    }
-}
-
-/// Executes one approved pending tool call.
+/// Executes one approved pending tool call and streams runtime continuation.
 async fn approve_tool(
     State(state): State<ApiState>,
     Path((conversation_id, tool_call_id)): Path<(String, String)>,
-) -> ApiResult<ToolResultResponse> {
-    let conversation_id = ConversationId::new(conversation_id);
-    let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = open_store(&state)?;
-    let result = operation::approve_tool_with_registry(
-        &mut store,
-        &conversation_id,
-        &tool_call_id,
-        &state.tool_registry,
+) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
+    runtime_stream(
+        state,
+        RuntimeStreamAction::ApproveTool {
+            conversation_id: ConversationId::new(conversation_id),
+            tool_call_id: ToolCallId::new(tool_call_id),
+        },
     )
-    .await?;
-
-    Ok(Json(ToolResultResponse::from(result)))
 }
 
-/// Stores a rejected result for one pending tool call.
+/// Stores a rejected result for one pending tool call and streams runtime continuation.
 async fn deny_tool(
     State(state): State<ApiState>,
     Path((conversation_id, tool_call_id)): Path<(String, String)>,
-) -> ApiResult<ToolResultResponse> {
-    let conversation_id = ConversationId::new(conversation_id);
-    let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = open_store(&state)?;
-    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
-
-    Ok(Json(ToolResultResponse::from(result)))
+) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
+    runtime_stream(
+        state,
+        RuntimeStreamAction::DenyTool {
+            conversation_id: ConversationId::new(conversation_id),
+            tool_call_id: ToolCallId::new(tool_call_id),
+        },
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1227,13 +1202,27 @@ impl RuntimeEventSink for QueryStreamEventSink {
     }
 }
 
-/// Runs a query and streams durable runtime events as server-sent events.
-async fn query_stream(
-    axum::extract::State(state): axum::extract::State<ApiState>,
-    Path(conversation_id): Path<String>,
-    Json(request): Json<QueryRequest>,
+/// Runtime action that can be driven through the shared event stream.
+enum RuntimeStreamAction {
+    Query {
+        conversation_id: ConversationId,
+        model_override: Option<ModelName>,
+    },
+    ApproveTool {
+        conversation_id: ConversationId,
+        tool_call_id: ToolCallId,
+    },
+    DenyTool {
+        conversation_id: ConversationId,
+        tool_call_id: ToolCallId,
+    },
+}
+
+/// Runs one runtime action and streams durable events to the client.
+fn runtime_stream(
+    state: ApiState,
+    action: RuntimeStreamAction,
 ) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
-    let conversation_id = ConversationId::new(conversation_id);
     let (sender, receiver) = mpsc::unbounded_channel::<QueryStreamEvent>();
 
     tokio::spawn(async move {
@@ -1242,29 +1231,64 @@ async fn query_stream(
             let events = QueryStreamEventSink {
                 sender: sender.clone(),
             };
-            let runtime = operation::QueryStreamRuntime::new(
-                GatewayUrl::new(state.gateway_url.clone()),
-                BaseUrl::new(state.base_url.clone()),
-                request.model.map(ModelName::new),
-                state.tool_registry.as_ref(),
-            );
-            let message = operation::query_conversation_with_registry_and_events(
-                &ApiOutput,
-                &events,
-                &mut store,
-                &conversation_id,
-                runtime,
-            )
-            .await?;
+            let message = match action {
+                RuntimeStreamAction::Query {
+                    conversation_id,
+                    model_override,
+                } => {
+                    let runtime = query_stream_runtime(&state, model_override);
+                    operation::query_runtime_turn(
+                        &ApiOutput,
+                        &events,
+                        &mut store,
+                        &conversation_id,
+                        runtime,
+                    )
+                    .await
+                    .map(Some)?
+                }
+                RuntimeStreamAction::ApproveTool {
+                    conversation_id,
+                    tool_call_id,
+                } => {
+                    let runtime = query_stream_runtime(&state, None);
+                    operation::approve_tool_turn(
+                        &ApiOutput,
+                        &events,
+                        &mut store,
+                        &conversation_id,
+                        &tool_call_id,
+                        runtime,
+                    )
+                    .await?
+                }
+                RuntimeStreamAction::DenyTool {
+                    conversation_id,
+                    tool_call_id,
+                } => {
+                    let runtime = query_stream_runtime(&state, None);
+                    operation::deny_tool_turn(
+                        &ApiOutput,
+                        &events,
+                        &mut store,
+                        &conversation_id,
+                        &tool_call_id,
+                        runtime,
+                    )
+                    .await?
+                }
+            };
 
-            Ok::<Message, anyhow::Error>(message)
+            Ok::<Option<Message>, anyhow::Error>(message)
         }
         .await;
 
         match result {
             Ok(message) => {
                 let _ = sender.send(QueryStreamEvent::QueryDone {
-                    message_id: message.id.map(|id| id.as_str().to_string()),
+                    message_id: message
+                        .and_then(|message| message.id)
+                        .map(|id| id.as_str().to_string()),
                 });
             }
             Err(error) => {
@@ -1276,6 +1300,41 @@ async fn query_stream(
         }
     });
 
+    runtime_event_sse(receiver)
+}
+
+/// Builds shared runtime settings for an API-streamed runtime action.
+fn query_stream_runtime<'a>(
+    state: &'a ApiState,
+    model_override: Option<ModelName>,
+) -> operation::QueryStreamRuntime<'a> {
+    operation::QueryStreamRuntime::new(
+        GatewayUrl::new(state.gateway_url.clone()),
+        BaseUrl::new(state.base_url.clone()),
+        model_override,
+        state.tool_registry.as_ref(),
+    )
+}
+
+/// Runs a query and streams durable runtime events as server-sent events.
+async fn query_stream(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<QueryRequest>,
+) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
+    runtime_stream(
+        state,
+        RuntimeStreamAction::Query {
+            conversation_id: ConversationId::new(conversation_id),
+            model_override: request.model.map(ModelName::new),
+        },
+    )
+}
+
+/// Converts runtime events into server-sent event frames.
+fn runtime_event_sse(
+    receiver: mpsc::UnboundedReceiver<QueryStreamEvent>,
+) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
     let stream = stream::unfold(receiver, |mut receiver| async move {
         let event = receiver.recv().await?;
         let event_name = event.event_name();
@@ -1961,7 +2020,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_later_multi_tool_call_returns_raw_order_error() {
+    async fn approve_later_multi_tool_call_streams_raw_order_error() {
         let db_path = temp_database_path();
         let app = test_app(db_path.clone());
         let conversation_id = insert_multi_tool_call_assistant(&db_path);
@@ -1975,13 +2034,58 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
-        let body = response_json_body(response).await;
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error"],
-            "tool call must be resolved after previous tool call: call_1"
-        );
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+        assert!(body.contains("event: query_error"));
+        assert!(body.contains("tool call must be resolved after previous tool call: call_1"));
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn deny_first_multi_tool_call_streams_result_without_querying() {
+        let db_path = temp_database_path();
+        let registry = Arc::new(registry_with_cached_test_tool());
+        let app = test_app_with_tool_registry(db_path.clone(), registry.clone());
+        let conversation_id = insert_attached_multi_tool_call_assistant(&db_path);
+
+        let response = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/approvals/call_1/deny"),
+                None,
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        let store = Store::open_at(&db_path).unwrap();
+        let approvals =
+            operation::list_tool_approvals_with_registry(&store, &conversation_id, &registry)
+                .unwrap();
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+        assert!(body.contains("event: tool_result_saved"));
+        assert!(body.contains("event: query_done"));
+        assert!(!body.contains("event: query_error"));
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].tool_call.id.as_str(), "call_2");
         let _ = fs::remove_file(db_path);
     }
 
@@ -2172,6 +2276,48 @@ mod tests {
                     tool_calls: vec![
                         ToolCall::function("call_1", "run_shell", r#"{"command":"printf first"}"#),
                         ToolCall::function("call_2", "run_shell", r#"{"command":"printf second"}"#),
+                    ],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        conversation_id
+    }
+
+    fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
+        let mut store = Store::open_at(db_path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        let registry = registry_with_cached_test_tool();
+        operation::attach_tool_with_registry(
+            &mut store,
+            &conversation_id,
+            &ToolProviderId::new("desktop-commander"),
+            &ProviderToolName::new("read_file"),
+            &registry,
+        )
+        .unwrap();
+        let user_id = store
+            .insert_message(&conversation_id, None, Role::User, "read files", None)
+            .unwrap();
+        store
+            .insert_message(
+                &conversation_id,
+                Some(&user_id),
+                Role::Assistant,
+                "",
+                Some(&MessageMetadata {
+                    tool_calls: vec![
+                        ToolCall::function(
+                            "call_1",
+                            "desktop_commander__read_file",
+                            r#"{"path":"/tmp/one"}"#,
+                        ),
+                        ToolCall::function(
+                            "call_2",
+                            "desktop_commander__read_file",
+                            r#"{"path":"/tmp/two"}"#,
+                        ),
                     ],
                     ..Default::default()
                 }),

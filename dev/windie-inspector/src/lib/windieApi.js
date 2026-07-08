@@ -118,19 +118,16 @@ function parseSseBlock(block) {
   };
 }
 
-export async function streamConversationQuery(conversationId, model, onEvent) {
+async function streamRuntime(path, body, fallbackError, onEvent) {
   const token = apiToken();
-  const response = await fetch(
-    `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { "X-Windie-Api-Token": token } : {}),
-      },
-      body: JSON.stringify({ model: model || null }),
-    }
-  );
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "X-Windie-Api-Token": token } : {}),
+    },
+    body: JSON.stringify(body || {}),
+  });
 
   if (!response.ok) {
     const text = await response.text();
@@ -140,7 +137,7 @@ export async function streamConversationQuery(conversationId, model, onEvent) {
     } catch {
       body = null;
     }
-    throw new Error(body?.error || `Windie query stream failed: ${response.status}`);
+    throw new Error(body?.error || `${fallbackError}: ${response.status}`);
   }
 
   if (!response.body) return;
@@ -160,7 +157,7 @@ export async function streamConversationQuery(conversationId, model, onEvent) {
       if (!parsed) continue;
       await onEvent(parsed);
       if (parsed.data?.type === "query_error") {
-        throw new Error(parsed.data.error || "Windie query stream failed");
+        throw new Error(parsed.data.error || fallbackError);
       }
     }
 
@@ -171,9 +168,36 @@ export async function streamConversationQuery(conversationId, model, onEvent) {
   if (final) {
     await onEvent(final);
     if (final.data?.type === "query_error") {
-      throw new Error(final.data.error || "Windie query stream failed");
+      throw new Error(final.data.error || fallbackError);
     }
   }
+}
+
+export async function streamConversationQuery(conversationId, model, onEvent) {
+  return streamRuntime(
+    `/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
+    { model: model || null },
+    "Windie query stream failed",
+    onEvent
+  );
+}
+
+export async function streamApproveTool(conversationId, toolCallId, onEvent) {
+  return streamRuntime(
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/approve`,
+    {},
+    "Windie approval stream failed",
+    onEvent
+  );
+}
+
+export async function streamDenyTool(conversationId, toolCallId, onEvent) {
+  return streamRuntime(
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/deny`,
+    {},
+    "Windie denial stream failed",
+    onEvent
+  );
 }
 
 export async function setConversationModel(conversationId, model) {

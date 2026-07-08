@@ -24,10 +24,11 @@ use crate::image_input::{ImageInput, read_image_input, validate_image_input_byte
 use crate::llm::{self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName};
 use crate::output::RuntimeOutput;
 use crate::runtime::{
-    RuntimeEventSink, approve_tool_call, approve_tool_call_with_registry, deny_tool_call,
-    pending_tool_approvals, pending_tool_approvals_with_registry,
+    PendingToolExecution, RuntimeEventSink, approve_tool_call, deny_pending_tool_call,
+    deny_tool_call, execute_pending_tool_call, load_pending_tool_call, pending_tool_approvals,
+    pending_tool_approvals_with_registry, prepare_pending_tool_execution,
     query_conversation_resolving_automatic_tools,
-    query_conversation_resolving_automatic_tools_with_events,
+    query_conversation_resolving_automatic_tools_with_events, store_pending_tool_result,
 };
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
@@ -800,13 +801,13 @@ impl<'a> QueryStreamRuntime<'a> {
     }
 }
 
-/// Runs the shared query sequence while emitting durable runtime events.
+/// Runs one streamed runtime query turn while emitting durable runtime events.
 ///
 /// The API streaming route uses this path to notify clients after assistant
 /// messages and tool results have been persisted. Existing blocking callers use
 /// `query_conversation_with_registry`, which keeps the same runtime flow with a
 /// no-op event sink.
-pub async fn query_conversation_with_registry_and_events<O, E>(
+pub async fn query_runtime_turn<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
@@ -841,21 +842,6 @@ pub async fn approve_tool(
     approve_tool_call(store, conversation_id, tool_call_id).await
 }
 
-/// Executes one approved pending tool call through a caller-owned provider
-/// registry and persists its result.
-///
-/// The API server uses this to keep MCP providers warm across HTTP requests.
-/// CLI callers keep using `approve_tool`, which creates the default
-/// short-lived registry.
-pub async fn approve_tool_with_registry(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
-    registry: &ToolProviderRegistry,
-) -> Result<ToolExecutionResult> {
-    approve_tool_call_with_registry(store, conversation_id, tool_call_id, registry).await
-}
-
 /// Persists a rejected result for one pending tool call.
 pub fn deny_tool(
     store: &mut Store,
@@ -863,6 +849,83 @@ pub fn deny_tool(
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
     deny_tool_call(store, conversation_id, tool_call_id)
+}
+
+/// Executes one approved tool call, emits its persisted result, and continues
+/// the runtime when no later approval is waiting.
+///
+/// This is the client-facing approval behavior: approval resolves one pending
+/// call and lets Windie advance if the active path is ready. Multi-tool turns
+/// stop after the stored result when the next requested call still needs manual
+/// approval.
+pub async fn approve_tool_turn<O, E>(
+    output: &O,
+    events: &E,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    runtime: QueryStreamRuntime<'_>,
+) -> Result<Option<Message>>
+where
+    O: RuntimeOutput,
+    E: RuntimeEventSink,
+{
+    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let execution =
+        prepare_pending_tool_execution(store, conversation_id, &pending, runtime.registry)?;
+    let result = match execution {
+        PendingToolExecution::Finished(result) => result,
+        PendingToolExecution::Execute(attached_tool) => {
+            execute_pending_tool_call(&pending, &attached_tool, runtime.registry).await?
+        }
+    };
+    let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
+    events.tool_result_saved(&message_id);
+
+    continue_after_tool_result(output, events, store, conversation_id, runtime).await
+}
+
+/// Stores one denied tool result, emits it, and continues the runtime when
+/// there are no later approvals waiting.
+pub async fn deny_tool_turn<O, E>(
+    output: &O,
+    events: &E,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    runtime: QueryStreamRuntime<'_>,
+) -> Result<Option<Message>>
+where
+    O: RuntimeOutput,
+    E: RuntimeEventSink,
+{
+    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let result = deny_pending_tool_call(&pending);
+    let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
+    events.tool_result_saved(&message_id);
+
+    continue_after_tool_result(output, events, store, conversation_id, runtime).await
+}
+
+/// Continues after a stored tool result only when no manual approval remains.
+async fn continue_after_tool_result<O, E>(
+    output: &O,
+    events: &E,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    runtime: QueryStreamRuntime<'_>,
+) -> Result<Option<Message>>
+where
+    O: RuntimeOutput,
+    E: RuntimeEventSink,
+{
+    if !pending_tool_approvals_with_registry(store, conversation_id, runtime.registry)?.is_empty() {
+        return Ok(None);
+    }
+
+    query_runtime_turn(output, events, store, conversation_id, runtime)
+        .await
+        .map(Some)
 }
 
 /// Loaded version of one insert part.

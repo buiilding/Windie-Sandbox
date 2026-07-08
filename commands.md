@@ -99,6 +99,12 @@ POST   /api/conversations/{conversation_id}/query
 POST   /api/conversations/{conversation_id}/query-stream
 ```
 
+The API approval routes use server-sent events. `approve` executes and stores
+the pending tool result, then continues the runtime when no later manual
+approval is waiting. `deny` stores a rejected tool result and follows the same
+continuation rule. Stream events use the same names as `query-stream`:
+`tool_result_saved`, `assistant_message_saved`, `query_done`, and `query_error`.
+
 ## Tools
 
 ```text

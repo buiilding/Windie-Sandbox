@@ -366,13 +366,16 @@ fn store_policy_denied_tool_results(
         ) else {
             return Ok(());
         };
-        let result = ToolExecutionResult::failure(tool_call.id.clone(), tool_call.name(), reason);
-        let message_id = store_tool_result(
-            store,
-            conversation_id,
-            &execution.result_parent_message_id,
-            &result,
-        )?;
+        let pending = PendingToolCall {
+            result_parent_message_id: execution.result_parent_message_id,
+            tool_call,
+        };
+        let result = ToolExecutionResult::failure(
+            pending.tool_call.id.clone(),
+            pending.tool_call.name(),
+            reason,
+        );
+        let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
         events.tool_result_saved(&message_id);
     }
 }
@@ -423,27 +426,27 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
             reason,
         ),
         PolicyDecision::Allow => {
-            execute_pending_tool_call_with_registry(&pending, attached_tool.as_ref(), registry)
-                .await?
+            execute_provider_tool_call(&pending, attached_tool.as_ref(), registry).await?
         }
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
 
-    let message_id = store_tool_result(
-        store,
-        conversation_id,
-        &pending.result_parent_message_id,
-        &result,
-    )?;
+    let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
     events.tool_result_saved(&message_id);
 
     Ok(AutomaticToolResolution::Resolved)
 }
 
 /// One pending tool call plus the message that should parent its result.
-struct PendingToolCall {
-    result_parent_message_id: MessageId,
-    tool_call: ToolCall,
+pub(crate) struct PendingToolCall {
+    pub(crate) result_parent_message_id: MessageId,
+    pub(crate) tool_call: ToolCall,
+}
+
+/// Prepared result of policy evaluation for one pending tool call.
+pub(crate) enum PendingToolExecution {
+    Finished(ToolExecutionResult),
+    Execute(AttachedTool),
 }
 
 /// Active-path state for the latest assistant tool execution.
@@ -548,39 +551,71 @@ pub(crate) async fn approve_tool_call_with_registry(
     tool_call_id: &ToolCallId,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolExecutionResult> {
-    let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let execution = prepare_pending_tool_execution(store, conversation_id, &pending, registry)?;
+    let result = match execution {
+        PendingToolExecution::Finished(result) => result,
+        PendingToolExecution::Execute(attached_tool) => {
+            execute_pending_tool_call(&pending, &attached_tool, registry).await?
+        }
+    };
+    store_pending_tool_result(store, conversation_id, &pending, &result)?;
+
+    Ok(result)
+}
+
+/// Evaluates policy and provider availability for one pending tool call.
+///
+/// This stays synchronous so SQLite store references never cross an async
+/// provider boundary. If policy denies the call, the returned execution is a
+/// finished failed result. If policy allows or asks, the caller receives the
+/// attached provider mapping needed for execution.
+pub(crate) fn prepare_pending_tool_execution(
+    store: &Store,
+    conversation_id: &ConversationId,
+    pending: &PendingToolCall,
+    registry: &ToolProviderRegistry,
+) -> Result<PendingToolExecution> {
     let policy = ToolPolicy;
     let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
-    let result = match policy.decide(
+
+    match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
         attached_tool_can_execute(registry, attached_tool.as_ref()),
         approval_mode,
     ) {
-        PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
-            pending.tool_call.id.clone(),
-            pending.tool_call.name(),
-            reason,
-        ),
+        PolicyDecision::Deny { reason } => Ok(PendingToolExecution::Finished(
+            ToolExecutionResult::failure(
+                pending.tool_call.id.clone(),
+                pending.tool_call.name(),
+                reason,
+            ),
+        )),
         PolicyDecision::Allow | PolicyDecision::Ask { .. } => {
-            execute_pending_tool_call_with_registry(&pending, attached_tool.as_ref(), registry)
-                .await?
+            let Some(attached_tool) = attached_tool else {
+                return Err(error::invalid_request(format!(
+                    "Tool is not attached: {}",
+                    pending.tool_call.name()
+                )));
+            };
+            Ok(PendingToolExecution::Execute(attached_tool))
         }
-    };
+    }
+}
 
-    store_tool_result(
-        store,
-        conversation_id,
-        &pending.result_parent_message_id,
-        &result,
-    )?;
-
-    Ok(result)
+/// Executes one prepared pending tool call through its attached provider.
+pub(crate) async fn execute_pending_tool_call(
+    pending: &PendingToolCall,
+    attached_tool: &AttachedTool,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
+    registry.call_tool(attached_tool, &pending.tool_call).await
 }
 
 /// Executes one pending tool call through its attached provider mapping.
-async fn execute_pending_tool_call_with_registry(
+async fn execute_provider_tool_call(
     pending: &PendingToolCall,
     attached_tool: Option<&AttachedTool>,
     registry: &ToolProviderRegistry,
@@ -592,7 +627,7 @@ async fn execute_pending_tool_call_with_registry(
         )));
     };
 
-    registry.call_tool(attached_tool, &pending.tool_call).await
+    execute_pending_tool_call(pending, attached_tool, registry).await
 }
 
 /// Stores an explicit rejection for one pending tool call.
@@ -601,25 +636,24 @@ pub(crate) fn deny_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    let pending = find_pending_tool_call(store, conversation_id, tool_call_id)?;
-    let result = ToolExecutionResult::failure(
-        pending.tool_call.id.clone(),
-        pending.tool_call.name(),
-        "tool call rejected by user",
-    );
-
-    store_tool_result(
-        store,
-        conversation_id,
-        &pending.result_parent_message_id,
-        &result,
-    )?;
+    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let result = deny_pending_tool_call(&pending);
+    store_pending_tool_result(store, conversation_id, &pending, &result)?;
 
     Ok(result)
 }
 
+/// Builds the failed result for an explicit user denial.
+pub(crate) fn deny_pending_tool_call(pending: &PendingToolCall) -> ToolExecutionResult {
+    ToolExecutionResult::failure(
+        pending.tool_call.id.clone(),
+        pending.tool_call.name(),
+        "tool call rejected by user",
+    )
+}
+
 /// Finds one pending tool call by provider tool-call ID.
-fn find_pending_tool_call(
+pub(crate) fn load_pending_tool_call(
     store: &Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
@@ -678,23 +712,23 @@ fn attached_tool_can_execute(
 }
 
 /// Saves one tool execution result as a `role: tool` child message.
-fn store_tool_result(
+pub(crate) fn store_pending_tool_result(
     store: &mut Store,
     conversation_id: &ConversationId,
-    parent_message_id: &MessageId,
+    pending: &PendingToolCall,
     result: &ToolExecutionResult,
 ) -> Result<MessageId> {
     if result.parts.is_empty() {
         store.insert_tool_result_message(
             conversation_id,
-            parent_message_id,
+            &pending.result_parent_message_id,
             &result.tool_call_id,
             &result.content,
         )
     } else {
         store.insert_tool_result_message_with_parts(
             conversation_id,
-            parent_message_id,
+            &pending.result_parent_message_id,
             &result.tool_call_id,
             &result.content,
             &result.parts,
