@@ -117,6 +117,7 @@ Windie currently includes code-approved MCP providers:
 ```text
 cua-driver          MCP provider launched with `cua-driver mcp`
 desktop-commander   MCP provider launched with `desktop-commander`
+blender-mcp         MCP provider launched with `uvx blender-mcp`
 ```
 
 Windie does not install provider binaries. The provider command must already be
@@ -126,6 +127,7 @@ the raw process-start error.
 ```text
 windie attach <conversation_id> tool cua-driver click
 windie attach <conversation_id> tool desktop-commander read_file
+windie attach <conversation_id> tool blender-mcp get_scene_info
 ```
 
 Attach one provider tool to a conversation. Attached tools are the schemas sent
@@ -134,6 +136,9 @@ to Bifrost during `query`; approval is still required before execution.
 MCP provider tools use provider-prefixed model-facing names. For example,
 attaching CUA's `click` tool stores and sends the schema as
 `cua_driver__click`, while Windie still executes provider tool `click`.
+Attaching Blender MCP's `get_scene_info` tool stores and sends the schema as
+`blender_mcp__get_scene_info`, while Windie still executes provider tool
+`get_scene_info`.
 
 ```text
 windie detach <conversation_id> tool cua_driver__click

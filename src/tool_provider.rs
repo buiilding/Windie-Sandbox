@@ -282,6 +282,31 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         shutdown_command: None,
         setup: Some(McpProviderSetup::DesktopCommanderConfig),
     },
+    McpProviderDefinition {
+        provider_id: "blender-mcp",
+        schema_prefix: "blender_mcp",
+        display_name: "Blender MCP",
+        command: McpCommand {
+            program: "uvx",
+            args: &["blender-mcp"],
+            env: &[
+                McpEnv {
+                    key: "DISABLE_TELEMETRY",
+                    value: McpEnvValue::Literal("true"),
+                },
+                McpEnv {
+                    key: "BLENDER_HOST",
+                    value: McpEnvValue::Literal("localhost"),
+                },
+                McpEnv {
+                    key: "BLENDER_PORT",
+                    value: McpEnvValue::Literal("9876"),
+                },
+            ],
+        },
+        shutdown_command: None,
+        setup: None,
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -649,6 +674,15 @@ mod tests {
         McpToolProvider::new(definition)
     }
 
+    fn approved_blender_mcp_provider() -> McpToolProvider {
+        let definition = APPROVED_MCP_PROVIDERS
+            .iter()
+            .copied()
+            .find(|definition| definition.provider_id == "blender-mcp")
+            .unwrap();
+        McpToolProvider::new(definition)
+    }
+
     fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {
         Arc::new(Mutex::new(HashMap::new()))
     }
@@ -722,6 +756,32 @@ mod tests {
             "desktop-commander"
         );
         assert_eq!(definition.provider.tool_name.as_str(), "read_file");
+        assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+        assert_eq!(
+            definition.permissions,
+            vec![ToolPermission::ExternalProcess]
+        );
+        assert_eq!(definition.annotations.read_only, Some(true));
+    }
+
+    #[test]
+    fn blender_mcp_tools_map_to_provider_backed_definitions() {
+        let provider = approved_blender_mcp_provider();
+        let definition = provider.definition_from_mcp_tool(McpTool {
+            name: "get_scene_info".to_string(),
+            description: "Get scene info".to_string(),
+            input_schema: json!({"type":"object"}),
+            annotations: Some(mcp::McpToolAnnotations {
+                read_only_hint: Some(true),
+            }),
+        });
+
+        assert_eq!(
+            definition.schema_name.as_str(),
+            "blender_mcp__get_scene_info"
+        );
+        assert_eq!(definition.provider.provider_id.as_str(), "blender-mcp");
+        assert_eq!(definition.provider.tool_name.as_str(), "get_scene_info");
         assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
         assert_eq!(
             definition.permissions,
@@ -848,6 +908,25 @@ mod tests {
             provider: ToolProviderRef::new(
                 ToolProviderId::new("cua-driver"),
                 ProviderToolName::new("click"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        };
+
+        assert!(registry.can_execute(&attached_tool));
+    }
+
+    #[test]
+    fn registry_recognizes_blender_mcp_as_approved_provider() {
+        let registry = ToolProviderRegistry::new();
+        let attached_tool = AttachedTool {
+            schema_name: ToolSchemaName::new("blender_mcp__get_scene_info"),
+            description: "Get scene info".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("blender-mcp"),
+                ProviderToolName::new("get_scene_info"),
                 ToolProviderKind::Mcp,
             ),
             permissions: vec![ToolPermission::ExternalProcess],

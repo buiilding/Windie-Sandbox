@@ -638,6 +638,7 @@ export default function InspectorPanel() {
 function providerLabel(providerId) {
   if (providerId === "windie") return "Windie";
   if (providerId === "cua-driver") return "CUA Driver";
+  if (providerId === "blender-mcp") return "Blender MCP";
   return providerId || "Unknown Provider";
 }
 

@@ -100,6 +100,7 @@ pub struct McpEnv {
 /// Static environment value shape for approved MCP provider commands.
 pub enum McpEnvValue {
     WindieDataDir(&'static str),
+    Literal(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -634,6 +635,7 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
             .join(relative_path)
             .to_string_lossy()
             .into_owned()),
+        McpEnvValue::Literal(value) => Ok(value.to_string()),
     }
 }
 
@@ -779,5 +781,12 @@ mod tests {
         let value = resolve_env_value(McpEnvValue::WindieDataDir("mcp/desktop-commander")).unwrap();
 
         assert!(value.ends_with(".windie/mcp/desktop-commander"));
+    }
+
+    #[test]
+    fn literal_env_value_resolves_directly() {
+        let value = resolve_env_value(McpEnvValue::Literal("true")).unwrap();
+
+        assert_eq!(value, "true");
     }
 }
