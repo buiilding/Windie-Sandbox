@@ -43,7 +43,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 8;
+const DATABASE_SCHEMA_VERSION: i32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -182,6 +182,7 @@ impl Store {
                     id TEXT PRIMARY KEY,
                     title TEXT,
                     model TEXT NOT NULL,
+                    reasoning_effort TEXT,
                     active_message_id TEXT,
                     system_prompt TEXT,
                     tool_approval_mode TEXT NOT NULL,
@@ -299,13 +300,14 @@ impl Store {
                     id,
                     title,
                     model,
+                    reasoning_effort,
                     active_message_id,
                     system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
+                VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     id.as_str(),
@@ -333,13 +335,14 @@ impl Store {
                     id,
                     title,
                     model,
+                    reasoning_effort,
                     active_message_id,
                     system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
+                VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     DEFAULT_CONVERSATION_ID,
@@ -452,6 +455,28 @@ impl Store {
             .context("failed to load conversation model")
     }
 
+    /// Loads the conversation-level reasoning effort for future queries.
+    ///
+    /// The store persists only the user/client-selected effort string. Provider
+    /// request shaping, such as adding OpenAI's visible reasoning-summary flag,
+    /// stays in the operation/LLM boundary where the concrete model is known.
+    pub fn conversation_reasoning_effort(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Option<String>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        self.connection
+            .query_row(
+                "SELECT reasoning_effort FROM conversations WHERE id = ?1",
+                params![conversation_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to load conversation reasoning effort")
+            .map(Option::flatten)
+    }
+
     /// Sets the conversation's persisted default model.
     pub fn set_conversation_model(
         &mut self,
@@ -469,7 +494,7 @@ impl Store {
 
         transaction
             .execute(
-                "UPDATE conversations SET model = ?1 WHERE id = ?2",
+                "UPDATE conversations SET model = ?1, reasoning_effort = NULL WHERE id = ?2",
                 params![model, conversation_id.as_str()],
             )
             .context("failed to save conversation model")?;
@@ -478,6 +503,40 @@ impl Store {
         transaction
             .commit()
             .context("failed to commit conversation model update")?;
+
+        Ok(())
+    }
+
+    /// Sets the conversation-level reasoning effort used by future queries.
+    ///
+    /// `None` and blank strings clear the setting. The store intentionally does
+    /// not validate model-specific values because Bifrost model metadata is the
+    /// source of truth for which efforts are available for a selected model.
+    pub fn set_conversation_reasoning_effort(
+        &mut self,
+        conversation_id: &ConversationId,
+        effort: Option<&str>,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        let effort = normalize_conversation_reasoning_effort(effort);
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start conversation reasoning transaction")?;
+
+        transaction
+            .execute(
+                "UPDATE conversations SET reasoning_effort = ?1 WHERE id = ?2",
+                params![effort, conversation_id.as_str()],
+            )
+            .context("failed to save conversation reasoning effort")?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)
+            .context("failed to update conversation timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit conversation reasoning update")?;
 
         Ok(())
     }
@@ -1650,6 +1709,7 @@ impl Store {
             .load_path_to_message(conversation_id, message_id)
             .context("failed to load messages for conversation fork")?;
         let source_model = self.conversation_model(conversation_id)?;
+        let source_reasoning_effort = self.conversation_reasoning_effort(conversation_id)?;
         let source_tool_approval_mode = self.tool_approval_mode(conversation_id)?;
         let forked_conversation_id = ConversationId::new(Uuid::new_v4().to_string());
         let mut message_id_map = HashMap::new();
@@ -1666,17 +1726,19 @@ impl Store {
                     id,
                     title,
                     model,
+                    reasoning_effort,
                     active_message_id,
                     system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
+                VALUES (?1, NULL, ?2, ?3, NULL, NULL, ?4, ?5, ?5)
                 ",
                 params![
                     forked_conversation_id.as_str(),
                     source_model,
+                    source_reasoning_effort,
                     source_tool_approval_mode.as_storage(),
                     now
                 ],
@@ -2777,6 +2839,14 @@ fn normalize_conversation_model(model: &str) -> Result<&str> {
     }
 
     Ok(model)
+}
+
+/// Normalizes an optional conversation reasoning effort before persistence.
+fn normalize_conversation_reasoning_effort(effort: Option<&str>) -> Option<String> {
+    effort
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+        .map(str::to_string)
 }
 
 /// Returns current Unix time in milliseconds for ordering persisted rows.

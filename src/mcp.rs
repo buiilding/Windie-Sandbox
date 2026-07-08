@@ -99,8 +99,16 @@ pub struct McpEnv {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Static environment value shape for approved MCP provider commands.
 pub enum McpEnvValue {
+    /// Build the value from Windie's per-user data directory plus this suffix.
     WindieDataDir(&'static str),
+    /// Use a fixed value owned by Windie's approved provider definition.
     Literal(&'static str),
+    /// Copy a value from Windie's process environment into the provider child.
+    ///
+    /// This keeps provider secret names explicit. For example, Windie can read
+    /// `BRIGHTDATA_API_TOKEN` from the user environment and pass it to a child
+    /// process as that provider's expected `API_TOKEN`.
+    UserEnv(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -636,6 +644,9 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
             .to_string_lossy()
             .into_owned()),
         McpEnvValue::Literal(value) => Ok(value.to_string()),
+        McpEnvValue::UserEnv(name) => {
+            env::var(name).with_context(|| format!("missing required environment variable: {name}"))
+        }
     }
 }
 
@@ -788,5 +799,25 @@ mod tests {
         let value = resolve_env_value(McpEnvValue::Literal("true")).unwrap();
 
         assert_eq!(value, "true");
+    }
+
+    #[test]
+    fn user_env_value_resolves_from_process_environment() {
+        let expected = env::var("HOME").unwrap();
+        let value = resolve_env_value(McpEnvValue::UserEnv("HOME")).unwrap();
+
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn missing_user_env_value_returns_clear_error() {
+        let error =
+            resolve_env_value(McpEnvValue::UserEnv("WINDIE_TEST_MISSING_MCP_ENV")).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing required environment variable: WINDIE_TEST_MISSING_MCP_ENV")
+        );
     }
 }

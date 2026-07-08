@@ -86,7 +86,9 @@ export default function Composer() {
   useEffect(() => {
     if (!activeConv || !selectedReasoningEffort) return;
     if (reasoningOptions.some((option) => option.value === selectedReasoningEffort)) return;
-    setConversationReasoningEffort(activeConv.id, null);
+    setConversationReasoningEffort(activeConv.id, null).catch((error) =>
+      toast.error(error.message)
+    );
   }, [
     activeConv,
     reasoningOptions,
@@ -359,7 +361,9 @@ export default function Composer() {
                             key={option.value}
                             type="button"
                             onClick={() => {
-                              setConversationReasoningEffort(activeConv?.id, option.value);
+                              setConversationReasoningEffort(activeConv?.id, option.value).catch(
+                                (error) => toast.error(error.message)
+                              );
                               setReasoningMenuOpen(false);
                             }}
                             className={`w-full text-left px-2.5 py-1.5 text-xs font-mono hover:bg-surface-hover flex items-center justify-between gap-3 ${

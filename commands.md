@@ -155,16 +155,25 @@ Windie currently includes code-approved MCP providers:
 cua-driver          MCP provider launched with `cua-driver mcp`
 desktop-commander   MCP provider launched with `desktop-commander`
 blender-mcp         MCP provider launched with `uvx blender-mcp`
+brightdata          MCP provider launched with `npx -y @brightdata/mcp`
 ```
 
 Windie does not install provider binaries. The provider command must already be
 available on `PATH`. If it is missing, provider listing or execution returns
 the raw process-start error.
 
+Bright Data also requires a user environment token. Set it before starting the
+Windie API or running a CLI command that lists or executes Bright Data tools:
+
+```bash
+export BRIGHTDATA_API_TOKEN=<your-bright-data-token>
+```
+
 ```text
 windie attach <conversation_id> tool cua-driver click
 windie attach <conversation_id> tool desktop-commander read_file
 windie attach <conversation_id> tool blender-mcp get_scene_info
+windie attach <conversation_id> tool brightdata search_engine
 ```
 
 Attach one provider tool to a conversation. Attached tools are the schemas sent
@@ -176,6 +185,9 @@ attaching CUA's `click` tool stores and sends the schema as
 Attaching Blender MCP's `get_scene_info` tool stores and sends the schema as
 `blender_mcp__get_scene_info`, while Windie still executes provider tool
 `get_scene_info`.
+Attaching Bright Data's `search_engine` tool stores and sends the schema as
+`brightdata__search_engine`, while Windie still executes provider tool
+`search_engine`.
 
 ```text
 windie detach <conversation_id> tool cua_driver__click

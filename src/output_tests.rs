@@ -5,6 +5,7 @@ use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, MessageId, MessageMetadata, MessagePart,
     Role, ToolCall, ToolSchema, ToolSchemaName,
 };
+use crate::llm::ReasoningRequest;
 use crate::perf::{
     BenchmarkMode, DurationMetric, PerformanceComparison, PerformanceComparisonRow,
     PerformanceReport, PerformanceSummary,
@@ -323,6 +324,10 @@ fn serializes_inspection_report_with_runtime_state() {
         &ConversationId::new("conversation-id"),
         Some(&MessageId::new("assistant-id")),
         "anthropic/claude-3-5-haiku",
+        Some(ReasoningRequest {
+            effort: Some("high".to_string()),
+            summary: None,
+        }),
         Some("You are concise.".to_string()),
         ToolApprovalMode::Manual,
         vec![tool_schema],
@@ -391,6 +396,7 @@ fn serializes_inspection_report_with_runtime_state() {
     assert_eq!(value["conversation_id"], "conversation-id");
     assert_eq!(value["active_message_id"], "assistant-id");
     assert_eq!(value["model"], "anthropic/claude-3-5-haiku");
+    assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_approval_mode"], "manual");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");

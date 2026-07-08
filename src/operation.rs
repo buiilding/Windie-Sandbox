@@ -132,6 +132,7 @@ pub struct InspectionReport {
     conversation_id: String,
     active_message_id: Option<String>,
     model: String,
+    reasoning: Option<ReasoningRequest>,
     system_prompt: Option<String>,
     tool_approval_mode: ToolApprovalMode,
     tool_schemas: Vec<ToolSchema>,
@@ -148,6 +149,7 @@ impl InspectionReport {
         conversation_id: &ConversationId,
         active_message_id: Option<&MessageId>,
         model: &str,
+        reasoning: Option<ReasoningRequest>,
         system_prompt: Option<String>,
         tool_approval_mode: ToolApprovalMode,
         tool_schemas: Vec<ToolSchema>,
@@ -160,6 +162,7 @@ impl InspectionReport {
             conversation_id: conversation_id.as_str().to_string(),
             active_message_id: active_message_id.map(|id| id.as_str().to_string()),
             model: model.to_string(),
+            reasoning,
             system_prompt,
             tool_approval_mode,
             tool_schemas,
@@ -259,6 +262,19 @@ pub fn conversation_model(store: &Store, conversation_id: &ConversationId) -> Re
     Ok(ModelName::new(store.conversation_model(conversation_id)?))
 }
 
+/// Loads the conversation-level reasoning request, if one is persisted.
+pub fn conversation_reasoning(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<Option<ReasoningRequest>> {
+    Ok(store
+        .conversation_reasoning_effort(conversation_id)?
+        .map(|effort| ReasoningRequest {
+            effort: Some(effort),
+            summary: None,
+        }))
+}
+
 /// Sets the persisted model for future conversation turns.
 pub fn set_conversation_model(
     store: &mut Store,
@@ -266,6 +282,16 @@ pub fn set_conversation_model(
     model: &ModelName,
 ) -> Result<()> {
     store.set_conversation_model(conversation_id, model.as_str())
+}
+
+/// Sets the conversation-level reasoning effort used by future turns.
+pub fn set_conversation_reasoning_effort(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    effort: Option<&str>,
+) -> Result<Option<ReasoningRequest>> {
+    store.set_conversation_reasoning_effort(conversation_id, effort)?;
+    conversation_reasoning(store, conversation_id)
 }
 
 /// Resolves the model for a runtime operation.
@@ -483,6 +509,7 @@ pub fn inspect_conversation(
     model_override: Option<ModelName>,
 ) -> Result<InspectionReport> {
     let model = resolve_conversation_model(store, conversation_id, model_override)?;
+    let reasoning = conversation_reasoning(store, conversation_id)?;
     let active_message_id = store.active_message_id(conversation_id)?;
     let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
     let messages = store.load_message_tree(conversation_id)?;
@@ -498,6 +525,7 @@ pub fn inspect_conversation(
         conversation_id,
         active_message_id.as_ref(),
         model.as_str(),
+        reasoning,
         context_parts.system_prompt,
         tool_approval_mode,
         tool_schemas,
@@ -849,6 +877,7 @@ where
 {
     require_gateway_running(gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, model_override)?;
+    let reasoning = resolve_reasoning_request(store, conversation_id, reasoning)?;
     let reasoning = reasoning_request_for_model(&model, reasoning);
     let prompt_cache = prompt_cache_request(base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(base_url, model);
@@ -881,7 +910,8 @@ where
 {
     require_gateway_running(runtime.gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
-    let reasoning = reasoning_request_for_model(&model, runtime.reasoning);
+    let reasoning = resolve_reasoning_request(store, conversation_id, runtime.reasoning)?;
+    let reasoning = reasoning_request_for_model(&model, reasoning);
     let prompt_cache =
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
@@ -950,7 +980,8 @@ where
 {
     require_gateway_running(runtime.gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
-    let reasoning = reasoning_request_for_model(&model, runtime.reasoning);
+    let reasoning = resolve_reasoning_request(store, conversation_id, runtime.reasoning)?;
+    let reasoning = reasoning_request_for_model(&model, reasoning);
     let prompt_cache =
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
@@ -965,6 +996,22 @@ where
         RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
     )
     .await
+}
+
+/// Resolves the reasoning request for a runtime operation.
+///
+/// A caller-supplied request is a one-query override. When it is absent,
+/// Windie uses the conversation-level persisted effort so CLI, API, and
+/// inspector clients all flow through the same primitive.
+fn resolve_reasoning_request(
+    store: &Store,
+    conversation_id: &ConversationId,
+    reasoning_override: Option<ReasoningRequest>,
+) -> Result<Option<ReasoningRequest>> {
+    match reasoning_override {
+        Some(reasoning) => Ok(Some(reasoning)),
+        None => conversation_reasoning(store, conversation_id),
+    }
 }
 
 /// Converts a client-selected reasoning setting into the request Windie should
@@ -1240,6 +1287,36 @@ mod tests {
     }
 
     #[test]
+    fn persisted_reasoning_resolves_without_request_override() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+        set_conversation_reasoning_effort(&mut store, &conversation_id, Some("medium")).unwrap();
+
+        let reasoning = resolve_reasoning_request(&store, &conversation_id, None).unwrap();
+
+        assert_eq!(reasoning.unwrap().effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn request_reasoning_overrides_persisted_reasoning() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+        set_conversation_reasoning_effort(&mut store, &conversation_id, Some("medium")).unwrap();
+
+        let reasoning = resolve_reasoning_request(
+            &store,
+            &conversation_id,
+            Some(ReasoningRequest {
+                effort: Some("high".to_string()),
+                summary: None,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(reasoning.unwrap().effort.as_deref(), Some("high"));
+    }
+
+    #[test]
     fn rejects_direct_tool_message_insert() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
@@ -1352,6 +1429,7 @@ mod tests {
             &ModelName::new("anthropic/test"),
         )
         .unwrap();
+        set_conversation_reasoning_effort(&mut store, &conversation_id, Some("high")).unwrap();
         set_system_prompt(&mut store, &conversation_id, "You are concise.").unwrap();
         let user_id = insert_message(
             &mut store,
@@ -1376,6 +1454,7 @@ mod tests {
         assert_eq!(value["conversation_id"], conversation_id.as_str());
         assert_eq!(value["active_message_id"], user_id.as_str());
         assert_eq!(value["model"], "anthropic/test");
+        assert_eq!(value["reasoning"]["effort"], "high");
         assert_eq!(value["system_prompt"], "You are concise.");
         assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
         assert_eq!(value["messages"][0]["id"], user_id.as_str());

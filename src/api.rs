@@ -129,6 +129,10 @@ fn router(state: ApiState) -> Router {
             patch(set_conversation_model),
         )
         .route(
+            "/api/conversations/{conversation_id}/reasoning",
+            patch(set_conversation_reasoning),
+        )
+        .route(
             "/api/conversations/{conversation_id}/tool-approval-mode",
             patch(set_tool_approval_mode),
         )
@@ -783,6 +787,35 @@ async fn set_conversation_model(
             .as_str()
             .to_string(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+/// Request body for setting the conversation default reasoning effort.
+struct ConversationReasoningRequest {
+    effort: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+/// Response for conversation reasoning mutation.
+struct ConversationReasoningResponse {
+    reasoning: Option<ReasoningRequest>,
+}
+
+/// Sets the conversation reasoning effort used by future queries.
+async fn set_conversation_reasoning(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<ConversationReasoningRequest>,
+) -> ApiResult<ConversationReasoningResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let mut store = open_store(&state)?;
+    let reasoning = operation::set_conversation_reasoning_effort(
+        &mut store,
+        &conversation_id,
+        request.effort.as_deref(),
+    )?;
+
+    Ok(Json(ConversationReasoningResponse { reasoning }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1741,6 +1774,59 @@ mod tests {
         assert_eq!(updated["model"], "anthropic/test");
         assert_eq!(inspected["model"], "anthropic/test");
         assert_eq!(listed["conversations"][0]["model"], "anthropic/test");
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn conversation_reasoning_route_persists_reasoning_effort() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let created = response_json(
+            app.clone()
+                .oneshot(authed_request(Method::POST, "/api/conversations", None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let conversation_id = created["conversation_id"].as_str().unwrap();
+
+        let updated = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::PATCH,
+                    &format!("/api/conversations/{conversation_id}/reasoning"),
+                    Some(json!({"effort":"high"})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let inspected = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::GET,
+                    &format!("/api/conversations/{conversation_id}"),
+                    None,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let cleared = response_json(
+            app.oneshot(authed_request(
+                Method::PATCH,
+                &format!("/api/conversations/{conversation_id}/reasoning"),
+                Some(json!({"effort":null})),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+
+        assert_eq!(updated["reasoning"]["effort"], "high");
+        assert_eq!(inspected["reasoning"]["effort"], "high");
+        assert_eq!(cleared["reasoning"], Value::Null);
 
         let _ = fs::remove_file(db_path);
     }

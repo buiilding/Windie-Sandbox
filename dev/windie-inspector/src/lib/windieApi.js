@@ -211,6 +211,13 @@ export async function setConversationModel(conversationId, model) {
   });
 }
 
+export async function setConversationReasoning(conversationId, effort) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/reasoning`, {
+    method: "PATCH",
+    body: JSON.stringify({ effort: effort || null }),
+  });
+}
+
 export function conversationSummaryFromApi(summary) {
   return {
     id: summary.id,
@@ -267,6 +274,7 @@ export function conversationFromInspection(report, fallback) {
     id: report.conversation_id,
     name: fallback?.name || `conversation ${report.conversation_id.slice(0, 8)}`,
     model: report.model,
+    reasoning: report.reasoning || null,
     systemPrompt: report.system_prompt || "",
     toolApprovalMode: report.tool_approval_mode || "manual",
     rootId,

@@ -8,6 +8,7 @@ import {
   fetchModelParameters,
   listModels,
   setConversationModel as setConversationModelApi,
+  setConversationReasoning as setConversationReasoningApi,
   streamApproveTool,
   streamConversationQuery,
   streamDenyTool,
@@ -123,7 +124,6 @@ export function WindieProvider({ children }) {
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
-  const [reasoningByConversationId, setReasoningByConversationId] = useState({});
   // Ephemeral live assistant preview from SSE delta events. Display-only: the
   // persisted message that arrives via `assistant_message_saved` is the source
   // of truth and replaces this.
@@ -385,26 +385,7 @@ export function WindieProvider({ children }) {
     [activeModelId, modelParametersById]
   );
 
-  const activeReasoning = useMemo(
-    () => reasoningByConversationId[activeConv?.id] || null,
-    [activeConv?.id, reasoningByConversationId]
-  );
-
-  const setConversationReasoningEffort = useCallback((convId, effort) => {
-    if (!convId) return;
-    setReasoningByConversationId((prev) => {
-      if (!effort) {
-        const next = { ...prev };
-        delete next[convId];
-        return next;
-      }
-
-      return {
-        ...prev,
-        [convId]: { effort },
-      };
-    });
-  }, []);
+  const activeReasoning = activeConv?.reasoning || null;
 
   const runMutation = useCallback(
     async (operation, options = {}) => {
@@ -421,6 +402,27 @@ export function WindieProvider({ children }) {
       }
     },
     [activeConvId, loadConversation, refreshConversations]
+  );
+
+  const setConversationReasoningEffort = useCallback(
+    (convId, effort) => {
+      if (!convId) return Promise.resolve(null);
+
+      return runMutation(async () => {
+        const result = await setConversationReasoningApi(convId, effort || null);
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id === convId ? { ...conv, reasoning: result.reasoning || null } : conv
+          )
+        );
+        return result;
+      }, {
+        convId,
+        reload: false,
+        refreshList: false,
+      });
+    },
+    [runMutation]
   );
 
   const createConversation = useCallback(async () => {
@@ -468,11 +470,6 @@ export function WindieProvider({ children }) {
     (convId, model) =>
       runMutation(async () => {
         const result = await setConversationModelApi(convId, model);
-        setReasoningByConversationId((prev) => {
-          const next = { ...prev };
-          delete next[convId];
-          return next;
-        });
         loadModelParameters(model);
         return result;
       }, {
@@ -696,9 +693,9 @@ export function WindieProvider({ children }) {
   const runStreamingQuery = useCallback(
     async (convId) =>
       consumeRuntimeStream(convId, (onEvent) =>
-        streamConversationQuery(convId, null, reasoningByConversationId[convId] || null, onEvent)
+        streamConversationQuery(convId, null, null, onEvent)
       ),
-    [consumeRuntimeStream, reasoningByConversationId]
+    [consumeRuntimeStream]
   );
 
   const sendMessage = useCallback(

@@ -195,9 +195,13 @@ fn creates_conversation_with_model() {
     let conversation_id = store.create_conversation("anthropic/test").unwrap();
 
     let model = store.conversation_model(&conversation_id).unwrap();
+    let reasoning_effort = store
+        .conversation_reasoning_effort(&conversation_id)
+        .unwrap();
     let conversations = store.list_conversations().unwrap();
 
     assert_eq!(model, "anthropic/test");
+    assert_eq!(reasoning_effort, None);
     assert_eq!(conversations[0].model, "anthropic/test");
 }
 
@@ -213,6 +217,60 @@ fn set_conversation_model_persists() {
     let model = store.conversation_model(&conversation_id).unwrap();
 
     assert_eq!(model, "anthropic/test");
+}
+
+#[test]
+fn set_conversation_reasoning_effort_persists() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+
+    store
+        .set_conversation_reasoning_effort(&conversation_id, Some(" high "))
+        .unwrap();
+
+    let reasoning_effort = store
+        .conversation_reasoning_effort(&conversation_id)
+        .unwrap();
+
+    assert_eq!(reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn clear_conversation_reasoning_effort_persists() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+
+    store
+        .set_conversation_reasoning_effort(&conversation_id, Some("high"))
+        .unwrap();
+    store
+        .set_conversation_reasoning_effort(&conversation_id, None)
+        .unwrap();
+
+    let reasoning_effort = store
+        .conversation_reasoning_effort(&conversation_id)
+        .unwrap();
+
+    assert_eq!(reasoning_effort, None);
+}
+
+#[test]
+fn setting_conversation_model_clears_reasoning_effort() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+
+    store
+        .set_conversation_reasoning_effort(&conversation_id, Some("high"))
+        .unwrap();
+    store
+        .set_conversation_model(&conversation_id, "anthropic/test")
+        .unwrap();
+
+    let reasoning_effort = store
+        .conversation_reasoning_effort(&conversation_id)
+        .unwrap();
+
+    assert_eq!(reasoning_effort, None);
 }
 
 #[test]
@@ -2083,6 +2141,9 @@ fn forks_conversation_at_message() {
     store
         .set_conversation_model(&conversation_id, "anthropic/test")
         .unwrap();
+    store
+        .set_conversation_reasoning_effort(&conversation_id, Some("high"))
+        .unwrap();
     let metadata = MessageMetadata {
         tool_calls: vec![ToolCall::function(
             "call_456",
@@ -2123,9 +2184,13 @@ fn forks_conversation_at_message() {
     let forked_messages = store.load_messages(&forked_conversation_id).unwrap();
     let forked_active_message_id = store.active_message_id(&forked_conversation_id).unwrap();
     let forked_model = store.conversation_model(&forked_conversation_id).unwrap();
+    let forked_reasoning_effort = store
+        .conversation_reasoning_effort(&forked_conversation_id)
+        .unwrap();
 
     assert_ne!(forked_conversation_id, conversation_id);
     assert_eq!(forked_model, "anthropic/test");
+    assert_eq!(forked_reasoning_effort.as_deref(), Some("high"));
     assert_eq!(source_messages.len(), 3);
     assert_eq!(forked_messages.len(), 2);
     assert_eq!(forked_messages[0].role, Role::User);
