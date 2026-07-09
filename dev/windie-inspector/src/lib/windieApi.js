@@ -17,19 +17,29 @@ function apiToken() {
   );
 }
 
+function parseApiBody(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text };
+  }
+}
+
 export async function apiRequest(path, options = {}) {
   const token = apiToken();
+  const { headers: optionHeaders = {}, ...fetchOptions } = options;
   const response = await fetch(`${API_BASE}${path}`, {
+    ...fetchOptions,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { "X-Windie-Api-Token": token } : {}),
-      ...(options.headers || {}),
+      ...optionHeaders,
     },
-    ...options,
   });
 
   const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
+  const body = parseApiBody(text);
 
   if (!response.ok) {
     if (response.status === 401) {
@@ -56,12 +66,7 @@ export async function fetchImageAsset(conversationId, assetId) {
 
   if (!response.ok) {
     const text = await response.text();
-    let body = null;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = null;
-    }
+    const body = parseApiBody(text);
     throw new Error(body?.error || `Windie image request failed: ${response.status}`);
   }
 
@@ -135,12 +140,7 @@ async function streamRuntime(path, body, fallbackError, onEvent) {
 
   if (!response.ok) {
     const text = await response.text();
-    let body = null;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = null;
-    }
+    const body = parseApiBody(text);
     throw new Error(body?.error || `${fallbackError}: ${response.status}`);
   }
 

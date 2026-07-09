@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -45,6 +45,12 @@ use crate::tool::{
 use crate::tool_provider::ToolProviderRegistry;
 
 const API_TOKEN_HEADER: &str = "x-windie-api-token";
+/// Maximum JSON request body accepted by the localhost API.
+///
+/// The default Axum body limit is too small for clipboard or local image data
+/// sent as base64 message parts. This keeps image input practical while staying
+/// bounded for a local developer harness.
+const API_JSON_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Runs the local developer API server until the process is stopped.
 pub async fn serve(
@@ -189,6 +195,7 @@ fn router(state: ApiState) -> Router {
             state.clone(),
             require_api_token,
         ))
+        .layer(DefaultBodyLimit::max(API_JSON_BODY_LIMIT_BYTES))
         .layer(cors)
         .with_state(state)
 }
