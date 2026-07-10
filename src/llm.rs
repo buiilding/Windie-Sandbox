@@ -604,47 +604,73 @@ pub async fn list_models(base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
 /// Loads Bifrost's model-parameter metadata for one model.
 ///
 /// The endpoint is Bifrost-specific management metadata, not an OpenAI
-/// compatibility route. Bifrost expects the provider-local model name, so
-/// `openai/gpt-5.5` becomes `gpt-5.5` before the request is sent.
-pub async fn model_parameters(base_url: BaseUrl, model: &ModelName) -> Result<ModelParameterInfo> {
-    let endpoint = model_parameters_endpoint(&base_url, model)?;
-    let response = Client::new()
-        .get(endpoint)
-        .send()
-        .await
-        .context("failed to send model parameter request")?;
+/// compatibility route. Its datasheet mixes routed, provider-local, and bare
+/// model identifiers, so Windie tries each representation in that order.
+pub async fn model_parameters(
+    base_url: BaseUrl,
+    model: &ModelName,
+) -> Result<Option<ModelParameterInfo>> {
+    let http = Client::new();
+    for lookup_name in model_parameter_lookup_names(model.as_str()) {
+        let endpoint = model_parameters_endpoint(&base_url, lookup_name)?;
+        let response = http
+            .get(endpoint)
+            .send()
+            .await
+            .context("failed to send model parameter request")?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "model parameter request failed with {status}: {body}"
-        ));
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            continue;
+        }
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "model parameter request failed with {status}: {body}"
+            ));
+        }
+
+        let raw = response
+            .json::<serde_json::Value>()
+            .await
+            .context("failed to parse model parameter response")?;
+        let mut parameters = serde_json::from_value::<ModelParameterInfo>(raw.clone())
+            .context("failed to decode model parameter response")?;
+        parameters.raw = raw;
+
+        return Ok(Some(parameters));
     }
 
-    let raw = response
-        .json::<serde_json::Value>()
-        .await
-        .context("failed to parse model parameter response")?;
-    let mut parameters = serde_json::from_value::<ModelParameterInfo>(raw.clone())
-        .context("failed to decode model parameter response")?;
-    parameters.raw = raw;
-
-    Ok(parameters)
+    Ok(None)
 }
 
 /// Builds the Bifrost management endpoint for model parameters.
-fn model_parameters_endpoint(base_url: &BaseUrl, model: &ModelName) -> Result<Url> {
+fn model_parameters_endpoint(base_url: &BaseUrl, lookup_name: &str) -> Result<Url> {
     let api_root = base_url
         .as_str()
         .strip_suffix("/v1")
         .unwrap_or_else(|| base_url.as_str());
     let mut url = Url::parse(&format!("{api_root}/api/models/parameters"))
         .context("failed to build model parameter endpoint")?;
-    url.query_pairs_mut()
-        .append_pair("model", provider_local_model_name(model.as_str()));
+    url.query_pairs_mut().append_pair("model", lookup_name);
 
     Ok(url)
+}
+
+/// Returns distinct parameter-datasheet identities from most to least specific.
+fn model_parameter_lookup_names(model: &str) -> Vec<&str> {
+    let mut names = vec![model];
+    if let Some((_, provider_local)) = model.split_once('/')
+        && !names.contains(&provider_local)
+    {
+        names.push(provider_local);
+    }
+    if let Some((_, bare_model)) = model.rsplit_once('/')
+        && !names.contains(&bare_model)
+    {
+        names.push(bare_model);
+    }
+    names
 }
 
 /// Returns the provider-local model name expected by Bifrost management APIs.
@@ -1298,6 +1324,12 @@ mod tests {
         ImageAssetId, MessageId, MessageMetadata, Role, ToolCallFunction, ToolCallId, ToolCallKind,
         ToolSchema, ToolSchemaName,
     };
+    use axum::extract::Query;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use std::collections::HashMap;
+    use tokio::net::TcpListener;
 
     #[test]
     fn base_url_removes_trailing_slash() {
@@ -1384,14 +1416,93 @@ mod tests {
     #[test]
     fn builds_model_parameters_endpoint_from_base_url() {
         let base_url = BaseUrl::new("http://localhost:8080/v1/");
-        let model = ModelName::new("openai/gpt-5.5");
 
         assert_eq!(
-            model_parameters_endpoint(&base_url, &model)
+            model_parameters_endpoint(&base_url, "openai/gpt-5.5")
                 .unwrap()
                 .as_str(),
-            "http://localhost:8080/api/models/parameters?model=gpt-5.5"
+            "http://localhost:8080/api/models/parameters?model=openai%2Fgpt-5.5"
         );
+    }
+
+    #[test]
+    fn builds_model_parameter_lookup_names_from_most_specific_to_least_specific() {
+        assert_eq!(
+            model_parameter_lookup_names("openrouter/moonshotai/kimi-k2.5"),
+            vec![
+                "openrouter/moonshotai/kimi-k2.5",
+                "moonshotai/kimi-k2.5",
+                "kimi-k2.5"
+            ]
+        );
+        assert_eq!(
+            model_parameter_lookup_names("anthropic/claude-fable-5"),
+            vec!["anthropic/claude-fable-5", "claude-fable-5"]
+        );
+        assert_eq!(
+            model_parameter_lookup_names("local-model"),
+            vec!["local-model"]
+        );
+    }
+
+    #[tokio::test]
+    async fn model_parameter_lookup_uses_first_successful_identity() {
+        let base_url = model_parameter_test_server().await;
+
+        let parameters =
+            model_parameters(base_url, &ModelName::new("openrouter/moonshotai/kimi-k2.5"))
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(parameters.supports_reasoning, Some(true));
+        assert_eq!(parameters.raw["matched_model"], "kimi-k2.5");
+    }
+
+    #[tokio::test]
+    async fn model_parameter_lookup_returns_none_when_all_identities_are_missing() {
+        let base_url = model_parameter_test_server().await;
+
+        let parameters = model_parameters(
+            base_url,
+            &ModelName::new("openrouter/example/missing-model"),
+        )
+        .await
+        .unwrap();
+
+        assert!(parameters.is_none());
+    }
+
+    async fn model_parameter_test_server() -> BaseUrl {
+        async fn parameters(
+            Query(query): Query<HashMap<String, String>>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            let model = query.get("model").map(String::as_str).unwrap_or_default();
+            if model == "kimi-k2.5" {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "matched_model": model,
+                        "supports_reasoning": true,
+                        "model_parameters": []
+                    })),
+                );
+            }
+
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error":"missing"})),
+            )
+        }
+
+        let app = Router::new().route("/api/models/parameters", get(parameters));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        BaseUrl::new(format!("http://{address}/v1"))
     }
 
     #[test]

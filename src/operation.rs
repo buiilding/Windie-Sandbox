@@ -357,7 +357,15 @@ pub async fn model_runtime_parameters(
 ) -> Result<ModelRuntimeParameters> {
     require_gateway_running(gateway_url).await?;
 
-    let parameters = llm::model_parameters(base_url, model).await?;
+    let Some(parameters) = llm::model_parameters(base_url, model).await? else {
+        return Ok(ModelRuntimeParameters {
+            model: model.as_str().to_string(),
+            supports_reasoning: false,
+            supports_prompt_caching: false,
+            reasoning: None,
+            raw: serde_json::Value::Null,
+        });
+    };
     let reasoning = reasoning_parameter(&parameters.model_parameters);
 
     Ok(ModelRuntimeParameters {
@@ -405,7 +413,10 @@ async fn prompt_cache_request(
     model: &ModelName,
     conversation_id: &ConversationId,
 ) -> Option<PromptCacheRequest> {
-    let parameters = llm::model_parameters(base_url, model).await.ok()?;
+    let parameters = llm::model_parameters(base_url, model)
+        .await
+        .ok()
+        .flatten()?;
     if !parameters.supports_prompt_caching.unwrap_or(false) {
         return None;
     }

@@ -124,8 +124,11 @@ an external side effect.
 selected model, including reasoning effort options and prompt-cache support
 when Bifrost reports them.
 Windie fetches the source metadata from Bifrost's
-`/api/models/parameters?model=<model>` endpoint and does not keep its own
-provider/model reasoning or caching table.
+`/api/models/parameters?model=<model>` endpoint. It tries the routed,
+provider-local, and bare model identifiers in order and uses the first record
+Bifrost recognizes. When no record exists, Windie reports no configurable
+parameters. Windie does not keep its own provider/model reasoning or caching
+table.
 
 `query` and `query-stream` accept an optional request-scoped reasoning override:
 
