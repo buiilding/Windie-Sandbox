@@ -1,5 +1,5 @@
 import { useWindie } from "@/context/WindieContext";
-import { Sun, Moon, GitBranch, Circle, Play, Square } from "lucide-react";
+import { Sun, Moon, GitBranch } from "lucide-react";
 
 function formatTokenCount(value) {
   if (value == null) return "--";
@@ -25,11 +25,7 @@ export default function TopBar() {
     treeOverlayOpen,
     setTreeOverlayOpen,
     activeConv,
-    streaming,
-    gatewayRunning,
     tokenMeter,
-    startGateway,
-    stopGateway,
   } =
     useWindie();
 
@@ -68,31 +64,6 @@ export default function TopBar() {
           {formatTokenCount(tokenMeter?.used)} / {formatTokenCount(tokenMeter?.max)}
         </span>
       </div>
-
-      <div className="h-4 w-px bg-border" />
-
-      <div className="flex items-center gap-1 text-muted-foreground">
-        <Circle
-          className={`size-2 ${gatewayRunning ? "fill-[hsl(var(--accent))] text-[hsl(var(--accent))]" : "fill-muted-foreground/40 text-muted-foreground/40"}`}
-        />
-        <span data-testid="topbar-runtime-status" className="uppercase tracking-widest">
-          {streaming ? "querying" : gatewayRunning ? "gateway" : "offline"}
-        </span>
-      </div>
-
-      <button
-        data-testid="topbar-gateway-toggle"
-        onClick={() => (gatewayRunning ? stopGateway() : startGateway())}
-        className="flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors"
-        aria-label={gatewayRunning ? "stop gateway" : "start gateway"}
-        title={gatewayRunning ? "stop gateway" : "start gateway"}
-      >
-        {gatewayRunning ? (
-          <Square className="size-3" strokeWidth={1.75} />
-        ) : (
-          <Play className="size-3.5" strokeWidth={1.75} />
-        )}
-      </button>
 
       <button
         data-testid="topbar-toggle-tree"
