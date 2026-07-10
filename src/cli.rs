@@ -112,6 +112,8 @@ pub enum Command {
         conversation_id: ConversationId,
         tool_call_id: ToolCallId,
     },
+    /// Inspect installation paths and external integration prerequisites.
+    Doctor,
     Show(ConversationId),
     Status,
     SetSystemPrompt {
@@ -171,6 +173,7 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
         [arg] if arg == "api" => Command::Api,
+        [arg] if arg == "doctor" => Command::Doctor,
         [arg] if arg == "tools" => Command::Tools { provider_id: None },
         [arg] if arg == "models" => Command::Models,
         [command, provider_id] if command == "tools" => Command::Tools {
@@ -585,6 +588,13 @@ mod tests {
         let command = command_from_args(["windie".to_string(), "api".to_string()]);
 
         assert!(matches!(command, Command::Api));
+    }
+
+    #[test]
+    fn reads_doctor_command() {
+        let command = command_from_args(["windie".to_string(), "doctor".to_string()]);
+
+        assert!(matches!(command, Command::Doctor));
     }
 
     #[test]

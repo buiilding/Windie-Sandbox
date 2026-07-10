@@ -8,6 +8,7 @@ mod api;
 mod cli;
 mod context;
 mod conversation;
+mod doctor;
 mod error;
 mod gateway;
 mod image_input;
@@ -15,8 +16,10 @@ mod llm;
 mod mcp;
 mod operation;
 mod output;
+mod paths;
 mod perf;
 mod policy;
+mod run;
 mod runtime;
 mod store;
 mod tool;
@@ -65,6 +68,7 @@ async fn main() -> Result<()> {
             provider_id,
             tool_name,
         } => attach_tool(conversation_id, provider_id, tool_name),
+        Command::Doctor => doctor(),
         Command::Help => print_help(),
         Command::Invalid => invalid_usage(),
         Command::Version => print_version(),
@@ -176,6 +180,12 @@ fn print_version() -> Result<()> {
     let output = TerminalOutput;
     output.version();
 
+    Ok(())
+}
+
+/// Prints installation paths and optional integration readiness.
+fn doctor() -> Result<()> {
+    TerminalOutput.doctor(&doctor::inspect());
     Ok(())
 }
 

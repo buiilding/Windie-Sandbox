@@ -1,4 +1,5 @@
 /target/
+/dist/
 .windie/perf/
 Clipboard.md
 Clipboard2.md

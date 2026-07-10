@@ -5,7 +5,6 @@
 //! queries.
 
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,6 +20,7 @@ use crate::conversation::{
     MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName, UnsavedMessagePart,
 };
 use crate::error;
+use crate::paths;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef,
@@ -43,7 +43,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 9;
+const DATABASE_SCHEMA_VERSION: i32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -62,6 +62,24 @@ pub struct Compaction {
     pub through_message_id: MessageId,
     pub content: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Persisted backend-owned runtime run.
+pub struct RuntimeRunRecord {
+    pub id: String,
+    pub conversation_id: ConversationId,
+    pub status: String,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One ordered serialized event emitted by a runtime run.
+pub struct RuntimeRunEventRecord {
+    pub sequence: u64,
+    pub payload: String,
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +110,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens the default user database at `~/.windie/windie.db`.
+    /// Opens the default user database in Windie's data directory.
     pub fn open() -> Result<Self> {
         Self::open_at(default_database_path()?)
     }
@@ -251,6 +269,27 @@ impl Store {
                     FOREIGN KEY (conversation_id) REFERENCES conversations(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS runtime_runs (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS runtime_run_events (
+                    run_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+
+                    PRIMARY KEY (run_id, sequence),
+                    FOREIGN KEY (run_id) REFERENCES runtime_runs(id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
                 ON messages(conversation_id, created_at);
 
@@ -271,6 +310,12 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
                 ON tool_schemas(conversation_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS runtime_runs_conversation_updated_idx
+                ON runtime_runs(conversation_id, updated_at);
+
+                CREATE INDEX IF NOT EXISTS runtime_run_events_run_sequence_idx
+                ON runtime_run_events(run_id, sequence);
                 ",
             )
             .context("failed to migrate database")?;
@@ -285,6 +330,215 @@ impl Store {
         self.connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .context("failed to read database schema version")
+    }
+
+    /// Creates one backend-owned runtime run for an existing conversation.
+    pub fn create_runtime_run(&self, conversation_id: &ConversationId) -> Result<RuntimeRunRecord> {
+        if !self.conversation_exists(conversation_id)? {
+            return Err(error::not_found(format!(
+                "conversation does not exist: {conversation_id}"
+            )));
+        }
+
+        let record = RuntimeRunRecord {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.clone(),
+            status: "running".to_string(),
+            error: None,
+            created_at: now_millis()?,
+            updated_at: now_millis()?,
+        };
+        self.connection
+            .execute(
+                "
+                INSERT INTO runtime_runs (
+                    id, conversation_id, status, error, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)
+                ",
+                params![
+                    record.id,
+                    record.conversation_id.as_str(),
+                    record.status,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )
+            .context("failed to create runtime run")?;
+
+        Ok(record)
+    }
+
+    /// Loads one runtime run by ID.
+    pub fn runtime_run(&self, run_id: &str) -> Result<RuntimeRunRecord> {
+        self.connection
+            .query_row(
+                "
+                SELECT id, conversation_id, status, error, created_at, updated_at
+                FROM runtime_runs
+                WHERE id = ?1
+                ",
+                params![run_id],
+                |row| {
+                    Ok(RuntimeRunRecord {
+                        id: row.get(0)?,
+                        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+                        status: row.get(2)?,
+                        error: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to load runtime run")?
+            .ok_or_else(|| error::not_found(format!("runtime run does not exist: {run_id}")))
+    }
+
+    /// Returns the newest running run for a conversation, if one exists.
+    pub fn active_runtime_run(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Option<RuntimeRunRecord>> {
+        self.connection
+            .query_row(
+                "
+                SELECT id, conversation_id, status, error, created_at, updated_at
+                FROM runtime_runs
+                WHERE conversation_id = ?1 AND status = 'running'
+                ORDER BY created_at DESC
+                LIMIT 1
+                ",
+                params![conversation_id.as_str()],
+                |row| {
+                    Ok(RuntimeRunRecord {
+                        id: row.get(0)?,
+                        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+                        status: row.get(2)?,
+                        error: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to load active runtime run")
+    }
+
+    /// Appends one event and returns its run-local sequence number.
+    pub fn append_runtime_run_event(&mut self, run_id: &str, payload: &str) -> Result<u64> {
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start runtime event transaction")?;
+        let next = transaction
+            .query_row(
+                "
+                SELECT COALESCE(MAX(sequence), 0) + 1
+                FROM runtime_run_events
+                WHERE run_id = ?1
+                ",
+                params![run_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed to determine runtime event sequence")?;
+        let now = now_millis()?;
+        transaction
+            .execute(
+                "
+                INSERT INTO runtime_run_events (run_id, sequence, payload_json, created_at)
+                VALUES (?1, ?2, ?3, ?4)
+                ",
+                params![run_id, next, payload, now],
+            )
+            .context("failed to append runtime event")?;
+        transaction
+            .execute(
+                "UPDATE runtime_runs SET updated_at = ?2 WHERE id = ?1",
+                params![run_id, now],
+            )
+            .context("failed to update runtime run timestamp")?;
+        transaction
+            .commit()
+            .context("failed to commit runtime event")?;
+
+        u64::try_from(next).context("runtime event sequence was negative")
+    }
+
+    /// Loads ordered events strictly after one sequence number.
+    pub fn runtime_run_events_after(
+        &self,
+        run_id: &str,
+        after: u64,
+    ) -> Result<Vec<RuntimeRunEventRecord>> {
+        self.runtime_run(run_id)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT sequence, payload_json
+                FROM runtime_run_events
+                WHERE run_id = ?1 AND sequence > ?2
+                ORDER BY sequence
+                ",
+            )
+            .context("failed to prepare runtime event load")?;
+        let rows = statement
+            .query_map(params![run_id, after], |row| {
+                let sequence = row.get::<_, i64>(0)?;
+                Ok(RuntimeRunEventRecord {
+                    sequence: u64::try_from(sequence).unwrap_or(0),
+                    payload: row.get(1)?,
+                })
+            })
+            .context("failed to load runtime events")?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to decode runtime events")
+    }
+
+    /// Updates terminal or interrupted runtime state.
+    pub fn set_runtime_run_status(
+        &self,
+        run_id: &str,
+        status: &str,
+        error_message: Option<&str>,
+    ) -> Result<()> {
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE runtime_runs
+                SET status = ?2, error = ?3, updated_at = ?4
+                WHERE id = ?1
+                ",
+                params![run_id, status, error_message, now_millis()?],
+            )
+            .context("failed to update runtime run status")?;
+        if changed == 0 {
+            return Err(error::not_found(format!(
+                "runtime run does not exist: {run_id}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Marks work left running by a previous process as interrupted.
+    pub fn interrupt_running_runtime_runs(&self) -> Result<()> {
+        self.connection
+            .execute(
+                "
+                UPDATE runtime_runs
+                SET status = 'interrupted',
+                    error = 'Windie stopped before this run completed',
+                    updated_at = ?1
+                WHERE status = 'running'
+                ",
+                params![now_millis()?],
+            )
+            .context("failed to mark interrupted runtime runs")?;
+
+        Ok(())
     }
 
     /// Creates an empty conversation with a generated ID and persisted model.
@@ -2324,9 +2578,7 @@ impl Store {
 
 /// Builds the default user database path.
 fn default_database_path() -> Result<PathBuf> {
-    let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-
-    Ok(PathBuf::from(home).join(".windie").join("windie.db"))
+    Ok(paths::database_path())
 }
 
 /// Converts one SQLite message row into the runtime message type.

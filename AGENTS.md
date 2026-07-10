@@ -127,6 +127,8 @@ Allowed in the current scope:
   annotations.
 - Unified tool provider layer for code-approved MCP providers and future
   plugins.
+- Backend-owned runtime runs with persisted ordered events, explicit
+  cancellation, and reconnectable UI subscriptions.
 - Code-approved MCP provider tools through the same attached-tool and approval
   boundary.
 - Conversation-level manual or full-access approval mode for attached executable
@@ -141,9 +143,11 @@ Allowed in the current scope:
 - OpenAI-compatible Responses image request serialization.
 - Bifrost gateway health check.
 - Explicit Bifrost gateway start and stop commands.
-- Public Bifrost gateway startup through `npx @maximhq/bifrost` or Docker when
-  a local Bifrost checkout is not present.
+- Version-pinned public Bifrost gateway startup through npm or Docker.
+- Explicit `WINDIE_BIFROST_BIN` override for official local development builds.
 - Explicit `.env` provider-key environment for Bifrost gateway startup.
+- Versioned installed binaries and a bundled stable operator UI that remain
+  separate from editable source and preview UI builds.
 - Clean module boundaries.
 
 Not in scope yet:
@@ -197,6 +201,9 @@ src/image_input.rs   local image file loading
 src/llm.rs           Bifrost/OpenAI-compatible HTTP client
 src/mcp.rs           MCP stdio JSON-RPC client and session pool
 src/perf.rs          performance baseline measurement
+src/paths.rs         installed and development filesystem locations
+src/run.rs           backend run lifecycle and reconnectable event journal
+src/doctor.rs        installation and integration diagnostics
 src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
 src/tool.rs          tool provider, attachment, approval, and execution result types
@@ -225,6 +232,10 @@ Keep boundaries strict:
 - Only `error.rs` should own typed Windie error categories used across client
   protocol boundaries.
 - Only `perf.rs` should own benchmark timing logic.
+- Only `paths.rs` should decide Windie data, config, and bundled UI locations.
+- Only `run.rs` should own backend run lifecycle, event sequencing, replay,
+  interruption, and explicit cancellation.
+- Only `doctor.rs` should inspect installation and external launcher readiness.
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `tool_provider.rs` should own provider catalog and execution dispatch
   across code-approved MCP providers and future plugins.

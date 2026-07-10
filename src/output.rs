@@ -14,6 +14,7 @@ use serde::Serialize;
 use crate::conversation::{
     ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
 };
+use crate::doctor::DoctorReport;
 use crate::llm::{ModelInfo, ModelName};
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
@@ -71,10 +72,36 @@ impl TerminalOutput {
         println!("windie {}", env!("CARGO_PKG_VERSION"));
     }
 
+    /// Prints stable paths and install guidance without mutating the machine.
+    pub fn doctor(&self, report: &DoctorReport) {
+        println!("windie doctor");
+        println!("executable: {}", report.executable.display());
+        println!("data: {}", report.data_dir.display());
+        println!("config: {}", report.config_dir.display());
+        println!("provider env: {}", report.provider_env.display());
+        println!("integrations");
+        for integration in &report.integrations {
+            println!(
+                "  {}: {}",
+                integration.name,
+                if integration.available {
+                    "ready"
+                } else {
+                    "missing prerequisite"
+                }
+            );
+            println!("    runtime: {}", integration.runtime);
+            if !integration.available {
+                println!("    setup: {}", integration.install);
+            }
+        }
+    }
+
     /// Prints the local API address and generated access token at startup.
     pub fn api_started(&self, address: &SocketAddr, api_token: &str) {
         println!("windie api listening on http://{address}");
         println!("windie api token: {api_token}");
+        println!("windie operator UI: http://{address}/?windie_token={api_token}");
     }
 
     /// Prints all fields measured by a performance baseline.
@@ -587,6 +614,7 @@ fn help_lines() -> Vec<String> {
         "Usage:",
         "  windie",
         "  windie api",
+        "  windie doctor",
         "  windie tools",
         "  windie models",
         "  windie new",
@@ -629,6 +657,7 @@ fn help_lines() -> Vec<String> {
         "Notes:",
         "  windie exits successfully without runtime action.",
         "  windie api starts the localhost developer API server.",
+        "  windie doctor inspects paths and optional integration prerequisites.",
         "  windie tools lists provider tools available to attach to conversations.",
         "  windie models lists models from the currently running Bifrost gateway.",
         "  windie bench <conversation_id> measures active path, tree, tool schema load, and context build.",

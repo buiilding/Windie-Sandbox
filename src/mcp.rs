@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -19,6 +18,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::paths;
 
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -639,7 +640,7 @@ fn configure_process(process: &mut Command, command: McpCommand) -> Result<()> {
 /// Resolves an MCP environment value at process-start time.
 fn resolve_env_value(value: McpEnvValue) -> Result<String> {
     match value {
-        McpEnvValue::WindieDataDir(relative_path) => Ok(windie_data_dir()
+        McpEnvValue::WindieDataDir(relative_path) => Ok(paths::data_dir()
             .join(relative_path)
             .to_string_lossy()
             .into_owned()),
@@ -648,14 +649,6 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
             env::var(name).with_context(|| format!("missing required environment variable: {name}"))
         }
     }
-}
-
-/// Returns Windie's per-user data directory.
-fn windie_data_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".windie")
 }
 
 /// Reads provider stdout on a dedicated thread so protocol waits can time out.
@@ -791,7 +784,7 @@ mod tests {
     fn windie_data_dir_env_value_resolves_under_user_home() {
         let value = resolve_env_value(McpEnvValue::WindieDataDir("mcp/desktop-commander")).unwrap();
 
-        assert!(value.ends_with(".windie/mcp/desktop-commander"));
+        assert!(value.ends_with(".local/share/windie/mcp/desktop-commander"));
     }
 
     #[test]

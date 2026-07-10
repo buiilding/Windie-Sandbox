@@ -9,7 +9,9 @@ import {
 } from "react";
 import { toast } from "sonner";
 import {
+  activeConversationRun,
   apiRequest,
+  cancelRun,
   countConversationInputTokens,
   conversationFromInspection,
   conversationSummaryFromApi,
@@ -17,9 +19,10 @@ import {
   listModels,
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
-  streamApproveTool,
-  streamConversationQuery,
-  streamDenyTool,
+  startApproveRun,
+  startConversationRun,
+  startDenyRun,
+  streamRunEvents,
   toolCatalogFromApi,
 } from "@/lib/windieApi";
 
@@ -137,6 +140,8 @@ export function WindieProvider({ children }) {
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
   const activeStreamAbortRef = useRef(null);
+  const activeRunIdRef = useRef(null);
+  const activeRunSequenceRef = useRef(0);
   // Ephemeral live assistant preview from SSE delta events. Display-only: the
   // persisted message that arrives via `assistant_message_saved` is the source
   // of truth and replaces this.
@@ -647,6 +652,12 @@ export function WindieProvider({ children }) {
     async (convId, stream) => {
       try {
         await stream(async ({ data }) => {
+          if (typeof data?.sequence === "number") {
+            activeRunSequenceRef.current = Math.max(
+              activeRunSequenceRef.current,
+              data.sequence
+            );
+          }
           if (data?.type === "assistant_delta") {
             // Ephemeral live model text. Accumulate into the pending bubble;
             // the persisted message replaces it once saved.
@@ -721,19 +732,30 @@ export function WindieProvider({ children }) {
     [loadConversation]
   );
 
-  const runAbortableRuntimeStream = useCallback(
-    async (convId, stream) => {
+  const followRuntimeRun = useCallback(
+    async (convId, run, options = {}) => {
       activeStreamAbortRef.current?.abort();
       const controller = new AbortController();
       activeStreamAbortRef.current = controller;
+      activeRunIdRef.current = run.id;
+      activeRunSequenceRef.current = options.after || 0;
 
       try {
         await consumeRuntimeStream(convId, (onEvent) =>
-          stream(onEvent, controller.signal)
+          streamRunEvents(
+            run.id,
+            options.after || 0,
+            onEvent,
+            { signal: controller.signal }
+          )
         );
       } finally {
         if (activeStreamAbortRef.current === controller) {
           activeStreamAbortRef.current = null;
+        }
+        if (activeRunIdRef.current === run.id) {
+          activeRunIdRef.current = null;
+          activeRunSequenceRef.current = 0;
         }
       }
     },
@@ -741,15 +763,51 @@ export function WindieProvider({ children }) {
   );
 
   const runStreamingQuery = useCallback(
-    async (convId) =>
-      runAbortableRuntimeStream(convId, (onEvent, signal) =>
-        streamConversationQuery(convId, null, null, onEvent, { signal })
-      ),
-    [runAbortableRuntimeStream]
+    async (convId) => {
+      const run = await startConversationRun(convId, null, null);
+      return followRuntimeRun(convId, run);
+    },
+    [followRuntimeRun]
   );
 
-  const stopStreaming = useCallback(() => {
+  useEffect(() => {
+    if (!activeConvId) return undefined;
+    let cancelled = false;
+
+    activeConversationRun(activeConvId)
+      .then(async (run) => {
+        if (cancelled || !run || activeRunIdRef.current === run.id) return;
+        setStreaming(true);
+        setPendingAssistant(null);
+        try {
+          await followRuntimeRun(activeConvId, run);
+          if (!cancelled) setApiError(null);
+        } catch (error) {
+          if (!cancelled && !isAbortError(error)) {
+            setApiError(error.message);
+            toast.error(error.message);
+          }
+        } finally {
+          if (!cancelled) setStreaming(false);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setApiError(error.message);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConvId, followRuntimeRun]);
+
+  const stopStreaming = useCallback(async () => {
+    const runId = activeRunIdRef.current;
+    if (runId) {
+      await cancelRun(runId).catch((error) => setApiError(error.message));
+    }
     activeStreamAbortRef.current?.abort();
+    activeRunIdRef.current = null;
+    activeRunSequenceRef.current = 0;
     setPendingAssistant(null);
     setStreaming(false);
   }, []);
@@ -834,25 +892,25 @@ export function WindieProvider({ children }) {
   const approveToolCall = useCallback(
     (convId, toolCallId) =>
       runMutation(
-        () =>
-          runAbortableRuntimeStream(convId, (onEvent, signal) =>
-            streamApproveTool(convId, toolCallId, onEvent, { signal })
-          ),
+        async () => {
+          const run = await startApproveRun(convId, toolCallId);
+          return followRuntimeRun(convId, run);
+        },
         { reload: false }
       ),
-    [runAbortableRuntimeStream, runMutation]
+    [followRuntimeRun, runMutation]
   );
 
   const denyToolCall = useCallback(
     (convId, toolCallId) =>
       runMutation(
-        () =>
-          runAbortableRuntimeStream(convId, (onEvent, signal) =>
-            streamDenyTool(convId, toolCallId, onEvent, { signal })
-          ),
+        async () => {
+          const run = await startDenyRun(convId, toolCallId);
+          return followRuntimeRun(convId, run);
+        },
         { reload: false }
       ),
-    [runAbortableRuntimeStream, runMutation]
+    [followRuntimeRun, runMutation]
   );
 
   const value = {

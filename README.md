@@ -11,7 +11,22 @@ through the same explicit boundaries.
 
 Windie currently provides a Rust CLI, a localhost developer API, SQLite-backed
 conversation storage, model-facing context construction, and a small developer
-frontend under `dev/` for exercising the runtime primitives.
+frontend under `dev/` for exercising the runtime primitives. Release packages
+also include a compiled operator UI served by the localhost API.
+
+## Install
+
+Install the latest published binary and bundled operator UI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/buiilding/Windie-Sandbox/main/install.sh | bash
+windie doctor
+windie api
+```
+
+`windie api` prints the authenticated operator UI URL. A normal installation
+contains Windie only. Bifrost and approved MCP servers use their public,
+version-pinned launch interfaces; their source repositories are not bundled.
 
 ## Why This Exists
 
@@ -55,6 +70,9 @@ Important runtime files:
   path.
 - `src/store.rs` owns SQLite persistence.
 - `src/runtime.rs` coordinates one-shot query flows.
+- `src/run.rs` owns durable backend runs and reconnectable event delivery.
+- `src/paths.rs` owns installed, development, and override filesystem paths.
+- `src/doctor.rs` inspects optional integration prerequisites.
 - `src/llm.rs` owns the OpenAI-compatible Bifrost HTTP request path.
 - `src/policy.rs` owns tool execution policy decisions.
 - `src/shell.rs` executes Windie's built-in `run_shell` tool.
@@ -81,22 +99,21 @@ scripts/check.sh
 release binary, and checks `windie --version` and `windie --help` against the
 local release binary. It should not call Bifrost or a model provider.
 
-Start the localhost developer API:
+Start an isolated localhost development API:
 
 ```bash
-target/release/windie api
+scripts/dev-api.sh
 ```
 
 The API listens on `http://127.0.0.1:8787` and prints a per-process API token.
 Local developer clients must send that token in the `X-Windie-Api-Token`
-header.
+header. Development state defaults to `target/windie-dev-data`, not the
+installed runtime database.
 
 Run the developer inspector:
 
 ```bash
-cd dev/windie-inspector
-npm install --legacy-peer-deps
-npm run start
+scripts/dev-ui.sh
 ```
 
 Then open it with the API token:
@@ -104,6 +121,22 @@ Then open it with the API token:
 ```text
 http://localhost:3000?windie_token=<printed token>
 ```
+
+The installed operator UI and editable preview are separate surfaces. The
+operator UI is bundled beside the installed binary and remains unchanged while
+the preview hot reloads. Runtime loops are backend-owned runs, so either UI can
+disconnect and replay events without cancelling model or tool work.
+
+Promote a tested checkout into a versioned local release:
+
+```bash
+scripts/install-local.sh
+```
+
+The script builds and checks Windie, compiles the operator UI, installs both
+under `~/.local/lib/windie/releases/<version>-<revision>/`, and atomically
+switches `~/.local/bin/windie`. A process already running continues to use its
+old executable and UI files until explicitly restarted.
 
 ## Provider Path
 
@@ -124,7 +157,34 @@ windie gateway stop
 ```
 
 Provider secrets should stay outside source control in the explicit provider
-key environment used for Bifrost startup.
+key environment used for Bifrost startup. The default file is
+`~/.config/windie/providers.env`; `WINDIE_ENV_FILE` can select another file.
+
+Windie starts unmodified Bifrost `1.6.3` through its public npm package, or the
+matching Docker image when npm is unavailable. Environment variables make
+configured `env.KEY` references available, but Windie does not create provider
+rows. Configure providers through Bifrost at `http://localhost:8080`.
+
+`windie models` returns the configured models reported by public Bifrost. It
+does not apply a private chat-completion allowlist; the selected provider owns
+capability validation for Windie's Responses request.
+
+Developers testing an official local Bifrost build can set
+`WINDIE_BIFROST_BIN=/absolute/path/to/bifrost-http`. Windie never discovers a
+sibling checkout implicitly.
+
+## External MCPs
+
+Windie keeps a code-approved provider list but does not package MCP source:
+
+- CUA runs through an explicitly installed `cua-driver mcp`.
+- Desktop Commander runs through pinned npm package `0.2.44`.
+- Blender MCP runs through pinned Python package `1.6.0`; its Blender addon is
+  installed separately.
+
+Run `windie doctor` for prerequisite status and official setup commands. Tools
+remain unavailable to a model until attached to a conversation through
+Windie's permission boundary.
 
 ## Contribution Bar
 

@@ -215,7 +215,7 @@ const c1 = (() => {
       parts: [
         {
           type: "text",
-          text: '# /etc/windie/runtime.toml\n[runtime]\nmodel_default = "windie-local-32b"\nmax_active_path = 128\nfork_policy   = "copy-on-branch"\n\n[storage]\nbackend = "sqlite"\npath    = "~/.windie/tree.db"\n\n[tools]\nenabled = ["fs.read_file","fs.list_dir","vec.search"]',
+          text: '# /etc/windie/runtime.toml\n[runtime]\nmodel_default = "windie-local-32b"\nmax_active_path = 128\nfork_policy   = "copy-on-branch"\n\n[storage]\nbackend = "sqlite"\npath    = "~/.local/share/windie/windie.db"\n\n[tools]\nenabled = ["fs.read_file","fs.list_dir","vec.search"]',
         },
       ],
       metadata: { toolCallId: "call_01", toolName: "fs.read_file" },
@@ -332,7 +332,7 @@ const c2 = (() => {
           {
             id: "call_11",
             name: "fs.list_dir",
-            arguments: { path: "~/.windie/logs", depth: 1 },
+            arguments: { path: "~/.local/share/windie/logs", depth: 1 },
             status: "ok",
           },
         ],

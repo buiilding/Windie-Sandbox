@@ -178,6 +178,85 @@ async function streamRuntime(path, body, fallbackError, onEvent, options = {}) {
   }
 }
 
+export async function startConversationRun(conversationId, model, reasoning) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/runs`, {
+    method: "POST",
+    body: JSON.stringify({ model: model || null, reasoning: reasoning || null }),
+  });
+}
+
+export async function startApproveRun(conversationId, toolCallId) {
+  return apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/approve-run`,
+    { method: "POST" }
+  );
+}
+
+export async function startDenyRun(conversationId, toolCallId) {
+  return apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/deny-run`,
+    { method: "POST" }
+  );
+}
+
+export async function activeConversationRun(conversationId) {
+  const body = await apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/active-run`
+  );
+  return body?.run || null;
+}
+
+export async function cancelRun(runId) {
+  return apiRequest(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+export async function streamRunEvents(runId, after, onEvent, options = {}) {
+  const token = apiToken();
+  const response = await fetch(
+    `${API_BASE}/api/runs/${encodeURIComponent(runId)}/events?after=${encodeURIComponent(after || 0)}`,
+    {
+      headers: {
+        ...(token ? { "X-Windie-Api-Token": token } : {}),
+      },
+      signal: options.signal,
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    const body = parseApiBody(text);
+    throw new Error(body?.error || `Windie run stream failed: ${response.status}`);
+  }
+  if (!response.body) return;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() || "";
+
+    for (const block of blocks) {
+      const parsed = parseSseBlock(block.trim());
+      if (!parsed) continue;
+      await onEvent(parsed);
+      if (parsed.data?.type === "query_error") {
+        throw new Error(parsed.data.error || "Windie run failed");
+      }
+    }
+
+    if (done) break;
+  }
+
+  const final = parseSseBlock(buffer.trim());
+  if (final) await onEvent(final);
+}
+
 export async function streamConversationQuery(
   conversationId,
   model,

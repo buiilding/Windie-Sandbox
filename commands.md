@@ -65,6 +65,9 @@ test conversation trees, active path selection, message mutation, system
 prompts, attached tools, gateway lifecycle, and one-shot queries without shelling
 out for each operation.
 
+Release packages include the compiled inspector as the stable operator UI.
+The editable port-3000 preview is a separate development surface.
+
 Initial routes:
 
 ```text
@@ -100,7 +103,22 @@ POST   /api/conversations/{conversation_id}/fork
 POST   /api/conversations/{conversation_id}/input-tokens
 POST   /api/conversations/{conversation_id}/query
 POST   /api/conversations/{conversation_id}/query-stream
+POST   /api/conversations/{conversation_id}/runs
+GET    /api/conversations/{conversation_id}/active-run
+POST   /api/conversations/{conversation_id}/approvals/{tool_call_id}/approve-run
+POST   /api/conversations/{conversation_id}/approvals/{tool_call_id}/deny-run
+GET    /api/runs/{run_id}
+GET    /api/runs/{run_id}/events?after=<sequence>
+POST   /api/runs/{run_id}/cancel
 ```
+
+The `runs` endpoints are the primary browser workflow. Starting a run returns
+its ID immediately. Windie owns the task independently from the HTTP response,
+persists ordered events, and lets clients reconnect with the last sequence they
+rendered. Browser disconnects and hot reload do not cancel work. Cancellation
+is explicit. If the Windie process exits, unfinished runs are marked
+`interrupted`; they are not replayed because a tool may already have produced
+an external side effect.
 
 `GET /api/model-parameters` returns normalized read-only metadata for the
 selected model, including reasoning effort options and prompt-cache support
@@ -153,14 +171,14 @@ Windie currently includes code-approved MCP providers:
 
 ```text
 cua-driver          MCP provider launched with `cua-driver mcp`
-desktop-commander   MCP provider launched with `desktop-commander`
-blender-mcp         MCP provider launched with `uvx blender-mcp`
+desktop-commander   MCP provider launched with pinned public npm package 0.2.44
+blender-mcp         MCP provider launched with pinned public Python package 1.6.0
 brightdata          MCP provider launched with `npx -y @brightdata/mcp`
 ```
 
-Windie does not install provider binaries. The provider command must already be
-available on `PATH`. If it is missing, provider listing or execution returns
-the raw process-start error.
+Windie does not bundle provider source. CUA must be installed explicitly.
+Desktop Commander needs `npx`; Blender MCP needs `uvx` plus the Blender addon.
+Run `windie doctor` for exact commands and prerequisite status.
 
 Bright Data also requires a user environment token. Set it before starting the
 Windie API or running a CLI command that lists or executes Bright Data tools:
@@ -514,8 +532,12 @@ endpoint.
 Requires the local Bifrost gateway to already be running. This command is
 read-only: it does not start, stop, restart, or reconfigure Bifrost.
 
-After changing Windie's `.env`, restart the gateway explicitly before listing
-models again:
+The response contains configured models from public Bifrost. Windie does not
+apply a private chat-completion filter. Provider capability validation occurs
+when Windie sends its Responses request.
+
+After changing provider secret environment values, restart the gateway
+explicitly before listing models again:
 
 ```text
 windie gateway stop
@@ -545,19 +567,24 @@ a duplicate process.
 Launcher order:
 
 ```text
-1. locally built sibling/workspace Bifrost binary
-2. public npx package: npx -y @maximhq/bifrost
-3. public Docker image: maximhq/bifrost:latest
+1. explicit WINDIE_BIFROST_BIN development override
+2. public npx package: npx -y @maximhq/bifrost@1.6.3
+3. public Docker image: maximhq/bifrost:1.6.3
 ```
 
 This means another computer can run Windie without cloning Bifrost, as long as
 Node/npm or Docker is installed.
 
-When Windie starts Bifrost, provider keys come from a Windie `.env` file.
+When Windie starts Bifrost, provider secrets come from a Windie environment
+file. These variables resolve provider rows configured as `env.KEY`; Windie
+does not create or modify provider rows. Configure providers through the
+official Bifrost UI at `http://localhost:8080`.
+
 Lookup order:
 
 ```text
-~/.windie/.env
+WINDIE_ENV_FILE
+~/.config/windie/providers.env
 ./.env in the Windie project directory
 ```
 
@@ -565,11 +592,10 @@ Use `.env.example` as the non-secret template. Do not commit real provider keys.
 For `npx`, Windie also passes `PATH` and `HOME` so Node/npm can launch. These
 are process-launch variables, not provider keys.
 
-Detached Bifrost process logs are written to one of:
+Detached Bifrost process logs are written to:
 
 ```text
-../bifrost/windie-gateway.log
-~/.windie/bifrost/windie-gateway.log
+~/.local/share/windie/bifrost/windie-gateway.log
 ```
 
 Use this file to inspect gateway startup failures.

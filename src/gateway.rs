@@ -3,9 +3,8 @@
 //! This module checks whether the local Bifrost HTTP gateway is healthy and
 //! starts or stops a gateway when explicitly requested.
 //!
-//! Startup prefers a locally built workspace Bifrost binary for development.
-//! If that binary is not present, Windie falls back to public Bifrost launchers
-//! so a machine can run Windie without cloning the Bifrost repository.
+//! Production startup uses version-pinned public Bifrost launchers. Developers
+//! can opt into an official local Bifrost build with `WINDIE_BIFROST_BIN`.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -19,6 +18,8 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use tokio::time::sleep;
 
+use crate::paths;
+
 // Current workspace gateway mode. Future production builds should prefer a
 // minimal/headless Bifrost gateway when available.
 const DEV_BIFROST_DIR: &str = "bifrost";
@@ -28,8 +29,9 @@ const DEV_BIFROST_LOG_FILE: &str = "windie-gateway.log";
 const PUBLIC_BIFROST_DIR: &str = "bifrost";
 const PUBLIC_BIFROST_DATA_DIR: &str = "data";
 const PUBLIC_BIFROST_LOG_FILE: &str = "windie-gateway.log";
-const PUBLIC_BIFROST_NPX_PACKAGE: &str = "@maximhq/bifrost";
-const PUBLIC_BIFROST_DOCKER_IMAGE: &str = "maximhq/bifrost:latest";
+const PUBLIC_BIFROST_PACKAGE_NAME: &str = "@maximhq/bifrost";
+const PUBLIC_BIFROST_NPX_PACKAGE: &str = "@maximhq/bifrost@1.6.3";
+const PUBLIC_BIFROST_DOCKER_IMAGE: &str = "maximhq/bifrost:1.6.3";
 const PUBLIC_BIFROST_DOCKER_NAME: &str = "windie-bifrost";
 const BIFROST_PORT: &str = "8080";
 const ENV_FILE_NAME: &str = ".env";
@@ -276,7 +278,7 @@ fn start_dev_process(paths: &BifrostPaths, environment: Vec<(String, String)>) -
     Ok(())
 }
 
-/// Starts public Bifrost through `npx @maximhq/bifrost`.
+/// Starts public Bifrost through the version-pinned npm package.
 fn start_npx_process(paths: &PublicBifrostPaths, environment: Vec<(String, String)>) -> Result<()> {
     fs::create_dir_all(&paths.app_dir).with_context(|| {
         format!(
@@ -398,12 +400,16 @@ fn stop_docker_container() -> Result<bool> {
 
 /// Finds the first Bifrost launcher available on this machine.
 fn find_bifrost_launcher() -> Result<BifrostLauncher> {
+    if let Some(paths) = explicit_dev_bifrost_paths()? {
+        return Ok(BifrostLauncher::Dev(paths));
+    }
+
     let public_paths = public_bifrost_paths()?;
     let command_paths = env::var_os("PATH")
         .map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
         .unwrap_or_default();
 
-    select_bifrost_launcher(dev_bifrost_search_roots(), command_paths, public_paths).ok_or_else(
+    select_bifrost_launcher(Vec::new(), command_paths, public_paths).ok_or_else(
         || {
             anyhow!(
                 "Bifrost launcher was not found. Install Node/npm for `npx {PUBLIC_BIFROST_NPX_PACKAGE}` or Docker for `{PUBLIC_BIFROST_DOCKER_IMAGE}`."
@@ -434,13 +440,36 @@ fn select_bifrost_launcher(
     None
 }
 
-/// Builds the public Bifrost runtime paths under `~/.windie`.
-fn public_bifrost_paths() -> Result<PublicBifrostPaths> {
-    let Some(home) = env::var_os("HOME") else {
-        return Err(anyhow!("HOME is not set"));
+/// Builds paths for an explicitly selected official local Bifrost binary.
+fn explicit_dev_bifrost_paths() -> Result<Option<BifrostPaths>> {
+    let Some(binary) = env::var_os("WINDIE_BIFROST_BIN") else {
+        return Ok(None);
     };
+    let binary = PathBuf::from(binary);
+    if !binary.is_file() {
+        return Err(anyhow!(
+            "WINDIE_BIFROST_BIN does not point to a file: {}",
+            binary.display()
+        ));
+    }
 
-    let dir = PathBuf::from(home).join(".windie").join(PUBLIC_BIFROST_DIR);
+    let dir = binary
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let runtime_dir = paths::data_dir().join(PUBLIC_BIFROST_DIR);
+
+    Ok(Some(BifrostPaths {
+        dir,
+        binary,
+        app_dir: runtime_dir.join(PUBLIC_BIFROST_DATA_DIR),
+        log_file: runtime_dir.join(PUBLIC_BIFROST_LOG_FILE),
+    }))
+}
+
+/// Builds the public Bifrost runtime paths under Windie's data directory.
+fn public_bifrost_paths() -> Result<PublicBifrostPaths> {
+    let dir = paths::data_dir().join(PUBLIC_BIFROST_DIR);
     let app_dir = dir.join(PUBLIC_BIFROST_DATA_DIR);
     let log_file = dir.join(PUBLIC_BIFROST_LOG_FILE);
     fs::create_dir_all(&app_dir)
@@ -544,7 +573,7 @@ fn process_command(process_id: u32) -> Result<String> {
 /// Identifies whether a process command line belongs to Bifrost.
 fn is_bifrost_command(command: &str) -> bool {
     command.contains("bifrost-http")
-        || command.contains(PUBLIC_BIFROST_NPX_PACKAGE)
+        || command.contains(PUBLIC_BIFROST_PACKAGE_NAME)
         || command.contains(PUBLIC_BIFROST_DOCKER_IMAGE)
         || command.contains(PUBLIC_BIFROST_DOCKER_NAME)
 }
@@ -567,24 +596,6 @@ fn find_dev_bifrost_paths_in(roots: impl IntoIterator<Item = PathBuf>) -> Option
     }
 
     None
-}
-
-/// Builds the list of roots used to discover the sibling/local Bifrost checkout.
-fn dev_bifrost_search_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-
-    if let Ok(current_dir) = env::current_dir() {
-        roots.push(current_dir);
-    }
-
-    if let Ok(exe_path) = env::current_exe()
-        && let Some(exe_dir) = exe_path.parent()
-    {
-        roots.push(exe_dir.to_path_buf());
-    }
-
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    roots
 }
 
 /// Returns both supported Bifrost locations for a root: inside the root and next
@@ -625,15 +636,17 @@ fn find_env_file_path() -> Option<PathBuf> {
 
 /// Returns supported `.env` locations in lookup order.
 fn env_file_candidates() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    let mut candidates = Vec::new();
 
-    if let Some(home) = env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join(".windie").join(ENV_FILE_NAME));
+    if let Some(path) = env::var_os("WINDIE_ENV_FILE") {
+        candidates.push(PathBuf::from(path));
     }
 
-    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(ENV_FILE_NAME));
+    candidates.push(paths::config_dir().join("providers.env"));
 
-    paths
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(ENV_FILE_NAME));
+
+    candidates
 }
 
 /// Parses simple KEY=VALUE lines from a `.env` file.
@@ -858,10 +871,10 @@ mod tests {
             "/Users/peterbui/Documents/WindieOS/bifrost/tmp/bifrost-http -port 8080"
         ));
         assert!(is_bifrost_command(
-            "npx -y @maximhq/bifrost -app-dir /Users/peterbui/.windie/bifrost/data"
+            "npx -y @maximhq/bifrost@1.6.3 -app-dir /Users/peterbui/.local/share/windie/bifrost/data"
         ));
         assert!(is_bifrost_command(
-            "docker run --name windie-bifrost -p 8080:8080 maximhq/bifrost:latest"
+            "docker run --name windie-bifrost -p 8080:8080 maximhq/bifrost:1.6.3"
         ));
         assert!(!is_bifrost_command("python3 -m http.server 8080"));
     }

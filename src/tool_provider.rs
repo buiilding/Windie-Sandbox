@@ -7,7 +7,6 @@
 //! same registry shape.
 
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -19,6 +18,7 @@ use serde_json::{Value, json};
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
 use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
+use crate::paths;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolExecutionResult,
     ToolPermission, ToolProviderId, ToolProviderKind, ToolProviderRef,
@@ -272,8 +272,8 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         schema_prefix: "desktop_commander",
         display_name: "Desktop Commander",
         command: McpCommand {
-            program: "desktop-commander",
-            args: &[],
+            program: "npx",
+            args: &["-y", "@wonderwhy-er/desktop-commander@0.2.44"],
             env: &[McpEnv {
                 key: "HOME",
                 value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
@@ -288,7 +288,7 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         display_name: "Blender MCP",
         command: McpCommand {
             program: "uvx",
-            args: &["blender-mcp"],
+            args: &["--python", "3.11", "blender-mcp==1.6.0"],
             env: &[
                 McpEnv {
                     key: "DISABLE_TELEMETRY",
@@ -553,15 +553,7 @@ fn write_desktop_commander_config() -> Result<()> {
 
 /// Returns the HOME directory Windie assigns to Desktop Commander.
 fn desktop_commander_home() -> PathBuf {
-    windie_data_dir().join(DESKTOP_COMMANDER_HOME_RELATIVE)
-}
-
-/// Returns Windie's per-user data directory.
-fn windie_data_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".windie")
+    paths::data_dir().join(DESKTOP_COMMANDER_HOME_RELATIVE)
 }
 
 /// Keeps Desktop Commander's default high-risk shell command blocklist.
