@@ -28,8 +28,9 @@ use crate::llm::{
 use crate::output::RuntimeOutput;
 use crate::runtime::{
     PendingToolExecution, RuntimeEventSink, RuntimeModelRequest, approve_tool_call,
-    deny_pending_tool_call, deny_tool_call, execute_pending_tool_call, load_pending_tool_call,
-    pending_tool_approvals, pending_tool_approvals_with_registry, prepare_pending_tool_execution,
+    approve_tool_call_with_registry, deny_pending_tool_call, deny_tool_call,
+    execute_pending_tool_call, load_pending_tool_call, pending_tool_approvals,
+    pending_tool_approvals_with_registry, prepare_pending_tool_execution,
     query_conversation_resolving_automatic_tools,
     query_conversation_resolving_automatic_tools_with_events, store_pending_tool_result,
 };
@@ -889,7 +890,7 @@ where
     require_gateway_running(gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, model_override)?;
     let reasoning = resolve_reasoning_request(store, conversation_id, reasoning)?;
-    let reasoning = reasoning_request_for_model(&model, reasoning);
+    let reasoning = llm::reasoning_request_for_model(&model, reasoning);
     let prompt_cache = prompt_cache_request(base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(base_url, model);
     let registry = ToolProviderRegistry::new();
@@ -922,7 +923,7 @@ where
     require_gateway_running(runtime.gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
     let reasoning = resolve_reasoning_request(store, conversation_id, runtime.reasoning)?;
-    let reasoning = reasoning_request_for_model(&model, reasoning);
+    let reasoning = llm::reasoning_request_for_model(&model, reasoning);
     let prompt_cache =
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
@@ -992,7 +993,7 @@ where
     require_gateway_running(runtime.gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
     let reasoning = resolve_reasoning_request(store, conversation_id, runtime.reasoning)?;
-    let reasoning = reasoning_request_for_model(&model, reasoning);
+    let reasoning = llm::reasoning_request_for_model(&model, reasoning);
     let prompt_cache =
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
@@ -1025,29 +1026,6 @@ fn resolve_reasoning_request(
     }
 }
 
-/// Converts a client-selected reasoning setting into the request Windie should
-/// send for one concrete model.
-///
-/// The UI only chooses a reasoning effort from Bifrost metadata. OpenAI
-/// Responses models need an additional `summary` request before they stream
-/// visible reasoning-summary deltas, so Windie adds that provider request
-/// detail here instead of teaching every client about OpenAI-specific fields.
-fn reasoning_request_for_model(
-    model: &ModelName,
-    reasoning: Option<ReasoningRequest>,
-) -> Option<ReasoningRequest> {
-    let mut reasoning = reasoning.filter(|reasoning| !reasoning.is_empty())?;
-
-    if model.as_str().starts_with("openai/")
-        && reasoning.effort.is_some()
-        && reasoning.summary.is_none()
-    {
-        reasoning.summary = Some("auto".to_string());
-    }
-
-    Some(reasoning)
-}
-
 /// Executes one approved pending tool call and persists its result.
 pub async fn approve_tool(
     store: &mut Store,
@@ -1055,6 +1033,16 @@ pub async fn approve_tool(
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
     approve_tool_call(store, conversation_id, tool_call_id).await
+}
+
+/// Executes one approved pending tool call with a caller-owned provider registry.
+pub async fn approve_tool_with_registry(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
+    approve_tool_call_with_registry(store, conversation_id, tool_call_id, registry).await
 }
 
 /// Persists a rejected result for one pending tool call.
@@ -1237,64 +1225,6 @@ mod tests {
 
         assert_eq!(prompt_cache.key, "windie:conversation-id");
         assert_eq!(prompt_cache.retention.as_deref(), Some("24h"));
-    }
-
-    #[test]
-    fn openai_reasoning_effort_requests_visible_summary() {
-        let reasoning = reasoning_request_for_model(
-            &ModelName::new("openai/gpt-5.5"),
-            Some(ReasoningRequest {
-                effort: Some("high".to_string()),
-                summary: None,
-            }),
-        )
-        .unwrap();
-
-        assert_eq!(reasoning.effort.as_deref(), Some("high"));
-        assert_eq!(reasoning.summary.as_deref(), Some("auto"));
-    }
-
-    #[test]
-    fn openai_reasoning_preserves_explicit_summary() {
-        let reasoning = reasoning_request_for_model(
-            &ModelName::new("openai/gpt-5.5"),
-            Some(ReasoningRequest {
-                effort: Some("high".to_string()),
-                summary: Some("detailed".to_string()),
-            }),
-        )
-        .unwrap();
-
-        assert_eq!(reasoning.effort.as_deref(), Some("high"));
-        assert_eq!(reasoning.summary.as_deref(), Some("detailed"));
-    }
-
-    #[test]
-    fn anthropic_reasoning_does_not_request_openai_summary() {
-        let reasoning = reasoning_request_for_model(
-            &ModelName::new("anthropic/claude-fable-5"),
-            Some(ReasoningRequest {
-                effort: Some("high".to_string()),
-                summary: None,
-            }),
-        )
-        .unwrap();
-
-        assert_eq!(reasoning.effort.as_deref(), Some("high"));
-        assert_eq!(reasoning.summary, None);
-    }
-
-    #[test]
-    fn empty_reasoning_request_stays_absent() {
-        let reasoning = reasoning_request_for_model(
-            &ModelName::new("openai/gpt-5.5"),
-            Some(ReasoningRequest {
-                effort: None,
-                summary: None,
-            }),
-        );
-
-        assert_eq!(reasoning, None);
     }
 
     #[test]

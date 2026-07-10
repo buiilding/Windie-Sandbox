@@ -16,7 +16,7 @@ use tokio::task::AbortHandle;
 
 use crate::conversation::ConversationId;
 use crate::error;
-use crate::store::{RuntimeRunEventRecord, RuntimeRunRecord, Store};
+use crate::store::{RuntimeRunEventRecord, RuntimeRunRecord, RuntimeRunStatus, Store};
 
 const RUN_EVENT_CHANNEL_CAPACITY: usize = 512;
 
@@ -90,7 +90,7 @@ pub struct RunEventEnvelope {
 pub struct RunSnapshot {
     pub id: String,
     pub conversation_id: String,
-    pub status: String,
+    pub status: RuntimeRunStatus,
     pub error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -205,7 +205,7 @@ impl RunManager {
     pub fn complete(&self, run_id: &str, message_id: Option<String>) -> Result<()> {
         self.publish(run_id, RunEvent::QueryDone { message_id })?;
         self.open_store()?
-            .set_runtime_run_status(run_id, "completed", None)?;
+            .set_runtime_run_status(run_id, RuntimeRunStatus::Completed, None)?;
         self.remove_active(run_id)
     }
 
@@ -218,15 +218,18 @@ impl RunManager {
                 causes,
             },
         )?;
-        self.open_store()?
-            .set_runtime_run_status(run_id, "failed", Some(&error))?;
+        self.open_store()?.set_runtime_run_status(
+            run_id,
+            RuntimeRunStatus::Failed,
+            Some(&error),
+        )?;
         self.remove_active(run_id)
     }
 
     /// Explicitly aborts active work and records cancellation.
     pub fn cancel(&self, run_id: &str) -> Result<RunSnapshot> {
         let snapshot = self.snapshot(run_id)?;
-        if snapshot.status != "running" {
+        if snapshot.status != RuntimeRunStatus::Running {
             return Err(error::invalid_request(format!(
                 "runtime run is not running: {run_id} ({})",
                 snapshot.status
@@ -243,7 +246,7 @@ impl RunManager {
         }
         self.publish(run_id, RunEvent::RunCancelled)?;
         self.open_store()?
-            .set_runtime_run_status(run_id, "cancelled", None)?;
+            .set_runtime_run_status(run_id, RuntimeRunStatus::Cancelled, None)?;
         self.remove_active(run_id)?;
         self.snapshot(run_id)
     }
@@ -358,7 +361,10 @@ mod tests {
         assert!(matches!(replay[0].event, RunEvent::AssistantDelta { .. }));
         assert_eq!(replay[1].sequence, 2);
         assert!(matches!(replay[1].event, RunEvent::QueryDone { .. }));
-        assert_eq!(manager.snapshot(&run.id).unwrap().status, "completed");
+        assert_eq!(
+            manager.snapshot(&run.id).unwrap().status,
+            RuntimeRunStatus::Completed
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -373,7 +379,10 @@ mod tests {
         let run = first.begin(&conversation_id).unwrap();
 
         let restarted = RunManager::new(Some(path.clone())).unwrap();
-        assert_eq!(restarted.snapshot(&run.id).unwrap().status, "interrupted");
+        assert_eq!(
+            restarted.snapshot(&run.id).unwrap().status,
+            RuntimeRunStatus::Interrupted
+        );
 
         let _ = fs::remove_file(path);
     }

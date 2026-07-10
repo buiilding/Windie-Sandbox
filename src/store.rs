@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -69,10 +70,72 @@ pub struct Compaction {
 pub struct RuntimeRunRecord {
     pub id: String,
     pub conversation_id: ConversationId,
-    pub status: String,
+    pub status: RuntimeRunStatus,
     pub error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Persisted lifecycle state for a backend-owned runtime run.
+pub enum RuntimeRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl RuntimeRunStatus {
+    /// Returns the SQLite representation for this status.
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    /// Decodes a persisted runtime run status.
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "running" => Some(Self::Running),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            "interrupted" => Some(Self::Interrupted),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeRunStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_storage())
+    }
+}
+
+fn read_runtime_run_row(row: &Row<'_>) -> rusqlite::Result<RuntimeRunRecord> {
+    let status = row.get::<_, String>(2)?;
+    let status = RuntimeRunStatus::from_storage(&status).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            Type::Text,
+            format!("unknown runtime run status: {status}").into(),
+        )
+    })?;
+
+    Ok(RuntimeRunRecord {
+        id: row.get(0)?,
+        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+        status,
+        error: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,7 +406,7 @@ impl Store {
         let record = RuntimeRunRecord {
             id: Uuid::new_v4().to_string(),
             conversation_id: conversation_id.clone(),
-            status: "running".to_string(),
+            status: RuntimeRunStatus::Running,
             error: None,
             created_at: now_millis()?,
             updated_at: now_millis()?,
@@ -358,7 +421,7 @@ impl Store {
                 params![
                     record.id,
                     record.conversation_id.as_str(),
-                    record.status,
+                    record.status.as_storage(),
                     record.created_at,
                     record.updated_at,
                 ],
@@ -378,16 +441,7 @@ impl Store {
                 WHERE id = ?1
                 ",
                 params![run_id],
-                |row| {
-                    Ok(RuntimeRunRecord {
-                        id: row.get(0)?,
-                        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
-                        status: row.get(2)?,
-                        error: row.get(3)?,
-                        created_at: row.get(4)?,
-                        updated_at: row.get(5)?,
-                    })
-                },
+                read_runtime_run_row,
             )
             .optional()
             .context("failed to load runtime run")?
@@ -404,21 +458,15 @@ impl Store {
                 "
                 SELECT id, conversation_id, status, error, created_at, updated_at
                 FROM runtime_runs
-                WHERE conversation_id = ?1 AND status = 'running'
+                WHERE conversation_id = ?1 AND status = ?2
                 ORDER BY created_at DESC
                 LIMIT 1
                 ",
-                params![conversation_id.as_str()],
-                |row| {
-                    Ok(RuntimeRunRecord {
-                        id: row.get(0)?,
-                        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
-                        status: row.get(2)?,
-                        error: row.get(3)?,
-                        created_at: row.get(4)?,
-                        updated_at: row.get(5)?,
-                    })
-                },
+                params![
+                    conversation_id.as_str(),
+                    RuntimeRunStatus::Running.as_storage()
+                ],
+                read_runtime_run_row,
             )
             .optional()
             .context("failed to load active runtime run")
@@ -500,7 +548,7 @@ impl Store {
     pub fn set_runtime_run_status(
         &self,
         run_id: &str,
-        status: &str,
+        status: RuntimeRunStatus,
         error_message: Option<&str>,
     ) -> Result<()> {
         let changed = self
@@ -511,7 +559,7 @@ impl Store {
                 SET status = ?2, error = ?3, updated_at = ?4
                 WHERE id = ?1
                 ",
-                params![run_id, status, error_message, now_millis()?],
+                params![run_id, status.as_storage(), error_message, now_millis()?],
             )
             .context("failed to update runtime run status")?;
         if changed == 0 {
@@ -529,12 +577,16 @@ impl Store {
             .execute(
                 "
                 UPDATE runtime_runs
-                SET status = 'interrupted',
+                SET status = ?1,
                     error = 'Windie stopped before this run completed',
-                    updated_at = ?1
-                WHERE status = 'running'
+                    updated_at = ?2
+                WHERE status = ?3
                 ",
-                params![now_millis()?],
+                params![
+                    RuntimeRunStatus::Interrupted.as_storage(),
+                    now_millis()?,
+                    RuntimeRunStatus::Running.as_storage()
+                ],
             )
             .context("failed to mark interrupted runtime runs")?;
 

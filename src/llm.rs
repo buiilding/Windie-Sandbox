@@ -164,6 +164,28 @@ impl ReasoningRequest {
     }
 }
 
+/// Converts a client-selected reasoning setting into the provider request shape
+/// for one concrete Bifrost model.
+///
+/// OpenAI Responses models need an explicit visible-summary request before they
+/// stream reasoning-summary deltas. Other providers receive only the normalized
+/// fields the client selected.
+pub fn reasoning_request_for_model(
+    model: &ModelName,
+    reasoning: Option<ReasoningRequest>,
+) -> Option<ReasoningRequest> {
+    let mut reasoning = reasoning.filter(|reasoning| !reasoning.is_empty())?;
+
+    if provider_name(model.as_str()) == Some("openai")
+        && reasoning.effort.is_some()
+        && reasoning.summary.is_none()
+    {
+        reasoning.summary = Some("auto".to_string());
+    }
+
+    Some(reasoning)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Provider prompt-cache hint for one model request.
 ///
@@ -1598,6 +1620,64 @@ mod tests {
                 "stream": true
             })
         );
+    }
+
+    #[test]
+    fn openai_reasoning_effort_requests_visible_summary() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("openai/gpt-5.5"),
+            Some(ReasoningRequest {
+                effort: Some("high".to_string()),
+                summary: None,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(reasoning.summary.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn openai_reasoning_preserves_explicit_summary() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("openai/gpt-5.5"),
+            Some(ReasoningRequest {
+                effort: Some("high".to_string()),
+                summary: Some("detailed".to_string()),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(reasoning.summary.as_deref(), Some("detailed"));
+    }
+
+    #[test]
+    fn anthropic_reasoning_does_not_request_openai_summary() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("anthropic/claude-fable-5"),
+            Some(ReasoningRequest {
+                effort: Some("high".to_string()),
+                summary: None,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(reasoning.summary, None);
+    }
+
+    #[test]
+    fn empty_reasoning_request_stays_absent() {
+        let reasoning = reasoning_request_for_model(
+            &ModelName::new("openai/gpt-5.5"),
+            Some(ReasoningRequest {
+                effort: None,
+                summary: None,
+            }),
+        );
+
+        assert_eq!(reasoning, None);
     }
 
     #[test]
