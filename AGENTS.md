@@ -27,18 +27,7 @@ through that tree. Model context is the flattened active path.
 
 ## Collaboration Rule
 
-Act primarily as a language-to-code converter for this project. Translate the
-user's requested behavior into code, tests, and documentation while keeping the
-implementation consistent with this file.
-
-The user makes every product, architecture, naming, command, and feature
-decision. Do not make those decisions independently. Present facts, current code
-state, consequences, and implementation options when useful, but wait for the
-user's decision before changing direction.
-
-Only provide an engineering opinion when the user asks for one. Only object to
-the user's command or opinion when fully confident it contradicts this file or
-would break a stated project invariant.
+Only give your opinion when asked. Your job is to read code and provide facts. Do not modify codebase unless explicitly told so.
 
 ## North Star
 
@@ -249,23 +238,6 @@ Schema compatibility is not a current goal. `store.rs` should create the
 current schema for fresh databases and reject unsupported older or newer schema
 versions clearly instead of carrying partial legacy migrations.
 
-## Teaching Requirement
-
-After creating or modifying project files, explain the change so the user can
-learn the codebase instead of only receiving a completion summary.
-
-For each meaningful code change, include:
-
-- what changed and why
-- which files were touched
-- what each new or changed function/struct is responsible for
-- how data flows through the changed code
-- what behavior changed for the user, if any
-- what tests or checks were run
-
-Keep the explanation direct and concrete. Prefer teaching the real code in front
-of us over abstract software-engineering vocabulary. The goal is that the user
-can gradually understand Windie well enough to navigate and modify it.
 
 ## Engineering Preferences
 
@@ -288,23 +260,6 @@ can gradually understand Windie well enough to navigate and modify it.
 - Do not reintroduce slash commands unless explicitly requested.
 - Do not add agent/tool behavior until explicitly requested.
 - Keep dependencies small and justified.
-
-## Verification
-
-After code changes, run:
-
-```bash
-cargo fmt
-cargo check
-scripts/check.sh
-```
-
-`scripts/check.sh` runs the test suite, builds the release binary, and checks
-`windie --version` / `windie --help` against the local release binary. It is a
-local/free smoke check and should not call Bifrost or a model provider.
-
-Benchmark behavior must keep side effects explicit. Document concrete benchmark
-commands in `commands.md`.
 
 ## Commit Workflow
 

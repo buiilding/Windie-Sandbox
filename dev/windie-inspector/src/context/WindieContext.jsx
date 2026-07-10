@@ -200,9 +200,12 @@ export function WindieProvider({ children }) {
 
   const loadModelParameters = useCallback(async (modelId) => {
     if (!modelId) return null;
+    if (!gatewayRunning || modelsLoading || modelsError) return null;
+    if (!models.some((model) => model.id === modelId)) return null;
+
     const existing = modelParametersById[modelId];
     if (existing?.status === "ready") return existing.data;
-    if (existing?.status === "loading") return null;
+    if (existing?.status === "loading" || existing?.status === "error") return null;
 
     setModelParametersById((prev) => ({
       ...prev,
@@ -219,11 +222,11 @@ export function WindieProvider({ children }) {
     } catch (error) {
       setModelParametersById((prev) => ({
         ...prev,
-        [modelId]: { status: "idle", data: null, error: null },
+        [modelId]: { status: "error", data: null, error: error.message },
       }));
       return null;
     }
-  }, [modelParametersById]);
+  }, [gatewayRunning, modelParametersById, models, modelsError, modelsLoading]);
 
   const refreshAvailableTools = useCallback(async () => {
     const body = await apiRequest("/api/tools");
@@ -375,9 +378,14 @@ export function WindieProvider({ children }) {
     [activeConv, activeModelId]
   );
 
+  const activeCatalogModel = useMemo(
+    () => models.find((model) => model.id === activeModelId) || null,
+    [activeModelId, models]
+  );
+
   const tokenMeter = useMemo(() => {
-    const selectedModel = models.find((model) => model.id === activeModelId);
-    const maxTokens = selectedModel?.contextLength ?? selectedModel?.maxInputTokens ?? null;
+    const maxTokens =
+      activeCatalogModel?.contextLength ?? activeCatalogModel?.maxInputTokens ?? null;
     const inputCount = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
 
     return {
@@ -389,16 +397,15 @@ export function WindieProvider({ children }) {
     };
   }, [
     activeConv?.id,
+    activeCatalogModel,
     activeModelId,
     inputTokenCounts,
-    models,
   ]);
 
   useEffect(() => {
-    if (activeModelId) {
-      loadModelParameters(activeModelId);
-    }
-  }, [activeModelId, loadModelParameters]);
+    if (!activeCatalogModel) return;
+    loadModelParameters(activeModelId);
+  }, [activeCatalogModel, activeModelId, loadModelParameters]);
 
   const activeModelParameters = useMemo(
     () => modelParametersById[activeModelId] || null,
@@ -803,12 +810,11 @@ export function WindieProvider({ children }) {
           const result = await apiRequest("/api/gateway/start", { method: "POST" });
           await refreshGateway();
           await refreshModels().catch(() => {});
-          if (activeModelId) await loadModelParameters(activeModelId);
           return result;
         },
         { reload: false }
       ),
-    [activeModelId, loadModelParameters, refreshGateway, refreshModels, runMutation]
+    [refreshGateway, refreshModels, runMutation]
   );
 
   const stopGateway = useCallback(

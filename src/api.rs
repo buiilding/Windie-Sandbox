@@ -238,6 +238,8 @@ struct ApiError(anyhow::Error);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        log_api_error(&self.0);
+
         let causes = error_causes(&self.0);
         let message = raw_error_message(&self.0);
         let status = match error::kind_from_error(&self.0) {
@@ -264,6 +266,14 @@ impl From<anyhow::Error> for ApiError {
 }
 
 type ApiResult<T> = std::result::Result<Json<T>, ApiError>;
+
+/// Prints one API error chain to stderr for local developer visibility.
+fn log_api_error(error: &anyhow::Error) {
+    eprintln!("api error:");
+    for cause in error.chain() {
+        eprintln!("  {cause}");
+    }
+}
 
 /// Returns the root cause text that clients should display first.
 fn raw_error_message(error: &anyhow::Error) -> String {
@@ -298,6 +308,9 @@ async fn require_api_token(
         .get(API_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok());
     if provided != Some(state.api_token.as_str()) {
+        eprintln!("api error:");
+        eprintln!("  missing or invalid Windie API token");
+
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -1411,6 +1424,7 @@ fn runtime_stream(
                 });
             }
             Err(error) => {
+                log_api_error(&error);
                 let _ = sender.send(QueryStreamEvent::QueryError {
                     error: raw_error_message(&error),
                     causes: error_causes(&error),
