@@ -263,6 +263,28 @@ struct ResponsesInputTokensRequest<'a> {
     tools: Option<Vec<ResponsesTool<'a>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Model-facing image detail level serialized onto every Responses image block.
+///
+/// Windie stores user images and tool-output images through the same
+/// `MessagePart::Image` primitive. Choosing the detail level here keeps visual
+/// grounding policy inside the provider HTTP boundary instead of duplicating it
+/// across input, MCP, or tool-provider code paths.
+enum ImageInputDetail {
+    High,
+    Original,
+}
+
+impl ImageInputDetail {
+    /// Returns the OpenAI-compatible wire value for Responses `input_image`.
+    fn as_wire_value(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Original => "original",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 /// OpenAI-compatible model list response returned by Bifrost.
 struct ModelsResponse {
@@ -346,6 +368,7 @@ struct ResponsesImagePart {
     #[serde(rename = "type")]
     kind: &'static str,
     image_url: String,
+    detail: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -450,7 +473,7 @@ impl BifrostClient {
     ) -> Result<InputTokenCount> {
         let request = ResponsesInputTokensRequest {
             model: self.model.as_str(),
-            input: responses_input(messages),
+            input: responses_input(messages, image_input_detail_for_model(self.model.as_str())),
             tools: responses_tools(tools),
         };
 
@@ -495,7 +518,7 @@ impl BifrostClient {
         let prompt_cache_fields = prompt_cache_fields(self.model.as_str(), prompt_cache);
         let request = ResponsesRequest {
             model: self.model.as_str(),
-            input: responses_input(messages),
+            input: responses_input(messages, image_input_detail_for_model(self.model.as_str())),
             tools: responses_tools(tools),
             reasoning,
             prompt_cache_key: prompt_cache_fields.prompt_cache_key,
@@ -674,16 +697,52 @@ fn provider_name(model: &str) -> Option<&str> {
     model.split_once('/').map(|(provider, _)| provider)
 }
 
+/// Chooses the Responses image detail level for one concrete Bifrost model.
+///
+/// `high` is the provider-unified default because it is broadly understood by
+/// OpenAI-compatible vision adapters. `original` is reserved for known OpenAI
+/// model names where OpenAI documents pixel-preserving image processing for
+/// GUI grounding and computer-use accuracy.
+fn image_input_detail_for_model(model: &str) -> ImageInputDetail {
+    if provider_name(model) == Some("openai")
+        && openai_model_supports_original_image_detail(provider_local_model_name(model))
+    {
+        return ImageInputDetail::Original;
+    }
+
+    ImageInputDetail::High
+}
+
+/// Returns whether one OpenAI-local model name supports `detail: original`.
+fn openai_model_supports_original_image_detail(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+
+    if model.starts_with("gpt-5.4-mini") || model.starts_with("gpt-5.4-nano") {
+        return false;
+    }
+
+    model == "gpt-5.4"
+        || model.starts_with("gpt-5.4-")
+        || model.starts_with("gpt-5.5")
+        || model.starts_with("gpt-5.6")
+}
+
 /// Converts Windie's internal messages into the Responses request input array.
-fn responses_input(messages: &[Message]) -> Vec<ResponsesInputItem<'_>> {
+fn responses_input(
+    messages: &[Message],
+    image_detail: ImageInputDetail,
+) -> Vec<ResponsesInputItem<'_>> {
     messages
         .iter()
-        .flat_map(responses_items_for_message)
+        .flat_map(|message| responses_items_for_message(message, image_detail))
         .collect()
 }
 
 /// Converts one Windie message into one or more Responses input items.
-fn responses_items_for_message(message: &Message) -> Vec<ResponsesInputItem<'_>> {
+fn responses_items_for_message(
+    message: &Message,
+    image_detail: ImageInputDetail,
+) -> Vec<ResponsesInputItem<'_>> {
     match message.role {
         crate::conversation::Role::Assistant => {
             let metadata = message.metadata.as_ref();
@@ -696,7 +755,7 @@ fn responses_items_for_message(message: &Message) -> Vec<ResponsesInputItem<'_>>
                     items.push(ResponsesInputItem::Message(ResponsesMessageItem {
                         kind: "message",
                         role: "assistant",
-                        content: responses_message_content(message),
+                        content: responses_message_content(message, image_detail),
                     }));
                 }
                 items.extend(
@@ -720,7 +779,7 @@ fn responses_items_for_message(message: &Message) -> Vec<ResponsesInputItem<'_>>
             vec![ResponsesInputItem::Message(ResponsesMessageItem {
                 kind: "message",
                 role: "assistant",
-                content: responses_message_content(message),
+                content: responses_message_content(message, image_detail),
             })]
         }
         crate::conversation::Role::Tool => {
@@ -735,7 +794,7 @@ fn responses_items_for_message(message: &Message) -> Vec<ResponsesInputItem<'_>>
                         ResponsesFunctionCallOutputItem {
                             kind: "function_call_output",
                             call_id,
-                            output: responses_tool_output(message),
+                            output: responses_tool_output(message, image_detail),
                             status: "completed",
                         },
                     )]
@@ -746,21 +805,24 @@ fn responses_items_for_message(message: &Message) -> Vec<ResponsesInputItem<'_>>
             vec![ResponsesInputItem::Message(ResponsesMessageItem {
                 kind: "message",
                 role: "system",
-                content: responses_message_content(message),
+                content: responses_message_content(message, image_detail),
             })]
         }
         crate::conversation::Role::User => {
             vec![ResponsesInputItem::Message(ResponsesMessageItem {
                 kind: "message",
                 role: "user",
-                content: responses_message_content(message),
+                content: responses_message_content(message, image_detail),
             })]
         }
     }
 }
 
 /// Converts one normal message body into Responses content.
-fn responses_message_content(message: &Message) -> ResponsesMessageContent<'_> {
+fn responses_message_content(
+    message: &Message,
+    image_detail: ImageInputDetail,
+) -> ResponsesMessageContent<'_> {
     if message.parts.is_empty() {
         if message.role == crate::conversation::Role::Assistant && !message.content.is_empty() {
             return ResponsesMessageContent::Parts(vec![ResponsesContentPart::Text(
@@ -777,22 +839,27 @@ fn responses_message_content(message: &Message) -> ResponsesMessageContent<'_> {
     ResponsesMessageContent::Parts(responses_content_parts(
         &message.parts,
         message.role == crate::conversation::Role::Assistant,
+        image_detail,
     ))
 }
 
 /// Converts one tool message body into Responses function-call output.
-fn responses_tool_output(message: &Message) -> ResponsesToolOutput<'_> {
+fn responses_tool_output(
+    message: &Message,
+    image_detail: ImageInputDetail,
+) -> ResponsesToolOutput<'_> {
     if message.parts.is_empty() {
         return ResponsesToolOutput::Text(&message.content);
     }
 
-    ResponsesToolOutput::Parts(responses_content_parts(&message.parts, false))
+    ResponsesToolOutput::Parts(responses_content_parts(&message.parts, false, image_detail))
 }
 
 /// Converts stored text/image parts into Responses content blocks.
 fn responses_content_parts(
     parts: &[MessagePart],
     assistant_output: bool,
+    image_detail: ImageInputDetail,
 ) -> Vec<ResponsesContentPart<'_>> {
     let text_kind = if assistant_output {
         "output_text"
@@ -807,13 +874,15 @@ fn responses_content_parts(
                 kind: text_kind,
                 text,
             }),
-            MessagePart::Image(image) => ResponsesContentPart::Image(responses_image_part(image)),
+            MessagePart::Image(image) => {
+                ResponsesContentPart::Image(responses_image_part(image, image_detail))
+            }
         })
         .collect()
 }
 
 /// Encodes one persisted image as the data URL accepted by Responses.
-fn responses_image_part(image: &ImagePart) -> ResponsesImagePart {
+fn responses_image_part(image: &ImagePart, detail: ImageInputDetail) -> ResponsesImagePart {
     ResponsesImagePart {
         kind: "input_image",
         image_url: format!(
@@ -821,6 +890,7 @@ fn responses_image_part(image: &ImagePart) -> ResponsesImagePart {
             image.mime_type,
             STANDARD.encode(&image.bytes)
         ),
+        detail: detail.as_wire_value(),
     }
 }
 
@@ -1244,6 +1314,38 @@ mod tests {
     }
 
     #[test]
+    fn selects_original_image_detail_for_supported_openai_models() {
+        assert_eq!(
+            image_input_detail_for_model("openai/gpt-5.4"),
+            ImageInputDetail::Original
+        );
+        assert_eq!(
+            image_input_detail_for_model("openai/gpt-5.5"),
+            ImageInputDetail::Original
+        );
+        assert_eq!(
+            image_input_detail_for_model("openai/gpt-5.6"),
+            ImageInputDetail::Original
+        );
+    }
+
+    #[test]
+    fn selects_high_image_detail_for_other_models() {
+        assert_eq!(
+            image_input_detail_for_model("openai/gpt-4o-mini"),
+            ImageInputDetail::High
+        );
+        assert_eq!(
+            image_input_detail_for_model("openai/gpt-5.4-mini"),
+            ImageInputDetail::High
+        );
+        assert_eq!(
+            image_input_detail_for_model("anthropic/claude-opus-4-7"),
+            ImageInputDetail::High
+        );
+    }
+
+    #[test]
     fn builds_responses_endpoint_from_base_url() {
         let llm = BifrostClient::new(
             BaseUrl::new("http://localhost:8080/v1/"),
@@ -1338,7 +1440,7 @@ mod tests {
         }];
         let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            input: responses_input(&messages),
+            input: responses_input(&messages, ImageInputDetail::High),
             tools: None,
             reasoning: None,
             prompt_cache_key: None,
@@ -1526,7 +1628,7 @@ mod tests {
         }];
         let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            input: responses_input(&messages),
+            input: responses_input(&messages, ImageInputDetail::High),
             tools: None,
             reasoning: None,
             prompt_cache_key: None,
@@ -1576,7 +1678,7 @@ mod tests {
         }];
         let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            input: responses_input(&messages),
+            input: responses_input(&messages, ImageInputDetail::High),
             tools: None,
             reasoning: None,
             prompt_cache_key: None,
@@ -1632,7 +1734,7 @@ mod tests {
         }];
         let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            input: responses_input(&messages),
+            input: responses_input(&messages, ImageInputDetail::High),
             tools: None,
             reasoning: None,
             prompt_cache_key: None,
@@ -1652,7 +1754,7 @@ mod tests {
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": "what is this?"},
-                        {"type": "input_image", "image_url": "data:image/png;base64,AQID"}
+                        {"type": "input_image", "image_url": "data:image/png;base64,AQID", "detail": "high"}
                     ]
                 }],
                 "stream": true
@@ -1675,7 +1777,7 @@ mod tests {
         }];
         let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            input: responses_input(&messages),
+            input: responses_input(&messages, ImageInputDetail::High),
             tools: None,
             reasoning: None,
             prompt_cache_key: None,
@@ -1721,7 +1823,7 @@ mod tests {
         }];
         let request = ResponsesRequest {
             model: "openai/gpt-4o-mini",
-            input: responses_input(&messages),
+            input: responses_input(&messages, ImageInputDetail::High),
             tools: None,
             reasoning: None,
             prompt_cache_key: None,
@@ -1739,7 +1841,7 @@ mod tests {
                     "call_id": "call-id",
                     "output": [
                         {"type": "input_text", "text": "screenshot"},
-                        {"type": "input_image", "image_url": "data:image/png;base64,AQID"}
+                        {"type": "input_image", "image_url": "data:image/png;base64,AQID", "detail": "high"}
                     ],
                     "status": "completed"
                 }],
@@ -1808,7 +1910,7 @@ mod tests {
         }];
         let request = ResponsesInputTokensRequest {
             model: "openai/gpt-4o-mini",
-            input: responses_input(&messages),
+            input: responses_input(&messages, ImageInputDetail::High),
             tools: None,
         };
 

@@ -27,6 +27,7 @@ export default function Composer() {
     activeConv,
     sendMessage,
     continueConversation,
+    stopStreaming,
     streaming,
     setConversationModel,
     models,
@@ -413,11 +414,11 @@ export default function Composer() {
 
           <button
             data-testid="composer-send"
-            onClick={submit}
-            disabled={streaming || !hasSendContent}
+            onClick={streaming ? stopStreaming : submit}
+            disabled={!streaming && !hasSendContent}
             className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
               streaming
-                ? "border-[hsl(var(--accent))] text-[hsl(var(--accent))] cursor-not-allowed"
+                ? "border-[hsl(var(--accent))] text-[hsl(var(--accent))] hover:bg-surface-hover"
                 : hasSendContent
                   ? "border-foreground bg-foreground text-background hover:opacity-90"
                   : "border-border text-muted-foreground cursor-not-allowed"
@@ -426,7 +427,7 @@ export default function Composer() {
             {streaming ? (
               <>
                 <Square className="size-3 fill-current" />
-                streaming
+                stop
               </>
             ) : (
               <>

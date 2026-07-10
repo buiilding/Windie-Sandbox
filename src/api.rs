@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -59,6 +60,12 @@ pub async fn serve(
     base_url: &str,
     model: &str,
 ) -> Result<()> {
+    let output = TerminalOutput;
+    match operation::start_gateway(GatewayUrl::new(gateway_url)).await? {
+        crate::gateway::GatewayStart::AlreadyRunning => output.gateway_already_running(),
+        crate::gateway::GatewayStart::Started => output.gateway_started(),
+    }
+
     let api_token =
         std::env::var("WINDIE_API_TOKEN").unwrap_or_else(|_| Uuid::new_v4().to_string());
     let state = ApiState {
@@ -73,7 +80,6 @@ pub async fn serve(
         .await
         .with_context(|| format!("failed to bind API server at {address}"))?;
 
-    let output = TerminalOutput;
     output.api_started(&address, &state.api_token);
     axum::serve(listener, router(state))
         .await
@@ -1334,7 +1340,7 @@ fn runtime_stream(
 ) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
     let (sender, receiver) = mpsc::unbounded_channel::<QueryStreamEvent>();
 
-    tokio::spawn(async move {
+    let runtime_task = tokio::spawn(async move {
         let result = async {
             let mut store = open_store(&state)?;
             let events = QueryStreamEventSink {
@@ -1413,7 +1419,7 @@ fn runtime_stream(
         }
     });
 
-    runtime_event_sse(receiver)
+    runtime_event_sse(receiver, runtime_task)
 }
 
 /// Builds shared runtime settings for an API-streamed runtime action.
@@ -1450,24 +1456,47 @@ async fn query_stream(
 /// Converts runtime events into server-sent event frames.
 fn runtime_event_sse(
     receiver: mpsc::UnboundedReceiver<QueryStreamEvent>,
+    runtime_task: JoinHandle<()>,
 ) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
-    let stream = stream::unfold(receiver, |mut receiver| async move {
-        let event = receiver.recv().await?;
-        let event_name = event.event_name();
-        let data = serde_json::to_string(&event).unwrap_or_else(|error| {
-            serde_json::json!({
-                "type": "query_error",
-                "error": format!("failed to serialize query stream event: {error}"),
-                "causes": [format!("failed to serialize query stream event: {error}")],
-            })
-            .to_string()
-        });
-        let sse = Event::default().event(event_name).data(data);
+    let stream = stream::unfold(
+        RuntimeSseState {
+            receiver,
+            runtime_task,
+        },
+        |mut state| async move {
+            let event = state.receiver.recv().await?;
+            let event_name = event.event_name();
+            let data = serde_json::to_string(&event).unwrap_or_else(|error| {
+                serde_json::json!({
+                    "type": "query_error",
+                    "error": format!("failed to serialize query stream event: {error}"),
+                    "causes": [format!("failed to serialize query stream event: {error}")],
+                })
+                .to_string()
+            });
+            let sse = Event::default().event(event_name).data(data);
 
-        Some((Ok::<Event, Infallible>(sse), receiver))
-    });
+            Some((Ok::<Event, Infallible>(sse), state))
+        },
+    );
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// State owned by one SSE response stream.
+///
+/// The runtime task is intentionally tied to the HTTP stream lifetime. If the
+/// client disconnects or aborts `fetch`, Axum drops this stream state and the
+/// in-flight runtime query is aborted instead of continuing unseen.
+struct RuntimeSseState {
+    receiver: mpsc::UnboundedReceiver<QueryStreamEvent>,
+    runtime_task: JoinHandle<()>,
+}
+
+impl Drop for RuntimeSseState {
+    fn drop(&mut self) {
+        self.runtime_task.abort();
+    }
 }
 
 /// Runtime output sink used by non-streaming API query execution.

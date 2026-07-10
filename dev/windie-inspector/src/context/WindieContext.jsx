@@ -1,4 +1,12 @@
-import { createContext, useContext, useMemo, useState, useCallback, useEffect } from "react";
+import {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+} from "react";
 import { toast } from "sonner";
 import {
   apiRequest,
@@ -53,6 +61,10 @@ async function messagePartsForSend(text, attachments = []) {
 
 function tokenCountKey(conversationId, modelId) {
   return `${conversationId || ""}::${modelId || ""}`;
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
 }
 
 function pathNodesForConversation(conversation) {
@@ -124,10 +136,18 @@ export function WindieProvider({ children }) {
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
+  const activeStreamAbortRef = useRef(null);
   // Ephemeral live assistant preview from SSE delta events. Display-only: the
   // persisted message that arrives via `assistant_message_saved` is the source
   // of truth and replaces this.
   const [pendingAssistant, setPendingAssistant] = useState(null);
+
+  useEffect(
+    () => () => {
+      activeStreamAbortRef.current?.abort();
+    },
+    []
+  );
 
   useEffect(() => {
     const root = document.documentElement;
@@ -396,6 +416,10 @@ export function WindieProvider({ children }) {
         if (options.reload !== false && activeConvId) await loadConversation(options.convId || activeConvId);
         return result;
       } catch (error) {
+        if (isAbortError(error)) {
+          setApiError(null);
+          return null;
+        }
         setApiError(error.message);
         toast.error(error.message);
         throw error;
@@ -690,13 +714,38 @@ export function WindieProvider({ children }) {
     [loadConversation]
   );
 
-  const runStreamingQuery = useCallback(
-    async (convId) =>
-      consumeRuntimeStream(convId, (onEvent) =>
-        streamConversationQuery(convId, null, null, onEvent)
-      ),
+  const runAbortableRuntimeStream = useCallback(
+    async (convId, stream) => {
+      activeStreamAbortRef.current?.abort();
+      const controller = new AbortController();
+      activeStreamAbortRef.current = controller;
+
+      try {
+        await consumeRuntimeStream(convId, (onEvent) =>
+          stream(onEvent, controller.signal)
+        );
+      } finally {
+        if (activeStreamAbortRef.current === controller) {
+          activeStreamAbortRef.current = null;
+        }
+      }
+    },
     [consumeRuntimeStream]
   );
+
+  const runStreamingQuery = useCallback(
+    async (convId) =>
+      runAbortableRuntimeStream(convId, (onEvent, signal) =>
+        streamConversationQuery(convId, null, null, onEvent, { signal })
+      ),
+    [runAbortableRuntimeStream]
+  );
+
+  const stopStreaming = useCallback(() => {
+    activeStreamAbortRef.current?.abort();
+    setPendingAssistant(null);
+    setStreaming(false);
+  }, []);
 
   const sendMessage = useCallback(
     async (convId, text, options = {}) => {
@@ -713,6 +762,10 @@ export function WindieProvider({ children }) {
         await runStreamingQuery(convId);
         setApiError(null);
       } catch (error) {
+        if (isAbortError(error)) {
+          setApiError(null);
+          return;
+        }
         setApiError(error.message);
         toast.error(error.message);
       } finally {
@@ -730,6 +783,10 @@ export function WindieProvider({ children }) {
         await runStreamingQuery(convId);
         setApiError(null);
       } catch (error) {
+        if (isAbortError(error)) {
+          setApiError(null);
+          return;
+        }
         setApiError(error.message);
         toast.error(error.message);
       } finally {
@@ -772,24 +829,24 @@ export function WindieProvider({ children }) {
     (convId, toolCallId) =>
       runMutation(
         () =>
-          consumeRuntimeStream(convId, (onEvent) =>
-            streamApproveTool(convId, toolCallId, onEvent)
+          runAbortableRuntimeStream(convId, (onEvent, signal) =>
+            streamApproveTool(convId, toolCallId, onEvent, { signal })
           ),
         { reload: false }
       ),
-    [consumeRuntimeStream, runMutation]
+    [runAbortableRuntimeStream, runMutation]
   );
 
   const denyToolCall = useCallback(
     (convId, toolCallId) =>
       runMutation(
         () =>
-          consumeRuntimeStream(convId, (onEvent) =>
-            streamDenyTool(convId, toolCallId, onEvent)
+          runAbortableRuntimeStream(convId, (onEvent, signal) =>
+            streamDenyTool(convId, toolCallId, onEvent, { signal })
           ),
         { reload: false }
       ),
-    [consumeRuntimeStream, runMutation]
+    [runAbortableRuntimeStream, runMutation]
   );
 
   const value = {
@@ -843,6 +900,7 @@ export function WindieProvider({ children }) {
     forkFromMessage,
     sendMessage,
     continueConversation,
+    stopStreaming,
     startGateway,
     stopGateway,
     refreshGateway,

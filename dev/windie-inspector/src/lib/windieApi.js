@@ -127,7 +127,7 @@ function parseSseBlock(block) {
   };
 }
 
-async function streamRuntime(path, body, fallbackError, onEvent) {
+async function streamRuntime(path, body, fallbackError, onEvent, options = {}) {
   const token = apiToken();
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -136,6 +136,7 @@ async function streamRuntime(path, body, fallbackError, onEvent) {
       ...(token ? { "X-Windie-Api-Token": token } : {}),
     },
     body: JSON.stringify(body || {}),
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -177,30 +178,49 @@ async function streamRuntime(path, body, fallbackError, onEvent) {
   }
 }
 
-export async function streamConversationQuery(conversationId, model, reasoning, onEvent) {
+export async function streamConversationQuery(
+  conversationId,
+  model,
+  reasoning,
+  onEvent,
+  options = {}
+) {
   return streamRuntime(
     `/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
     { model: model || null, reasoning: reasoning || null },
     "Windie query stream failed",
-    onEvent
+    onEvent,
+    options
   );
 }
 
-export async function streamApproveTool(conversationId, toolCallId, onEvent) {
+export async function streamApproveTool(
+  conversationId,
+  toolCallId,
+  onEvent,
+  options = {}
+) {
   return streamRuntime(
     `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/approve`,
     {},
     "Windie approval stream failed",
-    onEvent
+    onEvent,
+    options
   );
 }
 
-export async function streamDenyTool(conversationId, toolCallId, onEvent) {
+export async function streamDenyTool(
+  conversationId,
+  toolCallId,
+  onEvent,
+  options = {}
+) {
   return streamRuntime(
     `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/deny`,
     {},
     "Windie denial stream failed",
-    onEvent
+    onEvent,
+    options
   );
 }
 

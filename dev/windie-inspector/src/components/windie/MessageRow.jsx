@@ -29,6 +29,20 @@ function RoleBadge({ role }) {
   );
 }
 
+function ReasoningLane({ reasoning }) {
+  if (!reasoning) return null;
+  return (
+    <div className="mb-3 border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5">
+      <div className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))]">
+        reasoning
+      </div>
+      <div className="mt-0.5 text-xs text-muted-foreground italic leading-relaxed">
+        {reasoning}
+      </div>
+    </div>
+  );
+}
+
 function MetadataLanes({ metadata }) {
   if (!metadata) return null;
   const lanes = [];
@@ -53,21 +67,6 @@ function MetadataLanes({ metadata }) {
             </span>
           </div>
         ))}
-      </div>
-    );
-  }
-  if (metadata.reasoning) {
-    lanes.push(
-      <div
-        key="rs"
-        className="border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5"
-      >
-        <div className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))]">
-          reasoning
-        </div>
-        <div className="mt-0.5 text-xs text-muted-foreground italic leading-relaxed">
-          {metadata.reasoning}
-        </div>
       </div>
     );
   }
@@ -156,22 +155,6 @@ function PendingMetadataLanes({ pendingAssistant }) {
             ) : null}
           </div>
         ))}
-      </div>
-    );
-  }
-
-  if (pendingAssistant.reasoning) {
-    lanes.push(
-      <div
-        key="rs"
-        className="border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5"
-      >
-        <div className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))]">
-          reasoning
-        </div>
-        <div className="mt-0.5 text-xs text-muted-foreground italic leading-relaxed">
-          {pendingAssistant.reasoning}
-        </div>
       </div>
     );
   }
@@ -289,6 +272,7 @@ export function PendingAssistantRow({ pendingAssistant, index }) {
           <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             <span className="text-foreground/70">streaming</span>
           </div>
+          <ReasoningLane reasoning={pendingAssistant.reasoning} />
           <MessageMarkdown text={pendingAssistant.text} isStreaming />
           <PendingMetadataLanes pendingAssistant={pendingAssistant} />
         </div>
@@ -410,6 +394,8 @@ export default function MessageRow({ node, index, isLast }) {
             </div>
           ) : (
             <>
+              <ReasoningLane reasoning={node.message.metadata?.reasoning} />
+
               {role === "tool" ? (
                 <pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-[hsl(var(--tool-call))]/90 bg-[hsl(var(--tool-call))]/5 border border-[hsl(var(--tool-call))]/20 p-2 overflow-x-auto">
                   {textPart?.text}
