@@ -1232,6 +1232,18 @@ impl InputTokensResponse {
             },
         }
     }
+
+    /// Builds a successful response for providers that do not support
+    /// pre-query input-token counting.
+    fn unavailable(model: &ModelName) -> Self {
+        Self {
+            input_tokens: None,
+            total_tokens: None,
+            model: Some(model.as_str().to_string()),
+            source: Some("unavailable".to_string()),
+            raw: None,
+        }
+    }
 }
 
 /// Counts current model-facing input tokens without mutating conversation state.
@@ -1252,15 +1264,33 @@ async fn count_input_tokens(
         .as_ref()
         .map(|context| context.source().as_str().to_string());
     drop(store);
-    let count = operation::count_input_tokens_for_context(
+    let count = match operation::count_input_tokens_for_context(
         GatewayUrl::new(state.gateway_url),
         BaseUrl::new(state.base_url),
         &model,
         context,
     )
-    .await?;
+    .await
+    {
+        Ok(count) => count,
+        Err(error) if is_unsupported_input_token_count_error(&error) => {
+            return Ok(Json(InputTokensResponse::unavailable(&model)));
+        }
+        Err(error) => return Err(error.into()),
+    };
 
     Ok(Json(InputTokensResponse::from_count(count, source)))
+}
+
+/// Returns whether Bifrost reported that the routed provider cannot preflight
+/// Responses token counts.
+fn is_unsupported_input_token_count_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let text = cause.to_string();
+        text.contains("count_tokens is not supported")
+            || (text.contains("\"unsupported_operation\"")
+                && text.contains("\"request_type\":\"count_tokens\""))
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1834,6 +1864,19 @@ mod tests {
     use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn recognizes_unsupported_input_token_count_errors() {
+        let error = anyhow::anyhow!(
+            "responses input token request failed with 400 Bad Request: {body}",
+            body = r#"{"error":{"code":"unsupported_operation","message":"count_tokens is not supported by openrouter provider"},"extra_fields":{"request_type":"count_tokens"}}"#
+        );
+
+        assert!(is_unsupported_input_token_count_error(&error));
+        assert!(!is_unsupported_input_token_count_error(&anyhow::anyhow!(
+            "responses input token request failed with 500 Internal Server Error"
+        )));
+    }
 
     #[tokio::test]
     async fn health_does_not_require_token() {
