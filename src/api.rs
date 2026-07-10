@@ -36,7 +36,7 @@ use crate::conversation::{
 };
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
+use crate::llm::{BaseUrl, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::paths;
@@ -1214,16 +1214,21 @@ struct InputTokensResponse {
 impl InputTokensResponse {
     /// Builds the API shape while preserving the count source computed before
     /// the async Bifrost request.
-    fn from_count(count: Option<InputTokenCount>, source: Option<String>) -> Self {
-        match count {
-            Some(count) => Self {
+    fn from_count_result(
+        result: operation::InputTokenCountResult,
+        model: &ModelName,
+        source: Option<String>,
+    ) -> Self {
+        match result {
+            operation::InputTokenCountResult::Count(count) => Self {
                 input_tokens: Some(count.input_tokens),
                 total_tokens: count.total_tokens,
                 model: count.model,
                 source,
                 raw: Some(count.raw),
             },
-            None => Self {
+            operation::InputTokenCountResult::Unsupported => Self::unavailable(model),
+            operation::InputTokenCountResult::EmptyContext => Self {
                 input_tokens: None,
                 total_tokens: None,
                 model: None,
@@ -1264,33 +1269,17 @@ async fn count_input_tokens(
         .as_ref()
         .map(|context| context.source().as_str().to_string());
     drop(store);
-    let count = match operation::count_input_tokens_for_context(
+    let result = operation::count_input_tokens_for_context(
         GatewayUrl::new(state.gateway_url),
         BaseUrl::new(state.base_url),
         &model,
         context,
     )
-    .await
-    {
-        Ok(count) => count,
-        Err(error) if is_unsupported_input_token_count_error(&error) => {
-            return Ok(Json(InputTokensResponse::unavailable(&model)));
-        }
-        Err(error) => return Err(error.into()),
-    };
+    .await?;
 
-    Ok(Json(InputTokensResponse::from_count(count, source)))
-}
-
-/// Returns whether Bifrost reported that the routed provider cannot preflight
-/// Responses token counts.
-fn is_unsupported_input_token_count_error(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let text = cause.to_string();
-        text.contains("count_tokens is not supported")
-            || (text.contains("\"unsupported_operation\"")
-                && text.contains("\"request_type\":\"count_tokens\""))
-    })
+    Ok(Json(InputTokensResponse::from_count_result(
+        result, &model, source,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1322,7 +1311,7 @@ async fn query(
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
-    let runtime = query_stream_runtime(&state, request.model_override(), request.reasoning());
+    let runtime = runtime_turn_config(&state, request.model_override(), request.reasoning());
     let message = operation::query_conversation_with_registry(
         &ApiOutput,
         &mut store,
@@ -1476,7 +1465,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     model_override,
                     reasoning,
                 } => {
-                    let runtime = query_stream_runtime(&state, model_override, reasoning);
+                    let runtime = runtime_turn_config(&state, model_override, reasoning);
                     operation::query_runtime_turn(
                         &output,
                         &events,
@@ -1491,7 +1480,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = query_stream_runtime(&state, None, None);
+                    let runtime = runtime_turn_config(&state, None, None);
                     operation::approve_tool_turn(
                         &output,
                         &events,
@@ -1506,7 +1495,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = query_stream_runtime(&state, None, None);
+                    let runtime = runtime_turn_config(&state, None, None);
                     operation::deny_tool_turn(
                         &output,
                         &events,
@@ -1549,13 +1538,13 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
     Ok(snapshot)
 }
 
-/// Builds shared runtime settings for an API-streamed runtime action.
-fn query_stream_runtime<'a>(
+/// Builds shared runtime settings for an API-driven runtime action.
+fn runtime_turn_config<'a>(
     state: &'a ApiState,
     model_override: Option<ModelName>,
     reasoning: Option<ReasoningRequest>,
-) -> operation::QueryStreamRuntime<'a> {
-    operation::QueryStreamRuntime::new(
+) -> operation::RuntimeTurnConfig<'a> {
+    operation::RuntimeTurnConfig::new(
         GatewayUrl::new(state.gateway_url.clone()),
         BaseUrl::new(state.base_url.clone()),
         model_override,
@@ -1864,19 +1853,6 @@ mod tests {
     use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn recognizes_unsupported_input_token_count_errors() {
-        let error = anyhow::anyhow!(
-            "responses input token request failed with 400 Bad Request: {body}",
-            body = r#"{"error":{"code":"unsupported_operation","message":"count_tokens is not supported by openrouter provider"},"extra_fields":{"request_type":"count_tokens"}}"#
-        );
-
-        assert!(is_unsupported_input_token_count_error(&error));
-        assert!(!is_unsupported_input_token_count_error(&anyhow::anyhow!(
-            "responses input token request failed with 500 Internal Server Error"
-        )));
-    }
 
     #[tokio::test]
     async fn health_does_not_require_token() {

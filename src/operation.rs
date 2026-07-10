@@ -22,8 +22,8 @@ use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::image_input::{ImageInput, read_image_input, validate_image_input_bytes};
 use crate::llm::{
-    self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName, ModelParameter,
-    ModelParameterOption, PromptCacheRequest, ReasoningRequest,
+    self, BaseUrl, BifrostClient, InputTokenCount, InputTokenCountOutcome, ModelInfo, ModelName,
+    ModelParameter, ModelParameterOption, PromptCacheRequest, ReasoningRequest,
 };
 use crate::output::RuntimeOutput;
 use crate::runtime::{
@@ -93,6 +93,14 @@ impl InputTokenCountContext {
     pub fn source(&self) -> InputTokenCountSource {
         self.source
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Client-facing outcome for a pre-query input-token count request.
+pub enum InputTokenCountResult {
+    Count(InputTokenCount),
+    Unsupported,
+    EmptyContext,
 }
 
 #[derive(Debug, Serialize)]
@@ -482,17 +490,21 @@ pub async fn count_input_tokens_for_context(
     base_url: BaseUrl,
     model: &ModelName,
     context: Option<InputTokenCountContext>,
-) -> Result<Option<InputTokenCount>> {
+) -> Result<InputTokenCountResult> {
     let Some(context) = context else {
-        return Ok(None);
+        return Ok(InputTokenCountResult::EmptyContext);
     };
     require_gateway_running(gateway_url).await?;
 
     let client = BifrostClient::new(base_url, model.clone());
-    client
+    match client
         .count_input_tokens(&context.model_messages, &context.tool_schemas)
         .await
-        .map(Some)
+    {
+        Ok(InputTokenCountOutcome::Count(count)) => Ok(InputTokenCountResult::Count(count)),
+        Ok(InputTokenCountOutcome::Unsupported) => Ok(InputTokenCountResult::Unsupported),
+        Err(error) => Err(error),
+    }
 }
 
 /// Loads the active path shown by the CLI and inspector.
@@ -915,7 +927,7 @@ pub async fn query_conversation_with_registry<O>(
     output: &O,
     store: &mut Store,
     conversation_id: &ConversationId,
-    runtime: QueryStreamRuntime<'_>,
+    runtime: RuntimeTurnConfig<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -940,12 +952,11 @@ where
     .await
 }
 
-/// Provider/runtime inputs needed to execute a streamed query.
+/// Provider/runtime inputs needed to execute one model-backed runtime turn.
 ///
-/// The streaming operation has one extra event sink compared with the blocking
-/// query path, so this struct keeps the API call site explicit without growing
-/// a long parameter list.
-pub struct QueryStreamRuntime<'a> {
+/// Query, approval, and denial flows share these values. Grouping them keeps
+/// call sites explicit without growing long parameter lists.
+pub struct RuntimeTurnConfig<'a> {
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model_override: Option<ModelName>,
@@ -953,7 +964,7 @@ pub struct QueryStreamRuntime<'a> {
     registry: &'a ToolProviderRegistry,
 }
 
-impl<'a> QueryStreamRuntime<'a> {
+impl<'a> RuntimeTurnConfig<'a> {
     /// Groups the gateway, Bifrost endpoint, optional model override, and
     /// provider registry.
     pub fn new(
@@ -984,7 +995,7 @@ pub async fn query_runtime_turn<O, E>(
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
-    runtime: QueryStreamRuntime<'_>,
+    runtime: RuntimeTurnConfig<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -1067,7 +1078,7 @@ pub async fn approve_tool_turn<O, E>(
     store: &mut Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
-    runtime: QueryStreamRuntime<'_>,
+    runtime: RuntimeTurnConfig<'_>,
 ) -> Result<Option<Message>>
 where
     O: RuntimeOutput,
@@ -1096,7 +1107,7 @@ pub async fn deny_tool_turn<O, E>(
     store: &mut Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
-    runtime: QueryStreamRuntime<'_>,
+    runtime: RuntimeTurnConfig<'_>,
 ) -> Result<Option<Message>>
 where
     O: RuntimeOutput,
@@ -1116,7 +1127,7 @@ async fn continue_after_tool_result<O, E>(
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
-    runtime: QueryStreamRuntime<'_>,
+    runtime: RuntimeTurnConfig<'_>,
 ) -> Result<Option<Message>>
 where
     O: RuntimeOutput,

@@ -130,6 +130,17 @@ pub struct InputTokenCount {
     pub raw: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+/// Result of asking Bifrost to count Responses input tokens.
+///
+/// Some routed providers do not implement Bifrost's count endpoint. Windie keeps
+/// that as a typed outcome so client layers do not need to inspect provider
+/// error payloads.
+pub enum InputTokenCountOutcome {
+    Count(InputTokenCount),
+    Unsupported,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Normalized reason the provider stopped the assistant stream.
 pub enum FinishReason {
@@ -492,7 +503,7 @@ impl BifrostClient {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-    ) -> Result<InputTokenCount> {
+    ) -> Result<InputTokenCountOutcome> {
         let request = ResponsesInputTokensRequest {
             model: self.model.as_str(),
             input: responses_input(messages, image_input_detail_for_model(self.model.as_str())),
@@ -510,6 +521,10 @@ impl BifrostClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            if is_unsupported_input_token_count_response(&body) {
+                return Ok(InputTokenCountOutcome::Unsupported);
+            }
+
             return Err(anyhow!(
                 "responses input token request failed with {status}: {body}"
             ));
@@ -520,7 +535,7 @@ impl BifrostClient {
             .await
             .context("failed to parse responses input token response")?;
 
-        input_token_count_from_raw(raw)
+        input_token_count_from_raw(raw).map(InputTokenCountOutcome::Count)
     }
 
     /// Sends the Responses request, streams assistant text deltas to the
@@ -1309,6 +1324,28 @@ fn input_token_count_from_raw(raw: serde_json::Value) -> Result<InputTokenCount>
         model,
         raw,
     })
+}
+
+/// Returns whether Bifrost reported that the routed provider cannot preflight
+/// Responses token counts.
+fn is_unsupported_input_token_count_response(body: &str) -> bool {
+    let Ok(raw) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let unsupported_operation = raw
+        .pointer("/error/code")
+        .and_then(serde_json::Value::as_str)
+        == Some("unsupported_operation");
+    let count_tokens_request = raw
+        .pointer("/extra_fields/request_type")
+        .and_then(serde_json::Value::as_str)
+        == Some("count_tokens");
+    let unsupported_message = raw
+        .pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|message| message.contains("count_tokens is not supported"));
+
+    unsupported_message || (unsupported_operation && count_tokens_request)
 }
 
 /// Returns the most useful error text from a failed Responses stream event.
@@ -2131,6 +2168,19 @@ mod tests {
         assert_eq!(response.total_tokens, Some(45));
         assert_eq!(response.model.as_deref(), Some("openai/gpt-4o-mini"));
         assert_eq!(response.raw["input_tokens_details"]["cached_tokens"], 3);
+    }
+
+    #[test]
+    fn recognizes_unsupported_input_token_count_response() {
+        let body = r#"{"error":{"code":"unsupported_operation","message":"count_tokens is not supported by openrouter provider"},"extra_fields":{"request_type":"count_tokens"}}"#;
+
+        assert!(is_unsupported_input_token_count_response(body));
+        assert!(!is_unsupported_input_token_count_response(
+            r#"{"error":{"code":"internal_error","message":"temporary failure"}}"#
+        ));
+        assert!(!is_unsupported_input_token_count_response(
+            "500 Internal Server Error"
+        ));
     }
 
     #[test]

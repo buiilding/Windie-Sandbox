@@ -1227,9 +1227,13 @@ impl Store {
 
     /// Loads message rows for one conversation without attaching ordered parts.
     ///
-    /// This is public so `perf.rs` can time row loading separately from
-    /// part/image attachment while keeping timing ownership outside the store.
-    pub fn load_message_rows(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+    /// This is crate-private so `perf.rs` can time row loading separately from
+    /// part/image attachment without making row loading part of the public store
+    /// API.
+    pub(crate) fn load_message_rows(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<Message>> {
         self.ensure_conversation_exists(conversation_id)?;
 
         let mut statement = self
@@ -1253,12 +1257,13 @@ impl Store {
 
     /// Loads the root-to-message rows without attaching ordered parts.
     ///
-    /// This is public so `perf.rs` can time active-path row loading separately
-    /// from active message lookup and part/image attachment.
+    /// This is crate-private so `perf.rs` can time active-path row loading
+    /// separately from active message lookup and part/image attachment without
+    /// exposing the primitive outside the crate.
     /// The recursive step starts from the one-row `path` table and uses
     /// `CROSS JOIN` to keep SQLite on primary-key parent lookups even before a
     /// fresh database has planner statistics.
-    pub fn load_path_to_message_rows(
+    pub(crate) fn load_path_to_message_rows(
         &self,
         conversation_id: &ConversationId,
         message_id: &MessageId,
@@ -1376,9 +1381,10 @@ impl Store {
 
     /// Attaches ordered text/image parts to already-loaded message rows.
     ///
-    /// This is public so `perf.rs` can time part/image attachment separately
-    /// from row loading. Callers must pass messages loaded from this store.
-    pub fn attach_message_parts(&self, messages: &mut [Message]) -> Result<()> {
+    /// This is crate-private so `perf.rs` can time part/image attachment
+    /// separately from row loading. Callers must pass messages loaded from this
+    /// store.
+    pub(crate) fn attach_message_parts(&self, messages: &mut [Message]) -> Result<()> {
         let message_ids = messages
             .iter()
             .filter_map(|message| message.id.as_ref())
