@@ -474,7 +474,6 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         result_parent_message_id: execution.result_parent_message_id,
         tool_call,
     };
-    claim_pending_tool_call(store, conversation_id, &pending)?;
     let policy = ToolPolicy;
     let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
@@ -484,13 +483,27 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         attached_tool_can_execute(registry, attached_tool.as_ref()),
         approval_mode,
     ) {
-        PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
-            pending.tool_call.id.clone(),
-            pending.tool_call.name(),
-            reason,
-        ),
+        PolicyDecision::Deny { reason } => {
+            claim_pending_tool_call(store, conversation_id, &pending)?;
+            ToolExecutionResult::failure(
+                pending.tool_call.id.clone(),
+                pending.tool_call.name(),
+                reason,
+            )
+        }
         PolicyDecision::Allow => {
-            execute_provider_tool_call(&pending, attached_tool.as_ref(), registry).await?
+            claim_pending_tool_call(store, conversation_id, &pending)?;
+            match execute_provider_tool_call(&pending, attached_tool.as_ref(), registry).await {
+                Ok(result) => result,
+                Err(execution_error) => {
+                    store.fail_tool_call_execution(
+                        &pending.assistant_message_id,
+                        &pending.tool_call.id,
+                        &execution_error.to_string(),
+                    )?;
+                    return Err(execution_error);
+                }
+            }
         }
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };

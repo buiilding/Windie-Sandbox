@@ -519,6 +519,45 @@ async fn auto_approval_executes_tool_and_queries_again() {
 }
 
 #[tokio::test]
+async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    attach_test_mcp_tool(&mut store, &conversation_id);
+    store
+        .insert_message(&conversation_id, None, Role::User, "list files", None)
+        .unwrap();
+    let llm = ToolThenReplyLlm::new();
+    let registry = test_mcp_registry();
+
+    let tool_call_message = query_conversation_resolving_automatic_tools(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        &conversation_id,
+        &registry,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let approvals =
+        pending_tool_approvals_with_registry(&store, &conversation_id, &registry).unwrap();
+    let result = approve_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &ToolCallId::new("call_123"),
+        &registry,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tool_call_message.role, Role::Assistant);
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].tool_call.id.as_str(), "call_123");
+    assert!(result.success);
+}
+
+#[tokio::test]
 async fn auto_approval_emits_persisted_runtime_events() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
