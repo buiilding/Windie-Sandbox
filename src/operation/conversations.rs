@@ -98,7 +98,7 @@ pub fn inspect_conversation(
     let system_prompt = store.system_prompt(conversation_id)?;
     let latest_compaction = store.latest_compaction(conversation_id)?;
     let execution_claims = store.tool_execution_records(conversation_id)?;
-    let model_context = inspection_model_context(
+    let model_context = ContextBuilder::flatten_view(
         active_path.clone(),
         system_prompt.clone(),
         latest_compaction.as_ref(),
@@ -118,44 +118,6 @@ pub fn inspect_conversation(
         latest_compaction,
         execution_claims,
     ))
-}
-
-fn inspection_model_context(
-    active_path: Vec<MessageView>,
-    system_prompt: Option<String>,
-    compaction: Option<&Compaction>,
-) -> Vec<MessageView> {
-    let mut context = if let Some(compaction) = compaction {
-        if let Some(index) = active_path.iter().position(|message| {
-            message.id.as_deref() == Some(compaction.through_message_id.as_str())
-        }) {
-            let mut messages = vec![inspection_system_message(format!(
-                "Previous conversation summary:\n{}",
-                compaction.content
-            ))];
-            messages.extend(active_path.into_iter().skip(index + 1));
-            messages
-        } else {
-            active_path
-        }
-    } else {
-        active_path
-    };
-    if let Some(system_prompt) = system_prompt {
-        context.insert(0, inspection_system_message(system_prompt));
-    }
-    context
-}
-
-fn inspection_system_message(content: String) -> MessageView {
-    MessageView {
-        id: None,
-        parent_message_id: None,
-        role: Role::System,
-        content,
-        parts: Vec::new(),
-        metadata: None,
-    }
 }
 
 /// Inserts one message below the current active message.
