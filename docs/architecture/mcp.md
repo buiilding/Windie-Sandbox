@@ -254,8 +254,9 @@ reader, an MCP error response, or a missing result is treated as failure.
 
 ## Result Normalization
 
-The provider adapter converts an MCP `tools/call` result into ordered Windie
-message parts:
+`mcp.rs` first decodes MCP wire fields into a typed tool result. The provider
+adapter then converts that protocol-neutral result into ordered Windie message
+parts:
 
 - `text` blocks become text parts;
 - `image` blocks are base64-decoded with their MIME type;
@@ -263,9 +264,10 @@ message parts:
 - non-null `structuredContent` is appended as text;
 - an otherwise empty result falls back to its complete JSON string.
 
-The visible tool-message preview joins text and image summaries. The ordered
-parts are persisted separately so image-capable model requests can replay real
-image blocks.
+The visible tool-message preview includes text and image summaries up to 4 KiB,
+then adds a truncation marker. Full ordered parts are persisted separately so
+large text is not duplicated on the message row and image-capable model
+requests can replay real image blocks.
 
 MCP's `isError: true` marks the result unsuccessful, but its content is still
 normalized and persisted as the required output for the call.

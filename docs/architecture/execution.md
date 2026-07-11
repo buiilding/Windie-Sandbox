@@ -115,10 +115,11 @@ or after it completed. Claim state is typed as `executing`, `completed`,
 so an unresolved call is distinguishable from one already in flight.
 
 `interrupted` means Windie observed cancellation before the provider result was
-committed and permits an explicit retry. `unknown` means the owning runtime
-ended while the claim was still `executing`, so Windie cannot prove whether an
-external side effect happened. Unknown claims are not retried automatically or
-through the interrupted-claim retry path.
+committed and permits an explicit retry. `failed` is also retryable and is
+reserved for failures known to occur before provider dispatch. `unknown` means
+dispatch may have started but no result was durably committed, so Windie cannot
+prove whether an external side effect happened. Unknown claims are never
+retried automatically.
 
 The API's approval and denial runs continue automatically if no later manual
 approval remains. The one-shot CLI `approve` and `deny` commands store one
@@ -173,8 +174,9 @@ carry base64 as visible text.
 Completing a tool call is one database transaction. Windie inserts the result
 message and parts, conditionally advances the active path, and changes the
 claim to `completed` together. A failed transaction leaves none of those
-changes partially visible. A failed execution similarly changes exactly one
-owned `executing` claim to `failed`.
+changes partially visible. Provider-local setup runs before the claim. An
+unexpected task failure after dispatch changes the owned `executing` claim to
+`unknown`, preventing an unsafe automatic retry.
 
 ## Run Ownership and Cancellation
 
@@ -182,6 +184,11 @@ Durable API runs, direct API operations, and CLI operations acquire the same
 per-conversation runtime record. The record identifies the action and owner
 and carries a renewable lease. A second client cannot start conflicting work
 while that lease is active; startup recovery interrupts only expired owners.
+
+`RunManager` owns begin, cancellation, task supervision, and terminalization
+for all three clients. Runtime actions execute on dedicated blocking threads
+with current-thread async runtimes, keeping synchronous SQLite work and busy
+waits off API Tokio workers.
 
 Cancellation is cooperative. Model and tool waits observe a cancellation
 token. A cancelled persistent MCP call first drops its child session, then the
