@@ -57,6 +57,14 @@ impl RuntimeStreamAction {
             } => conversation_id,
         }
     }
+
+    fn run_action(&self) -> RuntimeRunAction {
+        match self {
+            Self::Query { .. } => RuntimeRunAction::Query,
+            Self::ApproveTool { .. } => RuntimeRunAction::ApproveTool,
+            Self::DenyTool { .. } => RuntimeRunAction::DenyTool,
+        }
+    }
 }
 
 /// Starts a backend-owned query and returns immediately with its durable ID.
@@ -145,7 +153,9 @@ async fn cancel_run(
 
 /// Starts one task whose lifetime is independent from HTTP subscribers.
 fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<RunSnapshot> {
-    let snapshot = state.run_manager.begin(action.conversation_id())?;
+    let snapshot = state
+        .run_manager
+        .begin_action(action.conversation_id(), action.run_action())?;
     let run_id = snapshot.id.clone();
     let task_run_id = run_id.clone();
     let manager = state.run_manager.clone();

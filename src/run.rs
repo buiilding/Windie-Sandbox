@@ -7,20 +7,26 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
+use uuid::Uuid;
 
 use crate::conversation::ConversationId;
 use crate::error;
-use crate::store::{RuntimeRunEventRecord, RuntimeRunRecord, RuntimeRunStatus, Store};
+use crate::store::{
+    RuntimeRunAction, RuntimeRunEventRecord, RuntimeRunRecord, RuntimeRunStatus, Store,
+};
 
 const RUN_EVENT_CHANNEL_CAPACITY: usize = 512;
 const RUN_JOURNAL_COMMAND_CAPACITY: usize = 512;
+const RUN_LEASE_DURATION: Duration = Duration::from_secs(30);
+const RUN_LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -92,6 +98,7 @@ pub struct RunEventEnvelope {
 pub struct RunSnapshot {
     pub id: String,
     pub conversation_id: String,
+    pub action: RuntimeRunAction,
     pub status: RuntimeRunStatus,
     pub error: Option<String>,
     pub created_at: i64,
@@ -103,6 +110,7 @@ impl From<RuntimeRunRecord> for RunSnapshot {
         Self {
             id: record.id,
             conversation_id: record.conversation_id.as_str().to_string(),
+            action: record.action,
             status: record.status,
             error: record.error,
             created_at: record.created_at,
@@ -125,6 +133,7 @@ struct ActiveRun {
 enum RunJournalCommand {
     Create {
         conversation_id: ConversationId,
+        action: RuntimeRunAction,
         response: Sender<Result<RuntimeRunRecord>>,
     },
     Append {
@@ -165,13 +174,13 @@ impl RunJournal {
             Some(path) => Store::open_at(path)?,
             None => Store::open()?,
         };
-        store.interrupt_running_runtime_runs()?;
-        store.interrupt_running_tool_call_executions()?;
+        store.interrupt_expired_runtime_runs(unix_millis()?)?;
+        let owner_id = Uuid::new_v4().to_string();
 
         let (commands, receiver) = sync_channel(RUN_JOURNAL_COMMAND_CAPACITY);
         std::thread::Builder::new()
             .name("windie-run-journal".to_string())
-            .spawn(move || run_journal_worker(store, receiver))
+            .spawn(move || run_journal_worker(store, receiver, owner_id))
             .context("failed to start runtime run journal")?;
 
         Ok(Self { commands })
@@ -190,9 +199,14 @@ impl RunJournal {
             .map_err(|_| anyhow!("runtime run journal stopped before replying"))?
     }
 
-    fn create(&self, conversation_id: &ConversationId) -> Result<RuntimeRunRecord> {
+    fn create(
+        &self,
+        conversation_id: &ConversationId,
+        action: RuntimeRunAction,
+    ) -> Result<RuntimeRunRecord> {
         self.request(|response| RunJournalCommand::Create {
             conversation_id: conversation_id.clone(),
+            action,
             response,
         })
     }
@@ -247,14 +261,36 @@ impl RunJournal {
     }
 }
 
-fn run_journal_worker(mut store: Store, receiver: Receiver<RunJournalCommand>) {
-    while let Ok(command) = receiver.recv() {
+fn run_journal_worker(mut store: Store, receiver: Receiver<RunJournalCommand>, owner_id: String) {
+    let mut next_renewal = Instant::now() + RUN_LEASE_RENEW_INTERVAL;
+    loop {
+        let wait = next_renewal.saturating_duration_since(Instant::now());
+        let command = match receiver.recv_timeout(wait) {
+            Ok(command) => command,
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = store.renew_runtime_run_leases(&owner_id, lease_deadline_millis());
+                next_renewal = Instant::now() + RUN_LEASE_RENEW_INTERVAL;
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             RunJournalCommand::Create {
                 conversation_id,
+                action,
                 response,
             } => {
-                let _ = response.send(store.create_runtime_run(&conversation_id));
+                let result = store
+                    .interrupt_expired_runtime_runs(unix_millis().unwrap_or(i64::MAX))
+                    .and_then(|_| {
+                        store.create_owned_runtime_run(
+                            &conversation_id,
+                            action,
+                            &owner_id,
+                            lease_deadline_millis(),
+                        )
+                    });
+                let _ = response.send(result);
             }
             RunJournalCommand::Append {
                 run_id,
@@ -294,7 +330,26 @@ fn run_journal_worker(mut store: Store, receiver: Receiver<RunJournalCommand>) {
                 let _ = response.send(store.runtime_run_events_after(&run_id, after));
             }
         }
+
+        if Instant::now() >= next_renewal {
+            let _ = store.renew_runtime_run_leases(&owner_id, lease_deadline_millis());
+            next_renewal = Instant::now() + RUN_LEASE_RENEW_INTERVAL;
+        }
     }
+    let _ = store.interrupt_runtime_runs_for_owner(&owner_id);
+}
+
+fn unix_millis() -> Result<i64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before unix epoch")?;
+    Ok(duration.as_millis().min(i64::MAX as u128) as i64)
+}
+
+fn lease_deadline_millis() -> i64 {
+    unix_millis()
+        .unwrap_or(i64::MAX - RUN_LEASE_DURATION.as_millis() as i64)
+        .saturating_add(RUN_LEASE_DURATION.as_millis() as i64)
 }
 
 #[derive(Clone)]
@@ -315,7 +370,16 @@ impl RunManager {
 
     /// Creates persisted run state before its task is spawned.
     pub fn begin(&self, conversation_id: &ConversationId) -> Result<RunSnapshot> {
-        let record = self.journal.create(conversation_id)?;
+        self.begin_action(conversation_id, RuntimeRunAction::Query)
+    }
+
+    /// Creates persisted ownership for one concrete runtime action.
+    pub fn begin_action(
+        &self,
+        conversation_id: &ConversationId,
+        action: RuntimeRunAction,
+    ) -> Result<RunSnapshot> {
+        let record = self.journal.create(conversation_id, action)?;
         let (sender, _) = broadcast::channel(RUN_EVENT_CHANNEL_CAPACITY);
         self.active
             .lock()
@@ -329,6 +393,22 @@ impl RunManager {
             );
 
         Ok(record.into())
+    }
+
+    /// Finalizes one direct operation without changing its client response shape.
+    pub fn finish_result<T>(&self, run_id: &str, result: Result<T>) -> Result<T> {
+        match result {
+            Ok(value) => {
+                self.complete(run_id, None)?;
+                Ok(value)
+            }
+            Err(operation_error) => {
+                let message = operation_error.to_string();
+                let causes = operation_error.chain().map(ToString::to_string).collect();
+                self.fail(run_id, message, causes)?;
+                Err(operation_error)
+            }
+        }
     }
 
     /// Attaches the spawned task's explicit cancellation handle.
@@ -563,8 +643,8 @@ mod tests {
     }
 
     #[test]
-    fn new_manager_marks_abandoned_runs_interrupted() {
-        let path = test_path("interrupted");
+    fn new_manager_does_not_interrupt_another_live_owner() {
+        let path = test_path("live-owner");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
@@ -574,9 +654,35 @@ mod tests {
         let restarted = RunManager::new(Some(path.clone())).unwrap();
         assert_eq!(
             restarted.snapshot(&run.id).unwrap().status,
-            RuntimeRunStatus::Interrupted
+            RuntimeRunStatus::Running
         );
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn new_manager_replaces_an_expired_owner() {
+        let path = test_path("expired-owner");
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        let expired = store
+            .create_owned_runtime_run(
+                &conversation_id,
+                RuntimeRunAction::Query,
+                "expired-owner",
+                0,
+            )
+            .unwrap();
+        drop(store);
+
+        let manager = RunManager::new(Some(path.clone())).unwrap();
+        let replacement = manager.begin(&conversation_id).unwrap();
+
+        assert_eq!(
+            manager.snapshot(&expired.id).unwrap().status,
+            RuntimeRunStatus::Interrupted
+        );
+        assert_eq!(replacement.status, RuntimeRunStatus::Running);
         let _ = fs::remove_file(path);
     }
 

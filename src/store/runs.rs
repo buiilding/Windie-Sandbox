@@ -4,7 +4,25 @@ use super::*;
 
 impl Store {
     /// Creates one backend-owned runtime run for an existing conversation.
+    #[cfg(test)]
     pub fn create_runtime_run(&self, conversation_id: &ConversationId) -> Result<RuntimeRunRecord> {
+        let now = now_millis()?;
+        self.create_owned_runtime_run(
+            conversation_id,
+            RuntimeRunAction::Query,
+            "store-direct",
+            now + 30_000,
+        )
+    }
+
+    /// Creates one runtime operation owned by a live coordinator lease.
+    pub fn create_owned_runtime_run(
+        &self,
+        conversation_id: &ConversationId,
+        action: RuntimeRunAction,
+        owner_id: &str,
+        lease_expires_at: i64,
+    ) -> Result<RuntimeRunRecord> {
         if !self.conversation_exists(conversation_id)? {
             return Err(error::not_found(format!(
                 "conversation does not exist: {conversation_id}"
@@ -14,21 +32,28 @@ impl Store {
         let record = RuntimeRunRecord {
             id: Uuid::new_v4().to_string(),
             conversation_id: conversation_id.clone(),
+            action,
+            owner_id: owner_id.to_string(),
             status: RuntimeRunStatus::Running,
             error: None,
+            lease_expires_at,
             created_at: now_millis()?,
             updated_at: now_millis()?,
         };
         if let Err(insert_error) = self.connection.execute(
             "
                 INSERT INTO runtime_runs (
-                    id, conversation_id, status, error, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)
+                    id, conversation_id, action, owner_id, status, error,
+                    lease_expires_at, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)
                 ",
             params![
                 record.id,
                 record.conversation_id.as_str(),
+                record.action.as_storage(),
+                record.owner_id,
                 record.status.as_storage(),
+                record.lease_expires_at,
                 record.created_at,
                 record.updated_at,
             ],
@@ -49,7 +74,8 @@ impl Store {
         self.connection
             .query_row(
                 "
-                SELECT id, conversation_id, status, error, created_at, updated_at
+                SELECT id, conversation_id, action, owner_id, status, error,
+                       lease_expires_at, created_at, updated_at
                 FROM runtime_runs
                 WHERE id = ?1
                 ",
@@ -69,15 +95,17 @@ impl Store {
         self.connection
             .query_row(
                 "
-                SELECT id, conversation_id, status, error, created_at, updated_at
+                SELECT id, conversation_id, action, owner_id, status, error,
+                       lease_expires_at, created_at, updated_at
                 FROM runtime_runs
-                WHERE conversation_id = ?1 AND status = ?2
+                WHERE conversation_id = ?1 AND status = ?2 AND lease_expires_at > ?3
                 ORDER BY created_at DESC
                 LIMIT 1
                 ",
                 params![
                     conversation_id.as_str(),
-                    RuntimeRunStatus::Running.as_storage()
+                    RuntimeRunStatus::Running.as_storage(),
+                    now_millis()?
                 ],
                 read_runtime_run_row,
             )
@@ -255,25 +283,52 @@ impl Store {
             .context("failed to decode runtime events")
     }
 
-    /// Marks work left running by a previous process as interrupted.
-    pub fn interrupt_running_runtime_runs(&self) -> Result<()> {
+    /// Renews every running operation owned by one live coordinator.
+    pub fn renew_runtime_run_leases(&self, owner_id: &str, lease_expires_at: i64) -> Result<()> {
         self.connection
             .execute(
                 "
                 UPDATE runtime_runs
-                SET status = ?1,
-                    error = 'Windie stopped before this run completed',
-                    updated_at = ?2
-                WHERE status = ?3
+                SET lease_expires_at = ?2, updated_at = ?3
+                WHERE owner_id = ?1 AND status = 'running'
                 ",
-                params![
-                    RuntimeRunStatus::Interrupted.as_storage(),
-                    now_millis()?,
-                    RuntimeRunStatus::Running.as_storage()
-                ],
+                params![owner_id, lease_expires_at, now_millis()?],
             )
-            .context("failed to mark interrupted runtime runs")?;
+            .context("failed to renew runtime operation leases")?;
+        Ok(())
+    }
 
+    /// Marks expired operations abandoned so new work can acquire ownership.
+    pub fn interrupt_expired_runtime_runs(&self, now: i64) -> Result<()> {
+        self.connection
+            .execute(
+                "
+                UPDATE runtime_runs
+                SET status = 'interrupted',
+                    error = 'Windie runtime ownership lease expired',
+                    updated_at = ?1
+                WHERE status = 'running' AND lease_expires_at <= ?1
+                ",
+                params![now],
+            )
+            .context("failed to interrupt expired runtime operations")?;
+        Ok(())
+    }
+
+    /// Marks operations abandoned when their coordinator shuts down cleanly.
+    pub fn interrupt_runtime_runs_for_owner(&self, owner_id: &str) -> Result<()> {
+        self.connection
+            .execute(
+                "
+                UPDATE runtime_runs
+                SET status = 'interrupted',
+                    error = 'Windie runtime coordinator stopped',
+                    updated_at = ?2
+                WHERE owner_id = ?1 AND status = 'running'
+                ",
+                params![owner_id, now_millis()?],
+            )
+            .context("failed to interrupt owned runtime operations")?;
         Ok(())
     }
 }
@@ -283,10 +338,42 @@ impl Store {
 pub struct RuntimeRunRecord {
     pub id: String,
     pub conversation_id: ConversationId,
+    pub action: RuntimeRunAction,
+    pub owner_id: String,
     pub status: RuntimeRunStatus,
     pub error: Option<String>,
+    pub lease_expires_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Concrete operation owned by one runtime run.
+pub enum RuntimeRunAction {
+    Query,
+    ApproveTool,
+    DenyTool,
+}
+
+impl RuntimeRunAction {
+    /// Returns the SQLite representation for this action.
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::Query => "query",
+            Self::ApproveTool => "approve_tool",
+            Self::DenyTool => "deny_tool",
+        }
+    }
+
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "query" => Some(Self::Query),
+            "approve_tool" => Some(Self::ApproveTool),
+            "deny_tool" => Some(Self::DenyTool),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -332,10 +419,18 @@ impl std::fmt::Display for RuntimeRunStatus {
 }
 
 fn read_runtime_run_row(row: &Row<'_>) -> rusqlite::Result<RuntimeRunRecord> {
-    let status = row.get::<_, String>(2)?;
-    let status = RuntimeRunStatus::from_storage(&status).ok_or_else(|| {
+    let action = row.get::<_, String>(2)?;
+    let action = RuntimeRunAction::from_storage(&action).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
             2,
+            Type::Text,
+            format!("unknown runtime run action: {action}").into(),
+        )
+    })?;
+    let status = row.get::<_, String>(4)?;
+    let status = RuntimeRunStatus::from_storage(&status).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
             Type::Text,
             format!("unknown runtime run status: {status}").into(),
         )
@@ -344,10 +439,13 @@ fn read_runtime_run_row(row: &Row<'_>) -> rusqlite::Result<RuntimeRunRecord> {
     Ok(RuntimeRunRecord {
         id: row.get(0)?,
         conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+        action,
+        owner_id: row.get(3)?,
         status,
-        error: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
+        error: row.get(5)?,
+        lease_expires_at: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 

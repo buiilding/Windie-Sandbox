@@ -540,14 +540,18 @@ async fn query(
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
+    let run = state
+        .run_manager
+        .begin_action(&conversation_id, RuntimeRunAction::Query)?;
     let runtime = runtime_turn_config(&state, request.model_override(), request.reasoning());
-    let message = operation::query_conversation_with_registry(
+    let result = operation::query_conversation_with_registry(
         &ApiOutput,
         &mut store,
         &conversation_id,
         runtime,
     )
-    .await?;
+    .await;
+    let message = state.run_manager.finish_result(&run.id, result)?;
 
     Ok(Json(MessageResponse::from_message(message)))
 }

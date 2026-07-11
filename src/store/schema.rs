@@ -164,8 +164,11 @@ impl Store {
                 CREATE TABLE IF NOT EXISTS runtime_runs (
                     id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     error TEXT,
+                    lease_expires_at INTEGER NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
 

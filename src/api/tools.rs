@@ -350,13 +350,17 @@ async fn approve_tool(
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
     let mut store = open_store(&state)?;
+    let run = state
+        .run_manager
+        .begin_action(&conversation_id, RuntimeRunAction::ApproveTool)?;
     let result = operation::approve_tool_with_registry(
         &mut store,
         &conversation_id,
         &tool_call_id,
         &state.tool_registry,
     )
-    .await?;
+    .await;
+    let result = state.run_manager.finish_result(&run.id, result)?;
 
     Ok(Json(result.into()))
 }
@@ -369,7 +373,11 @@ async fn deny_tool(
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
     let mut store = open_store(&state)?;
-    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
+    let run = state
+        .run_manager
+        .begin_action(&conversation_id, RuntimeRunAction::DenyTool)?;
+    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id);
+    let result = state.run_manager.finish_result(&run.id, result)?;
 
     Ok(Json(result.into()))
 }

@@ -42,11 +42,11 @@ use images::{
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 12;
+const DATABASE_SCHEMA_VERSION: i32 = 13;
 
 pub use compactions::Compaction;
 pub use conversations::ConversationInfo;
-pub use runs::{RuntimeRunEventRecord, RuntimeRunRecord, RuntimeRunStatus};
+pub use runs::{RuntimeRunAction, RuntimeRunEventRecord, RuntimeRunRecord, RuntimeRunStatus};
 
 /// SQLite-backed persistence boundary for conversations, messages, tools, runs,
 /// images, and compactions.

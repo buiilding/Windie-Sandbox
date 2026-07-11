@@ -16,7 +16,8 @@ use crate::llm::{BaseUrl, ModelName};
 use crate::operation::MessageInputPart;
 use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
-use crate::store::Store;
+use crate::run::RunManager;
+use crate::store::{RuntimeRunAction, Store};
 use crate::tool::{ProviderToolName, ToolProviderId};
 use crate::{api, doctor, operation, perf};
 
@@ -448,7 +449,10 @@ fn list_approvals(conversation_id: ConversationId) -> Result<()> {
 async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
-    let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await?;
+    let runs = RunManager::new(None)?;
+    let run = runs.begin_action(&conversation_id, RuntimeRunAction::ApproveTool)?;
+    let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await;
+    let result = runs.finish_result(&run.id, result)?;
 
     output.tool_execution_result(&result);
 
@@ -459,7 +463,10 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
 fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
-    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
+    let runs = RunManager::new(None)?;
+    let run = runs.begin_action(&conversation_id, RuntimeRunAction::DenyTool)?;
+    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id);
+    let result = runs.finish_result(&run.id, result)?;
 
     output.tool_execution_result(&result);
 
@@ -530,8 +537,10 @@ async fn list_models() -> Result<()> {
 async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
+    let runs = RunManager::new(None)?;
+    let run = runs.begin_action(&conversation_id, RuntimeRunAction::Query)?;
 
-    operation::query_conversation(
+    let result = operation::query_conversation(
         &output,
         &mut store,
         &conversation_id,
@@ -540,7 +549,8 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
         model,
         None,
     )
-    .await?;
+    .await;
+    runs.finish_result(&run.id, result)?;
 
     Ok(())
 }

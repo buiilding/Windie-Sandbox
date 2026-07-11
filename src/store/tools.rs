@@ -129,23 +129,6 @@ impl Store {
         Ok(())
     }
 
-    /// Marks tool calls abandoned by a stopped Windie process as retryable.
-    pub fn interrupt_running_tool_call_executions(&self) -> Result<()> {
-        self.connection
-            .execute(
-                "
-                UPDATE tool_call_executions
-                SET status = 'interrupted',
-                    error = 'Windie stopped before this tool call completed',
-                    updated_at = ?1
-                WHERE status = 'executing'
-                ",
-                params![now_millis()?],
-            )
-            .context("failed to mark interrupted tool call executions")?;
-        Ok(())
-    }
-
     /// Loads all attached provider tools configured on one conversation.
     ///
     /// Attached tools are conversation-level model inputs plus provider

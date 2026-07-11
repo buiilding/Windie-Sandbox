@@ -48,7 +48,7 @@ use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::paths;
 use crate::run::{RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription};
 use crate::runtime::RuntimeEventSink;
-use crate::store::{ConversationInfo, Store};
+use crate::store::{ConversationInfo, RuntimeRunAction, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
     ToolProviderId,
