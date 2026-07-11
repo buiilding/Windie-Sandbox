@@ -11,28 +11,14 @@
     "sonner": "2.0.3"
   },
   "scripts": {
-    "start": "craco start",
-    "build": "craco build",
-    "test": "craco test"
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
+    "start": "vite",
+    "build": "vite build"
   },
   "devDependencies": {
-    "@craco/craco": "7.1.0",
+    "@vitejs/plugin-react": "6.0.3",
     "autoprefixer": "10.4.20",
-    "eslint": "8.57.1",
     "postcss": "8.5.10",
-    "react-scripts": "5.0.1",
-    "tailwindcss": "3.4.17"
+    "tailwindcss": "3.4.17",
+    "vite": "8.1.4"
   }
 }

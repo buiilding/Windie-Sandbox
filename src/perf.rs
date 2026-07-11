@@ -5,6 +5,7 @@
 //! Conversation benchmarks avoid provider calls. Live benchmarks are explicit
 //! because they send a real provider request.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,7 +54,7 @@ const FAKE_MCP_COMMAND: McpCommand = McpCommand {
     env: &[],
 };
 
-const REPORT_FORMAT_VERSION: u32 = 3;
+const REPORT_FORMAT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -98,64 +99,95 @@ impl Default for BenchmarkOptions {
     }
 }
 
-/// Timings collected by one benchmark run.
-///
-/// Fields are optional because each benchmark mode measures a different path.
+macro_rules! metric_catalog {
+    ($name:ident; $( $variant:ident => ($key:literal, $label:literal) ),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        pub enum $name { $( $variant ),+ }
+
+        impl $name {
+            pub const ALL: &[Self] = &[$( Self::$variant ),+];
+
+            pub fn key(self) -> &'static str {
+                match self { $( Self::$variant => $key ),+ }
+            }
+
+            pub fn label(self) -> &'static str {
+                match self { $( Self::$variant => $label ),+ }
+            }
+
+            fn from_key(key: &str) -> Option<Self> {
+                Self::ALL.iter().copied().find(|metric| metric.key() == key)
+            }
+        }
+    };
+}
+
+metric_catalog! {
+    MetricName;
+    StoreOpen => ("store_open", "store open"),
+    ActivePathLoad => ("active_path_load", "active path load"),
+    ActiveMessageLookup => ("active_message_lookup", "active message lookup"),
+    ActivePathRowLoad => ("active_path_row_load", "active path row load"),
+    ActivePathPartLoad => ("active_path_part_load", "active path part/image load"),
+    TreeLoad => ("tree_load", "tree load"),
+    TreeRowLoad => ("tree_row_load", "tree row load"),
+    TreePartLoad => ("tree_part_load", "tree part/image load"),
+    ToolSchemaLoad => ("tool_schema_load", "tool schema load"),
+    ContextBuild => ("context_build", "context build"),
+    ContextActivePathLoad => ("context_active_path_load", "context active path load"),
+    ContextSystemPromptLoad => ("context_system_prompt_load", "context system prompt load"),
+    ContextCompactionLoad => ("context_compaction_load", "context compaction load"),
+    ContextFlatten => ("context_flatten", "context flatten"),
+    PrepareQueryTurn => ("prepare_query_turn", "prepare query turn"),
+    PendingToolApprovalScan => ("pending_tool_approval_scan", "pending tool approval scan"),
+    ToolResultInsert => ("tool_result_insert", "tool result insert"),
+    DenyToolResultPersist => ("deny_tool_result_persist", "deny tool result persist"),
+    SpliceRemove => ("splice_remove", "splice remove"),
+    Truncate => ("truncate", "truncate"),
+    ContextBuildAfterToolChain => ("context_build_after_tool_chain", "context build after tool chain"),
+    ActivePathLoad100 => ("active_path_load_100", "active path load 100"),
+    ActivePathLoad1000 => ("active_path_load_1000", "active path load 1000"),
+    PendingToolApprovalScanLongPath => ("pending_tool_approval_scan_long_path", "pending tool approval scan long path"),
+    PendingToolApprovalScanDeepChain => ("pending_tool_approval_scan_deep_chain", "pending tool approval scan deep chain"),
+    PrepareQueryNoTools => ("prepare_query_no_tools", "prepare query no tools"),
+    PrepareQueryCompletedToolChain => ("prepare_query_completed_tool_chain", "prepare query completed tool chain"),
+    PrepareQueryRequiresApproval => ("prepare_query_requires_approval", "prepare query requires approval"),
+    PrepareQueryPolicyDenied => ("prepare_query_policy_denied", "prepare query policy denied"),
+    SpliceRemoveBranchPoint => ("splice_remove_branch_point", "splice remove branch point"),
+    SpliceRemoveRootManyChildren => ("splice_remove_root_many_children", "splice remove root many children"),
+    SpliceRemoveToolGroup => ("splice_remove_tool_group", "splice remove tool group"),
+    TruncateLargeSubtree => ("truncate_large_subtree", "truncate large subtree"),
+    ContextBuildPlain100 => ("context_build_plain_100", "context build plain 100"),
+    ContextBuildPlain1000 => ("context_build_plain_1000", "context build plain 1000"),
+    ContextBuildWithSystemPrompt => ("context_build_with_system_prompt", "context build with system prompt"),
+    ContextBuildWithCompaction => ("context_build_with_compaction", "context build with compaction"),
+    ContextBuildWithImageParts => ("context_build_with_image_parts", "context build with image parts"),
+    ProviderToolAttachLoad => ("provider_tool_attach_load", "provider tool attach/load"),
+    FakeMcpListCall => ("fake_mcp_list_call", "fake mcp list/call"),
+    GatewayReady => ("gateway_ready", "gateway ready"),
+    FirstToken => ("first_token", "first token"),
+    FullResponse => ("full_response", "full response"),
+}
+
+metric_catalog! {
+    CountName;
+    ActivePathMessages => ("active_path_messages", "active path messages"),
+    TreeMessages => ("tree_messages", "tree messages"),
+    RequestedToolCalls => ("requested_tool_calls", "requested tool calls"),
+    ResolvedToolResults => ("resolved_tool_results", "resolved tool results"),
+    DeletedMessages => ("deleted_messages", "deleted messages"),
+    PromotedChildren => ("promoted_children", "promoted children"),
+    TruncatedMessages => ("truncated_messages", "truncated messages"),
+    ResponseBytes => ("response_bytes", "response bytes"),
+}
+
+/// Timings and counts collected by one benchmark run.
 pub struct PerformanceBaseline {
     pub mode: BenchmarkMode,
     pub model: ModelName,
     pub conversation_id: Option<ConversationId>,
-    pub store_open: Option<Duration>,
-    pub conversation_load: Option<Duration>,
-    pub active_message_lookup: Option<Duration>,
-    pub active_path_row_load: Option<Duration>,
-    pub active_path_part_load: Option<Duration>,
-    pub tree_load: Option<Duration>,
-    pub tree_row_load: Option<Duration>,
-    pub tree_part_load: Option<Duration>,
-    pub tool_schema_load: Option<Duration>,
-    pub context_build: Option<Duration>,
-    pub context_active_path_load: Option<Duration>,
-    pub context_system_prompt_load: Option<Duration>,
-    pub context_compaction_load: Option<Duration>,
-    pub context_flatten: Option<Duration>,
-    pub prepare_query_turn: Option<Duration>,
-    pub pending_tool_approval_scan: Option<Duration>,
-    pub tool_result_insert: Option<Duration>,
-    pub deny_tool_result_persist: Option<Duration>,
-    pub splice_remove: Option<Duration>,
-    pub truncate: Option<Duration>,
-    pub context_build_after_tool_chain: Option<Duration>,
-    pub active_path_load_100: Option<Duration>,
-    pub active_path_load_1000: Option<Duration>,
-    pub pending_tool_approval_scan_long_path: Option<Duration>,
-    pub pending_tool_approval_scan_deep_chain: Option<Duration>,
-    pub prepare_query_no_tools: Option<Duration>,
-    pub prepare_query_completed_tool_chain: Option<Duration>,
-    pub prepare_query_requires_approval: Option<Duration>,
-    pub prepare_query_policy_denied: Option<Duration>,
-    pub splice_remove_branch_point: Option<Duration>,
-    pub splice_remove_root_many_children: Option<Duration>,
-    pub splice_remove_tool_group: Option<Duration>,
-    pub truncate_large_subtree: Option<Duration>,
-    pub context_build_plain_100: Option<Duration>,
-    pub context_build_plain_1000: Option<Duration>,
-    pub context_build_with_system_prompt: Option<Duration>,
-    pub context_build_with_compaction: Option<Duration>,
-    pub context_build_with_image_parts: Option<Duration>,
-    pub provider_tool_attach_load: Option<Duration>,
-    pub fake_mcp_list_call: Option<Duration>,
-    pub loaded_messages: Option<usize>,
-    pub tree_messages: Option<usize>,
-    pub requested_tool_calls: Option<usize>,
-    pub resolved_tool_results: Option<usize>,
-    pub deleted_messages: Option<usize>,
-    pub promoted_children: Option<usize>,
-    pub truncated_messages: Option<usize>,
-    pub gateway_ready: Option<Duration>,
-    pub first_token: Option<Duration>,
-    pub full_response: Option<Duration>,
-    pub response_bytes: Option<usize>,
+    durations: BTreeMap<MetricName, Duration>,
+    counts: BTreeMap<CountName, usize>,
 }
 
 /// Persistent benchmark artifact written by `windie bench --json`.
@@ -174,166 +206,16 @@ pub struct PerformanceReport {
 }
 
 /// One serialized benchmark sample.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct PerformanceSample {
-    pub store_open_us: Option<u64>,
-    pub active_path_load_us: Option<u64>,
-    pub active_message_lookup_us: Option<u64>,
-    pub active_path_row_load_us: Option<u64>,
-    pub active_path_part_load_us: Option<u64>,
-    pub tree_load_us: Option<u64>,
-    pub tree_row_load_us: Option<u64>,
-    pub tree_part_load_us: Option<u64>,
-    #[serde(default)]
-    pub tool_schema_load_us: Option<u64>,
-    pub context_build_us: Option<u64>,
-    pub context_active_path_load_us: Option<u64>,
-    pub context_system_prompt_load_us: Option<u64>,
-    pub context_compaction_load_us: Option<u64>,
-    pub context_flatten_us: Option<u64>,
-    #[serde(default)]
-    pub prepare_query_turn_us: Option<u64>,
-    #[serde(default)]
-    pub pending_tool_approval_scan_us: Option<u64>,
-    #[serde(default)]
-    pub tool_result_insert_us: Option<u64>,
-    #[serde(default)]
-    pub deny_tool_result_persist_us: Option<u64>,
-    #[serde(default)]
-    pub splice_remove_us: Option<u64>,
-    #[serde(default)]
-    pub truncate_us: Option<u64>,
-    #[serde(default)]
-    pub context_build_after_tool_chain_us: Option<u64>,
-    #[serde(default)]
-    pub active_path_load_100_us: Option<u64>,
-    #[serde(default)]
-    pub active_path_load_1000_us: Option<u64>,
-    #[serde(default)]
-    pub pending_tool_approval_scan_long_path_us: Option<u64>,
-    #[serde(default)]
-    pub pending_tool_approval_scan_deep_chain_us: Option<u64>,
-    #[serde(default)]
-    pub prepare_query_no_tools_us: Option<u64>,
-    #[serde(default)]
-    pub prepare_query_completed_tool_chain_us: Option<u64>,
-    #[serde(default)]
-    pub prepare_query_requires_approval_us: Option<u64>,
-    #[serde(default)]
-    pub prepare_query_policy_denied_us: Option<u64>,
-    #[serde(default)]
-    pub splice_remove_branch_point_us: Option<u64>,
-    #[serde(default)]
-    pub splice_remove_root_many_children_us: Option<u64>,
-    #[serde(default)]
-    pub splice_remove_tool_group_us: Option<u64>,
-    #[serde(default)]
-    pub truncate_large_subtree_us: Option<u64>,
-    #[serde(default)]
-    pub context_build_plain_100_us: Option<u64>,
-    #[serde(default)]
-    pub context_build_plain_1000_us: Option<u64>,
-    #[serde(default)]
-    pub context_build_with_system_prompt_us: Option<u64>,
-    #[serde(default)]
-    pub context_build_with_compaction_us: Option<u64>,
-    #[serde(default)]
-    pub context_build_with_image_parts_us: Option<u64>,
-    #[serde(default)]
-    pub provider_tool_attach_load_us: Option<u64>,
-    #[serde(default)]
-    pub fake_mcp_list_call_us: Option<u64>,
-    pub active_path_messages: Option<usize>,
-    pub tree_messages: Option<usize>,
-    #[serde(default)]
-    pub requested_tool_calls: Option<usize>,
-    #[serde(default)]
-    pub resolved_tool_results: Option<usize>,
-    #[serde(default)]
-    pub deleted_messages: Option<usize>,
-    #[serde(default)]
-    pub promoted_children: Option<usize>,
-    #[serde(default)]
-    pub truncated_messages: Option<usize>,
-    pub gateway_ready_us: Option<u64>,
-    pub first_token_us: Option<u64>,
-    pub full_response_us: Option<u64>,
-    pub response_bytes: Option<usize>,
+    durations_us: BTreeMap<MetricName, u64>,
+    counts: BTreeMap<CountName, usize>,
 }
 
 /// Aggregated duration metrics across all benchmark samples.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct PerformanceSummary {
-    pub store_open: Option<DurationMetric>,
-    pub active_path_load: Option<DurationMetric>,
-    pub active_message_lookup: Option<DurationMetric>,
-    pub active_path_row_load: Option<DurationMetric>,
-    pub active_path_part_load: Option<DurationMetric>,
-    pub tree_load: Option<DurationMetric>,
-    pub tree_row_load: Option<DurationMetric>,
-    pub tree_part_load: Option<DurationMetric>,
-    #[serde(default)]
-    pub tool_schema_load: Option<DurationMetric>,
-    pub context_build: Option<DurationMetric>,
-    pub context_active_path_load: Option<DurationMetric>,
-    pub context_system_prompt_load: Option<DurationMetric>,
-    pub context_compaction_load: Option<DurationMetric>,
-    pub context_flatten: Option<DurationMetric>,
-    #[serde(default)]
-    pub prepare_query_turn: Option<DurationMetric>,
-    #[serde(default)]
-    pub pending_tool_approval_scan: Option<DurationMetric>,
-    #[serde(default)]
-    pub tool_result_insert: Option<DurationMetric>,
-    #[serde(default)]
-    pub deny_tool_result_persist: Option<DurationMetric>,
-    #[serde(default)]
-    pub splice_remove: Option<DurationMetric>,
-    #[serde(default)]
-    pub truncate: Option<DurationMetric>,
-    #[serde(default)]
-    pub context_build_after_tool_chain: Option<DurationMetric>,
-    #[serde(default)]
-    pub active_path_load_100: Option<DurationMetric>,
-    #[serde(default)]
-    pub active_path_load_1000: Option<DurationMetric>,
-    #[serde(default)]
-    pub pending_tool_approval_scan_long_path: Option<DurationMetric>,
-    #[serde(default)]
-    pub pending_tool_approval_scan_deep_chain: Option<DurationMetric>,
-    #[serde(default)]
-    pub prepare_query_no_tools: Option<DurationMetric>,
-    #[serde(default)]
-    pub prepare_query_completed_tool_chain: Option<DurationMetric>,
-    #[serde(default)]
-    pub prepare_query_requires_approval: Option<DurationMetric>,
-    #[serde(default)]
-    pub prepare_query_policy_denied: Option<DurationMetric>,
-    #[serde(default)]
-    pub splice_remove_branch_point: Option<DurationMetric>,
-    #[serde(default)]
-    pub splice_remove_root_many_children: Option<DurationMetric>,
-    #[serde(default)]
-    pub splice_remove_tool_group: Option<DurationMetric>,
-    #[serde(default)]
-    pub truncate_large_subtree: Option<DurationMetric>,
-    #[serde(default)]
-    pub context_build_plain_100: Option<DurationMetric>,
-    #[serde(default)]
-    pub context_build_plain_1000: Option<DurationMetric>,
-    #[serde(default)]
-    pub context_build_with_system_prompt: Option<DurationMetric>,
-    #[serde(default)]
-    pub context_build_with_compaction: Option<DurationMetric>,
-    #[serde(default)]
-    pub context_build_with_image_parts: Option<DurationMetric>,
-    #[serde(default)]
-    pub provider_tool_attach_load: Option<DurationMetric>,
-    #[serde(default)]
-    pub fake_mcp_list_call: Option<DurationMetric>,
-    pub gateway_ready: Option<DurationMetric>,
-    pub first_token: Option<DurationMetric>,
-    pub full_response: Option<DurationMetric>,
+    metrics: BTreeMap<MetricName, DurationMetric>,
 }
 
 /// Summary of one duration field, in integer microseconds.
@@ -343,6 +225,118 @@ pub struct DurationMetric {
     pub median_us: u64,
     pub p95_us: u64,
     pub max_us: u64,
+}
+
+impl Serialize for PerformanceSample {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut values = BTreeMap::new();
+        for (name, value) in &self.durations_us {
+            values.insert(format!("{}_us", name.key()), *value);
+        }
+        for (name, value) in &self.counts {
+            values.insert(name.key().to_string(), *value as u64);
+        }
+        values.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PerformanceSample {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = BTreeMap::<String, Option<u64>>::deserialize(deserializer)?;
+        let mut sample = Self::default();
+        for (key, value) in values {
+            let Some(value) = value else { continue };
+            if let Some(metric) = key.strip_suffix("_us").and_then(MetricName::from_key) {
+                sample.durations_us.insert(metric, value);
+            } else if let Some(count) = CountName::from_key(&key) {
+                let value = usize::try_from(value).map_err(serde::de::Error::custom)?;
+                sample.counts.insert(count, value);
+            }
+        }
+        Ok(sample)
+    }
+}
+
+impl Serialize for PerformanceSummary {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.metrics
+            .iter()
+            .map(|(name, metric)| (name.key(), metric))
+            .collect::<BTreeMap<_, _>>()
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PerformanceSummary {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = BTreeMap::<String, Option<DurationMetric>>::deserialize(deserializer)?;
+        Ok(Self {
+            metrics: values
+                .into_iter()
+                .filter_map(|(key, value)| MetricName::from_key(&key).zip(value))
+                .collect(),
+        })
+    }
+}
+
+impl PerformanceBaseline {
+    pub fn durations(&self) -> impl Iterator<Item = (MetricName, Duration)> + '_ {
+        MetricName::ALL.iter().filter_map(|name| {
+            self.durations
+                .get(name)
+                .copied()
+                .map(|value| (*name, value))
+        })
+    }
+
+    pub fn counts(&self) -> impl Iterator<Item = (CountName, usize)> + '_ {
+        CountName::ALL
+            .iter()
+            .filter_map(|name| self.counts.get(name).copied().map(|value| (*name, value)))
+    }
+
+    fn record(&mut self, name: MetricName, value: Duration) {
+        self.durations.insert(name, value);
+    }
+
+    fn record_optional(&mut self, name: MetricName, value: Option<Duration>) {
+        if let Some(value) = value {
+            self.record(name, value);
+        }
+    }
+
+    fn count(&mut self, name: CountName, value: usize) {
+        self.counts.insert(name, value);
+    }
+}
+
+impl PerformanceSummary {
+    pub fn metrics(&self) -> impl Iterator<Item = (MetricName, &DurationMetric)> {
+        MetricName::ALL
+            .iter()
+            .filter_map(|name| self.metrics.get(name).map(|value| (*name, value)))
+    }
+
+    pub fn get(&self, name: MetricName) -> Option<&DurationMetric> {
+        self.metrics.get(&name)
+    }
+
+    #[cfg(test)]
+    pub fn insert(&mut self, name: MetricName, metric: DurationMetric) {
+        self.metrics.insert(name, metric);
+    }
 }
 
 /// Difference between two persisted benchmark reports.
@@ -401,6 +395,105 @@ struct RuntimeBenchmarkTimings {
     truncated_messages: usize,
 }
 
+impl RuntimeBenchmarkTimings {
+    fn durations(&self) -> [(MetricName, Duration); 26] {
+        [
+            (MetricName::PrepareQueryTurn, self.prepare_query_turn),
+            (
+                MetricName::PendingToolApprovalScan,
+                self.pending_tool_approval_scan,
+            ),
+            (MetricName::ToolResultInsert, self.tool_result_insert),
+            (
+                MetricName::DenyToolResultPersist,
+                self.deny_tool_result_persist,
+            ),
+            (MetricName::SpliceRemove, self.splice_remove),
+            (MetricName::Truncate, self.truncate),
+            (
+                MetricName::ContextBuildAfterToolChain,
+                self.context_build_after_tool_chain,
+            ),
+            (MetricName::ActivePathLoad100, self.active_path_load_100),
+            (MetricName::ActivePathLoad1000, self.active_path_load_1000),
+            (
+                MetricName::PendingToolApprovalScanLongPath,
+                self.pending_tool_approval_scan_long_path,
+            ),
+            (
+                MetricName::PendingToolApprovalScanDeepChain,
+                self.pending_tool_approval_scan_deep_chain,
+            ),
+            (MetricName::PrepareQueryNoTools, self.prepare_query_no_tools),
+            (
+                MetricName::PrepareQueryCompletedToolChain,
+                self.prepare_query_completed_tool_chain,
+            ),
+            (
+                MetricName::PrepareQueryRequiresApproval,
+                self.prepare_query_requires_approval,
+            ),
+            (
+                MetricName::PrepareQueryPolicyDenied,
+                self.prepare_query_policy_denied,
+            ),
+            (
+                MetricName::SpliceRemoveBranchPoint,
+                self.splice_remove_branch_point,
+            ),
+            (
+                MetricName::SpliceRemoveRootManyChildren,
+                self.splice_remove_root_many_children,
+            ),
+            (
+                MetricName::SpliceRemoveToolGroup,
+                self.splice_remove_tool_group,
+            ),
+            (
+                MetricName::TruncateLargeSubtree,
+                self.truncate_large_subtree,
+            ),
+            (
+                MetricName::ContextBuildPlain100,
+                self.context_build_plain_100,
+            ),
+            (
+                MetricName::ContextBuildPlain1000,
+                self.context_build_plain_1000,
+            ),
+            (
+                MetricName::ContextBuildWithSystemPrompt,
+                self.context_build_with_system_prompt,
+            ),
+            (
+                MetricName::ContextBuildWithCompaction,
+                self.context_build_with_compaction,
+            ),
+            (
+                MetricName::ContextBuildWithImageParts,
+                self.context_build_with_image_parts,
+            ),
+            (
+                MetricName::ProviderToolAttachLoad,
+                self.provider_tool_attach_load,
+            ),
+            (MetricName::FakeMcpListCall, self.fake_mcp_list_call),
+        ]
+    }
+
+    fn counts(&self) -> [(CountName, usize); 7] {
+        [
+            (CountName::ActivePathMessages, self.active_path_messages),
+            (CountName::TreeMessages, self.tree_messages),
+            (CountName::RequestedToolCalls, self.requested_tool_calls),
+            (CountName::ResolvedToolResults, self.resolved_tool_results),
+            (CountName::DeletedMessages, self.deleted_messages),
+            (CountName::PromotedChildren, self.promoted_children),
+            (CountName::TruncatedMessages, self.truncated_messages),
+        ]
+    }
+}
+
 /// Counts and duration from the context-after-tool-chain scenario.
 struct RuntimeContextBenchmark {
     duration: Duration,
@@ -425,57 +518,8 @@ pub async fn run(
         mode,
         model,
         conversation_id,
-        store_open: None,
-        conversation_load: None,
-        active_message_lookup: None,
-        active_path_row_load: None,
-        active_path_part_load: None,
-        tree_load: None,
-        tree_row_load: None,
-        tree_part_load: None,
-        tool_schema_load: None,
-        context_build: None,
-        context_active_path_load: None,
-        context_system_prompt_load: None,
-        context_compaction_load: None,
-        context_flatten: None,
-        prepare_query_turn: None,
-        pending_tool_approval_scan: None,
-        tool_result_insert: None,
-        deny_tool_result_persist: None,
-        splice_remove: None,
-        truncate: None,
-        context_build_after_tool_chain: None,
-        active_path_load_100: None,
-        active_path_load_1000: None,
-        pending_tool_approval_scan_long_path: None,
-        pending_tool_approval_scan_deep_chain: None,
-        prepare_query_no_tools: None,
-        prepare_query_completed_tool_chain: None,
-        prepare_query_requires_approval: None,
-        prepare_query_policy_denied: None,
-        splice_remove_branch_point: None,
-        splice_remove_root_many_children: None,
-        splice_remove_tool_group: None,
-        truncate_large_subtree: None,
-        context_build_plain_100: None,
-        context_build_plain_1000: None,
-        context_build_with_system_prompt: None,
-        context_build_with_compaction: None,
-        context_build_with_image_parts: None,
-        provider_tool_attach_load: None,
-        fake_mcp_list_call: None,
-        loaded_messages: None,
-        tree_messages: None,
-        requested_tool_calls: None,
-        resolved_tool_results: None,
-        deleted_messages: None,
-        promoted_children: None,
-        truncated_messages: None,
-        gateway_ready: None,
-        first_token: None,
-        full_response: None,
-        response_bytes: None,
+        durations: BTreeMap::new(),
+        counts: BTreeMap::new(),
     };
 
     match mode {
@@ -553,75 +597,45 @@ pub async fn run(
             let context_flatten = context_flatten_started.elapsed();
             let context_build = context_started.elapsed();
 
-            baseline.store_open = Some(store_open);
-            baseline.conversation_load = Some(conversation_load);
-            baseline.active_message_lookup = Some(active_message_lookup);
-            baseline.active_path_row_load = Some(active_path_row_load);
-            baseline.active_path_part_load = Some(active_path_part_load);
-            baseline.tree_load = Some(tree_load);
-            baseline.tree_row_load = Some(tree_row_load);
-            baseline.tree_part_load = Some(tree_part_load);
-            baseline.tool_schema_load = Some(tool_schema_load);
-            baseline.context_build = Some(context_build);
-            baseline.context_active_path_load = Some(context_active_path_load);
-            baseline.context_system_prompt_load = Some(context_system_prompt_load);
-            baseline.context_compaction_load = Some(context_compaction_load);
-            baseline.context_flatten = Some(context_flatten);
-            baseline.loaded_messages = Some(loaded_messages);
-            baseline.tree_messages = Some(tree_messages);
+            baseline.record(MetricName::StoreOpen, store_open);
+            baseline.record(MetricName::ActivePathLoad, conversation_load);
+            baseline.record(MetricName::ActiveMessageLookup, active_message_lookup);
+            baseline.record(MetricName::ActivePathRowLoad, active_path_row_load);
+            baseline.record(MetricName::ActivePathPartLoad, active_path_part_load);
+            baseline.record(MetricName::TreeLoad, tree_load);
+            baseline.record(MetricName::TreeRowLoad, tree_row_load);
+            baseline.record(MetricName::TreePartLoad, tree_part_load);
+            baseline.record(MetricName::ToolSchemaLoad, tool_schema_load);
+            baseline.record(MetricName::ContextBuild, context_build);
+            baseline.record(MetricName::ContextActivePathLoad, context_active_path_load);
+            baseline.record(
+                MetricName::ContextSystemPromptLoad,
+                context_system_prompt_load,
+            );
+            baseline.record(MetricName::ContextCompactionLoad, context_compaction_load);
+            baseline.record(MetricName::ContextFlatten, context_flatten);
+            baseline.count(CountName::ActivePathMessages, loaded_messages);
+            baseline.count(CountName::TreeMessages, tree_messages);
         }
         BenchmarkMode::Runtime => {
             let runtime = run_runtime_benchmark()?;
-            baseline.prepare_query_turn = Some(runtime.prepare_query_turn);
-            baseline.pending_tool_approval_scan = Some(runtime.pending_tool_approval_scan);
-            baseline.tool_result_insert = Some(runtime.tool_result_insert);
-            baseline.deny_tool_result_persist = Some(runtime.deny_tool_result_persist);
-            baseline.splice_remove = Some(runtime.splice_remove);
-            baseline.truncate = Some(runtime.truncate);
-            baseline.context_build_after_tool_chain = Some(runtime.context_build_after_tool_chain);
-            baseline.active_path_load_100 = Some(runtime.active_path_load_100);
-            baseline.active_path_load_1000 = Some(runtime.active_path_load_1000);
-            baseline.pending_tool_approval_scan_long_path =
-                Some(runtime.pending_tool_approval_scan_long_path);
-            baseline.pending_tool_approval_scan_deep_chain =
-                Some(runtime.pending_tool_approval_scan_deep_chain);
-            baseline.prepare_query_no_tools = Some(runtime.prepare_query_no_tools);
-            baseline.prepare_query_completed_tool_chain =
-                Some(runtime.prepare_query_completed_tool_chain);
-            baseline.prepare_query_requires_approval =
-                Some(runtime.prepare_query_requires_approval);
-            baseline.prepare_query_policy_denied = Some(runtime.prepare_query_policy_denied);
-            baseline.splice_remove_branch_point = Some(runtime.splice_remove_branch_point);
-            baseline.splice_remove_root_many_children =
-                Some(runtime.splice_remove_root_many_children);
-            baseline.splice_remove_tool_group = Some(runtime.splice_remove_tool_group);
-            baseline.truncate_large_subtree = Some(runtime.truncate_large_subtree);
-            baseline.context_build_plain_100 = Some(runtime.context_build_plain_100);
-            baseline.context_build_plain_1000 = Some(runtime.context_build_plain_1000);
-            baseline.context_build_with_system_prompt =
-                Some(runtime.context_build_with_system_prompt);
-            baseline.context_build_with_compaction = Some(runtime.context_build_with_compaction);
-            baseline.context_build_with_image_parts = Some(runtime.context_build_with_image_parts);
-            baseline.provider_tool_attach_load = Some(runtime.provider_tool_attach_load);
-            baseline.fake_mcp_list_call = Some(runtime.fake_mcp_list_call);
-            baseline.loaded_messages = Some(runtime.active_path_messages);
-            baseline.tree_messages = Some(runtime.tree_messages);
-            baseline.requested_tool_calls = Some(runtime.requested_tool_calls);
-            baseline.resolved_tool_results = Some(runtime.resolved_tool_results);
-            baseline.deleted_messages = Some(runtime.deleted_messages);
-            baseline.promoted_children = Some(runtime.promoted_children);
-            baseline.truncated_messages = Some(runtime.truncated_messages);
+            for (name, value) in runtime.durations() {
+                baseline.record(name, value);
+            }
+            for (name, value) in runtime.counts() {
+                baseline.count(name, value);
+            }
         }
         BenchmarkMode::Live => {
             let gateway = BifrostGateway::new(gateway_url);
             let gateway_started = Instant::now();
             gateway.require_running().await?;
-            baseline.gateway_ready = Some(gateway_started.elapsed());
+            baseline.record(MetricName::GatewayReady, gateway_started.elapsed());
             let (first_token, full_response, response_bytes) =
                 run_live_request(&base_url, &baseline.model).await?;
-            baseline.first_token = first_token;
-            baseline.full_response = Some(full_response);
-            baseline.response_bytes = Some(response_bytes);
+            baseline.record_optional(MetricName::FirstToken, first_token);
+            baseline.record(MetricName::FullResponse, full_response);
+            baseline.count(CountName::ResponseBytes, response_bytes);
         }
     }
 
@@ -1493,275 +1507,33 @@ async fn run_live_request(
 }
 
 impl PerformanceSample {
-    /// Converts the in-memory timing result into JSON-safe primitive values.
+    /// Converts one in-memory timing result into JSON-safe primitive values.
     fn from_baseline(baseline: &PerformanceBaseline) -> Self {
         Self {
-            store_open_us: baseline.store_open.map(duration_micros),
-            active_path_load_us: baseline.conversation_load.map(duration_micros),
-            active_message_lookup_us: baseline.active_message_lookup.map(duration_micros),
-            active_path_row_load_us: baseline.active_path_row_load.map(duration_micros),
-            active_path_part_load_us: baseline.active_path_part_load.map(duration_micros),
-            tree_load_us: baseline.tree_load.map(duration_micros),
-            tree_row_load_us: baseline.tree_row_load.map(duration_micros),
-            tree_part_load_us: baseline.tree_part_load.map(duration_micros),
-            tool_schema_load_us: baseline.tool_schema_load.map(duration_micros),
-            context_build_us: baseline.context_build.map(duration_micros),
-            context_active_path_load_us: baseline.context_active_path_load.map(duration_micros),
-            context_system_prompt_load_us: baseline.context_system_prompt_load.map(duration_micros),
-            context_compaction_load_us: baseline.context_compaction_load.map(duration_micros),
-            context_flatten_us: baseline.context_flatten.map(duration_micros),
-            prepare_query_turn_us: baseline.prepare_query_turn.map(duration_micros),
-            pending_tool_approval_scan_us: baseline.pending_tool_approval_scan.map(duration_micros),
-            tool_result_insert_us: baseline.tool_result_insert.map(duration_micros),
-            deny_tool_result_persist_us: baseline.deny_tool_result_persist.map(duration_micros),
-            splice_remove_us: baseline.splice_remove.map(duration_micros),
-            truncate_us: baseline.truncate.map(duration_micros),
-            context_build_after_tool_chain_us: baseline
-                .context_build_after_tool_chain
-                .map(duration_micros),
-            active_path_load_100_us: baseline.active_path_load_100.map(duration_micros),
-            active_path_load_1000_us: baseline.active_path_load_1000.map(duration_micros),
-            pending_tool_approval_scan_long_path_us: baseline
-                .pending_tool_approval_scan_long_path
-                .map(duration_micros),
-            pending_tool_approval_scan_deep_chain_us: baseline
-                .pending_tool_approval_scan_deep_chain
-                .map(duration_micros),
-            prepare_query_no_tools_us: baseline.prepare_query_no_tools.map(duration_micros),
-            prepare_query_completed_tool_chain_us: baseline
-                .prepare_query_completed_tool_chain
-                .map(duration_micros),
-            prepare_query_requires_approval_us: baseline
-                .prepare_query_requires_approval
-                .map(duration_micros),
-            prepare_query_policy_denied_us: baseline
-                .prepare_query_policy_denied
-                .map(duration_micros),
-            splice_remove_branch_point_us: baseline.splice_remove_branch_point.map(duration_micros),
-            splice_remove_root_many_children_us: baseline
-                .splice_remove_root_many_children
-                .map(duration_micros),
-            splice_remove_tool_group_us: baseline.splice_remove_tool_group.map(duration_micros),
-            truncate_large_subtree_us: baseline.truncate_large_subtree.map(duration_micros),
-            context_build_plain_100_us: baseline.context_build_plain_100.map(duration_micros),
-            context_build_plain_1000_us: baseline.context_build_plain_1000.map(duration_micros),
-            context_build_with_system_prompt_us: baseline
-                .context_build_with_system_prompt
-                .map(duration_micros),
-            context_build_with_compaction_us: baseline
-                .context_build_with_compaction
-                .map(duration_micros),
-            context_build_with_image_parts_us: baseline
-                .context_build_with_image_parts
-                .map(duration_micros),
-            provider_tool_attach_load_us: baseline.provider_tool_attach_load.map(duration_micros),
-            fake_mcp_list_call_us: baseline.fake_mcp_list_call.map(duration_micros),
-            active_path_messages: baseline.loaded_messages,
-            tree_messages: baseline.tree_messages,
-            requested_tool_calls: baseline.requested_tool_calls,
-            resolved_tool_results: baseline.resolved_tool_results,
-            deleted_messages: baseline.deleted_messages,
-            promoted_children: baseline.promoted_children,
-            truncated_messages: baseline.truncated_messages,
-            gateway_ready_us: baseline.gateway_ready.map(duration_micros),
-            first_token_us: baseline.first_token.map(duration_micros),
-            full_response_us: baseline.full_response.map(duration_micros),
-            response_bytes: baseline.response_bytes,
+            durations_us: baseline
+                .durations()
+                .map(|(name, duration)| (name, duration_micros(duration)))
+                .collect(),
+            counts: baseline.counts().collect(),
         }
     }
 }
 
 impl PerformanceSummary {
-    /// Aggregates all duration fields that are present in the samples.
+    /// Aggregates every duration present in at least one sample.
     fn from_samples(samples: &[PerformanceSample]) -> Self {
         Self {
-            store_open: duration_metric(samples.iter().filter_map(|sample| sample.store_open_us)),
-            active_path_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_load_us),
-            ),
-            active_message_lookup: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_message_lookup_us),
-            ),
-            active_path_row_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_row_load_us),
-            ),
-            active_path_part_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_part_load_us),
-            ),
-            tree_load: duration_metric(samples.iter().filter_map(|sample| sample.tree_load_us)),
-            tree_row_load: duration_metric(
-                samples.iter().filter_map(|sample| sample.tree_row_load_us),
-            ),
-            tree_part_load: duration_metric(
-                samples.iter().filter_map(|sample| sample.tree_part_load_us),
-            ),
-            tool_schema_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.tool_schema_load_us),
-            ),
-            context_build: duration_metric(
-                samples.iter().filter_map(|sample| sample.context_build_us),
-            ),
-            context_active_path_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_active_path_load_us),
-            ),
-            context_system_prompt_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_system_prompt_load_us),
-            ),
-            context_compaction_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_compaction_load_us),
-            ),
-            context_flatten: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_flatten_us),
-            ),
-            prepare_query_turn: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.prepare_query_turn_us),
-            ),
-            pending_tool_approval_scan: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.pending_tool_approval_scan_us),
-            ),
-            tool_result_insert: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.tool_result_insert_us),
-            ),
-            deny_tool_result_persist: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.deny_tool_result_persist_us),
-            ),
-            splice_remove: duration_metric(
-                samples.iter().filter_map(|sample| sample.splice_remove_us),
-            ),
-            truncate: duration_metric(samples.iter().filter_map(|sample| sample.truncate_us)),
-            context_build_after_tool_chain: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_build_after_tool_chain_us),
-            ),
-            active_path_load_100: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_load_100_us),
-            ),
-            active_path_load_1000: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_load_1000_us),
-            ),
-            pending_tool_approval_scan_long_path: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.pending_tool_approval_scan_long_path_us),
-            ),
-            pending_tool_approval_scan_deep_chain: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.pending_tool_approval_scan_deep_chain_us),
-            ),
-            prepare_query_no_tools: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.prepare_query_no_tools_us),
-            ),
-            prepare_query_completed_tool_chain: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.prepare_query_completed_tool_chain_us),
-            ),
-            prepare_query_requires_approval: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.prepare_query_requires_approval_us),
-            ),
-            prepare_query_policy_denied: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.prepare_query_policy_denied_us),
-            ),
-            splice_remove_branch_point: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.splice_remove_branch_point_us),
-            ),
-            splice_remove_root_many_children: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.splice_remove_root_many_children_us),
-            ),
-            splice_remove_tool_group: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.splice_remove_tool_group_us),
-            ),
-            truncate_large_subtree: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.truncate_large_subtree_us),
-            ),
-            context_build_plain_100: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_build_plain_100_us),
-            ),
-            context_build_plain_1000: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_build_plain_1000_us),
-            ),
-            context_build_with_system_prompt: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_build_with_system_prompt_us),
-            ),
-            context_build_with_compaction: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_build_with_compaction_us),
-            ),
-            context_build_with_image_parts: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.context_build_with_image_parts_us),
-            ),
-            provider_tool_attach_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.provider_tool_attach_load_us),
-            ),
-            fake_mcp_list_call: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.fake_mcp_list_call_us),
-            ),
-            gateway_ready: duration_metric(
-                samples.iter().filter_map(|sample| sample.gateway_ready_us),
-            ),
-            first_token: duration_metric(samples.iter().filter_map(|sample| sample.first_token_us)),
-            full_response: duration_metric(
-                samples.iter().filter_map(|sample| sample.full_response_us),
-            ),
+            metrics: MetricName::ALL
+                .iter()
+                .filter_map(|name| {
+                    duration_metric(
+                        samples
+                            .iter()
+                            .filter_map(|sample| sample.durations_us.get(name).copied()),
+                    )
+                    .map(|metric| (*name, metric))
+                })
+                .collect(),
         }
     }
 }
@@ -1794,220 +1566,19 @@ fn comparison_rows(
     baseline: &PerformanceSummary,
     current: &PerformanceSummary,
 ) -> Vec<PerformanceComparisonRow> {
-    [
-        ("store open", &baseline.store_open, &current.store_open),
-        (
-            "active path load",
-            &baseline.active_path_load,
-            &current.active_path_load,
-        ),
-        (
-            "active message lookup",
-            &baseline.active_message_lookup,
-            &current.active_message_lookup,
-        ),
-        (
-            "active path row load",
-            &baseline.active_path_row_load,
-            &current.active_path_row_load,
-        ),
-        (
-            "active path part/image load",
-            &baseline.active_path_part_load,
-            &current.active_path_part_load,
-        ),
-        ("tree load", &baseline.tree_load, &current.tree_load),
-        (
-            "tree row load",
-            &baseline.tree_row_load,
-            &current.tree_row_load,
-        ),
-        (
-            "tree part/image load",
-            &baseline.tree_part_load,
-            &current.tree_part_load,
-        ),
-        (
-            "tool schema load",
-            &baseline.tool_schema_load,
-            &current.tool_schema_load,
-        ),
-        (
-            "context build",
-            &baseline.context_build,
-            &current.context_build,
-        ),
-        (
-            "context active path load",
-            &baseline.context_active_path_load,
-            &current.context_active_path_load,
-        ),
-        (
-            "context system prompt load",
-            &baseline.context_system_prompt_load,
-            &current.context_system_prompt_load,
-        ),
-        (
-            "context compaction load",
-            &baseline.context_compaction_load,
-            &current.context_compaction_load,
-        ),
-        (
-            "context flatten",
-            &baseline.context_flatten,
-            &current.context_flatten,
-        ),
-        (
-            "prepare query turn",
-            &baseline.prepare_query_turn,
-            &current.prepare_query_turn,
-        ),
-        (
-            "pending tool approval scan",
-            &baseline.pending_tool_approval_scan,
-            &current.pending_tool_approval_scan,
-        ),
-        (
-            "tool result insert",
-            &baseline.tool_result_insert,
-            &current.tool_result_insert,
-        ),
-        (
-            "deny tool result persist",
-            &baseline.deny_tool_result_persist,
-            &current.deny_tool_result_persist,
-        ),
-        (
-            "splice remove",
-            &baseline.splice_remove,
-            &current.splice_remove,
-        ),
-        ("truncate", &baseline.truncate, &current.truncate),
-        (
-            "context build after tool chain",
-            &baseline.context_build_after_tool_chain,
-            &current.context_build_after_tool_chain,
-        ),
-        (
-            "active path load 100",
-            &baseline.active_path_load_100,
-            &current.active_path_load_100,
-        ),
-        (
-            "active path load 1000",
-            &baseline.active_path_load_1000,
-            &current.active_path_load_1000,
-        ),
-        (
-            "pending tool approval scan long path",
-            &baseline.pending_tool_approval_scan_long_path,
-            &current.pending_tool_approval_scan_long_path,
-        ),
-        (
-            "pending tool approval scan deep chain",
-            &baseline.pending_tool_approval_scan_deep_chain,
-            &current.pending_tool_approval_scan_deep_chain,
-        ),
-        (
-            "prepare query no tools",
-            &baseline.prepare_query_no_tools,
-            &current.prepare_query_no_tools,
-        ),
-        (
-            "prepare query completed tool chain",
-            &baseline.prepare_query_completed_tool_chain,
-            &current.prepare_query_completed_tool_chain,
-        ),
-        (
-            "prepare query requires approval",
-            &baseline.prepare_query_requires_approval,
-            &current.prepare_query_requires_approval,
-        ),
-        (
-            "prepare query policy denied",
-            &baseline.prepare_query_policy_denied,
-            &current.prepare_query_policy_denied,
-        ),
-        (
-            "splice remove branch point",
-            &baseline.splice_remove_branch_point,
-            &current.splice_remove_branch_point,
-        ),
-        (
-            "splice remove root many children",
-            &baseline.splice_remove_root_many_children,
-            &current.splice_remove_root_many_children,
-        ),
-        (
-            "splice remove tool group",
-            &baseline.splice_remove_tool_group,
-            &current.splice_remove_tool_group,
-        ),
-        (
-            "truncate large subtree",
-            &baseline.truncate_large_subtree,
-            &current.truncate_large_subtree,
-        ),
-        (
-            "context build plain 100",
-            &baseline.context_build_plain_100,
-            &current.context_build_plain_100,
-        ),
-        (
-            "context build plain 1000",
-            &baseline.context_build_plain_1000,
-            &current.context_build_plain_1000,
-        ),
-        (
-            "context build with system prompt",
-            &baseline.context_build_with_system_prompt,
-            &current.context_build_with_system_prompt,
-        ),
-        (
-            "context build with compaction",
-            &baseline.context_build_with_compaction,
-            &current.context_build_with_compaction,
-        ),
-        (
-            "context build with image parts",
-            &baseline.context_build_with_image_parts,
-            &current.context_build_with_image_parts,
-        ),
-        (
-            "provider tool attach/load",
-            &baseline.provider_tool_attach_load,
-            &current.provider_tool_attach_load,
-        ),
-        (
-            "fake mcp list/call",
-            &baseline.fake_mcp_list_call,
-            &current.fake_mcp_list_call,
-        ),
-        (
-            "gateway ready",
-            &baseline.gateway_ready,
-            &current.gateway_ready,
-        ),
-        ("first token", &baseline.first_token, &current.first_token),
-        (
-            "full response",
-            &baseline.full_response,
-            &current.full_response,
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(name, baseline, current)| {
-        let baseline = baseline.as_ref()?;
-        let current = current.as_ref()?;
-
-        Some(PerformanceComparisonRow {
-            name,
-            baseline_median_us: baseline.median_us,
-            current_median_us: current.median_us,
-            change_percent: percent_change(baseline.median_us, current.median_us),
+    MetricName::ALL
+        .iter()
+        .filter_map(|name| {
+            let baseline = baseline.get(*name)?;
+            let current = current.get(*name)?;
+            Some(PerformanceComparisonRow {
+                name: name.label(),
+                baseline_median_us: baseline.median_us,
+                current_median_us: current.median_us,
+                change_percent: percent_change(baseline.median_us, current.median_us),
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 /// Calculates percentage change from baseline to current.
@@ -2023,6 +1594,15 @@ fn percent_change(baseline: u64, current: u64) -> f64 {
 mod tests {
     use super::*;
 
+    fn fixed_metric(value: u64) -> DurationMetric {
+        DurationMetric {
+            min_us: value,
+            median_us: value,
+            p95_us: value,
+            max_us: value,
+        }
+    }
+
     #[test]
     fn summarizes_duration_samples() {
         let metric = duration_metric([30, 10, 20, 40].into_iter()).unwrap();
@@ -2034,7 +1614,34 @@ mod tests {
     }
 
     #[test]
+    fn reads_legacy_null_metrics() {
+        let sample: PerformanceSample = serde_json::from_value(serde_json::json!({
+            "store_open_us": 10,
+            "first_token_us": null,
+            "active_path_messages": 2
+        }))
+        .unwrap();
+        let summary: PerformanceSummary = serde_json::from_value(serde_json::json!({
+            "store_open": {
+                "min_us": 10,
+                "median_us": 10,
+                "p95_us": 10,
+                "max_us": 10
+            },
+            "first_token": null
+        }))
+        .unwrap();
+
+        assert_eq!(sample.durations_us[&MetricName::StoreOpen], 10);
+        assert_eq!(sample.counts[&CountName::ActivePathMessages], 2);
+        assert!(summary.get(MetricName::StoreOpen).is_some());
+        assert!(summary.get(MetricName::FirstToken).is_none());
+    }
+
+    #[test]
     fn compares_report_medians() {
+        let mut baseline_summary = PerformanceSummary::default();
+        baseline_summary.insert(MetricName::ActivePathLoad, fixed_metric(100));
         let baseline = PerformanceReport {
             format_version: REPORT_FORMAT_VERSION,
             mode: BenchmarkMode::Conversation,
@@ -2042,26 +1649,12 @@ mod tests {
             conversation_id: Some("conversation-id".to_string()),
             runs: 2,
             samples: vec![],
-            summary: PerformanceSummary {
-                active_path_load: Some(DurationMetric {
-                    min_us: 100,
-                    median_us: 100,
-                    p95_us: 100,
-                    max_us: 100,
-                }),
-                ..PerformanceSummary::default()
-            },
+            summary: baseline_summary,
         };
+        let mut current_summary = baseline.summary.clone();
+        current_summary.insert(MetricName::ActivePathLoad, fixed_metric(125));
         let current = PerformanceReport {
-            summary: PerformanceSummary {
-                active_path_load: Some(DurationMetric {
-                    min_us: 125,
-                    median_us: 125,
-                    p95_us: 125,
-                    max_us: 125,
-                }),
-                ..baseline.summary.clone()
-            },
+            summary: current_summary,
             runs: 3,
             ..baseline.clone()
         };
@@ -2075,58 +1668,29 @@ mod tests {
 
     #[test]
     fn reads_json_report_and_compares_it() {
+        let mut sample = PerformanceSample::default();
+        sample.durations_us.insert(MetricName::StoreOpen, 10);
+        sample.durations_us.insert(MetricName::ActivePathLoad, 20);
+        sample.durations_us.insert(MetricName::ContextBuild, 30);
+        sample.counts.insert(CountName::ActivePathMessages, 1);
+        sample.counts.insert(CountName::TreeMessages, 1);
+        let mut baseline_summary = PerformanceSummary::default();
+        baseline_summary.insert(MetricName::StoreOpen, fixed_metric(10));
+        baseline_summary.insert(MetricName::ActivePathLoad, fixed_metric(20));
+        baseline_summary.insert(MetricName::ContextBuild, fixed_metric(30));
         let baseline = PerformanceReport {
             format_version: REPORT_FORMAT_VERSION,
             mode: BenchmarkMode::Conversation,
             model: "model".to_string(),
             conversation_id: Some("conversation-id".to_string()),
             runs: 1,
-            samples: vec![PerformanceSample {
-                store_open_us: Some(10),
-                active_path_load_us: Some(20),
-                tree_load_us: None,
-                context_build_us: Some(30),
-                active_path_messages: Some(1),
-                tree_messages: Some(1),
-                gateway_ready_us: None,
-                first_token_us: None,
-                full_response_us: None,
-                response_bytes: None,
-                ..PerformanceSample::default()
-            }],
-            summary: PerformanceSummary {
-                store_open: Some(DurationMetric {
-                    min_us: 10,
-                    median_us: 10,
-                    p95_us: 10,
-                    max_us: 10,
-                }),
-                active_path_load: Some(DurationMetric {
-                    min_us: 20,
-                    median_us: 20,
-                    p95_us: 20,
-                    max_us: 20,
-                }),
-                tree_load: None,
-                context_build: Some(DurationMetric {
-                    min_us: 30,
-                    median_us: 30,
-                    p95_us: 30,
-                    max_us: 30,
-                }),
-                ..PerformanceSummary::default()
-            },
+            samples: vec![sample],
+            summary: baseline_summary,
         };
+        let mut current_summary = baseline.summary.clone();
+        current_summary.insert(MetricName::ActivePathLoad, fixed_metric(40));
         let current = PerformanceReport {
-            summary: PerformanceSummary {
-                active_path_load: Some(DurationMetric {
-                    min_us: 40,
-                    median_us: 40,
-                    p95_us: 40,
-                    max_us: 40,
-                }),
-                ..baseline.summary.clone()
-            },
+            summary: current_summary,
             ..baseline.clone()
         };
         let baseline_path = std::env::temp_dir().join(format!(

@@ -2145,7 +2145,6 @@ impl Store {
     /// CLI command writes compactions yet.
     ///
     /// The checkpoint message must belong to the same conversation.
-    #[allow(dead_code)]
     pub fn save_compaction(
         &mut self,
         conversation_id: &ConversationId,

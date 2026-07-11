@@ -25,9 +25,8 @@ else
   printf '%s\n' "$WINDIE_API_TOKEN" > "$TOKEN_FILE"
 fi
 
-export REACT_APP_WINDIE_API_URL="${REACT_APP_WINDIE_API_URL:-http://127.0.0.1:8787}"
-export REACT_APP_WINDIE_API_TOKEN="$WINDIE_API_TOKEN"
-export BROWSER=none
+export VITE_WINDIE_API_URL="${VITE_WINDIE_API_URL:-http://127.0.0.1:8787}"
+export VITE_WINDIE_API_TOKEN="$WINDIE_API_TOKEN"
 
 api_pid=""
 ui_pid=""

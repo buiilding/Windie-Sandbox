@@ -151,7 +151,6 @@ export function WindieProvider({ children }) {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [theme, setTheme] = useState("dark");
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
-  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
@@ -538,10 +537,6 @@ export function WindieProvider({ children }) {
     return body.conversation_id;
   }, [loadConversation, runMutation]);
 
-  const renameConversation = useCallback(() => {
-    toast.message("rename is not a Windie primitive yet");
-  }, []);
-
   const deleteConversation = useCallback(
     async (convId) => {
       await runMutation(
@@ -653,15 +648,6 @@ export function WindieProvider({ children }) {
         })
       ),
     [runMutation]
-  );
-
-  const setActivePath = useCallback(
-    (convId, path) => {
-      const leafId = path[path.length - 1];
-      if (!leafId) return Promise.resolve();
-      return setActivePathToLeaf(convId, leafId);
-    },
-    [setActivePathToLeaf]
   );
 
   const truncateAfter = useCallback(
@@ -927,34 +913,6 @@ export function WindieProvider({ children }) {
     [runStreamingQuery, streaming]
   );
 
-  const startGateway = useCallback(
-    () =>
-      runMutation(
-        async () => {
-          const result = await apiRequest("/api/gateway/start", { method: "POST" });
-          await refreshGateway();
-          await refreshModels().catch(() => {});
-          return result;
-        },
-        { reload: false }
-      ),
-    [refreshGateway, refreshModels, runMutation]
-  );
-
-  const stopGateway = useCallback(
-    () =>
-      runMutation(
-        async () => {
-          const result = await apiRequest("/api/gateway/stop", { method: "POST" });
-          await refreshGateway();
-          await refreshModels().catch(() => {});
-          return result;
-        },
-        { reload: false }
-      ),
-    [refreshGateway, refreshModels, runMutation]
-  );
-
   const approveToolCall = useCallback(
     (convId, toolCallId) =>
       runMutation(
@@ -987,32 +945,27 @@ export function WindieProvider({ children }) {
     activePathNodes,
     theme,
     treeOverlayOpen,
-    contextPreviewOpen,
     streaming,
     pendingAssistant,
     searchQuery,
     models,
     modelsLoading,
     modelsError,
-    modelParametersById,
     activeModelParameters,
     activeReasoning,
     tokenMeter,
     toolSchemas: activeConv?.toolSchemas || [],
     availableToolSchemas,
     apiError,
-    gatewayRunning,
     approvals,
     setActiveConvId,
     setSelectedNodeId,
     setTheme,
     setTreeOverlayOpen,
-    setContextPreviewOpen,
     setSearchQuery,
     refreshModels,
     loadModelParameters,
     createConversation,
-    renameConversation,
     deleteConversation,
     setSystemPrompt,
     setConversationModel,
@@ -1022,7 +975,6 @@ export function WindieProvider({ children }) {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
-    setActivePath,
     setActivePathToLeaf,
     truncateAfter,
     removeMessage,
@@ -1031,13 +983,8 @@ export function WindieProvider({ children }) {
     sendMessage,
     continueConversation,
     stopStreaming,
-    startGateway,
-    stopGateway,
-    refreshGateway,
     approveToolCall,
     denyToolCall,
-    refreshConversations,
-    loadConversation,
   };
 
   return <WindieCtx.Provider value={value}>{children}</WindieCtx.Provider>;

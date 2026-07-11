@@ -781,7 +781,6 @@ pub(crate) fn store_pending_tool_result(
     }
 }
 
-#[allow(dead_code)]
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;

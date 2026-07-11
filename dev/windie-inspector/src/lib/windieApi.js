@@ -1,4 +1,4 @@
-const API_BASE = process.env.REACT_APP_WINDIE_API_URL || "http://127.0.0.1:8787";
+const API_BASE = import.meta.env.VITE_WINDIE_API_URL || "http://127.0.0.1:8787";
 const API_TOKEN_STORAGE_KEY = "windie_api_token";
 export const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
@@ -11,7 +11,7 @@ function apiToken() {
   }
 
   return (
-    process.env.REACT_APP_WINDIE_API_TOKEN ||
+    import.meta.env.VITE_WINDIE_API_TOKEN ||
     window.localStorage.getItem(API_TOKEN_STORAGE_KEY) ||
     ""
   );

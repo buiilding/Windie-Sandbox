@@ -1,7 +1,7 @@
 # Windie Inspector
 
-This React application is Windie's editable developer preview and the source
-for the compiled operator UI bundled into releases.
+This Vite-powered React application is Windie's editable developer preview and
+the source for the compiled operator UI bundled into releases.
 
 From the repository root:
 

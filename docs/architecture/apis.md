@@ -5,8 +5,9 @@ requests. It does not list backend routes that have no active inspector caller.
 
 ## Connection and Authentication
 
-The inspector uses `REACT_APP_WINDIE_API_URL` when set, otherwise
-`http://127.0.0.1:8787`.
+The inspector uses `VITE_WINDIE_API_URL` when set, otherwise
+`http://127.0.0.1:8787`. `VITE_WINDIE_API_TOKEN` supplies the development
+token when the URL does not contain one.
 
 The API prints a per-process token in the operator UI URL. The inspector reads
 `windie_token` from the URL, saves it in local storage, and sends it as:
@@ -27,11 +28,13 @@ limit.
 | Method and route | Inspector use | Request | Important response |
 | --- | --- | --- | --- |
 | `GET /api/status` | Refresh gateway state | None | `gateway_running` |
-| `POST /api/gateway/start` | Start Bifrost | No body | Start status |
-| `POST /api/gateway/stop` | Stop Bifrost | No body | Stop status |
 | `GET /api/models` | Populate model selector | None | Model IDs and token limits |
 | `GET /api/model-parameters?model=...` | Populate reasoning controls | Model query parameter | Capability and parameter metadata |
 | `GET /api/tools` | Populate attachable tool catalog | None | Provider-neutral tool definitions |
+
+The backend also exposes direct `POST /api/gateway/start` and
+`POST /api/gateway/stop` operations. The current inspector does not call them;
+gateway lifecycle remains available to the CLI and future clients.
 
 The UI refreshes status on startup, then attempts model and tool catalog loads.
 Starting or stopping the gateway triggers another status and model refresh.

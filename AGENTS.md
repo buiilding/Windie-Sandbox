@@ -187,8 +187,11 @@ The code should stay split by concrete responsibilities:
 ```text
 src/main.rs          wires components together
 src/api.rs           localhost developer API server
+src/api_tests.rs     localhost developer API tests
 src/cli.rs           startup CLI arguments
+src/cli_tests.rs     startup CLI argument tests
 src/operation.rs     shared CLI/API operation orchestration
+src/operation_tests.rs shared operation orchestration tests
 src/output.rs        terminal and JSON output only
 src/output_tests.rs  terminal output tests
 src/policy.rs        tool execution policy and approval boundary
@@ -199,6 +202,7 @@ src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
 src/llm.rs           Bifrost/OpenAI-compatible HTTP client
+src/llm_tests.rs     Bifrost client and wire-format tests
 src/mcp.rs           MCP stdio JSON-RPC client and session pool
 src/perf.rs          performance baseline measurement
 src/paths.rs         installed and development filesystem locations
@@ -208,6 +212,7 @@ src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
 src/tool.rs          tool provider, attachment, approval, and execution result types
 src/tool_provider.rs tool provider registry and dispatch
+src/tool_provider_tests.rs tool provider registry and dispatch tests
 src/store.rs         SQLite persistence
 src/store_tests.rs   SQLite persistence tests
 ```

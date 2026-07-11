@@ -7,7 +7,7 @@ use crate::conversation::{
 };
 use crate::llm::ReasoningRequest;
 use crate::perf::{
-    BenchmarkMode, DurationMetric, PerformanceComparison, PerformanceComparisonRow,
+    BenchmarkMode, DurationMetric, MetricName, PerformanceComparison, PerformanceComparisonRow,
     PerformanceReport, PerformanceSummary,
 };
 use crate::store::Compaction;
@@ -485,22 +485,24 @@ fn formats_duration_as_seconds() {
 
 #[test]
 fn formats_performance_report_lines() {
+    let mut summary = PerformanceSummary::default();
+    summary.insert(
+        MetricName::StoreOpen,
+        DurationMetric {
+            min_us: 100,
+            median_us: 200,
+            p95_us: 300,
+            max_us: 400,
+        },
+    );
     let report = PerformanceReport {
-        format_version: 3,
+        format_version: 4,
         mode: BenchmarkMode::Conversation,
         model: "openai/gpt-4o-mini".to_string(),
         conversation_id: Some("conversation-id".to_string()),
         runs: 3,
         samples: vec![],
-        summary: PerformanceSummary {
-            store_open: Some(DurationMetric {
-                min_us: 100,
-                median_us: 200,
-                p95_us: 300,
-                max_us: 400,
-            }),
-            ..PerformanceSummary::default()
-        },
+        summary,
     };
 
     let lines = performance_report_lines(&report);

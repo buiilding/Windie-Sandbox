@@ -472,13 +472,11 @@ pub struct Message {
     #[serde(skip)]
     pub id: Option<MessageId>,
     #[serde(skip)]
-    #[allow(dead_code)]
     pub parent_message_id: Option<MessageId>,
     pub role: Role,
     pub content: String,
     #[serde(skip)]
     pub parts: Vec<MessagePart>,
     #[serde(skip)]
-    #[allow(dead_code)]
     pub metadata: Option<MessageMetadata>,
 }

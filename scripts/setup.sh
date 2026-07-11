@@ -13,7 +13,7 @@ done
 
 echo "Installing frontend dependencies with npm..."
 cd "$UI"
-npm ci --legacy-peer-deps
+npm ci
 
 echo
 echo "Windie setup complete."

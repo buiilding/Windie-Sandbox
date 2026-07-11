@@ -23,7 +23,7 @@ scripts/dev.sh
 One command starts:
 
 - the current Rust checkout through `cargo run -- api` on port `8787`;
-- the React development server on port `3000`;
+- the Vite development server for the React inspector on port `3000`;
 - one stable development API token shared by both processes.
 
 The script prints the authenticated inspector URL. It does not open a browser
