@@ -3,8 +3,7 @@
 //! This module is the execution boundary for tool providers. Runtime asks this
 //! registry which tools are available and asks it to execute an approved tool
 //! call through the provider reference stored on the conversation attachment.
-//! Approved MCP servers and future plugins should enter runtime through this
-//! same registry shape.
+//! Approved MCP servers enter runtime through this shared registry shape.
 
 use std::collections::HashMap;
 use std::fs;
@@ -33,8 +32,8 @@ const MCP_TOOL_RESULT_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// Registry of tool providers available to this Windie process.
 ///
 /// The registry deliberately exposes provider-neutral operations. Runtime does
-/// not branch on shell, MCP, or plugin details; it resolves the conversation's
-/// attached tool to a provider reference and calls this registry.
+/// does not know MCP process details; it resolves the conversation's attached
+/// tool to a provider reference and calls this registry.
 pub struct ToolProviderRegistry {
     mcp_providers: Vec<McpToolProvider>,
     mcp_session_pool: Option<McpSessionPool>,
@@ -116,7 +115,7 @@ impl ToolProviderRegistry {
             ToolProviderKind::Mcp => self
                 .mcp_provider(&attached_tool.provider.provider_id)
                 .is_some(),
-            ToolProviderKind::Plugin => false,
+            ToolProviderKind::SchemaOnly => false,
         }
     }
 
@@ -152,7 +151,7 @@ impl ToolProviderRegistry {
                 .await
                 .context("MCP provider task stopped")?
             }
-            ToolProviderKind::Plugin => Err(error::invalid_request(format!(
+            ToolProviderKind::SchemaOnly => Err(error::invalid_request(format!(
                 "unknown tool: {}",
                 tool_call.name()
             ))),
