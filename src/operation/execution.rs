@@ -296,7 +296,7 @@ where
         &snapshot,
     )
     .await?;
-    events.tool_result_saved(&message_id);
+    events.tool_result_saved(&message_id)?;
     let continuation = RuntimeContinuation {
         model,
         reasoning,
@@ -338,7 +338,7 @@ where
     )?;
     let (_, message_id) =
         deny_tool_call_for_run(store, conversation_id, tool_call_id, runtime.run_id)?;
-    events.tool_result_saved(&message_id);
+    events.tool_result_saved(&message_id)?;
     let continuation = RuntimeContinuation {
         model,
         reasoning,

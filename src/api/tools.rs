@@ -352,7 +352,8 @@ async fn approve_tool(
     let mut store = open_store(&state)?;
     let run = state
         .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::ApproveTool)?;
+        .begin_action(&conversation_id, RuntimeRunAction::ApproveTool)
+        .await?;
     let cancellation = state.run_manager.cancellation(&run.id)?;
     let result = operation::approve_tool_with_registry(
         &mut store,
@@ -363,7 +364,7 @@ async fn approve_tool(
         &cancellation,
     )
     .await;
-    let result = state.run_manager.finish_result(&run.id, result)?;
+    let result = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(result.into()))
 }
@@ -378,7 +379,8 @@ async fn deny_tool(
     let mut store = open_store(&state)?;
     let run = state
         .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::DenyTool)?;
+        .begin_action(&conversation_id, RuntimeRunAction::DenyTool)
+        .await?;
     let cancellation = state.run_manager.cancellation(&run.id)?;
     let result = operation::deny_tool(
         &mut store,
@@ -387,7 +389,7 @@ async fn deny_tool(
         &run.id,
         &cancellation,
     );
-    let result = state.run_manager.finish_result(&run.id, result)?;
+    let result = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(result.into()))
 }

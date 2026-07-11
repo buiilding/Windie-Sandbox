@@ -104,7 +104,7 @@ pub async fn execute(command: Command) -> Result<()> {
         Command::DenyTool {
             conversation_id,
             tool_call_id,
-        } => deny_tool(conversation_id, tool_call_id),
+        } => deny_tool(conversation_id, tool_call_id).await,
         Command::Show(conversation_id) => show_conversation(conversation_id),
         Command::Status => status().await,
         Command::SetSystemPrompt {
@@ -451,7 +451,9 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
     let mut store = Store::open()?;
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
-    let run = runs.begin_action(&conversation_id, RuntimeRunAction::ApproveTool)?;
+    let run = runs
+        .begin_action(&conversation_id, RuntimeRunAction::ApproveTool)
+        .await?;
     let cancellation = runs.cancellation(&run.id)?;
     let result = operation::approve_tool(
         &mut store,
@@ -461,7 +463,7 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
         &cancellation,
     )
     .await;
-    let result = runs.finish_result(&run.id, result)?;
+    let result = runs.finish_result(&run.id, result).await?;
 
     output.tool_execution_result(&result);
 
@@ -469,11 +471,13 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
 }
 
 /// Stores a rejected tool-result message for one pending tool call.
-fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
+async fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
-    let run = runs.begin_action(&conversation_id, RuntimeRunAction::DenyTool)?;
+    let run = runs
+        .begin_action(&conversation_id, RuntimeRunAction::DenyTool)
+        .await?;
     let cancellation = runs.cancellation(&run.id)?;
     let result = operation::deny_tool(
         &mut store,
@@ -482,7 +486,7 @@ fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Resul
         &run.id,
         &cancellation,
     );
-    let result = runs.finish_result(&run.id, result)?;
+    let result = runs.finish_result(&run.id, result).await?;
 
     output.tool_execution_result(&result);
 
@@ -554,7 +558,9 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
     let mut store = Store::open()?;
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
-    let run = runs.begin_action(&conversation_id, RuntimeRunAction::Query)?;
+    let run = runs
+        .begin_action(&conversation_id, RuntimeRunAction::Query)
+        .await?;
 
     let registry = ToolProviderRegistry::new();
     let runtime = operation::RuntimeTurnConfig::new(
@@ -569,7 +575,7 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
     let result =
         operation::query_conversation_with_registry(&output, &mut store, &conversation_id, runtime)
             .await;
-    runs.finish_result(&run.id, result)?;
+    runs.finish_result(&run.id, result).await?;
 
     Ok(())
 }

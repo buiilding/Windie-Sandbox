@@ -27,8 +27,12 @@ use crate::tool_provider::ToolProviderRegistry;
 /// can stream them to a UI, while CLI callers use the no-op sink and keep the
 /// existing blocking behavior.
 pub(crate) trait RuntimeEventSink {
-    fn assistant_message_saved(&self, _message_id: &MessageId) {}
-    fn tool_result_saved(&self, _message_id: &MessageId) {}
+    fn assistant_message_saved(&self, _message_id: &MessageId) -> Result<()> {
+        Ok(())
+    }
+    fn tool_result_saved(&self, _message_id: &MessageId) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Runtime event sink used by existing blocking callers.
@@ -201,7 +205,7 @@ where
         &assistant_response.content,
         metadata.as_ref(),
     )?;
-    events.assistant_message_saved(&assistant_message_id);
+    events.assistant_message_saved(&assistant_message_id)?;
     let response_is_active =
         store.active_message_id(conversation_id)?.as_ref() == Some(&assistant_message_id);
     if response_is_active {
@@ -523,7 +527,7 @@ fn store_policy_denied_tool_results(
         );
         let message_id =
             store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
-        events.tool_result_saved(&message_id);
+        events.tool_result_saved(&message_id)?;
     }
 }
 
@@ -602,7 +606,7 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
     };
 
     let message_id = store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
-    events.tool_result_saved(&message_id);
+    events.tool_result_saved(&message_id)?;
 
     Ok(AutomaticToolResolution::Resolved(message_id))
 }

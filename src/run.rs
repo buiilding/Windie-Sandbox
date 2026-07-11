@@ -8,13 +8,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::conversation::ConversationId;
@@ -125,6 +124,18 @@ pub struct RunSubscription {
     pub receiver: broadcast::Receiver<RunEventEnvelope>,
 }
 
+pub struct PendingRunEvent {
+    response: oneshot::Receiver<Result<RunEventEnvelope>>,
+}
+
+impl PendingRunEvent {
+    pub async fn persisted(self) -> Result<RunEventEnvelope> {
+        self.response
+            .await
+            .map_err(|_| anyhow!("runtime run journal stopped before persisting event"))?
+    }
+}
+
 struct ActiveRun {
     sender: broadcast::Sender<RunEventEnvelope>,
     cancellation: RunCancellation,
@@ -185,38 +196,42 @@ enum RunJournalCommand {
     Create {
         conversation_id: ConversationId,
         action: RuntimeRunAction,
-        response: Sender<Result<RuntimeRunRecord>>,
+        response: oneshot::Sender<Result<RuntimeRunRecord>>,
     },
     Append {
         run_id: String,
         payload: String,
-        response: Sender<Result<u64>>,
+        event: RunEvent,
+        broadcast: broadcast::Sender<RunEventEnvelope>,
+        response: oneshot::Sender<Result<RunEventEnvelope>>,
     },
     Finish {
         run_id: String,
         status: RuntimeRunStatus,
         error: Option<String>,
         payload: String,
-        response: Sender<Result<Option<u64>>>,
+        event: RunEvent,
+        broadcast: broadcast::Sender<RunEventEnvelope>,
+        response: oneshot::Sender<Result<Option<RunEventEnvelope>>>,
     },
     Snapshot {
         run_id: String,
-        response: Sender<Result<RuntimeRunRecord>>,
+        response: oneshot::Sender<Result<RuntimeRunRecord>>,
     },
     ActiveForConversation {
         conversation_id: ConversationId,
-        response: Sender<Result<Option<RuntimeRunRecord>>>,
+        response: oneshot::Sender<Result<Option<RuntimeRunRecord>>>,
     },
     EventsAfter {
         run_id: String,
         after: u64,
-        response: Sender<Result<Vec<RuntimeRunEventRecord>>>,
+        response: oneshot::Sender<Result<Vec<RuntimeRunEventRecord>>>,
     },
 }
 
 #[derive(Clone)]
 struct RunJournal {
-    commands: SyncSender<RunJournalCommand>,
+    commands: mpsc::Sender<RunJournalCommand>,
 }
 
 impl RunJournal {
@@ -228,29 +243,36 @@ impl RunJournal {
         store.interrupt_expired_runtime_runs(unix_millis()?)?;
         let owner_id = Uuid::new_v4().to_string();
 
-        let (commands, receiver) = sync_channel(RUN_JOURNAL_COMMAND_CAPACITY);
+        let (commands, receiver) = mpsc::channel(RUN_JOURNAL_COMMAND_CAPACITY);
         std::thread::Builder::new()
             .name("windie-run-journal".to_string())
-            .spawn(move || run_journal_worker(store, receiver, owner_id))
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build()
+                    .expect("failed to build run journal runtime");
+                runtime.block_on(run_journal_worker(store, receiver, owner_id));
+            })
             .context("failed to start runtime run journal")?;
 
         Ok(Self { commands })
     }
 
-    fn request<T>(
+    async fn request<T>(
         &self,
-        command: impl FnOnce(Sender<Result<T>>) -> RunJournalCommand,
+        command: impl FnOnce(oneshot::Sender<Result<T>>) -> RunJournalCommand,
     ) -> Result<T> {
-        let (response, receiver) = channel();
+        let (response, receiver) = oneshot::channel();
         self.commands
             .send(command(response))
+            .await
             .map_err(|_| anyhow!("runtime run journal stopped"))?;
         receiver
-            .recv()
+            .await
             .map_err(|_| anyhow!("runtime run journal stopped before replying"))?
     }
 
-    fn create(
+    async fn create(
         &self,
         conversation_id: &ConversationId,
         action: RuntimeRunAction,
@@ -260,40 +282,59 @@ impl RunJournal {
             action,
             response,
         })
+        .await
     }
 
-    fn append(&self, run_id: &str, payload: String) -> Result<u64> {
-        self.request(|response| RunJournalCommand::Append {
-            run_id: run_id.to_string(),
-            payload,
-            response,
-        })
+    fn enqueue(
+        &self,
+        run_id: &str,
+        event: RunEvent,
+        broadcast: broadcast::Sender<RunEventEnvelope>,
+    ) -> Result<PendingRunEvent> {
+        let payload = serde_json::to_string(&event).context("failed to serialize runtime event")?;
+        let (response, receiver) = oneshot::channel();
+        self.commands
+            .try_send(RunJournalCommand::Append {
+                run_id: run_id.to_string(),
+                payload,
+                event,
+                broadcast,
+                response,
+            })
+            .map_err(|error| anyhow!("runtime run journal queue rejected event: {error}"))?;
+        Ok(PendingRunEvent { response: receiver })
     }
 
-    fn finish(
+    async fn finish(
         &self,
         run_id: &str,
         status: RuntimeRunStatus,
         error: Option<&str>,
-        payload: String,
-    ) -> Result<Option<u64>> {
+        event: RunEvent,
+        broadcast: broadcast::Sender<RunEventEnvelope>,
+    ) -> Result<Option<RunEventEnvelope>> {
+        let payload = serde_json::to_string(&event).context("failed to serialize runtime event")?;
         self.request(|response| RunJournalCommand::Finish {
             run_id: run_id.to_string(),
             status,
             error: error.map(str::to_string),
             payload,
+            event,
+            broadcast,
             response,
         })
+        .await
     }
 
-    fn snapshot(&self, run_id: &str) -> Result<RuntimeRunRecord> {
+    async fn snapshot(&self, run_id: &str) -> Result<RuntimeRunRecord> {
         self.request(|response| RunJournalCommand::Snapshot {
             run_id: run_id.to_string(),
             response,
         })
+        .await
     }
 
-    fn active_for_conversation(
+    async fn active_for_conversation(
         &self,
         conversation_id: &ConversationId,
     ) -> Result<Option<RuntimeRunRecord>> {
@@ -301,29 +342,37 @@ impl RunJournal {
             conversation_id: conversation_id.clone(),
             response,
         })
+        .await
     }
 
-    fn events_after(&self, run_id: &str, after: u64) -> Result<Vec<RuntimeRunEventRecord>> {
+    async fn events_after(&self, run_id: &str, after: u64) -> Result<Vec<RuntimeRunEventRecord>> {
         self.request(|response| RunJournalCommand::EventsAfter {
             run_id: run_id.to_string(),
             after,
             response,
         })
+        .await
     }
 }
 
-fn run_journal_worker(mut store: Store, receiver: Receiver<RunJournalCommand>, owner_id: String) {
-    let mut next_renewal = Instant::now() + RUN_LEASE_RENEW_INTERVAL;
+async fn run_journal_worker(
+    mut store: Store,
+    mut receiver: mpsc::Receiver<RunJournalCommand>,
+    owner_id: String,
+) {
+    let renewal = tokio::time::sleep(RUN_LEASE_RENEW_INTERVAL);
+    tokio::pin!(renewal);
     loop {
-        let wait = next_renewal.saturating_duration_since(Instant::now());
-        let command = match receiver.recv_timeout(wait) {
-            Ok(command) => command,
-            Err(RecvTimeoutError::Timeout) => {
+        let command = tokio::select! {
+            command = receiver.recv() => match command {
+                Some(command) => command,
+                None => break,
+            },
+            () = &mut renewal => {
                 let _ = store.renew_runtime_run_leases(&owner_id, lease_deadline_millis());
-                next_renewal = Instant::now() + RUN_LEASE_RENEW_INTERVAL;
+                renewal.as_mut().reset(tokio::time::Instant::now() + RUN_LEASE_RENEW_INTERVAL);
                 continue;
             }
-            Err(RecvTimeoutError::Disconnected) => break,
         };
         match command {
             RunJournalCommand::Create {
@@ -346,23 +395,46 @@ fn run_journal_worker(mut store: Store, receiver: Receiver<RunJournalCommand>, o
             RunJournalCommand::Append {
                 run_id,
                 payload,
+                event,
+                broadcast,
                 response,
             } => {
-                let _ = response.send(store.append_runtime_run_event(&run_id, &payload));
+                let result = store
+                    .append_runtime_run_event(&run_id, &payload)
+                    .map(|sequence| {
+                        let envelope = RunEventEnvelope {
+                            run_id,
+                            sequence,
+                            event,
+                        };
+                        let _ = broadcast.send(envelope.clone());
+                        envelope
+                    });
+                let _ = response.send(result);
             }
             RunJournalCommand::Finish {
                 run_id,
                 status,
                 error,
                 payload,
+                event,
+                broadcast,
                 response,
             } => {
-                let _ = response.send(store.finish_runtime_run(
-                    &run_id,
-                    status,
-                    error.as_deref(),
-                    &payload,
-                ));
+                let result = store
+                    .finish_runtime_run(&run_id, status, error.as_deref(), &payload)
+                    .map(|sequence| {
+                        sequence.map(|sequence| {
+                            let envelope = RunEventEnvelope {
+                                run_id,
+                                sequence,
+                                event,
+                            };
+                            let _ = broadcast.send(envelope.clone());
+                            envelope
+                        })
+                    });
+                let _ = response.send(result);
             }
             RunJournalCommand::Snapshot { run_id, response } => {
                 let _ = response.send(store.runtime_run(&run_id));
@@ -380,11 +452,6 @@ fn run_journal_worker(mut store: Store, receiver: Receiver<RunJournalCommand>, o
             } => {
                 let _ = response.send(store.runtime_run_events_after(&run_id, after));
             }
-        }
-
-        if Instant::now() >= next_renewal {
-            let _ = store.renew_runtime_run_leases(&owner_id, lease_deadline_millis());
-            next_renewal = Instant::now() + RUN_LEASE_RENEW_INTERVAL;
         }
     }
     let _ = store.interrupt_runtime_runs_for_owner(&owner_id);
@@ -420,17 +487,18 @@ impl RunManager {
     }
 
     /// Creates persisted run state before its task is spawned.
-    pub fn begin(&self, conversation_id: &ConversationId) -> Result<RunSnapshot> {
+    pub async fn begin(&self, conversation_id: &ConversationId) -> Result<RunSnapshot> {
         self.begin_action(conversation_id, RuntimeRunAction::Query)
+            .await
     }
 
     /// Creates persisted ownership for one concrete runtime action.
-    pub fn begin_action(
+    pub async fn begin_action(
         &self,
         conversation_id: &ConversationId,
         action: RuntimeRunAction,
     ) -> Result<RunSnapshot> {
-        let record = self.journal.create(conversation_id, action)?;
+        let record = self.journal.create(conversation_id, action).await?;
         let (sender, _) = broadcast::channel(RUN_EVENT_CHANNEL_CAPACITY);
         self.active
             .lock()
@@ -448,16 +516,16 @@ impl RunManager {
     }
 
     /// Finalizes one direct operation without changing its client response shape.
-    pub fn finish_result<T>(&self, run_id: &str, result: Result<T>) -> Result<T> {
+    pub async fn finish_result<T>(&self, run_id: &str, result: Result<T>) -> Result<T> {
         match result {
             Ok(value) => {
-                self.complete(run_id, None)?;
+                self.complete(run_id, None).await?;
                 Ok(value)
             }
             Err(operation_error) => {
                 let message = operation_error.to_string();
                 let causes = operation_error.chain().map(ToString::to_string).collect();
-                self.fail(run_id, message, causes)?;
+                self.fail(run_id, message, causes).await?;
                 Err(operation_error)
             }
         }
@@ -472,42 +540,39 @@ impl RunManager {
             .ok_or_else(|| error::not_found(format!("active runtime run does not exist: {run_id}")))
     }
 
-    /// Persists and broadcasts one ordered event.
-    pub fn publish(&self, run_id: &str, event: RunEvent) -> Result<RunEventEnvelope> {
-        let payload = serde_json::to_string(&event).context("failed to serialize runtime event")?;
-        let sequence = self.journal.append(run_id, payload)?;
-        let envelope = RunEventEnvelope {
-            run_id: run_id.to_string(),
-            sequence,
-            event,
-        };
-
-        if let Some(sender) = self
+    pub fn enqueue(&self, run_id: &str, event: RunEvent) -> Result<PendingRunEvent> {
+        let sender = self
             .active
             .lock()
             .map_err(|_| anyhow!("runtime run manager lock was poisoned"))?
             .get(run_id)
             .map(|active| active.sender.clone())
-        {
-            let _ = sender.send(envelope.clone());
-        }
+            .ok_or_else(|| {
+                error::invalid_request(format!("runtime run is not running: {run_id}"))
+            })?;
+        self.journal.enqueue(run_id, event, sender)
+    }
 
-        Ok(envelope)
+    /// Persists and broadcasts one ordered event.
+    #[cfg(test)]
+    pub async fn publish(&self, run_id: &str, event: RunEvent) -> Result<RunEventEnvelope> {
+        self.enqueue(run_id, event)?.persisted().await
     }
 
     /// Completes a run after persisting its terminal event.
-    pub fn complete(&self, run_id: &str, message_id: Option<String>) -> Result<()> {
+    pub async fn complete(&self, run_id: &str, message_id: Option<String>) -> Result<()> {
         self.finish(
             run_id,
             RunEvent::QueryDone { message_id },
             RuntimeRunStatus::Completed,
             None,
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
     /// Fails a run after preserving the full client-facing error chain.
-    pub fn fail(&self, run_id: &str, error: String, causes: Vec<String>) -> Result<()> {
+    pub async fn fail(&self, run_id: &str, error: String, causes: Vec<String>) -> Result<()> {
         self.finish(
             run_id,
             RunEvent::QueryError {
@@ -516,7 +581,8 @@ impl RunManager {
             },
             RuntimeRunStatus::Failed,
             Some(&error),
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -533,7 +599,7 @@ impl RunManager {
             })?;
         cancellation.cancel();
         loop {
-            let snapshot = self.snapshot(run_id)?;
+            let snapshot = self.snapshot(run_id).await?;
             if snapshot.status != RuntimeRunStatus::Running {
                 return Ok(snapshot);
             }
@@ -544,34 +610,36 @@ impl RunManager {
         }
     }
 
-    pub fn finish_cancelled(&self, run_id: &str) -> Result<()> {
+    pub async fn finish_cancelled(&self, run_id: &str) -> Result<()> {
         self.finish(
             run_id,
             RunEvent::RunCancelled,
             RuntimeRunStatus::Cancelled,
             None,
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
     /// Loads current persisted run state.
-    pub fn snapshot(&self, run_id: &str) -> Result<RunSnapshot> {
-        Ok(self.journal.snapshot(run_id)?.into())
+    pub async fn snapshot(&self, run_id: &str) -> Result<RunSnapshot> {
+        Ok(self.journal.snapshot(run_id).await?.into())
     }
 
     /// Loads the active run for a conversation, including after UI reload.
-    pub fn active_for_conversation(
+    pub async fn active_for_conversation(
         &self,
         conversation_id: &ConversationId,
     ) -> Result<Option<RunSnapshot>> {
         Ok(self
             .journal
-            .active_for_conversation(conversation_id)?
+            .active_for_conversation(conversation_id)
+            .await?
             .map(Into::into))
     }
 
     /// Subscribes before loading replay history, preventing a creation gap.
-    pub fn subscribe(&self, run_id: &str, after: u64) -> Result<RunSubscription> {
+    pub async fn subscribe(&self, run_id: &str, after: u64) -> Result<RunSubscription> {
         let receiver = if let Some(sender) = self
             .active
             .lock()
@@ -585,15 +653,16 @@ impl RunManager {
             drop(sender);
             receiver
         };
-        let history = self.events_after(run_id, after)?;
+        let history = self.events_after(run_id, after).await?;
 
         Ok(RunSubscription { history, receiver })
     }
 
     /// Reloads persisted events after a lagged broadcast receiver.
-    pub fn events_after(&self, run_id: &str, after: u64) -> Result<Vec<RunEventEnvelope>> {
+    pub async fn events_after(&self, run_id: &str, after: u64) -> Result<Vec<RunEventEnvelope>> {
         self.journal
-            .events_after(run_id, after)?
+            .events_after(run_id, after)
+            .await?
             .into_iter()
             .map(|record| decode_event_record(run_id, record))
             .collect()
@@ -611,34 +680,29 @@ impl RunManager {
         Ok(())
     }
 
-    fn finish(
+    async fn finish(
         &self,
         run_id: &str,
         event: RunEvent,
         status: RuntimeRunStatus,
         error_message: Option<&str>,
     ) -> Result<bool> {
-        let payload = serde_json::to_string(&event).context("failed to serialize runtime event")?;
-        let Some(sequence) = self
-            .journal
-            .finish(run_id, status, error_message, payload)?
-        else {
-            return Ok(false);
-        };
-        let envelope = RunEventEnvelope {
-            run_id: run_id.to_string(),
-            sequence,
-            event,
-        };
-        if let Some(sender) = self
+        let sender = self
             .active
             .lock()
             .map_err(|_| anyhow!("runtime run manager lock was poisoned"))?
             .get(run_id)
             .map(|active| active.sender.clone())
-        {
-            let _ = sender.send(envelope);
-        }
+            .ok_or_else(|| {
+                error::not_found(format!("active runtime run does not exist: {run_id}"))
+            })?;
+        let Some(_envelope) = self
+            .journal
+            .finish(run_id, status, error_message, event, sender)
+            .await?
+        else {
+            return Ok(false);
+        };
         self.remove_active(run_id)?;
         Ok(true)
     }
@@ -666,14 +730,14 @@ mod tests {
         std::env::temp_dir().join(format!("windie-run-{name}-{nonce}.db"))
     }
 
-    #[test]
-    fn persists_and_replays_ordered_events() {
+    #[tokio::test]
+    async fn persists_and_replays_ordered_events() {
         let path = test_path("replay");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let run = manager.begin(&conversation_id).unwrap();
+        let run = manager.begin(&conversation_id).await.unwrap();
 
         manager
             .publish(
@@ -682,45 +746,47 @@ mod tests {
                     text: "hello".to_string(),
                 },
             )
+            .await
             .unwrap();
         manager
             .complete(&run.id, Some("message-1".to_string()))
+            .await
             .unwrap();
 
-        let replay = manager.events_after(&run.id, 0).unwrap();
+        let replay = manager.events_after(&run.id, 0).await.unwrap();
         assert_eq!(replay.len(), 2);
         assert_eq!(replay[0].sequence, 1);
         assert!(matches!(replay[0].event, RunEvent::AssistantDelta { .. }));
         assert_eq!(replay[1].sequence, 2);
         assert!(matches!(replay[1].event, RunEvent::QueryDone { .. }));
         assert_eq!(
-            manager.snapshot(&run.id).unwrap().status,
+            manager.snapshot(&run.id).await.unwrap().status,
             RuntimeRunStatus::Completed
         );
 
         let _ = fs::remove_file(path);
     }
 
-    #[test]
-    fn new_manager_does_not_interrupt_another_live_owner() {
+    #[tokio::test]
+    async fn new_manager_does_not_interrupt_another_live_owner() {
         let path = test_path("live-owner");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let first = RunManager::new(Some(path.clone())).unwrap();
-        let run = first.begin(&conversation_id).unwrap();
+        let run = first.begin(&conversation_id).await.unwrap();
 
         let restarted = RunManager::new(Some(path.clone())).unwrap();
         assert_eq!(
-            restarted.snapshot(&run.id).unwrap().status,
+            restarted.snapshot(&run.id).await.unwrap().status,
             RuntimeRunStatus::Running
         );
 
         let _ = fs::remove_file(path);
     }
 
-    #[test]
-    fn new_manager_replaces_an_expired_owner() {
+    #[tokio::test]
+    async fn new_manager_replaces_an_expired_owner() {
         let path = test_path("expired-owner");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
@@ -735,73 +801,48 @@ mod tests {
         drop(store);
 
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let replacement = manager.begin(&conversation_id).unwrap();
+        let replacement = manager.begin(&conversation_id).await.unwrap();
 
         assert_eq!(
-            manager.snapshot(&expired.id).unwrap().status,
+            manager.snapshot(&expired.id).await.unwrap().status,
             RuntimeRunStatus::Interrupted
         );
         assert_eq!(replacement.status, RuntimeRunStatus::Running);
         let _ = fs::remove_file(path);
     }
 
-    #[test]
-    fn concurrent_starts_create_only_one_running_run() {
+    #[tokio::test]
+    async fn concurrent_starts_create_only_one_running_run() {
         let path = test_path("concurrent-start");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(3));
-        let mut workers = Vec::new();
-        for _ in 0..2 {
-            let manager = manager.clone();
-            let conversation_id = conversation_id.clone();
-            let barrier = Arc::clone(&barrier);
-            workers.push(std::thread::spawn(move || {
-                barrier.wait();
-                manager.begin(&conversation_id)
-            }));
-        }
-        barrier.wait();
-        let results = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .collect::<Vec<_>>();
+        let (first, second) = tokio::join!(
+            manager.begin(&conversation_id),
+            manager.begin(&conversation_id)
+        );
+        let results = [first, second];
 
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
         assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
         let _ = fs::remove_file(path);
     }
 
-    #[test]
-    fn competing_terminal_transitions_persist_one_terminal_event() {
+    #[tokio::test]
+    async fn competing_terminal_transitions_persist_one_terminal_event() {
         let path = test_path("terminal-race");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let run = manager.begin(&conversation_id).unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(3));
-        let complete_manager = manager.clone();
-        let complete_id = run.id.clone();
-        let complete_barrier = Arc::clone(&barrier);
-        let complete = std::thread::spawn(move || {
-            complete_barrier.wait();
-            complete_manager.complete(&complete_id, None)
-        });
-        let cancel_manager = manager.clone();
-        let cancel_id = run.id.clone();
-        let cancel_barrier = Arc::clone(&barrier);
-        let cancel = std::thread::spawn(move || {
-            cancel_barrier.wait();
-            cancel_manager.finish_cancelled(&cancel_id)
-        });
-        barrier.wait();
-        let _ = complete.join().unwrap();
-        let _ = cancel.join().unwrap();
+        let run = manager.begin(&conversation_id).await.unwrap();
+        let _ = tokio::join!(
+            manager.complete(&run.id, None),
+            manager.finish_cancelled(&run.id)
+        );
 
-        let events = manager.events_after(&run.id, 0).unwrap();
+        let events = manager.events_after(&run.id, 0).await.unwrap();
         assert_eq!(
             events
                 .iter()
@@ -810,59 +851,44 @@ mod tests {
             1
         );
         assert_ne!(
-            manager.snapshot(&run.id).unwrap().status,
+            manager.snapshot(&run.id).await.unwrap().status,
             RuntimeRunStatus::Running
         );
         let _ = fs::remove_file(path);
     }
 
-    #[test]
-    fn fail_and_cancel_compete_for_one_terminal_transition() {
+    #[tokio::test]
+    async fn fail_and_cancel_compete_for_one_terminal_transition() {
         let path = test_path("fail-cancel-race");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let run = manager.begin(&conversation_id).unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let run = manager.begin(&conversation_id).await.unwrap();
+        let _ = tokio::join!(
+            manager.fail(&run.id, "failed".to_string(), Vec::new()),
+            manager.finish_cancelled(&run.id)
+        );
 
-        let fail_manager = manager.clone();
-        let fail_id = run.id.clone();
-        let fail_barrier = Arc::clone(&barrier);
-        let fail = std::thread::spawn(move || {
-            fail_barrier.wait();
-            fail_manager.fail(&fail_id, "failed".to_string(), Vec::new())
-        });
-        let cancel_manager = manager.clone();
-        let cancel_id = run.id.clone();
-        let cancel_barrier = Arc::clone(&barrier);
-        let cancel = std::thread::spawn(move || {
-            cancel_barrier.wait();
-            cancel_manager.finish_cancelled(&cancel_id)
-        });
-        barrier.wait();
-        let _ = fail.join().unwrap();
-        let _ = cancel.join().unwrap();
-
-        let events = manager.events_after(&run.id, 0).unwrap();
+        let events = manager.events_after(&run.id, 0).await.unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].event.is_terminal());
         assert_ne!(
-            manager.snapshot(&run.id).unwrap().status,
+            manager.snapshot(&run.id).await.unwrap().status,
             RuntimeRunStatus::Running
         );
         let _ = fs::remove_file(path);
     }
 
-    #[test]
-    fn rejects_late_events_after_terminal_event() {
+    #[tokio::test]
+    async fn rejects_late_events_after_terminal_event() {
         let path = test_path("late-event");
         let store = Store::open_at(&path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let run = manager.begin(&conversation_id).unwrap();
-        manager.complete(&run.id, None).unwrap();
+        let run = manager.begin(&conversation_id).await.unwrap();
+        manager.complete(&run.id, None).await.unwrap();
 
         let error = manager
             .publish(
@@ -871,10 +897,11 @@ mod tests {
                     text: "late".to_string(),
                 },
             )
+            .await
             .unwrap_err();
 
         assert!(error.to_string().contains("is not running"));
-        let events = manager.events_after(&run.id, 0).unwrap();
+        let events = manager.events_after(&run.id, 0).await.unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].event.is_terminal());
         let _ = fs::remove_file(path);
@@ -887,7 +914,7 @@ mod tests {
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let run = manager.begin(&conversation_id).unwrap();
+        let run = manager.begin(&conversation_id).await.unwrap();
         let cancellation = manager.cancellation(&run.id).unwrap();
         let cancel_manager = manager.clone();
         let cancel_id = run.id.clone();
@@ -902,9 +929,46 @@ mod tests {
         .unwrap();
         assert!(!cancel.is_finished());
 
-        manager.finish_cancelled(&run.id).unwrap();
+        manager.finish_cancelled(&run.id).await.unwrap();
         let snapshot = cancel.await.unwrap().unwrap();
         assert_eq!(snapshot.status, RuntimeRunStatus::Cancelled);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn bounded_journal_reports_backpressure() {
+        let path = test_path("backpressure");
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let manager = RunManager::new(Some(path.clone())).unwrap();
+        let run = manager.begin(&conversation_id).await.unwrap();
+        let mut pending = Vec::new();
+        let mut rejected = None;
+
+        for _ in 0..10_000 {
+            match manager.enqueue(
+                &run.id,
+                RunEvent::AssistantDelta {
+                    text: "x".to_string(),
+                },
+            ) {
+                Ok(write) => pending.push(write),
+                Err(error) => {
+                    rejected = Some(error);
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            rejected
+                .unwrap()
+                .to_string()
+                .contains("queue rejected event")
+        );
+        drop(pending);
+        drop(manager);
         let _ = fs::remove_file(path);
     }
 }

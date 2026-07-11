@@ -542,7 +542,8 @@ async fn query(
     let mut store = open_store(&state)?;
     let run = state
         .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::Query)?;
+        .begin_action(&conversation_id, RuntimeRunAction::Query)
+        .await?;
     let runtime = runtime_turn_config(
         &state,
         &run.id,
@@ -556,7 +557,7 @@ async fn query(
         runtime,
     )
     .await;
-    let message = state.run_manager.finish_result(&run.id, result)?;
+    let message = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(MessageResponse::from_message(message)))
 }

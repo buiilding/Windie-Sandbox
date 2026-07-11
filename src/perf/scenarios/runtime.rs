@@ -606,7 +606,8 @@ fn benchmark_fake_mcp_list_call() -> Result<Duration> {
     Ok(duration)
 }
 
-/// Measures ordered persistence of a sustained small-delta stream.
+/// Measures queued persistence after production-style delta coalescing across
+/// concurrent conversations.
 fn benchmark_durable_stream_journal() -> Result<Duration> {
     let path = env::temp_dir().join(format!(
         "windie-bench-durable-stream-{}-{}.db",
@@ -614,22 +615,38 @@ fn benchmark_durable_stream_journal() -> Result<Duration> {
         Uuid::new_v4()
     ));
     let store = Store::open_at(&path)?;
-    let conversation_id = store.create_conversation("openai/test")?;
+    let conversation_ids = (0..4)
+        .map(|_| store.create_conversation("openai/test"))
+        .collect::<Result<Vec<_>>>()?;
     drop(store);
 
     let manager = RunManager::new(Some(path.clone()))?;
-    let run = manager.begin(&conversation_id)?;
-    let started = Instant::now();
-    for _ in 0..500 {
-        manager.publish(
-            &run.id,
-            RunEvent::AssistantDelta {
-                text: "x".to_string(),
-            },
-        )?;
-    }
-    manager.complete(&run.id, None)?;
-    let duration = started.elapsed();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()?;
+    let duration = runtime.block_on(async {
+        let mut runs = Vec::new();
+        for conversation_id in &conversation_ids {
+            runs.push(manager.begin(conversation_id).await?);
+        }
+        let started = Instant::now();
+        let mut writes = Vec::new();
+        for run in &runs {
+            writes.push(manager.enqueue(
+                &run.id,
+                RunEvent::AssistantDelta {
+                    text: "x".repeat(125),
+                },
+            )?);
+        }
+        for write in writes {
+            write.persisted().await?;
+        }
+        for run in &runs {
+            manager.complete(&run.id, None).await?;
+        }
+        Ok::<Duration, anyhow::Error>(started.elapsed())
+    })?;
     drop(manager);
     let _ = fs::remove_file(path);
 

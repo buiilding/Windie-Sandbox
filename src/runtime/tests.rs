@@ -62,20 +62,22 @@ impl RecordingRuntimeEvents {
 }
 
 impl RuntimeEventSink for RecordingRuntimeEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
+    fn assistant_message_saved(&self, message_id: &MessageId) -> Result<()> {
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::AssistantMessageSaved(
                 message_id.clone(),
             ));
+        Ok(())
     }
 
-    fn tool_result_saved(&self, message_id: &MessageId) {
+    fn tool_result_saved(&self, message_id: &MessageId) -> Result<()> {
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::ToolResultSaved(message_id.clone()));
+        Ok(())
     }
 }
 
