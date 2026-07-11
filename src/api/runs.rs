@@ -1,6 +1,7 @@
 //! Backend-owned runtime run lifecycle and reconnectable SSE routes.
 
 use super::*;
+use crate::store::RuntimeRunStatus;
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
@@ -369,7 +370,13 @@ fn persistent_run_event_sse(
                     Err(broadcast::error::RecvError::Closed) => {
                         match state.manager.events_after(&state.run_id, state.after).await {
                             Ok(events) if !events.is_empty() => state.pending.extend(events),
-                            _ => return None,
+                            Ok(_) => match state.manager.snapshot(&state.run_id).await {
+                                Ok(snapshot) if snapshot.status == RuntimeRunStatus::Running => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+                                _ => return None,
+                            },
+                            Err(_) => return None,
                         }
                     }
                 }
@@ -676,6 +683,52 @@ mod tests {
 
         drop(output);
         drop(manager);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sse_polls_events_owned_by_another_run_manager() {
+        let path = std::env::temp_dir().join(format!(
+            "windie-run-nonlocal-sse-{}-{}.db",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let owner = Arc::new(RunManager::new(Some(path.clone())).unwrap());
+        let follower = Arc::new(RunManager::new(Some(path.clone())).unwrap());
+        let run = owner.begin(&conversation_id).await.unwrap();
+        let subscription = follower.subscribe(&run.id, 0).await.unwrap();
+        let response =
+            persistent_run_event_sse(subscription, Arc::clone(&follower), run.id.clone(), 0)
+                .into_response();
+        let owner_for_task = Arc::clone(&owner);
+        let run_id = run.id.clone();
+        let producer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            owner_for_task
+                .publish(
+                    &run_id,
+                    RunEvent::AssistantDelta {
+                        text: "remote".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            owner_for_task.complete(&run_id, None).await.unwrap();
+        });
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        producer.await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("event: assistant_delta"));
+        assert!(body.contains("event: query_done"));
+
+        drop(follower);
+        drop(owner);
         let _ = std::fs::remove_file(path);
     }
 }
