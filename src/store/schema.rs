@@ -158,7 +158,7 @@ impl Store {
                     updated_at INTEGER NOT NULL,
 
                     PRIMARY KEY (conversation_id, name),
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS runtime_runs (
@@ -169,7 +169,7 @@ impl Store {
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
 
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS runtime_run_events (
@@ -180,6 +180,20 @@ impl Store {
 
                     PRIMARY KEY (run_id, sequence),
                     FOREIGN KEY (run_id) REFERENCES runtime_runs(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS tool_call_executions (
+                    conversation_id TEXT NOT NULL,
+                    assistant_message_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_message_id TEXT,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+
+                    PRIMARY KEY (assistant_message_id, tool_call_id),
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
@@ -206,6 +220,10 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS runtime_runs_conversation_updated_idx
                 ON runtime_runs(conversation_id, updated_at);
 
+                CREATE UNIQUE INDEX IF NOT EXISTS runtime_runs_one_running_per_conversation_idx
+                ON runtime_runs(conversation_id)
+                WHERE status = 'running';
+
                 CREATE INDEX IF NOT EXISTS runtime_run_events_run_sequence_idx
                 ON runtime_run_events(run_id, sequence);
                 ",
@@ -223,4 +241,28 @@ impl Store {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .context("failed to read database schema version")
     }
+}
+
+impl Store {
+    fn table_exists(&self, table_name: &str) -> Result<bool> {
+        let exists = self
+            .connection
+            .query_row(
+                "
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = ?1
+                ",
+                params![table_name],
+                |_| Ok(()),
+            )
+            .optional()
+            .context("failed to inspect database tables")?
+            .is_some();
+
+        Ok(exists)
+    }
+}
+fn default_database_path() -> Result<PathBuf> {
+    Ok(paths::database_path())
 }

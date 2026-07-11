@@ -19,22 +19,27 @@ impl Store {
             created_at: now_millis()?,
             updated_at: now_millis()?,
         };
-        self.connection
-            .execute(
-                "
+        if let Err(insert_error) = self.connection.execute(
+            "
                 INSERT INTO runtime_runs (
                     id, conversation_id, status, error, created_at, updated_at
                 ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)
                 ",
-                params![
-                    record.id,
-                    record.conversation_id.as_str(),
-                    record.status.as_storage(),
-                    record.created_at,
-                    record.updated_at,
-                ],
-            )
-            .context("failed to create runtime run")?;
+            params![
+                record.id,
+                record.conversation_id.as_str(),
+                record.status.as_storage(),
+                record.created_at,
+                record.updated_at,
+            ],
+        ) {
+            if self.active_runtime_run(conversation_id)?.is_some() {
+                return Err(error::invalid_request(format!(
+                    "conversation already has a running action: {conversation_id}"
+                )));
+            }
+            return Err(insert_error).context("failed to create runtime run");
+        }
 
         Ok(record)
     }
@@ -86,6 +91,20 @@ impl Store {
             .connection
             .transaction()
             .context("failed to start runtime event transaction")?;
+        let status = transaction
+            .query_row(
+                "SELECT status FROM runtime_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("failed to load runtime run status")?
+            .ok_or_else(|| error::not_found(format!("runtime run does not exist: {run_id}")))?;
+        if status != RuntimeRunStatus::Running.as_storage() {
+            return Err(error::invalid_request(format!(
+                "runtime run is not running: {run_id} ({status})"
+            )));
+        }
         let next = transaction
             .query_row(
                 "
@@ -120,6 +139,90 @@ impl Store {
         u64::try_from(next).context("runtime event sequence was negative")
     }
 
+    /// Atomically records one terminal event and changes a running run to its
+    /// final status. A competing terminal transition wins by changing the status
+    /// first; later transitions return `None` without appending another event.
+    pub fn finish_runtime_run(
+        &mut self,
+        run_id: &str,
+        status: RuntimeRunStatus,
+        error_message: Option<&str>,
+        terminal_payload: &str,
+    ) -> Result<Option<u64>> {
+        if status == RuntimeRunStatus::Running {
+            return Err(error::invalid_request(
+                "terminal runtime status must not be running",
+            ));
+        }
+
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start runtime completion transaction")?;
+        let now = now_millis()?;
+        let changed = transaction
+            .execute(
+                "
+                UPDATE runtime_runs
+                SET status = ?2, error = ?3, updated_at = ?4
+                WHERE id = ?1 AND status = ?5
+                ",
+                params![
+                    run_id,
+                    status.as_storage(),
+                    error_message,
+                    now,
+                    RuntimeRunStatus::Running.as_storage()
+                ],
+            )
+            .context("failed to finish runtime run")?;
+        if changed == 0 {
+            let exists = transaction
+                .query_row(
+                    "SELECT 1 FROM runtime_runs WHERE id = ?1",
+                    params![run_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .context("failed to check runtime run")?
+                .is_some();
+            if !exists {
+                return Err(error::not_found(format!(
+                    "runtime run does not exist: {run_id}"
+                )));
+            }
+            return Ok(None);
+        }
+
+        let next = transaction
+            .query_row(
+                "
+                SELECT COALESCE(MAX(sequence), 0) + 1
+                FROM runtime_run_events
+                WHERE run_id = ?1
+                ",
+                params![run_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed to determine terminal event sequence")?;
+        transaction
+            .execute(
+                "
+                INSERT INTO runtime_run_events (run_id, sequence, payload_json, created_at)
+                VALUES (?1, ?2, ?3, ?4)
+                ",
+                params![run_id, next, terminal_payload, now],
+            )
+            .context("failed to append terminal runtime event")?;
+        transaction
+            .commit()
+            .context("failed to commit runtime completion")?;
+
+        Ok(Some(
+            u64::try_from(next).context("terminal event sequence was negative")?,
+        ))
+    }
+
     /// Loads ordered events strictly after one sequence number.
     pub fn runtime_run_events_after(
         &self,
@@ -152,33 +255,6 @@ impl Store {
             .context("failed to decode runtime events")
     }
 
-    /// Updates terminal or interrupted runtime state.
-    pub fn set_runtime_run_status(
-        &self,
-        run_id: &str,
-        status: RuntimeRunStatus,
-        error_message: Option<&str>,
-    ) -> Result<()> {
-        let changed = self
-            .connection
-            .execute(
-                "
-                UPDATE runtime_runs
-                SET status = ?2, error = ?3, updated_at = ?4
-                WHERE id = ?1
-                ",
-                params![run_id, status.as_storage(), error_message, now_millis()?],
-            )
-            .context("failed to update runtime run status")?;
-        if changed == 0 {
-            return Err(error::not_found(format!(
-                "runtime run does not exist: {run_id}"
-            )));
-        }
-
-        Ok(())
-    }
-
     /// Marks work left running by a previous process as interrupted.
     pub fn interrupt_running_runtime_runs(&self) -> Result<()> {
         self.connection
@@ -200,4 +276,84 @@ impl Store {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Persisted backend-owned runtime run.
+pub struct RuntimeRunRecord {
+    pub id: String,
+    pub conversation_id: ConversationId,
+    pub status: RuntimeRunStatus,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Persisted lifecycle state for a backend-owned runtime run.
+pub enum RuntimeRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl RuntimeRunStatus {
+    /// Returns the SQLite representation for this status.
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    /// Decodes a persisted runtime run status.
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "running" => Some(Self::Running),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            "interrupted" => Some(Self::Interrupted),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeRunStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_storage())
+    }
+}
+
+fn read_runtime_run_row(row: &Row<'_>) -> rusqlite::Result<RuntimeRunRecord> {
+    let status = row.get::<_, String>(2)?;
+    let status = RuntimeRunStatus::from_storage(&status).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            Type::Text,
+            format!("unknown runtime run status: {status}").into(),
+        )
+    })?;
+
+    Ok(RuntimeRunRecord {
+        id: row.get(0)?,
+        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+        status,
+        error: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One ordered serialized event emitted by a runtime run.
+pub struct RuntimeRunEventRecord {
+    pub sequence: u64,
+    pub payload: String,
 }

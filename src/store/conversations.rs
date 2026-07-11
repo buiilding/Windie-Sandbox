@@ -389,3 +389,28 @@ impl Store {
         Ok(())
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Lightweight row used by conversation listing.
+pub struct ConversationInfo {
+    pub id: ConversationId,
+    pub model: String,
+    pub message_count: i64,
+}
+
+fn normalize_conversation_model(model: &str) -> Result<&str> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(error::invalid_request("model requires non-empty text"));
+    }
+
+    Ok(model)
+}
+
+/// Normalizes an optional conversation reasoning effort before persistence.
+fn normalize_conversation_reasoning_effort(effort: Option<&str>) -> Option<String> {
+    effort
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+        .map(str::to_string)
+}

@@ -142,15 +142,18 @@ where
     } else {
         Some(assistant_response.metadata)
     };
-    let assistant_message_id = store.insert_message(
+    let assistant_message_id = store.insert_assistant_message_on_branch(
         conversation_id,
         parent_message_id.as_ref(),
-        Role::Assistant,
         &assistant_response.content,
         metadata.as_ref(),
     )?;
     events.assistant_message_saved(&assistant_message_id);
-    store_policy_denied_tool_results(store, conversation_id, registry, events)?;
+    let response_is_active =
+        store.active_message_id(conversation_id)?.as_ref() == Some(&assistant_message_id);
+    if response_is_active {
+        store_policy_denied_tool_results(store, conversation_id, registry, events)?;
+    }
 
     Ok(Message {
         id: Some(assistant_message_id),
@@ -222,7 +225,16 @@ where
         )
         .await?
         {
-            AutomaticToolResolution::Resolved => {}
+            AutomaticToolResolution::Resolved(result_message_id) => {
+                if store.active_message_id(conversation_id)?.as_ref() != Some(&result_message_id) {
+                    if let Some(message) = last_assistant_message {
+                        return Ok(message);
+                    }
+                    return Err(error::invalid_request(
+                        "active path changed during automatic tool execution",
+                    ));
+                }
+            }
             AutomaticToolResolution::WaitingForApproval => {
                 if let Some(message) = last_assistant_message {
                     return Ok(message);
@@ -256,6 +268,9 @@ where
                     .is_some_and(|metadata| !metadata.tool_calls.is_empty());
 
                 if !has_tool_calls {
+                    return Ok(message);
+                }
+                if store.active_message_id(conversation_id)?.as_ref() != message.id.as_ref() {
                     return Ok(message);
                 }
 
@@ -412,15 +427,17 @@ fn store_policy_denied_tool_results(
             return Ok(());
         };
         let pending = PendingToolCall {
+            assistant_message_id: execution.assistant_message_id,
             result_parent_message_id: execution.result_parent_message_id,
             tool_call,
         };
+        claim_pending_tool_call(store, conversation_id, &pending)?;
         let result = ToolExecutionResult::failure(
             pending.tool_call.id.clone(),
             pending.tool_call.name(),
             reason,
         );
-        let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
+        let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
         events.tool_result_saved(&message_id);
     }
 }
@@ -429,7 +446,7 @@ fn store_policy_denied_tool_results(
 enum AutomaticToolResolution {
     Idle,
     WaitingForApproval,
-    Resolved,
+    Resolved(MessageId),
 }
 
 /// Resolves one pending tool call and emits an event for the stored result.
@@ -453,9 +470,11 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
     };
 
     let pending = PendingToolCall {
+        assistant_message_id: execution.assistant_message_id,
         result_parent_message_id: execution.result_parent_message_id,
         tool_call,
     };
+    claim_pending_tool_call(store, conversation_id, &pending)?;
     let policy = ToolPolicy;
     let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
@@ -476,14 +495,15 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
 
-    let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
     events.tool_result_saved(&message_id);
 
-    Ok(AutomaticToolResolution::Resolved)
+    Ok(AutomaticToolResolution::Resolved(message_id))
 }
 
 /// One pending tool call plus the message that should parent its result.
 pub(crate) struct PendingToolCall {
+    pub(crate) assistant_message_id: MessageId,
     pub(crate) result_parent_message_id: MessageId,
     pub(crate) tool_call: ToolCall,
 }
@@ -596,17 +616,39 @@ pub(crate) async fn approve_tool_call_with_registry(
     tool_call_id: &ToolCallId,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolExecutionResult> {
+    approve_tool_call_with_registry_and_message(store, conversation_id, tool_call_id, registry)
+        .await
+        .map(|(result, _)| result)
+}
+
+pub(crate) async fn approve_tool_call_with_registry_and_message(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    registry: &ToolProviderRegistry,
+) -> Result<(ToolExecutionResult, MessageId)> {
     let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    claim_pending_tool_call(store, conversation_id, &pending)?;
     let execution = prepare_pending_tool_execution(store, conversation_id, &pending, registry)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            execute_pending_tool_call(&pending, &attached_tool, registry).await?
+            match execute_pending_tool_call(&pending, &attached_tool, registry).await {
+                Ok(result) => result,
+                Err(execution_error) => {
+                    store.fail_tool_call_execution(
+                        &pending.assistant_message_id,
+                        &pending.tool_call.id,
+                        &execution_error.to_string(),
+                    )?;
+                    return Err(execution_error);
+                }
+            }
         }
     };
-    store_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
 
-    Ok(result)
+    Ok((result, message_id))
 }
 
 /// Evaluates policy and provider availability for one pending tool call.
@@ -681,11 +723,20 @@ pub(crate) fn deny_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
-    let result = deny_pending_tool_call(&pending);
-    store_pending_tool_result(store, conversation_id, &pending, &result)?;
+    deny_tool_call_with_message(store, conversation_id, tool_call_id).map(|(result, _)| result)
+}
 
-    Ok(result)
+pub(crate) fn deny_tool_call_with_message(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+) -> Result<(ToolExecutionResult, MessageId)> {
+    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    claim_pending_tool_call(store, conversation_id, &pending)?;
+    let result = deny_pending_tool_call(&pending);
+    let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
+
+    Ok((result, message_id))
 }
 
 /// Builds the failed result for an explicit user denial.
@@ -733,9 +784,43 @@ pub(crate) fn load_pending_tool_call(
     }
 
     Ok(PendingToolCall {
+        assistant_message_id: execution.assistant_message_id,
         result_parent_message_id: execution.result_parent_message_id,
         tool_call: next_tool_call,
     })
+}
+
+fn claim_pending_tool_call(
+    store: &Store,
+    conversation_id: &ConversationId,
+    pending: &PendingToolCall,
+) -> Result<()> {
+    store.claim_tool_call_execution(
+        conversation_id,
+        &pending.assistant_message_id,
+        &pending.tool_call.id,
+    )
+}
+
+fn store_claimed_tool_result(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    pending: &PendingToolCall,
+    result: &ToolExecutionResult,
+) -> Result<MessageId> {
+    let message_id = store.insert_tool_result_message_on_branch(
+        conversation_id,
+        &pending.result_parent_message_id,
+        &result.tool_call_id,
+        &result.content,
+        &result.parts,
+    )?;
+    store.complete_tool_call_execution(
+        &pending.assistant_message_id,
+        &pending.tool_call.id,
+        &message_id,
+    )?;
+    Ok(message_id)
 }
 
 /// Loads the attached tool matching one model-requested function name.
@@ -754,31 +839,6 @@ fn attached_tool_can_execute(
     attached_tool: Option<&AttachedTool>,
 ) -> bool {
     attached_tool.is_some_and(|attached_tool| registry.can_execute(attached_tool))
-}
-
-/// Saves one tool execution result as a `role: tool` child message.
-pub(crate) fn store_pending_tool_result(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    pending: &PendingToolCall,
-    result: &ToolExecutionResult,
-) -> Result<MessageId> {
-    if result.parts.is_empty() {
-        store.insert_tool_result_message(
-            conversation_id,
-            &pending.result_parent_message_id,
-            &result.tool_call_id,
-            &result.content,
-        )
-    } else {
-        store.insert_tool_result_message_with_parts(
-            conversation_id,
-            &pending.result_parent_message_id,
-            &result.tool_call_id,
-            &result.content,
-            &result.parts,
-        )
-    }
 }
 
 #[cfg(test)]

@@ -107,6 +107,12 @@ Approving reevaluates the attachment and executor, invokes the provider, and
 stores the output. Denying does not invoke the provider; it stores an
 error-shaped output stating that the user rejected the call.
 
+Before any external execution, the store atomically claims the pair of
+assistant message ID and provider tool-call ID. A second direct request or run
+cannot claim the same call while it is executing or after it completed. Claims
+left executing by a stopped process become `interrupted` and can be retried
+explicitly.
+
 The API's approval and denial runs continue automatically if no later manual
 approval remains. The one-shot CLI `approve` and `deny` commands store one
 result and exit; the user invokes `query` explicitly afterward.
@@ -167,6 +173,11 @@ The store accepts a tool output only when:
 - the assistant requested the supplied call ID.
 
 Generic message insertion cannot create `role: tool` nodes.
+
+Assistant and tool-result inserts target the branch that initiated the work.
+They advance the selected active message only when that selection still equals
+the captured parent. Selecting or creating another branch while work is in
+flight therefore does not get overwritten by a late result.
 
 ## Group Deletion
 

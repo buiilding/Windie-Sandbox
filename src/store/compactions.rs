@@ -89,3 +89,13 @@ impl Store {
         Ok(id)
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Saved summary of conversation history through a specific message.
+pub struct Compaction {
+    pub id: CompactionId,
+    pub conversation_id: ConversationId,
+    pub through_message_id: MessageId,
+    pub content: String,
+    pub created_at: i64,
+}

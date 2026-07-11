@@ -20,6 +20,10 @@ fn creates_performance_indexes() {
     assert!(index_exists(&store, "messages_parent_idx"));
     assert!(index_exists(&store, "messages_id_conversation_idx"));
     assert!(index_exists(&store, "conversations_updated_idx"));
+    assert!(index_exists(
+        &store,
+        "runtime_runs_one_running_per_conversation_idx"
+    ));
 }
 
 #[test]

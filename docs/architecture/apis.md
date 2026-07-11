@@ -82,10 +82,8 @@ Deletes the conversation's messages, compactions, attachments, and orphaned
 images, then deletes the conversation row. The inspector refreshes the list and
 selects another conversation when available.
 
-Current limitation: runtime run rows are not deleted by this operation, and
-their conversation foreign key has no delete cascade. After a conversation has
-durable run records, this route currently fails its transaction instead of
-deleting the conversation and run journal together.
+Runtime runs, run events, and tool-execution claims are conversation-owned and
+delete through foreign-key cascades with the conversation.
 
 ## Conversation Settings
 

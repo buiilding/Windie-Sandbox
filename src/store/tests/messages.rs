@@ -1132,3 +1132,62 @@ fn rejects_forking_at_message_from_another_conversation() {
             .contains("message does not belong to conversation")
     );
 }
+
+#[test]
+fn branch_response_does_not_override_a_new_active_path() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let original_parent = store
+        .insert_message(&conversation_id, None, Role::User, "original", None)
+        .unwrap();
+    let selected_branch = store
+        .insert_message(
+            &conversation_id,
+            Some(&original_parent),
+            Role::User,
+            "new branch",
+            None,
+        )
+        .unwrap();
+
+    let response = store
+        .insert_assistant_message_on_branch(
+            &conversation_id,
+            Some(&original_parent),
+            "late response",
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store.active_message_id(&conversation_id).unwrap(),
+        Some(selected_branch)
+    );
+    assert_eq!(
+        store
+            .load_path_to_message(&conversation_id, &response)
+            .unwrap()
+            .last()
+            .unwrap()
+            .content,
+        "late response"
+    );
+}
+
+#[test]
+fn branch_response_becomes_active_when_selection_is_unchanged() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let parent_id = store
+        .insert_message(&conversation_id, None, Role::User, "question", None)
+        .unwrap();
+
+    let response_id = store
+        .insert_assistant_message_on_branch(&conversation_id, Some(&parent_id), "response", None)
+        .unwrap();
+
+    assert_eq!(
+        store.active_message_id(&conversation_id).unwrap(),
+        Some(response_id)
+    );
+}

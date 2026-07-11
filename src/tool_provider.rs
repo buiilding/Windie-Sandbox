@@ -132,9 +132,15 @@ impl ToolProviderRegistry {
                     )));
                 };
 
-                provider
-                    .call_tool(attached_tool, tool_call, self.mcp_session_pool.as_ref())
-                    .await
+                let provider = provider.clone();
+                let attached_tool = attached_tool.clone();
+                let tool_call = tool_call.clone();
+                let session_pool = self.mcp_session_pool.clone();
+                tokio::task::spawn_blocking(move || {
+                    provider.call_tool(&attached_tool, &tool_call, session_pool.as_ref())
+                })
+                .await
+                .context("MCP provider task stopped")?
             }
             ToolProviderKind::Plugin => Err(error::invalid_request(format!(
                 "unknown tool: {}",
@@ -380,7 +386,7 @@ impl McpToolProvider {
     }
 
     /// Executes one approved MCP tool call.
-    async fn call_tool(
+    fn call_tool(
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,

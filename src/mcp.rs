@@ -232,8 +232,11 @@ pub fn call_tool_with_shutdown(
 /// also runs the provider shutdown hook when one is configured.
 #[derive(Clone)]
 pub struct McpSessionPool {
-    sessions: Arc<Mutex<PersistentMcpSessions>>,
+    sessions: Arc<Mutex<PersistentMcpSessionMap>>,
 }
+
+type PersistentMcpSessionSlot = Arc<Mutex<Option<PersistentMcpSession>>>;
+type PersistentMcpSessionMap = HashMap<String, PersistentMcpSessionSlot>;
 
 impl std::fmt::Debug for McpSessionPool {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -246,7 +249,7 @@ impl std::fmt::Debug for McpSessionPool {
 impl McpSessionPool {
     /// Creates a registry-owned persistent MCP session pool.
     pub fn new() -> Self {
-        let sessions = Arc::new(Mutex::new(PersistentMcpSessions::default()));
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
         spawn_idle_reaper(Arc::clone(&sessions));
 
         Self { sessions }
@@ -261,12 +264,14 @@ impl McpSessionPool {
         name: &str,
         arguments: Value,
     ) -> Result<Value> {
-        let mut sessions = self
+        let slot = self
             .sessions
             .lock()
-            .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?;
-
-        sessions.call_tool(provider_id, command, shutdown_command, name, arguments)
+            .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?
+            .entry(provider_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone();
+        call_persistent_tool(slot, command, shutdown_command, name, arguments)
     }
 }
 
@@ -277,125 +282,102 @@ impl Default for McpSessionPool {
 }
 
 /// Starts a small background loop that stops idle persistent MCP sessions.
-fn spawn_idle_reaper(sessions: Arc<Mutex<PersistentMcpSessions>>) {
+fn spawn_idle_reaper(sessions: Arc<Mutex<PersistentMcpSessionMap>>) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(MCP_IDLE_REAPER_INTERVAL);
-            let Ok(mut sessions) = sessions.lock() else {
+            let Ok(session_slots) = sessions.lock().map(|sessions| {
+                sessions
+                    .iter()
+                    .map(|(provider_id, slot)| (provider_id.clone(), Arc::clone(slot)))
+                    .collect::<Vec<_>>()
+            }) else {
                 break;
             };
-            sessions.stop_idle_sessions(MCP_IDLE_TIMEOUT);
+            for (provider_id, slot) in session_slots {
+                let Ok(mut session) = slot.try_lock() else {
+                    continue;
+                };
+                let is_idle = session
+                    .as_ref()
+                    .is_some_and(|session| session.last_used_at.elapsed() >= MCP_IDLE_TIMEOUT);
+                if !is_idle {
+                    continue;
+                }
+                let stopped = session.take();
+                drop(session);
+                if let Some(stopped) = stopped {
+                    let shutdown_command = stopped.shutdown_command;
+                    drop(stopped);
+                    run_shutdown_best_effort(shutdown_command);
+                }
+                if let Ok(mut sessions) = sessions.lock()
+                    && sessions
+                        .get(&provider_id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &slot))
+                {
+                    sessions.remove(&provider_id);
+                }
+            }
         }
     });
 }
 
-#[derive(Default)]
-/// Process-wide owner for persistent MCP provider sessions.
-struct PersistentMcpSessions {
-    sessions: HashMap<String, PersistentMcpSession>,
-}
-
-impl PersistentMcpSessions {
-    /// Calls one tool through the persistent session for `provider_id`.
-    fn call_tool(
-        &mut self,
-        provider_id: &str,
-        command: McpCommand,
-        shutdown_command: Option<McpCommand>,
-        name: &str,
-        arguments: Value,
-    ) -> Result<Value> {
-        self.ensure_session(provider_id, command, shutdown_command)?;
-
-        let result = {
-            let session = self
-                .sessions
-                .get_mut(provider_id)
-                .ok_or_else(|| anyhow!("persistent MCP session was not started: {provider_id}"))?;
-            session.last_used_at = Instant::now();
-            session.session.call(
-                "tools/call",
-                Some(json!({
-                    "name": name,
-                    "arguments": arguments
-                })),
-            )
-        };
-
-        match result {
-            Ok(result) => {
-                if let Some(session) = self.sessions.get_mut(provider_id) {
-                    session.last_used_at = Instant::now();
-                }
-                Ok(result)
-            }
-            Err(error) => {
-                self.stop_session(provider_id);
-                Err(error)
-            }
+fn call_persistent_tool(
+    slot: PersistentMcpSessionSlot,
+    command: McpCommand,
+    shutdown_command: Option<McpCommand>,
+    name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    let mut session_slot = slot
+        .lock()
+        .map_err(|_| anyhow!("persistent MCP provider session is poisoned"))?;
+    let command_changed = session_slot.as_ref().is_some_and(|session| {
+        session.command != command || session.shutdown_command != shutdown_command
+    });
+    if command_changed {
+        let stopped = session_slot.take();
+        if let Some(stopped) = stopped {
+            let old_shutdown = stopped.shutdown_command;
+            drop(stopped);
+            run_shutdown_best_effort(old_shutdown);
         }
     }
-
-    /// Ensures a matching persistent MCP session exists for one provider.
-    fn ensure_session(
-        &mut self,
-        provider_id: &str,
-        command: McpCommand,
-        shutdown_command: Option<McpCommand>,
-    ) -> Result<()> {
-        let command_changed = self.sessions.get(provider_id).is_some_and(|session| {
-            session.command != command || session.shutdown_command != shutdown_command
+    if session_slot.is_none() {
+        *session_slot = Some(PersistentMcpSession {
+            command,
+            shutdown_command,
+            session: McpSession::start(command)?,
+            last_used_at: Instant::now(),
         });
-        if command_changed {
-            self.stop_session(provider_id);
-        }
-        if self.sessions.contains_key(provider_id) {
-            return Ok(());
-        }
-
-        let session = McpSession::start(command)?;
-        self.sessions.insert(
-            provider_id.to_string(),
-            PersistentMcpSession {
-                command,
-                shutdown_command,
-                session,
-                last_used_at: Instant::now(),
-            },
-        );
-
-        Ok(())
     }
 
-    /// Stops sessions that have not received a call within `idle_timeout`.
-    fn stop_idle_sessions(&mut self, idle_timeout: Duration) {
-        let now = Instant::now();
-        let provider_ids = self
-            .sessions
-            .iter()
-            .filter_map(|(provider_id, session)| {
-                if now.duration_since(session.last_used_at) >= idle_timeout {
-                    Some(provider_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        for provider_id in provider_ids {
-            self.stop_session(&provider_id);
+    let session = session_slot
+        .as_mut()
+        .ok_or_else(|| anyhow!("persistent MCP session was not started"))?;
+    session.last_used_at = Instant::now();
+    let result = session.session.call(
+        "tools/call",
+        Some(json!({
+            "name": name,
+            "arguments": arguments
+        })),
+    );
+    match result {
+        Ok(result) => {
+            session.last_used_at = Instant::now();
+            Ok(result)
         }
-    }
-
-    /// Stops one persistent session and runs its provider shutdown hook.
-    fn stop_session(&mut self, provider_id: &str) {
-        let Some(session) = self.sessions.remove(provider_id) else {
-            return;
-        };
-        let shutdown_command = session.shutdown_command;
-        drop(session);
-
-        run_shutdown_best_effort(shutdown_command);
+        Err(error) => {
+            let stopped = session_slot.take();
+            if let Some(stopped) = stopped {
+                let shutdown = stopped.shutdown_command;
+                drop(stopped);
+                run_shutdown_best_effort(shutdown);
+            }
+            Err(error)
+        }
     }
 }
 
@@ -510,8 +492,15 @@ impl McpSession {
     /// Reads JSON-RPC lines until the response matching `request_id` arrives.
     fn read_response(&mut self, request_id: u64, method: &str) -> Result<Value> {
         let timeout = request_timeout_for_method(method);
+        let deadline = Instant::now() + timeout;
         loop {
-            let line = match self.stdout_lines.recv_timeout(timeout) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(self.error_with_stderr(
+                    McpRequestTimeout::new(self.command.program, method, timeout).into(),
+                ));
+            }
+            let line = match self.stdout_lines.recv_timeout(remaining) {
                 Ok(Ok(line)) => line,
                 Ok(Err(error)) => {
                     return Err(self.error_with_stderr(anyhow!("{error} for {method}")));
@@ -732,6 +721,53 @@ fn captured_stderr(captured: &Arc<Mutex<Vec<u8>>>) -> String {
 mod tests {
     use super::*;
 
+    const SLOW_TEST_MCP: McpCommand = McpCommand {
+        program: "/bin/sh",
+        args: &[
+            "-c",
+            concat!(
+                "while IFS= read -r line; do\n",
+                "case \"$line\" in\n",
+                "*'\"method\":\"initialize\"'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}' ;;\n",
+                "*'\"method\":\"tools/call\"'*) sleep 1; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}'; exit 0 ;;\n",
+                "esac\n",
+                "done",
+            ),
+        ],
+        env: &[],
+    };
+    const FAST_TEST_MCP: McpCommand = McpCommand {
+        program: "/bin/sh",
+        args: &[
+            "-c",
+            concat!(
+                "while IFS= read -r line; do\n",
+                "case \"$line\" in\n",
+                "*'\"method\":\"initialize\"'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}' ;;\n",
+                "*'\"method\":\"tools/call\"'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}'; exit 0 ;;\n",
+                "esac\n",
+                "done",
+            ),
+        ],
+        env: &[],
+    };
+    const SEQUENTIAL_TEST_MCP: McpCommand = McpCommand {
+        program: "/bin/sh",
+        args: &[
+            "-c",
+            concat!(
+                "calls=0\n",
+                "while IFS= read -r line; do\n",
+                "case \"$line\" in\n",
+                "*'\"method\":\"initialize\"'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}' ;;\n",
+                "*'\"method\":\"tools/call\"'*) calls=$((calls + 1)); sleep 0.25; printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"content\":[]}}\\n' \"$((calls + 1))\" ;;\n",
+                "esac\n",
+                "done",
+            ),
+        ],
+        env: &[],
+    };
+
     #[test]
     fn captured_stderr_returns_provider_text() {
         let captured = Arc::new(Mutex::new(b"missing permission".to_vec()));
@@ -808,5 +844,49 @@ mod tests {
         assert!(error.to_string().contains(
             "missing required provider environment variable: WINDIE_TEST_MISSING_MCP_ENV"
         ));
+    }
+
+    #[test]
+    fn slow_provider_does_not_block_another_provider() {
+        let pool = McpSessionPool::new();
+        let slow_pool = pool.clone();
+        let slow = std::thread::spawn(move || {
+            slow_pool.call_tool("slow", SLOW_TEST_MCP, None, "slow", json!({}))
+        });
+        std::thread::sleep(Duration::from_millis(100));
+
+        let started = Instant::now();
+        pool.call_tool("fast", FAST_TEST_MCP, None, "fast", json!({}))
+            .unwrap();
+        let fast_elapsed = started.elapsed();
+
+        slow.join().unwrap().unwrap();
+        assert!(
+            fast_elapsed < Duration::from_millis(500),
+            "fast provider waited {fast_elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn calls_to_one_provider_remain_sequential() {
+        let pool = McpSessionPool::new();
+        let first_pool = pool.clone();
+        let started = Instant::now();
+        let first = std::thread::spawn(move || {
+            first_pool.call_tool("sequential", SEQUENTIAL_TEST_MCP, None, "first", json!({}))
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        let second_pool = pool.clone();
+        let second = std::thread::spawn(move || {
+            second_pool.call_tool("sequential", SEQUENTIAL_TEST_MCP, None, "second", json!({}))
+        });
+
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(450),
+            "same-provider calls overlapped: {elapsed:?}"
+        );
     }
 }

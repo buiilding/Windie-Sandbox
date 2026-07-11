@@ -210,3 +210,28 @@ fn clear_conversation_reasoning_effort_persists() {
 
     assert_eq!(reasoning_effort, None);
 }
+
+#[test]
+fn deleting_conversation_cascades_completed_run_journal() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let run = store.create_runtime_run(&conversation_id).unwrap();
+    store
+        .finish_runtime_run(
+            &run.id,
+            RuntimeRunStatus::Completed,
+            None,
+            r#"{"type":"query_done","message_id":null}"#,
+        )
+        .unwrap();
+
+    store.remove_conversation(&conversation_id).unwrap();
+
+    assert!(
+        store
+            .runtime_run(&run.id)
+            .unwrap_err()
+            .to_string()
+            .contains("does not exist")
+    );
+}

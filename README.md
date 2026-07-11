@@ -61,10 +61,12 @@ interface surfaces.
 Important runtime files:
 
 - `src/main.rs` wires components together.
-- `src/cli.rs` parses startup arguments into typed commands.
+- `src/cli.rs` parses startup arguments into typed commands;
+  `src/cli/execute.rs` owns the CLI adapter.
 - `src/api.rs` composes the localhost developer API; `src/api/` owns route
   families and their private HTTP types.
-- `src/operation.rs` coordinates shared CLI/API operations.
+- `src/operation.rs` exposes shared contracts; `src/operation/` separates
+  conversation, model, tool, and execution operations.
 - `src/conversation.rs` defines message, role, identifier, tool schema, and
   assistant metadata types.
 - `src/context.rs` builds model-facing context from the active conversation
@@ -80,7 +82,8 @@ Important runtime files:
   calls, model metadata, Responses request serialization, and SSE decoding.
 - `src/policy.rs` owns tool execution policy decisions.
 - `src/perf.rs` exposes benchmark options; `src/perf/metrics.rs` owns reports
-  and statistics while `src/perf/scenarios.rs` owns measured fixtures.
+  and statistics while `src/perf/scenarios/` separates conversation, runtime,
+  fixture, and live-provider behavior.
 
 Developer-facing references:
 

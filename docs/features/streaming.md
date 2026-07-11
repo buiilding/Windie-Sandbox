@@ -107,10 +107,18 @@ corresponding store mutation succeeds.
 Publishing performs:
 
 1. serialize the typed event;
-2. open the run store;
+2. enqueue it on the bounded journal command channel;
 3. transactionally select the next sequence number;
 4. insert the event and update the run timestamp;
 5. broadcast the same envelope to live subscribers.
+
+One journal worker owns one long-lived store connection. The bounded command
+channel applies backpressure when persistence falls behind production and keeps
+connection ownership out of stream callbacks.
+
+Adjacent assistant, reasoning, and tool-call fragments are coalesced into
+bounded chunks before publication. This keeps replay exact without opening and
+initializing SQLite or committing one row for every provider token.
 
 Persistence happens before broadcast, so a subscriber that misses the live
 notification can recover it from SQLite.
@@ -120,12 +128,12 @@ notification can recover it from SQLite.
 The inspector posts model and reasoning overrides to the conversation run
 route. The API:
 
-1. rejects a second active run for that conversation;
-2. creates the durable `running` record;
-3. creates a process broadcast channel;
-4. spawns the query task;
-5. registers its abort handle;
-6. returns the run snapshot immediately.
+1. atomically creates the durable `running` record under a database uniqueness
+   constraint that allows one running run per conversation;
+2. creates a process broadcast channel;
+3. spawns the query task;
+4. registers its abort handle;
+5. returns the run snapshot immediately.
 
 Approval and denial runs use the same infrastructure with different runtime
 actions.
@@ -189,25 +197,19 @@ local SSE request.
 
 Backend cancellation:
 
-1. verifies the run is currently `running`;
+1. atomically changes `running` to `cancelled` and persists `run_cancelled`;
 2. aborts the registered task when available;
-3. persists and broadcasts `run_cancelled`;
-4. stores `cancelled` status;
-5. removes the process-active entry.
+3. removes the process-active entry.
 
 Disconnecting or locally aborting SSE without calling cancellation affects only
 the subscriber.
 
 ## Terminal Completion and Failure
 
-Successful completion first publishes `query_done`, then marks the run
-`completed`, then removes it from the active map.
-
-Failure publishes `query_error` with the complete client-facing cause chain,
-marks the record `failed`, and removes the active entry.
-
-The event is persisted before the terminal status change. Subscribers use the
-terminal event to stop following.
+Completion, failure, and cancellation each use one transaction that changes a
+run only when its current status is `running` and appends the matching terminal
+event. Competing terminal outcomes therefore cannot overwrite each other or
+append two terminal events.
 
 ## Broadcast Capacity and Lag
 

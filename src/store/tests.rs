@@ -84,7 +84,7 @@ fn insert_tool_result_with_parts(
     parts: &[UnsavedMessagePart],
 ) -> MessageId {
     store
-        .insert_tool_result_message_with_parts(
+        .insert_tool_result_message_on_branch(
             conversation_id,
             parent_message_id,
             &ToolCallId::new(tool_call_id),

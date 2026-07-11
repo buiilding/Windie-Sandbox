@@ -190,8 +190,10 @@ src/main.rs          wires components together
 src/api.rs           localhost API composition, shared state, and errors
 src/api/             API routes by auth, gateway, conversation, tool, and run ownership
 src/cli.rs           startup CLI arguments
+src/cli/execute.rs   CLI command execution adapter
 src/cli/tests.rs     startup CLI argument tests
 src/operation.rs     shared CLI/API operation orchestration
+src/operation/       conversation, model, tool, and execution operations
 src/operation/tests.rs shared operation orchestration tests
 src/output.rs        terminal and JSON output only
 src/output/tests.rs  terminal output tests
@@ -207,6 +209,7 @@ src/llm/             Bifrost HTTP client, model metadata, Responses wire format,
 src/mcp.rs           MCP stdio JSON-RPC client and session pool
 src/perf.rs          benchmark facade and public options
 src/perf/            benchmark metrics/reporting, scenarios, and tests
+src/perf/scenarios/  conversation, runtime, fixture, and live benchmark ownership
 src/paths.rs         installed and development filesystem locations
 src/run.rs           backend run lifecycle and reconnectable event journal
 src/doctor.rs        installation and integration diagnostics
@@ -224,8 +227,9 @@ Keep boundaries strict:
 - Only `llm.rs` and `llm/` should know about provider HTTP request details.
 - Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
 - Only `api.rs` and `api/` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
-- Only `cli.rs` should know about startup CLI argument handling.
-- Only `operation.rs` should own shared CLI/API orchestration over store/runtime
+- Only `cli.rs` and `cli/` should know about startup CLI argument handling and
+  CLI-specific execution adaptation.
+- Only `operation.rs` and `operation/` should own shared CLI/API orchestration over store/runtime
   primitives. It should not parse argv, map HTTP, format terminal output,
   execute shell commands, or know provider HTTP details.
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
@@ -238,7 +242,7 @@ Keep boundaries strict:
 - Only `context.rs` should decide what history the model sees.
 - Only `error.rs` should own typed Windie error categories used across client
   protocol boundaries.
-- Only `perf.rs` should own benchmark timing logic.
+- Only `perf.rs` and `perf/` should own benchmark timing logic.
 - Only `paths.rs` should decide Windie data, config, and bundled UI locations.
 - Only `run.rs` should own backend run lifecycle, event sequencing, replay,
   interruption, and explicit cancellation.
@@ -246,7 +250,7 @@ Keep boundaries strict:
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `tool_provider.rs` should own provider catalog and execution dispatch
   across code-approved MCP providers and future plugins.
-- Only `store.rs` should own persisted message history, attached tools, and
+- Only `store.rs` and `store/` should own persisted message history, attached tools, and
   know about SQLite tables and queries.
 - Only `tool.rs` should own tool provider, attachment, approval, and execution
   result data shared across runtime, output, policy, store, and executors.

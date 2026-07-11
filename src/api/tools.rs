@@ -52,9 +52,12 @@ struct ToolCatalogResponse {
 
 /// Lists provider tools clients may attach to conversations.
 async fn list_tools(State(state): State<ApiState>) -> ApiResult<ToolCatalogResponse> {
-    Ok(Json(ToolCatalogResponse {
-        tools: operation::available_tools_with_registry(&state.tool_registry)?,
-    }))
+    let registry = Arc::clone(&state.tool_registry);
+    let tools =
+        tokio::task::spawn_blocking(move || operation::available_tools_with_registry(&registry))
+            .await
+            .context("tool catalog task stopped")??;
+    Ok(Json(ToolCatalogResponse { tools }))
 }
 
 /// Lists available tools for one provider.
@@ -63,13 +66,14 @@ async fn list_provider_tools(
     Path(provider_id): Path<String>,
 ) -> ApiResult<ToolCatalogResponse> {
     let provider_id = ToolProviderId::new(provider_id);
+    let registry = Arc::clone(&state.tool_registry);
+    let tools = tokio::task::spawn_blocking(move || {
+        operation::available_provider_tools_with_registry(&registry, &provider_id)
+    })
+    .await
+    .context("provider tool catalog task stopped")??;
 
-    Ok(Json(ToolCatalogResponse {
-        tools: operation::available_provider_tools_with_registry(
-            &state.tool_registry,
-            &provider_id,
-        )?,
-    }))
+    Ok(Json(ToolCatalogResponse { tools }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,14 +157,18 @@ async fn attach_tool(
     let conversation_id = ConversationId::new(conversation_id);
     let provider_id = ToolProviderId::new(request.provider_id);
     let tool_name = ProviderToolName::new(request.tool_name);
-    let mut store = open_store(&state)?;
-    let schema_name = operation::attach_tool_with_registry(
-        &mut store,
-        &conversation_id,
-        &provider_id,
-        &tool_name,
-        &state.tool_registry,
-    )?;
+    let schema_name = tokio::task::spawn_blocking(move || {
+        let mut store = open_store(&state)?;
+        operation::attach_tool_with_registry(
+            &mut store,
+            &conversation_id,
+            &provider_id,
+            &tool_name,
+            &state.tool_registry,
+        )
+    })
+    .await
+    .context("tool attachment task stopped")??;
 
     Ok(Json(ToolSchemaResponse {
         name: schema_name.as_str().to_string(),
@@ -184,13 +192,17 @@ async fn attach_tools(
             )
         })
         .collect::<Vec<_>>();
-    let mut store = open_store(&state)?;
-    let schema_names = operation::attach_tools_with_registry(
-        &mut store,
-        &conversation_id,
-        &requests,
-        &state.tool_registry,
-    )?;
+    let schema_names = tokio::task::spawn_blocking(move || {
+        let mut store = open_store(&state)?;
+        operation::attach_tools_with_registry(
+            &mut store,
+            &conversation_id,
+            &requests,
+            &state.tool_registry,
+        )
+    })
+    .await
+    .context("tool attachment task stopped")??;
 
     Ok(Json(ToolSchemasResponse {
         names: schema_names

@@ -392,3 +392,69 @@ fn desktop_commander_read_file_definition() -> ToolDefinition {
         annotations: ToolAnnotations::default(),
     }
 }
+
+#[test]
+fn destructive_mutations_reject_while_conversation_is_running() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let message_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    store.create_runtime_run(&conversation_id).unwrap();
+
+    assert!(
+        update_message(&mut store, &conversation_id, &message_id, "changed")
+            .unwrap_err()
+            .to_string()
+            .contains("running action")
+    );
+    assert!(
+        remove_message(&mut store, &conversation_id, &message_id)
+            .unwrap_err()
+            .to_string()
+            .contains("running action")
+    );
+    assert!(
+        truncate_conversation(&mut store, &conversation_id, &message_id)
+            .unwrap_err()
+            .to_string()
+            .contains("running action")
+    );
+    assert!(
+        remove_conversation(&mut store, &conversation_id)
+            .unwrap_err()
+            .to_string()
+            .contains("running action")
+    );
+}
+
+#[test]
+fn non_destructive_path_operations_remain_available_while_running() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    store.create_runtime_run(&conversation_id).unwrap();
+
+    let branch_id = insert_message(
+        &mut store,
+        &conversation_id,
+        Role::User,
+        &[MessageInputPart::Text("branch".to_string())],
+    )
+    .unwrap();
+    activate_message(&mut store, &conversation_id, &root_id).unwrap();
+    let forked_id = fork_conversation(&mut store, &conversation_id, &root_id).unwrap();
+
+    assert_eq!(
+        store.active_message_id(&conversation_id).unwrap(),
+        Some(root_id)
+    );
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &branch_id)
+            .is_ok()
+    );
+    assert!(store.load_active_path(&forked_id).is_ok());
+}

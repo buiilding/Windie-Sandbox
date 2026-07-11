@@ -3,6 +3,96 @@
 use super::*;
 
 #[test]
+fn tool_call_execution_can_only_be_claimed_once() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use tool", None)
+        .unwrap();
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_once", "run", "{}")],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let call_id = ToolCallId::new("call_once");
+
+    store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id)
+        .unwrap();
+    let error = store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("already executing"));
+}
+
+#[test]
+fn concurrent_tool_claims_gate_the_side_effect_once() {
+    let path = std::env::temp_dir().join(format!(
+        "windie-tool-claim-{}-{}.db",
+        std::process::id(),
+        Uuid::new_v4()
+    ));
+    let mut setup = Store::open_at(&path).unwrap();
+    let conversation_id = setup.create_conversation("openai/test").unwrap();
+    let user_id = setup
+        .insert_message(&conversation_id, None, Role::User, "use tool", None)
+        .unwrap();
+    let assistant_id = setup
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_once", "run", "{}")],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    drop(setup);
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let side_effects = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut workers = Vec::new();
+    for _ in 0..2 {
+        let path = path.clone();
+        let conversation_id = conversation_id.clone();
+        let assistant_id = assistant_id.clone();
+        let barrier = std::sync::Arc::clone(&barrier);
+        let side_effects = std::sync::Arc::clone(&side_effects);
+        workers.push(std::thread::spawn(move || {
+            let store = Store::open_at(path).unwrap();
+            barrier.wait();
+            if store
+                .claim_tool_call_execution(
+                    &conversation_id,
+                    &assistant_id,
+                    &ToolCallId::new("call_once"),
+                )
+                .is_ok()
+            {
+                side_effects.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+    }
+    barrier.wait();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    assert_eq!(side_effects.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn new_conversation_defaults_to_manual_tool_approval() {
     let store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();

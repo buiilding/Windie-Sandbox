@@ -1,8 +1,13 @@
 //! Startup command parsing for the Windie CLI.
 //!
-//! This module owns command-line arguments only. It maps raw argv text into
-//! typed commands such as `new`, `ls`, `insert`, `update`, `query`, `gateway`,
-//! and `bench`. It should not open the database, call Bifrost, or print output.
+//! The facade maps raw argv text into typed commands such as `new`, `ls`,
+//! `insert`, `update`, `query`, `gateway`, and `bench`. The `execute` child is
+//! the CLI adapter that opens the database and delegates to shared operations;
+//! business rules stay outside this module.
+
+mod execute;
+
+pub use execute::execute;
 
 use std::env;
 use std::path::PathBuf;

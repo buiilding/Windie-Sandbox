@@ -177,6 +177,13 @@ Windie process.
 The API creates one registry with an `McpSessionPool`. The pool stores one live
 session per provider ID.
 
+Blocking stdio work runs through Tokio's blocking pool rather than on API
+runtime workers. The provider map is locked only long enough to locate a
+provider-owned session slot; each provider has its own call lock. Calls to one
+stdio session remain sequential, while different providers execute
+independently. Request timeouts use one fixed deadline, so unrelated stdout
+lines cannot extend a call indefinitely.
+
 On every call, the pool:
 
 1. checks whether the stored command and shutdown definition still match;

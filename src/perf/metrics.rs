@@ -12,7 +12,7 @@ use super::BenchmarkMode;
 use crate::conversation::ConversationId;
 use crate::llm::ModelName;
 
-pub(super) const REPORT_FORMAT_VERSION: u32 = 4;
+pub(super) const REPORT_FORMAT_VERSION: u32 = 5;
 
 macro_rules! metric_catalog {
     ($name:ident; $( $variant:ident => ($key:literal, $label:literal) ),+ $(,)?) => {
@@ -79,6 +79,7 @@ metric_catalog! {
     ContextBuildWithImageParts => ("context_build_with_image_parts", "context build with image parts"),
     ProviderToolAttachLoad => ("provider_tool_attach_load", "provider tool attach/load"),
     FakeMcpListCall => ("fake_mcp_list_call", "fake mcp list/call"),
+    DurableStreamJournal => ("durable_stream_journal", "durable stream journal (500 events)"),
     GatewayReady => ("gateway_ready", "gateway ready"),
     FirstToken => ("first_token", "first token"),
     FullResponse => ("full_response", "full response"),
