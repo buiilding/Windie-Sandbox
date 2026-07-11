@@ -13,7 +13,7 @@ fi
 
 UI="$ROOT/dev/windie-inspector"
 cd "$UI"
-npm ci --legacy-peer-deps
+npm ci
 npm run build
 
 cargo build --release --target "$TARGET" --manifest-path "$ROOT/Cargo.toml"
@@ -33,4 +33,3 @@ else
 fi
 
 echo "$ARCHIVE"
-

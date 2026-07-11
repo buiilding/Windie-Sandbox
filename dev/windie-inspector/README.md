@@ -1,13 +1,13 @@
 # Windie Inspector
 
-This React application is Windie's editable developer preview and the source
-for the compiled operator UI bundled into releases.
+This Vite-powered React application is Windie's editable developer preview and
+the source for the compiled operator UI bundled into releases.
 
 From the repository root:
 
 ```bash
-scripts/dev-api.sh
-scripts/dev-ui.sh
+scripts/setup.sh
+scripts/dev.sh
 ```
 
 Open `http://localhost:3000?windie_token=<printed token>`. The development page

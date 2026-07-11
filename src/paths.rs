@@ -20,7 +20,13 @@ pub fn data_dir() -> PathBuf {
 pub fn config_dir() -> PathBuf {
     env::var_os("WINDIE_CONFIG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".config").join("windie"))
+        .unwrap_or_else(canonical_config_dir)
+}
+
+/// Returns the canonical per-user configuration directory without development
+/// or test overrides.
+pub fn canonical_config_dir() -> PathBuf {
+    home_dir().join(".config").join("windie")
 }
 
 /// Returns the production conversation and runtime database path.

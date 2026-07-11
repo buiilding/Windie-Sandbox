@@ -91,8 +91,9 @@ whole product.
 For each provider Windie wants Bifrost to use, Bifrost needs provider config
 once. The provider row names the provider, such as `anthropic`. The key row
 points to the environment variable, such as `env.ANTHROPIC_API_KEY`. Use the
-same pattern for Gemini, Groq, OpenRouter, and other providers. The actual
-secret value should stay in Windie's explicit `.env` provider-key file.
+same pattern for Gemini, Groq, OpenRouter, and other providers. Actual secrets
+stay in Windie's canonical `~/.config/windie/providers.env`, shared by approved
+MCP providers and Bifrost.
 
 ## Current Scope
 
@@ -145,7 +146,7 @@ Allowed in the current scope:
 - Explicit Bifrost gateway start and stop commands.
 - Version-pinned public Bifrost gateway startup through npm or Docker.
 - Explicit `WINDIE_BIFROST_BIN` override for official local development builds.
-- Explicit `.env` provider-key environment for Bifrost gateway startup.
+- Canonical provider-key environment shared by Windie and Bifrost.
 - Versioned installed binaries and a bundled stable operator UI that remain
   separate from editable source and preview UI builds.
 - Clean module boundaries.
@@ -162,7 +163,7 @@ Not in scope yet:
 - Production/general computer use outside code-approved developer MCP providers.
 - Plugin systems.
 - Production web dashboard.
-- General config files beyond the explicit Bifrost `.env` provider-key file.
+- General config files beyond the canonical provider-key environment.
 - Global model selection.
 - Slash commands.
 - Automatic history compaction.
@@ -186,39 +187,49 @@ The code should stay split by concrete responsibilities:
 
 ```text
 src/main.rs          wires components together
-src/api.rs           localhost developer API server
+src/api.rs           localhost API composition, shared state, and errors
+src/api/             API routes by auth, gateway, conversation, tool, and run ownership
 src/cli.rs           startup CLI arguments
+src/cli/execute.rs   CLI command execution adapter
+src/cli/tests.rs     startup CLI argument tests
 src/operation.rs     shared CLI/API operation orchestration
+src/operation/       conversation, model, tool, and execution operations
+src/operation/tests.rs shared operation orchestration tests
 src/output.rs        terminal and JSON output only
-src/output_tests.rs  terminal output tests
+src/output/tests.rs  terminal output tests
 src/policy.rs        tool execution policy and approval boundary
-src/policy_tests.rs  tool execution policy tests
+src/policy/tests.rs  tool execution policy tests
 src/conversation.rs  message types, model-facing tool schema types, and assistant metadata types
 src/context.rs       model-facing context construction
 src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
-src/llm.rs           Bifrost/OpenAI-compatible HTTP client
+src/llm.rs           typed LLM contracts and Bifrost client facade
+src/llm/             Bifrost HTTP client, model metadata, Responses wire format, and SSE ownership
 src/mcp.rs           MCP stdio JSON-RPC client and session pool
-src/perf.rs          performance baseline measurement
+src/perf.rs          benchmark facade and public options
+src/perf/            benchmark metrics/reporting, scenarios, and tests
+src/perf/scenarios/  conversation, runtime, fixture, and live benchmark ownership
 src/paths.rs         installed and development filesystem locations
 src/run.rs           backend run lifecycle and reconnectable event journal
 src/doctor.rs        installation and integration diagnostics
 src/runtime.rs       one-shot runtime query coordination
-src/runtime_tests.rs runtime flow tests
+src/runtime/tests.rs runtime flow tests
 src/tool.rs          tool provider, attachment, approval, and execution result types
 src/tool_provider.rs tool provider registry and dispatch
-src/store.rs         SQLite persistence
-src/store_tests.rs   SQLite persistence tests
+src/tool_provider/tests.rs tool provider registry and dispatch tests
+src/store.rs         SQLite transaction and tree-integrity facade
+src/store/           persistence and tests by schema, run, conversation, message, tool, image, and compaction ownership
 ```
 
 Keep boundaries strict:
 
-- Only `llm.rs` should know about provider HTTP request details.
+- Only `llm.rs` and `llm/` should know about provider HTTP request details.
 - Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
-- Only `api.rs` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
-- Only `cli.rs` should know about startup CLI argument handling.
-- Only `operation.rs` should own shared CLI/API orchestration over store/runtime
+- Only `api.rs` and `api/` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
+- Only `cli.rs` and `cli/` should know about startup CLI argument handling and
+  CLI-specific execution adaptation.
+- Only `operation.rs` and `operation/` should own shared CLI/API orchestration over store/runtime
   primitives. It should not parse argv, map HTTP, format terminal output,
   execute shell commands, or know provider HTTP details.
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
@@ -231,7 +242,7 @@ Keep boundaries strict:
 - Only `context.rs` should decide what history the model sees.
 - Only `error.rs` should own typed Windie error categories used across client
   protocol boundaries.
-- Only `perf.rs` should own benchmark timing logic.
+- Only `perf.rs` and `perf/` should own benchmark timing logic.
 - Only `paths.rs` should decide Windie data, config, and bundled UI locations.
 - Only `run.rs` should own backend run lifecycle, event sequencing, replay,
   interruption, and explicit cancellation.
@@ -239,7 +250,7 @@ Keep boundaries strict:
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `tool_provider.rs` should own provider catalog and execution dispatch
   across code-approved MCP providers and future plugins.
-- Only `store.rs` should own persisted message history, attached tools, and
+- Only `store.rs` and `store/` should own persisted message history, attached tools, and
   know about SQLite tables and queries.
 - Only `tool.rs` should own tool provider, attachment, approval, and execution
   result data shared across runtime, output, policy, store, and executors.
@@ -274,40 +285,26 @@ versions clearly instead of carrying partial legacy migrations.
 
 ## Commit Workflow
 
-When making commits in this repository, do not call `git commit` directly. Use
-the project commit wrapper instead:
+Use normal Git commands. Before committing a meaningful code change, run the
+project correctness check:
 
 ```bash
-scripts/commit-with-bench.sh \
-  -m "commit subject" \
-  -m "what changed, why it changed, and which boundary it affects"
+scripts/check.sh
+git commit
+git push
 ```
 
-Use repeated `-m` flags or `-F` because every commit requires an explicit body:
+Keep commit messages explicit about what changed, why, and which behavior or
+ownership boundary is affected. Documentation-only and similarly narrow changes
+do not require performance measurements.
+
+Benchmarks are opt-in and belong to performance-sensitive work:
 
 ```bash
-scripts/commit-with-bench.sh \
-  -m "commit subject" \
-  -m "what changed, why it changed, and which boundary it affects"
-
-scripts/commit-with-bench.sh -F commit-message.txt
+scripts/bench.sh runtime
+scripts/bench.sh conversation <conversation_id>
 ```
 
-Install the repository hooks before making commits or pushes:
-
-```bash
-scripts/install-git-hooks.sh
-```
-
-The installed hooks reject direct `git commit` and direct `git push`. The
-commit and push wrappers set narrow environment markers for their internal Git
-calls, so normal project workflow must go through the wrappers.
-
-When pushing commits, use the project push wrapper instead of `git push`:
-
-```bash
-scripts/push-with-bench.sh
-```
-
-The push wrapper promotes the successful current benchmark to the local
-baseline after `git push` succeeds, then removes the current report.
+Do not put machine-local benchmark output into commit messages. Preserve a
+reviewed report as a local baseline with `scripts/bench.sh update-baseline` when
+that comparison is useful.

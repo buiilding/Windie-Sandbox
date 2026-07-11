@@ -10,16 +10,12 @@ It is not part of the runtime boundary: it must call explicit API primitives
 and must not own provider logic, persistence, context construction, runtime
 state transitions, tool execution, or permission policy.
 
-Run the hot-reloading preview from this repo with:
+Install dependencies once, then start the current API and hot-reloading preview
+together:
 
 ```bash
-scripts/dev-ui.sh
-```
-
-Start an isolated development API from the repository root:
-
-```bash
-scripts/dev-api.sh
+scripts/setup.sh
+scripts/dev.sh
 ```
 
 Open the inspector with the printed API token:

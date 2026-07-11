@@ -38,6 +38,20 @@ impl ContextBuilder {
         Ok(Self::flatten(parts))
     }
 
+    /// Builds context from a run's immutable prompt and compaction snapshot.
+    pub fn build_with_configuration(
+        store: &Store,
+        conversation_id: &ConversationId,
+        system_prompt: Option<String>,
+        compaction: Option<Compaction>,
+    ) -> Result<Vec<Message>> {
+        Ok(Self::flatten(ContextParts {
+            active_path: store.load_active_path(conversation_id)?,
+            system_prompt,
+            compaction,
+        }))
+    }
+
     /// Loads the storage-backed pieces needed to build model-facing context.
     ///
     /// This helper has no benchmark timers. Benchmark code can call each store

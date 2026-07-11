@@ -3,7 +3,6 @@
 //! This module owns CLI printing for assistant streams and command output.
 //! Other modules should pass display data here instead of formatting terminal
 //! output themselves.
-
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::SocketAddr;
@@ -12,7 +11,8 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
+    ConversationId, Message, MessageId, MessagePart, MessagePartView, MessageView, ToolCall,
+    ToolSchemaName,
 };
 use crate::doctor::DoctorReport;
 use crate::llm::{ModelInfo, ModelName};
@@ -115,185 +115,11 @@ impl TerminalOutput {
         if let Some(conversation_id) = baseline.conversation_id.as_ref() {
             println!("conversation: {conversation_id}");
         }
-        if let Some(duration) = baseline.store_open {
-            println!("store open: {}", format_duration(duration));
+        for (name, duration) in baseline.durations() {
+            println!("{}: {}", name.label(), format_duration(duration));
         }
-        if let Some(duration) = baseline.conversation_load {
-            println!("active path load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.active_message_lookup {
-            println!("active message lookup: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.active_path_row_load {
-            println!("active path row load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.active_path_part_load {
-            println!("active path part/image load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tree_load {
-            println!("tree load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tree_row_load {
-            println!("tree row load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tree_part_load {
-            println!("tree part/image load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tool_schema_load {
-            println!("tool schema load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build {
-            println!("context build: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_active_path_load {
-            println!("context active path load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_system_prompt_load {
-            println!("context system prompt load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_compaction_load {
-            println!("context compaction load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_flatten {
-            println!("context flatten: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.prepare_query_turn {
-            println!("prepare query turn: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.pending_tool_approval_scan {
-            println!("pending tool approval scan: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tool_result_insert {
-            println!("tool result insert: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.deny_tool_result_persist {
-            println!("deny tool result persist: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.splice_remove {
-            println!("splice remove: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.truncate {
-            println!("truncate: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_after_tool_chain {
-            println!(
-                "context build after tool chain: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.active_path_load_100 {
-            println!("active path load 100: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.active_path_load_1000 {
-            println!("active path load 1000: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.pending_tool_approval_scan_long_path {
-            println!(
-                "pending tool approval scan long path: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.pending_tool_approval_scan_deep_chain {
-            println!(
-                "pending tool approval scan deep chain: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.prepare_query_no_tools {
-            println!("prepare query no tools: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.prepare_query_completed_tool_chain {
-            println!(
-                "prepare query completed tool chain: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.prepare_query_requires_approval {
-            println!(
-                "prepare query requires approval: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.prepare_query_policy_denied {
-            println!("prepare query policy denied: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.splice_remove_branch_point {
-            println!("splice remove branch point: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.splice_remove_root_many_children {
-            println!(
-                "splice remove root many children: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.splice_remove_tool_group {
-            println!("splice remove tool group: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.truncate_large_subtree {
-            println!("truncate large subtree: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_plain_100 {
-            println!("context build plain 100: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_plain_1000 {
-            println!("context build plain 1000: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_with_system_prompt {
-            println!(
-                "context build with system prompt: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.context_build_with_compaction {
-            println!(
-                "context build with compaction: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.context_build_with_image_parts {
-            println!(
-                "context build with image parts: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.provider_tool_attach_load {
-            println!("provider tool attach/load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.fake_mcp_list_call {
-            println!("fake mcp list/call: {}", format_duration(duration));
-        }
-        if let Some(loaded_messages) = baseline.loaded_messages {
-            println!("active path messages: {loaded_messages}");
-        }
-        if let Some(tree_messages) = baseline.tree_messages {
-            println!("tree messages: {tree_messages}");
-        }
-        if let Some(requested_tool_calls) = baseline.requested_tool_calls {
-            println!("requested tool calls: {requested_tool_calls}");
-        }
-        if let Some(resolved_tool_results) = baseline.resolved_tool_results {
-            println!("resolved tool results: {resolved_tool_results}");
-        }
-        if let Some(deleted_messages) = baseline.deleted_messages {
-            println!("deleted messages: {deleted_messages}");
-        }
-        if let Some(promoted_children) = baseline.promoted_children {
-            println!("promoted children: {promoted_children}");
-        }
-        if let Some(truncated_messages) = baseline.truncated_messages {
-            println!("truncated messages: {truncated_messages}");
-        }
-        if let Some(duration) = baseline.gateway_ready {
-            println!("gateway ready: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.first_token {
-            println!("first token: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.full_response {
-            println!("full response: {}", format_duration(duration));
-        }
-        if let Some(response_bytes) = baseline.response_bytes {
-            println!("response bytes: {response_bytes}");
+        for (name, count) in baseline.counts() {
+            println!("{}: {count}", name.label());
         }
     }
 
@@ -470,7 +296,11 @@ impl TerminalOutput {
     }
 
     /// Prints the full message tree with indentation and active marker.
-    pub fn conversation_tree(&self, messages: &[Message], active_message_id: Option<&MessageId>) {
+    pub fn conversation_tree(
+        &self,
+        messages: &[MessageView],
+        active_message_id: Option<&MessageId>,
+    ) {
         for line in tree_lines(messages, active_message_id) {
             println!("{line}");
         }
@@ -582,7 +412,6 @@ impl ConversationListReport {
 /// Serializable summary for one persisted conversation.
 struct ConversationSummary {
     id: String,
-    title: Option<String>,
     model: String,
     message_count: i64,
 }
@@ -592,7 +421,6 @@ impl ConversationSummary {
     fn from_info(info: &ConversationInfo) -> Self {
         Self {
             id: info.id.as_str().to_string(),
-            title: info.title.clone(),
             model: info.model.clone(),
             message_count: info.message_count,
         }
@@ -737,222 +565,15 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
         lines.push(format!("conversation: {conversation_id}"));
     }
 
-    push_metric_lines(&mut lines, "store open", report.summary.store_open.as_ref());
-    push_metric_lines(
-        &mut lines,
-        "active path load",
-        report.summary.active_path_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "active message lookup",
-        report.summary.active_message_lookup.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "active path row load",
-        report.summary.active_path_row_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "active path part/image load",
-        report.summary.active_path_part_load.as_ref(),
-    );
-    push_metric_lines(&mut lines, "tree load", report.summary.tree_load.as_ref());
-    push_metric_lines(
-        &mut lines,
-        "tree row load",
-        report.summary.tree_row_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "tree part/image load",
-        report.summary.tree_part_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "tool schema load",
-        report.summary.tool_schema_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build",
-        report.summary.context_build.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context active path load",
-        report.summary.context_active_path_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context system prompt load",
-        report.summary.context_system_prompt_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context compaction load",
-        report.summary.context_compaction_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context flatten",
-        report.summary.context_flatten.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query turn",
-        report.summary.prepare_query_turn.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "pending tool approval scan",
-        report.summary.pending_tool_approval_scan.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "tool result insert",
-        report.summary.tool_result_insert.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "deny tool result persist",
-        report.summary.deny_tool_result_persist.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove",
-        report.summary.splice_remove.as_ref(),
-    );
-    push_metric_lines(&mut lines, "truncate", report.summary.truncate.as_ref());
-    push_metric_lines(
-        &mut lines,
-        "context build after tool chain",
-        report.summary.context_build_after_tool_chain.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "active path load 100",
-        report.summary.active_path_load_100.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "active path load 1000",
-        report.summary.active_path_load_1000.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "pending tool approval scan long path",
-        report.summary.pending_tool_approval_scan_long_path.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "pending tool approval scan deep chain",
-        report
-            .summary
-            .pending_tool_approval_scan_deep_chain
-            .as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query no tools",
-        report.summary.prepare_query_no_tools.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query completed tool chain",
-        report.summary.prepare_query_completed_tool_chain.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query requires approval",
-        report.summary.prepare_query_requires_approval.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query policy denied",
-        report.summary.prepare_query_policy_denied.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove branch point",
-        report.summary.splice_remove_branch_point.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove root many children",
-        report.summary.splice_remove_root_many_children.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove tool group",
-        report.summary.splice_remove_tool_group.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "truncate large subtree",
-        report.summary.truncate_large_subtree.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build plain 100",
-        report.summary.context_build_plain_100.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build plain 1000",
-        report.summary.context_build_plain_1000.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build with system prompt",
-        report.summary.context_build_with_system_prompt.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build with compaction",
-        report.summary.context_build_with_compaction.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build with image parts",
-        report.summary.context_build_with_image_parts.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "provider tool attach/load",
-        report.summary.provider_tool_attach_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "fake mcp list/call",
-        report.summary.fake_mcp_list_call.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "gateway ready",
-        report.summary.gateway_ready.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "first token",
-        report.summary.first_token.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "full response",
-        report.summary.full_response.as_ref(),
-    );
+    for (name, metric) in report.summary.metrics() {
+        push_metric_lines(&mut lines, name.label(), metric);
+    }
 
     lines
 }
 
 /// Appends min/median/p95/max lines for one benchmark metric.
-fn push_metric_lines(lines: &mut Vec<String>, name: &str, metric: Option<&DurationMetric>) {
-    let Some(metric) = metric else {
-        return;
-    };
-
+fn push_metric_lines(lines: &mut Vec<String>, name: &str, metric: &DurationMetric) {
     lines.push(format!("{name}:"));
     lines.push(format!("  min: {}", format_duration_us(metric.min_us)));
     lines.push(format!(
@@ -1023,16 +644,7 @@ fn conversation_lines(conversations: &[ConversationInfo]) -> Vec<String> {
 
     for conversation in conversations {
         let count = message_count(conversation.message_count);
-
-        if let Some(title) = conversation
-            .title
-            .as_deref()
-            .filter(|title| !title.is_empty())
-        {
-            lines.push(format!("{}  {count}  {title}", conversation.id));
-        } else {
-            lines.push(format!("{}  {count}", conversation.id));
-        }
+        lines.push(format!("{}  {count}", conversation.id));
     }
 
     lines
@@ -1064,17 +676,14 @@ fn message_lines(messages: &[Message]) -> Vec<String> {
 }
 
 /// Converts a full message tree into indented CLI lines.
-fn tree_lines(messages: &[Message], active_message_id: Option<&MessageId>) -> Vec<String> {
+fn tree_lines(messages: &[MessageView], active_message_id: Option<&MessageId>) -> Vec<String> {
     if messages.is_empty() {
         return vec!["no messages".to_string()];
     }
 
-    let mut children_by_parent = HashMap::<Option<String>, Vec<&Message>>::new();
+    let mut children_by_parent = HashMap::<Option<String>, Vec<&MessageView>>::new();
     for message in messages {
-        let parent_key = message
-            .parent_message_id
-            .as_ref()
-            .map(|message_id| message_id.as_str().to_string());
+        let parent_key = message.parent_message_id.clone();
         children_by_parent
             .entry(parent_key)
             .or_default()
@@ -1090,7 +699,7 @@ fn tree_lines(messages: &[Message], active_message_id: Option<&MessageId>) -> Ve
 /// Recursively appends indented tree lines under one parent message.
 fn append_tree_lines(
     lines: &mut Vec<String>,
-    children_by_parent: &HashMap<Option<String>, Vec<&Message>>,
+    children_by_parent: &HashMap<Option<String>, Vec<&MessageView>>,
     parent_id: Option<&str>,
     active_message_id: Option<&MessageId>,
     depth: usize,
@@ -1101,36 +710,53 @@ fn append_tree_lines(
     };
 
     for message in children {
-        let id = message
-            .id
-            .as_ref()
-            .map(|id| id.as_str())
-            .unwrap_or("<unsaved>");
-        let active_marker =
-            if active_message_id.is_some_and(|active_id| Some(active_id) == message.id.as_ref()) {
-                "*"
-            } else {
-                " "
-            };
+        let id = message.id.as_deref().unwrap_or("<unsaved>");
+        let active_marker = if active_message_id
+            .is_some_and(|active_id| message.id.as_deref() == Some(active_id.as_str()))
+        {
+            "*"
+        } else {
+            " "
+        };
         lines.push(format!(
             "{}{} {}  {}  {}",
             "  ".repeat(depth),
             active_marker,
             message.role.as_str(),
             id,
-            message_preview(message)
+            message_view_preview(message)
         ));
         append_tree_lines(
             lines,
             children_by_parent,
-            message.id.as_ref().map(MessageId::as_str),
+            message.id.as_deref(),
             active_message_id,
             depth + 1,
         );
     }
 }
 
-/// Normalizes one message into a compact, Unicode-safe preview.
+/// Normalizes one metadata-only message into a compact preview.
+fn message_view_preview(message: &MessageView) -> String {
+    let text = text_preview(&message.content);
+    let image_count = message
+        .parts
+        .iter()
+        .filter(|part| matches!(part, MessagePartView::Image { .. }))
+        .count();
+    let preview = match (text.is_empty(), image_count) {
+        (true, 0) => String::new(),
+        (true, 1) => "[image]".to_string(),
+        (true, count) => format!("[{count} images]"),
+        (false, 0) => text,
+        (false, 1) => format!("{text} [image]"),
+        (false, count) => format!("{text} [{count} images]"),
+    };
+
+    truncate_preview(&preview)
+}
+
+/// Normalizes one full message into a compact, Unicode-safe preview.
 fn message_preview(message: &Message) -> String {
     let text = text_preview(&message.content);
     let image_count = message
@@ -1185,5 +811,4 @@ fn format_duration_us(micros: u64) -> String {
 }
 
 #[cfg(test)]
-#[path = "output_tests.rs"]
 mod tests;

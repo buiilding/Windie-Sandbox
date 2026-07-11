@@ -61,82 +61,87 @@ interface surfaces.
 Important runtime files:
 
 - `src/main.rs` wires components together.
-- `src/cli.rs` parses startup arguments into typed commands.
-- `src/api.rs` exposes the localhost developer API.
-- `src/operation.rs` coordinates shared CLI/API operations.
+- `src/cli.rs` parses startup arguments into typed commands;
+  `src/cli/execute.rs` owns the CLI adapter.
+- `src/api.rs` composes the localhost developer API; `src/api/` owns route
+  families and their private HTTP types.
+- `src/operation.rs` exposes shared contracts; `src/operation/` separates
+  conversation, model, tool, and execution operations.
 - `src/conversation.rs` defines message, role, identifier, tool schema, and
   assistant metadata types.
 - `src/context.rs` builds model-facing context from the active conversation
   path.
-- `src/store.rs` owns SQLite persistence.
+- `src/store.rs` owns shared SQLite transaction/tree integrity; `src/store/`
+  separates schema, run, conversation, message, tool, image, and compaction
+  persistence.
 - `src/runtime.rs` coordinates one-shot query flows.
 - `src/run.rs` owns durable backend runs and reconnectable event delivery.
 - `src/paths.rs` owns installed, development, and override filesystem paths.
 - `src/doctor.rs` inspects optional integration prerequisites.
-- `src/llm.rs` owns the OpenAI-compatible Bifrost HTTP request path.
+- `src/llm.rs` exposes typed LLM contracts; `src/llm/` separates Bifrost HTTP
+  calls, model metadata, Responses request serialization, and SSE decoding.
 - `src/policy.rs` owns tool execution policy decisions.
-- `src/shell.rs` executes Windie's built-in `run_shell` tool.
-- `src/perf.rs` owns local benchmark timing.
+- `src/perf.rs` exposes benchmark options; `src/perf/metrics.rs` owns reports
+  and statistics while `src/perf/scenarios/` separates conversation, runtime,
+  fixture, and live-provider behavior.
 
 Developer-facing references:
 
-- `commands.md` is the concrete CLI command reference.
+- `docs/architecture/cli.md` is the concrete CLI command reference.
 - `dev/README.md` explains the localhost developer clients.
 - `benches/README.md` explains benchmark fixtures and comparison.
 - `AGENTS.md` records the project rules, boundaries, and current scope.
 
 ## Local Development
 
-Build and check the Rust runtime:
+Install frontend dependencies once:
 
 ```bash
-cargo fmt
-cargo check
-scripts/check.sh
+scripts/setup.sh
 ```
 
-`scripts/check.sh` is the local smoke check. It runs the test suite, builds the
-release binary, and checks `windie --version` and `windie --help` against the
-local release binary. It should not call Bifrost or a model provider.
-
-Start an isolated localhost development API:
+Start the isolated Rust API and hot-reloading inspector together:
 
 ```bash
-scripts/dev-api.sh
+scripts/dev.sh
 ```
 
 The API listens on `http://127.0.0.1:8787` and prints a per-process API token.
-Local developer clients must send that token in the `X-Windie-Api-Token`
-header. Development state defaults to `target/windie-dev-data`, not the
-installed runtime database.
-
-Run the developer inspector:
-
-```bash
-scripts/dev-ui.sh
-```
-
-Then open it with the API token:
+The inspector runs at the URL printed by the script:
 
 ```text
 http://localhost:3000?windie_token=<printed token>
 ```
+
+Development state defaults to `target/windie-dev-data`, not the installed
+runtime database. Frontend changes hot reload. Restart `scripts/dev.sh` after
+Rust changes.
 
 The installed operator UI and editable preview are separate surfaces. The
 operator UI is bundled beside the installed binary and remains unchanged while
 the preview hot reloads. Runtime loops are backend-owned runs, so either UI can
 disconnect and replay events without cancelling model or tool work.
 
+Run the full local correctness check before committing:
+
+```bash
+scripts/check.sh
+```
+
+This runs Rust formatting, tests, clippy, and a production frontend build. It
+does not call Bifrost, a model provider, or performance benchmarks.
+
 Promote a tested checkout into a versioned local release:
 
 ```bash
-scripts/install-local.sh
+scripts/install.sh
 ```
 
-The script builds and checks Windie, compiles the operator UI, installs both
+The install script builds the release binary and operator UI, installs both
 under `~/.local/lib/windie/releases/<version>-<revision>/`, and atomically
-switches `~/.local/bin/windie`. A process already running continues to use its
-old executable and UI files until explicitly restarted.
+switches `~/.local/bin/windie`. It assumes checks have already passed and does
+not rerun them. A running process continues to use its old release until
+explicitly restarted.
 
 ## Provider Path
 
@@ -156,9 +161,10 @@ windie gateway start
 windie gateway stop
 ```
 
-Provider secrets should stay outside source control in the explicit provider
-key environment used for Bifrost startup. The default file is
-`~/.config/windie/providers.env`; `WINDIE_ENV_FILE` can select another file.
+Provider secrets should stay outside source control in Windie's canonical
+provider environment. Windie uses it for approved MCP providers and passes it
+to Bifrost. The default file is `~/.config/windie/providers.env`;
+`WINDIE_ENV_FILE` can select another file.
 
 Windie starts unmodified Bifrost `1.6.3` through its public npm package, or the
 matching Docker image when npm is unavailable. Environment variables make
@@ -199,8 +205,8 @@ Windie is foundation code. Contributions should keep the runtime:
 - boring in the best way
 
 Prefer typed runtime contracts over loose strings and ad hoc JSON. Keep provider
-HTTP details in `src/llm.rs`, API route mapping in `src/api.rs`, CLI argument
-parsing in `src/cli.rs`, persistence in `src/store.rs`, and model context
+HTTP details in `src/llm/`, API route mapping in `src/api/`, CLI argument
+parsing in `src/cli.rs`, persistence in `src/store/`, and model context
 construction in `src/context.rs`.
 
 Do not add broad product surfaces before the primitive exists cleanly. The CLI
@@ -209,17 +215,17 @@ product.
 
 ## Commit Workflow
 
-Use the project wrappers instead of raw Git commands:
+Use normal Git after the local correctness check:
 
 ```bash
-scripts/commit-with-bench.sh -m "commit message"
-scripts/push-with-bench.sh
+scripts/check.sh
+git commit
+git push
 ```
 
-The commit wrapper runs local provider-free benchmarks, compares them with the
-local baseline, appends the comparison to the commit message, and creates the
-commit. The push wrapper promotes the successful current benchmark to the local
-baseline after the push succeeds.
+Performance-sensitive changes can run explicit provider-free benchmarks with
+`scripts/bench.sh`. Benchmarks are not required for ordinary commits and their
+machine-local output is not appended to commit messages.
 
 ## Good First Areas
 
@@ -230,7 +236,7 @@ Good contributions are small and boundary-respecting:
 - tighten API/CLI parity for an existing operation
 - improve provider-free benchmark coverage
 - make inspection output clearer without moving ownership
-- document command behavior in `commands.md`
+- document command behavior in `docs/architecture/cli.md`
 
 Before changing architecture, read `AGENTS.md`. It is the source of truth for
 current scope and ownership boundaries.

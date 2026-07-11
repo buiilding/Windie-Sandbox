@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useWindie } from "@/context/WindieContext";
 import { fetchImageAsset } from "@/lib/windieApi";
-import { ROLE_TOKENS } from "@/lib/mockData";
+import { ROLE_TOKENS } from "@/lib/roleTokens";
 import {
   GitBranch,
   Scissors,

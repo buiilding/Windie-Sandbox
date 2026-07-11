@@ -121,13 +121,36 @@ function contextSignatureParts(conversation, modelId) {
   };
 }
 
+function latestReplayInputFromAssistantUsage(conversation, modelId) {
+  const activeNodes = pathNodesForConversation(conversation);
+  const latestNode = activeNodes[activeNodes.length - 1] || null;
+  const usage = latestNode?.message?.metadata?.usage || null;
+  const totalTokens = usage?.totalTokens ?? null;
+
+  if (latestNode?.message?.role !== "assistant" || totalTokens == null) {
+    return null;
+  }
+
+  return {
+    currentInputTokens: totalTokens,
+    inputTokens: totalTokens,
+    totalTokens,
+    model: modelId || conversation?.model || null,
+    raw: usage.raw || null,
+    source: "postquery_total",
+  };
+}
+
+function inputTokenCountValue(count) {
+  return count?.currentInputTokens ?? count?.inputTokens ?? count?.totalTokens ?? null;
+}
+
 export function WindieProvider({ children }) {
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvId] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [theme, setTheme] = useState("dark");
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
-  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
@@ -268,6 +291,31 @@ export function WindieProvider({ children }) {
         const signature = contextSignatureParts(loaded, loadedModelId).fullSignature;
         const countKey = tokenCountKey(loaded?.id, loadedModelId);
         const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const postQueryBaseline = latestReplayInputFromAssistantUsage(loaded, loadedModelId);
+
+        if (postQueryBaseline) {
+          setInputTokenCounts((prev) => {
+            const existing = prev[countKey] || {};
+            const existingValue = inputTokenCountValue(existing);
+            const existingIsExact =
+              existing.signature === signature &&
+              (existing.source === "prequery_input" ||
+                existing.source === "prequery_synthetic_input") &&
+              existingValue != null;
+
+            if (existingIsExact) return prev;
+
+            return {
+              ...prev,
+              [countKey]: {
+                ...existing,
+                ...postQueryBaseline,
+                signature,
+                measuredAt: Date.now(),
+              },
+            };
+          });
+        }
 
         setInputTokenCounts((prev) => ({
           ...prev,
@@ -281,12 +329,25 @@ export function WindieProvider({ children }) {
           .then((count) => {
             setInputTokenCounts((prev) => {
               if (prev[countKey]?.latestRequestId !== requestId) return prev;
+              const existing = prev[countKey] || {};
+              const countedValue = count.inputTokens ?? count.totalTokens ?? null;
+              const existingValue = inputTokenCountValue(existing);
 
               return {
                 ...prev,
                 [countKey]: {
-                  ...count,
-                  source: count.source || "prequery_input",
+                  ...(countedValue == null ? existing : count),
+                  currentInputTokens: countedValue ?? existingValue,
+                  inputTokens:
+                    countedValue == null ? existing.inputTokens ?? null : count.inputTokens ?? null,
+                  totalTokens:
+                    countedValue == null ? existing.totalTokens ?? null : count.totalTokens ?? null,
+                  model: count.model || existing.model || loadedModelId,
+                  raw: countedValue == null ? existing.raw || null : count.raw || null,
+                  source:
+                    countedValue == null && existingValue != null
+                      ? existing.source || "postquery_total"
+                      : count.source || "prequery_input",
                   signature,
                   latestRequestId: requestId,
                   measuredAt: Date.now(),
@@ -298,15 +359,19 @@ export function WindieProvider({ children }) {
             setApiError(error.message);
             setInputTokenCounts((prev) => {
               if (prev[countKey]?.latestRequestId !== requestId) return prev;
+              const existing = prev[countKey] || {};
+              const existingValue = inputTokenCountValue(existing);
 
               return {
                 ...prev,
                 [countKey]: {
-                  inputTokens: null,
-                  totalTokens: null,
+                  ...existing,
+                  currentInputTokens: existingValue,
+                  inputTokens: existing.inputTokens ?? null,
+                  totalTokens: existing.totalTokens ?? null,
                   model: loadedModelId,
-                  raw: null,
-                  source: "prequery_input",
+                  raw: existing.raw || null,
+                  source: existingValue == null ? "unavailable" : existing.source || "unavailable",
                   signature,
                   latestRequestId: requestId,
                   measuredAt: Date.now(),
@@ -394,7 +459,7 @@ export function WindieProvider({ children }) {
     const inputCount = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
 
     return {
-      used: inputCount?.inputTokens ?? null,
+      used: inputTokenCountValue(inputCount),
       max: maxTokens,
       model: activeModelId,
       measuredModel: inputCount?.model || null,
@@ -471,10 +536,6 @@ export function WindieProvider({ children }) {
     await loadConversation(body.conversation_id);
     return body.conversation_id;
   }, [loadConversation, runMutation]);
-
-  const renameConversation = useCallback(() => {
-    toast.message("rename is not a Windie primitive yet");
-  }, []);
 
   const deleteConversation = useCallback(
     async (convId) => {
@@ -587,15 +648,6 @@ export function WindieProvider({ children }) {
         })
       ),
     [runMutation]
-  );
-
-  const setActivePath = useCallback(
-    (convId, path) => {
-      const leafId = path[path.length - 1];
-      if (!leafId) return Promise.resolve();
-      return setActivePathToLeaf(convId, leafId);
-    },
-    [setActivePathToLeaf]
   );
 
   const truncateAfter = useCallback(
@@ -861,34 +913,6 @@ export function WindieProvider({ children }) {
     [runStreamingQuery, streaming]
   );
 
-  const startGateway = useCallback(
-    () =>
-      runMutation(
-        async () => {
-          const result = await apiRequest("/api/gateway/start", { method: "POST" });
-          await refreshGateway();
-          await refreshModels().catch(() => {});
-          return result;
-        },
-        { reload: false }
-      ),
-    [refreshGateway, refreshModels, runMutation]
-  );
-
-  const stopGateway = useCallback(
-    () =>
-      runMutation(
-        async () => {
-          const result = await apiRequest("/api/gateway/stop", { method: "POST" });
-          await refreshGateway();
-          await refreshModels().catch(() => {});
-          return result;
-        },
-        { reload: false }
-      ),
-    [refreshGateway, refreshModels, runMutation]
-  );
-
   const approveToolCall = useCallback(
     (convId, toolCallId) =>
       runMutation(
@@ -921,32 +945,27 @@ export function WindieProvider({ children }) {
     activePathNodes,
     theme,
     treeOverlayOpen,
-    contextPreviewOpen,
     streaming,
     pendingAssistant,
     searchQuery,
     models,
     modelsLoading,
     modelsError,
-    modelParametersById,
     activeModelParameters,
     activeReasoning,
     tokenMeter,
     toolSchemas: activeConv?.toolSchemas || [],
     availableToolSchemas,
     apiError,
-    gatewayRunning,
     approvals,
     setActiveConvId,
     setSelectedNodeId,
     setTheme,
     setTreeOverlayOpen,
-    setContextPreviewOpen,
     setSearchQuery,
     refreshModels,
     loadModelParameters,
     createConversation,
-    renameConversation,
     deleteConversation,
     setSystemPrompt,
     setConversationModel,
@@ -956,7 +975,6 @@ export function WindieProvider({ children }) {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
-    setActivePath,
     setActivePathToLeaf,
     truncateAfter,
     removeMessage,
@@ -965,13 +983,8 @@ export function WindieProvider({ children }) {
     sendMessage,
     continueConversation,
     stopStreaming,
-    startGateway,
-    stopGateway,
-    refreshGateway,
     approveToolCall,
     denyToolCall,
-    refreshConversations,
-    loadConversation,
   };
 
   return <WindieCtx.Provider value={value}>{children}</WindieCtx.Provider>;
