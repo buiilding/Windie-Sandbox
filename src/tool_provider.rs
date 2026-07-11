@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -30,6 +31,7 @@ use crate::tool::{
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 const MCP_TOOL_RESULT_MAX_BYTES: usize = 32 * 1024 * 1024;
 const TOOL_RESULT_PREVIEW_MAX_BYTES: usize = 4 * 1024;
+const CATALOG_FAILURE_CACHE_DURATION: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -41,6 +43,19 @@ pub struct ToolProviderRegistry {
     mcp_providers: Vec<McpToolProvider>,
     mcp_session_pool: Option<McpSessionPool>,
     catalog_cache: Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>>,
+    catalog_loads: Arc<CatalogLoads>,
+}
+
+#[derive(Debug, Default)]
+struct CatalogLoads {
+    provider_locks: Mutex<HashMap<ToolProviderId, Arc<Mutex<()>>>>,
+    recent_failures: Mutex<HashMap<ToolProviderId, CatalogFailure>>,
+}
+
+#[derive(Debug)]
+struct CatalogFailure {
+    recorded_at: Instant,
+    message: String,
 }
 
 impl ToolProviderRegistry {
@@ -123,10 +138,28 @@ impl ToolProviderRegistry {
         if let Some(tools) = self.cached_provider_tools(provider_id)? {
             return Ok(tools);
         }
-        if let Some(provider) = self.mcp_provider(provider_id) {
-            let tools = provider.list_tools()?;
-            self.cache_provider_tools(provider_id, &tools)?;
+        let provider_lock = self.catalog_provider_lock(provider_id)?;
+        let _load = provider_lock
+            .lock()
+            .map_err(|_| anyhow!("provider catalog load lock was poisoned: {provider_id}"))?;
+        if let Some(tools) = self.cached_provider_tools(provider_id)? {
             return Ok(tools);
+        }
+        if let Some(error) = self.recent_catalog_failure(provider_id)? {
+            return Err(anyhow!(error));
+        }
+        if let Some(provider) = self.mcp_provider(provider_id) {
+            return match provider.list_tools() {
+                Ok(tools) => {
+                    self.cache_provider_tools(provider_id, &tools)?;
+                    self.clear_catalog_failure(provider_id)?;
+                    Ok(tools)
+                }
+                Err(error) => {
+                    self.cache_catalog_failure(provider_id, &error)?;
+                    Err(error)
+                }
+            };
         }
 
         Ok(Vec::new())
@@ -237,6 +270,63 @@ impl ToolProviderRegistry {
         Ok(cache.get(provider_id).cloned())
     }
 
+    fn catalog_provider_lock(&self, provider_id: &ToolProviderId) -> Result<Arc<Mutex<()>>> {
+        let mut locks = self
+            .catalog_loads
+            .provider_locks
+            .lock()
+            .map_err(|_| anyhow!("provider catalog lock map was poisoned"))?;
+        Ok(Arc::clone(
+            locks
+                .entry(provider_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        ))
+    }
+
+    fn recent_catalog_failure(&self, provider_id: &ToolProviderId) -> Result<Option<String>> {
+        let mut failures = self
+            .catalog_loads
+            .recent_failures
+            .lock()
+            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?;
+        let recent = failures.get(provider_id).and_then(|failure| {
+            (failure.recorded_at.elapsed() < CATALOG_FAILURE_CACHE_DURATION)
+                .then(|| failure.message.clone())
+        });
+        if recent.is_none() {
+            failures.remove(provider_id);
+        }
+        Ok(recent)
+    }
+
+    fn cache_catalog_failure(
+        &self,
+        provider_id: &ToolProviderId,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        self.catalog_loads
+            .recent_failures
+            .lock()
+            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?
+            .insert(
+                provider_id.clone(),
+                CatalogFailure {
+                    recorded_at: Instant::now(),
+                    message: format!("{error:#}"),
+                },
+            );
+        Ok(())
+    }
+
+    fn clear_catalog_failure(&self, provider_id: &ToolProviderId) -> Result<()> {
+        self.catalog_loads
+            .recent_failures
+            .lock()
+            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?
+            .remove(provider_id);
+        Ok(())
+    }
+
     /// Stores one backend-owned provider catalog for reuse by later operations.
     fn cache_provider_tools(
         &self,
@@ -279,6 +369,7 @@ impl ToolProviderRegistry {
             })],
             mcp_session_pool: None,
             catalog_cache,
+            catalog_loads: Arc::new(CatalogLoads::default()),
         }
     }
 }
@@ -293,6 +384,7 @@ impl Default for ToolProviderRegistry {
                 .collect(),
             mcp_session_pool: None,
             catalog_cache: Arc::new(Mutex::new(HashMap::new())),
+            catalog_loads: Arc::new(CatalogLoads::default()),
         }
     }
 }

@@ -86,14 +86,21 @@ one conversation.
 
 ## Catalog Loading and Cache
 
-Listing all available tools asks every registered provider for its catalog.
-Unavailable providers are skipped by the all-tools listing. Listing one
-specific provider returns its error directly.
+Listing all available tools asks registered providers for their catalogs in
+parallel. Partial results remain available when one provider fails; if every
+provider fails, the all-tools request returns an error. Listing one specific
+provider returns its error directly.
 
 After a provider catalog loads successfully, it is cached by provider ID for
 the life of the registry. The long-running API shares one registry, so later
 attachment requests reuse the cached definitions. Separate CLI processes start
 with separate empty caches.
+
+Catalog loading is single-flight per provider. Concurrent API requests wait for
+the same in-progress provider load instead of starting duplicate MCP processes.
+Different providers still load concurrently. Failures are cached for five
+seconds so overlapping callers share the failure while later requests can
+retry transient provider availability.
 
 The cache is not persisted. Attached tool definitions are persisted.
 

@@ -455,6 +455,7 @@ fn registry_finds_tools_from_cached_provider_catalog() {
         })],
         mcp_session_pool: None,
         catalog_cache,
+        catalog_loads: Arc::new(CatalogLoads::default()),
     };
 
     let found = registry
@@ -462,6 +463,76 @@ fn registry_finds_tools_from_cached_provider_catalog() {
         .unwrap();
 
     assert_eq!(found, Some(tool));
+}
+
+#[test]
+#[cfg(unix)]
+fn concurrent_catalog_requests_start_one_provider_process() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let nonce = uuid::Uuid::new_v4();
+    let script_path = std::env::temp_dir().join(format!("windie-catalog-{nonce}.sh"));
+    let starts_path = std::env::temp_dir().join(format!("windie-catalog-{nonce}.starts"));
+    let script = format!(
+        r#"#!/bin/sh
+printf 'start\n' >> '{}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"test","version":"1"}}}}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      sleep 0.2
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"search","description":"Search","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+  esac
+done
+"#,
+        starts_path.display()
+    );
+    std::fs::write(&script_path, script).unwrap();
+    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let program = Box::leak(script_path.to_string_lossy().into_owned().into_boxed_str());
+    let registry = Arc::new(ToolProviderRegistry {
+        mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+            provider_id: "single-flight-test",
+            schema_prefix: "single_flight_test",
+            display_name: "Single Flight Test",
+            command: McpCommand {
+                program,
+                args: &[],
+                env: &[],
+            },
+            shutdown_command: None,
+            setup: None,
+        })],
+        mcp_session_pool: None,
+        catalog_cache: test_cache(),
+        catalog_loads: Arc::new(CatalogLoads::default()),
+    });
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let workers = (0..2)
+        .map(|_| {
+            let registry = Arc::clone(&registry);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry.list_provider_tools(&ToolProviderId::new("single-flight-test"))
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+
+    for worker in workers {
+        let tools = worker.join().unwrap().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].schema_name.as_str(), "single_flight_test__search");
+    }
+    let starts = std::fs::read_to_string(&starts_path).unwrap();
+    assert_eq!(starts.lines().count(), 1);
+
+    let _ = std::fs::remove_file(script_path);
+    let _ = std::fs::remove_file(starts_path);
 }
 
 #[test]
@@ -502,6 +573,7 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
         ],
         mcp_session_pool: None,
         catalog_cache,
+        catalog_loads: Arc::new(CatalogLoads::default()),
     };
 
     let tools = registry.list_available_tools().unwrap();
