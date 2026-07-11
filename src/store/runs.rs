@@ -20,6 +20,32 @@ impl Store {
         )
     }
 
+    /// Returns a direct runtime run, creating it on the common idle path.
+    ///
+    /// Direct CLI/test helpers do not have a `RunCoordinator` admission record
+    /// to pass down. Try creation first so the normal idle path does one write
+    /// instead of a read-before-write pair. If another direct caller already
+    /// owns a live run, fall back to that run without changing API coordinator
+    /// behavior.
+    pub(crate) fn get_or_create_runtime_run(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<RuntimeRunRecord> {
+        match self.create_runtime_run(conversation_id) {
+            Ok(run) => Ok(run),
+            Err(create_error)
+                if crate::error::kind_from_error(&create_error)
+                    == Some(crate::error::WindieErrorKind::InvalidRequest) =>
+            {
+                if let Some(run) = self.active_runtime_run(conversation_id)? {
+                    return Ok(run);
+                }
+                Err(create_error)
+            }
+            Err(create_error) => Err(create_error),
+        }
+    }
+
     /// Creates one runtime operation owned by a live coordinator lease.
     pub fn create_owned_runtime_run(
         &self,

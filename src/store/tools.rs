@@ -253,6 +253,7 @@ impl Store {
     }
 
     /// Stores a tool result and completes its execution claim in one commit.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn complete_tool_call_with_result(
         &mut self,
@@ -269,6 +270,34 @@ impl Store {
             parent_message_id,
             tool_call_id,
         )?;
+        self.complete_claimed_tool_call_with_result(
+            conversation_id,
+            assistant_message_id,
+            parent_message_id,
+            tool_call_id,
+            run_id,
+            content,
+            parts,
+        )
+    }
+
+    /// Stores a result for a tool call already validated and claimed by runtime.
+    ///
+    /// Runtime reaches this point only after loading the assistant tool-call
+    /// path, validating metadata order, and reserving the side effect in
+    /// `tool_call_executions`. Keep the atomic claim/result transaction here,
+    /// but avoid re-walking the same parent chain.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn complete_claimed_tool_call_with_result(
+        &mut self,
+        conversation_id: &ConversationId,
+        assistant_message_id: &MessageId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        run_id: &str,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
         let id = MessageId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
         let metadata = MessageMetadata {

@@ -1007,7 +1007,7 @@ fn store_claimed_tool_result(
     run_id: &str,
     result: &ToolExecutionResult,
 ) -> Result<MessageId> {
-    store.complete_tool_call_with_result(
+    store.complete_claimed_tool_call_with_result(
         conversation_id,
         &pending.assistant_message_id,
         &pending.result_parent_message_id,
@@ -1019,10 +1019,7 @@ fn store_claimed_tool_result(
 }
 
 fn execution_run_id(store: &Store, conversation_id: &ConversationId) -> Result<String> {
-    if let Some(run) = store.active_runtime_run(conversation_id)? {
-        return Ok(run.id);
-    }
-    Ok(store.create_runtime_run(conversation_id)?.id)
+    Ok(store.get_or_create_runtime_run(conversation_id)?.id)
 }
 
 /// Captures policy and context configuration for one runtime operation.
