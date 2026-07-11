@@ -15,6 +15,11 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+pub(super) const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(super) const LLM_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+pub(super) const MAX_HTTP_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_LLM_STREAM_BYTES: usize = 32 * 1024 * 1024;
+
 use crate::conversation::{Message, MessageMetadata, ToolSchema};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

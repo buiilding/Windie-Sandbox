@@ -36,6 +36,7 @@ const PUBLIC_BIFROST_DOCKER_NAME: &str = "windie-bifrost";
 const BIFROST_PORT: &str = "8080";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(200);
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the local Bifrost gateway health endpoint.
@@ -177,14 +178,14 @@ impl BifrostGateway {
         let response = self
             .http
             .get(&health_url)
+            .timeout(HEALTH_CHECK_TIMEOUT)
             .send()
             .await
             .context("failed to reach Bifrost health endpoint")?;
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Bifrost health check failed with {status}: {body}"));
+            return Err(anyhow!("Bifrost health check failed with {status}"));
         }
 
         Ok(())

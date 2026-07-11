@@ -610,7 +610,7 @@ fn benchmark_fake_mcp_list_call() -> Result<Duration> {
     let duration = started.elapsed();
     debug_assert_eq!(tools.len(), 1);
     debug_assert_eq!(tools[0].name, "click");
-    debug_assert_eq!(result["isError"], false);
+    debug_assert!(!result.is_error);
 
     Ok(duration)
 }

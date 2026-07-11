@@ -242,6 +242,7 @@ fn mcp_tool_result_parts_decode_text_images_and_structured_content() {
         }
     });
 
+    let result = mcp::decode_tool_result(result).unwrap();
     let parts = mcp_tool_result_parts(&result).unwrap();
 
     assert_eq!(parts.len(), 3);
@@ -265,6 +266,7 @@ fn mcp_tool_result_rejects_invalid_image_bytes() {
         ]
     });
 
+    let result = mcp::decode_tool_result(result).unwrap();
     let error = mcp_tool_result_parts(&result).unwrap_err();
 
     assert!(error.to_string().contains("invalid MCP image result"));
@@ -277,6 +279,15 @@ fn mcp_tool_result_rejects_aggregate_size_overflow() {
     let error = add_mcp_result_bytes(&mut total, 1).unwrap_err();
 
     assert!(error.to_string().contains("MCP tool result exceeds"));
+}
+
+#[test]
+fn tool_result_preview_is_bounded_without_splitting_utf8() {
+    let text = "a".repeat(TOOL_RESULT_PREVIEW_MAX_BYTES - 1) + "é";
+    let preview = tool_result_preview(&[UnsavedMessagePart::Text(text)]);
+
+    assert!(preview.ends_with("\n[truncated]"));
+    assert!(preview.len() <= TOOL_RESULT_PREVIEW_MAX_BYTES + "\n[truncated]".len());
 }
 
 #[test]

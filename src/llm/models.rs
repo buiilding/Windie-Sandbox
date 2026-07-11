@@ -4,7 +4,11 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, Url};
 use serde::Deserialize;
 
-use super::{BaseUrl, ModelInfo, ModelName, ModelParameterInfo};
+use super::client::bounded_response_bytes;
+use super::{
+    BaseUrl, HTTP_REQUEST_TIMEOUT, MAX_HTTP_RESPONSE_BYTES, ModelInfo, ModelName,
+    ModelParameterInfo,
+};
 
 #[derive(Debug, Deserialize)]
 /// OpenAI-compatible model list response returned by Bifrost.
@@ -25,19 +29,19 @@ fn models_endpoint(base_url: &BaseUrl) -> String {
 pub async fn list_models(base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
     let response = Client::new()
         .get(models_endpoint(&base_url))
+        .timeout(HTTP_REQUEST_TIMEOUT)
         .send()
         .await
         .context("failed to send model list request")?;
 
     let status = response.status();
+    let body = bounded_response_bytes(response, MAX_HTTP_RESPONSE_BYTES).await?;
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&body);
         return Err(anyhow!("model list request failed with {status}: {body}"));
     }
 
-    let response = response
-        .json::<ModelsResponse>()
-        .await
+    let response = serde_json::from_slice::<ModelsResponse>(&body)
         .context("failed to parse model list response")?;
 
     Ok(response.data)
@@ -57,6 +61,7 @@ pub async fn model_parameters(
         let endpoint = model_parameters_endpoint(&base_url, lookup_name)?;
         let response = http
             .get(endpoint)
+            .timeout(HTTP_REQUEST_TIMEOUT)
             .send()
             .await
             .context("failed to send model parameter request")?;
@@ -65,16 +70,15 @@ pub async fn model_parameters(
         if status == reqwest::StatusCode::NOT_FOUND {
             continue;
         }
+        let body = bounded_response_bytes(response, MAX_HTTP_RESPONSE_BYTES).await?;
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = String::from_utf8_lossy(&body);
             return Err(anyhow!(
                 "model parameter request failed with {status}: {body}"
             ));
         }
 
-        let raw = response
-            .json::<serde_json::Value>()
-            .await
+        let raw = serde_json::from_slice::<serde_json::Value>(&body)
             .context("failed to parse model parameter response")?;
         let mut parameters = serde_json::from_value::<ModelParameterInfo>(raw.clone())
             .context("failed to decode model parameter response")?;

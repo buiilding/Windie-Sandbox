@@ -17,7 +17,9 @@ use serde_json::{Value, json};
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
 use crate::image_input::validate_image_input_bytes;
-use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
+use crate::mcp::{
+    self, McpCommand, McpContentBlock, McpEnv, McpEnvValue, McpSessionPool, McpTool, McpToolResult,
+};
 use crate::paths;
 use crate::run::{RunCancellation, is_runtime_cancelled};
 use crate::tool::{
@@ -27,6 +29,7 @@ use crate::tool::{
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 const MCP_TOOL_RESULT_MAX_BYTES: usize = 32 * 1024 * 1024;
+const TOOL_RESULT_PREVIEW_MAX_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -451,10 +454,7 @@ impl McpToolProvider {
                 ));
             }
         };
-        let success = !result
-            .get("isError")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let success = !result.is_error;
 
         let normalized = match mcp_tool_result_parts(&result) {
             Ok(parts) => parts,
@@ -625,60 +625,44 @@ fn mcp_schema_name(schema_prefix: &str, tool_name: &str) -> String {
 /// MCP can return text and binary images in the same content array. Windie
 /// stores those images through `message_parts` and `image_assets` so the
 /// Responses request can replay them as image blocks instead of base64 text.
-fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
+fn mcp_tool_result_parts(result: &McpToolResult) -> Result<Vec<UnsavedMessagePart>> {
     let mut parts = Vec::new();
     let mut result_bytes = 0_usize;
 
-    if let Some(content) = result.get("content").and_then(Value::as_array) {
-        for item in content {
-            match item.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    if let Some(text) = item.get("text").and_then(Value::as_str) {
-                        add_mcp_result_bytes(&mut result_bytes, text.len())?;
-                        parts.push(UnsavedMessagePart::Text(text.to_string()));
-                    }
-                }
-                Some("image") => {
-                    let data = item
-                        .get("data")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| anyhow!("MCP image result did not include data"))?;
-                    let mime_type = item
-                        .get("mimeType")
-                        .or_else(|| item.get("mime_type"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("image/png");
-                    let bytes = STANDARD
-                        .decode(data)
-                        .context("failed to decode MCP image result")?;
-                    validate_image_input_bytes(mime_type, &bytes)
-                        .context("invalid MCP image result")?;
-                    add_mcp_result_bytes(&mut result_bytes, bytes.len())?;
-                    parts.push(UnsavedMessagePart::Image(UnsavedImagePart {
-                        mime_type: mime_type.to_string(),
-                        bytes,
-                    }));
-                }
-                Some(other) => {
-                    let text = format!("Unsupported MCP content block: {other}");
-                    add_mcp_result_bytes(&mut result_bytes, text.len())?;
-                    parts.push(UnsavedMessagePart::Text(text));
-                }
-                None => {}
+    for block in &result.content {
+        match block {
+            McpContentBlock::Text(text) => {
+                add_mcp_result_bytes(&mut result_bytes, text.len())?;
+                parts.push(UnsavedMessagePart::Text(text.clone()));
+            }
+            McpContentBlock::Image { data, mime_type } => {
+                let bytes = STANDARD
+                    .decode(data)
+                    .context("failed to decode MCP image result")?;
+                validate_image_input_bytes(mime_type, &bytes)
+                    .context("invalid MCP image result")?;
+                add_mcp_result_bytes(&mut result_bytes, bytes.len())?;
+                parts.push(UnsavedMessagePart::Image(UnsavedImagePart {
+                    mime_type: mime_type.to_string(),
+                    bytes,
+                }));
+            }
+            McpContentBlock::Unsupported { kind } => {
+                let text = format!("Unsupported MCP content block: {kind}");
+                add_mcp_result_bytes(&mut result_bytes, text.len())?;
+                parts.push(UnsavedMessagePart::Text(text));
             }
         }
     }
 
-    if let Some(structured_content) = result.get("structuredContent")
-        && !structured_content.is_null()
-    {
+    if let Some(structured_content) = &result.structured_content {
         let text = format!("structuredContent: {structured_content}");
         add_mcp_result_bytes(&mut result_bytes, text.len())?;
         parts.push(UnsavedMessagePart::Text(text));
     }
 
     if parts.is_empty() {
-        let text = result.to_string();
+        let text = result.raw_json.clone();
         add_mcp_result_bytes(&mut result_bytes, text.len())?;
         parts.push(UnsavedMessagePart::Text(text));
     }
@@ -703,20 +687,45 @@ fn add_mcp_result_bytes(total: &mut usize, added: usize) -> Result<()> {
 
 /// Builds the compact visible text stored on the tool message row.
 fn tool_result_preview(parts: &[UnsavedMessagePart]) -> String {
-    let mut lines = Vec::new();
+    let mut preview = String::new();
+    let mut truncated = false;
 
-    for part in parts {
-        match part {
-            UnsavedMessagePart::Text(text) => lines.push(text.clone()),
-            UnsavedMessagePart::Image(image) => lines.push(format!(
-                "[image: {}, {} bytes]",
-                image.mime_type,
-                image.bytes.len()
-            )),
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            truncated |= !push_preview_text(&mut preview, "\n");
+        }
+        let complete = match part {
+            UnsavedMessagePart::Text(text) => push_preview_text(&mut preview, text),
+            UnsavedMessagePart::Image(image) => push_preview_text(
+                &mut preview,
+                &format!("[image: {}, {} bytes]", image.mime_type, image.bytes.len()),
+            ),
+        };
+        if !complete {
+            truncated = true;
+            break;
         }
     }
 
-    lines.join("\n")
+    if truncated {
+        preview.push_str("\n[truncated]");
+    }
+    preview
+}
+
+fn push_preview_text(preview: &mut String, text: &str) -> bool {
+    let remaining = TOOL_RESULT_PREVIEW_MAX_BYTES.saturating_sub(preview.len());
+    if text.len() <= remaining {
+        preview.push_str(text);
+        return true;
+    }
+
+    let mut boundary = remaining.min(text.len());
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    preview.push_str(&text[..boundary]);
+    false
 }
 
 #[cfg(test)]
