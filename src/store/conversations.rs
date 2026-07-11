@@ -198,17 +198,13 @@ impl Store {
     }
 
     /// Loads all messages for one conversation in stable insertion order.
+    #[cfg(test)]
     pub fn load_messages(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         let mut messages = self.load_message_rows(conversation_id)?;
         self.attach_message_parts(&mut messages)
             .context("failed to load message parts")?;
 
         Ok(messages)
-    }
-
-    /// Loads all stored messages for tree inspection.
-    pub fn load_message_tree(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
-        self.load_messages(conversation_id)
     }
 
     /// Loads the active message ID for one conversation.

@@ -11,7 +11,8 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
+    ConversationId, Message, MessageId, MessagePart, MessagePartView, MessageView, ToolCall,
+    ToolSchemaName,
 };
 use crate::doctor::DoctorReport;
 use crate::llm::{ModelInfo, ModelName};
@@ -295,7 +296,11 @@ impl TerminalOutput {
     }
 
     /// Prints the full message tree with indentation and active marker.
-    pub fn conversation_tree(&self, messages: &[Message], active_message_id: Option<&MessageId>) {
+    pub fn conversation_tree(
+        &self,
+        messages: &[MessageView],
+        active_message_id: Option<&MessageId>,
+    ) {
         for line in tree_lines(messages, active_message_id) {
             println!("{line}");
         }
@@ -671,17 +676,14 @@ fn message_lines(messages: &[Message]) -> Vec<String> {
 }
 
 /// Converts a full message tree into indented CLI lines.
-fn tree_lines(messages: &[Message], active_message_id: Option<&MessageId>) -> Vec<String> {
+fn tree_lines(messages: &[MessageView], active_message_id: Option<&MessageId>) -> Vec<String> {
     if messages.is_empty() {
         return vec!["no messages".to_string()];
     }
 
-    let mut children_by_parent = HashMap::<Option<String>, Vec<&Message>>::new();
+    let mut children_by_parent = HashMap::<Option<String>, Vec<&MessageView>>::new();
     for message in messages {
-        let parent_key = message
-            .parent_message_id
-            .as_ref()
-            .map(|message_id| message_id.as_str().to_string());
+        let parent_key = message.parent_message_id.clone();
         children_by_parent
             .entry(parent_key)
             .or_default()
@@ -697,7 +699,7 @@ fn tree_lines(messages: &[Message], active_message_id: Option<&MessageId>) -> Ve
 /// Recursively appends indented tree lines under one parent message.
 fn append_tree_lines(
     lines: &mut Vec<String>,
-    children_by_parent: &HashMap<Option<String>, Vec<&Message>>,
+    children_by_parent: &HashMap<Option<String>, Vec<&MessageView>>,
     parent_id: Option<&str>,
     active_message_id: Option<&MessageId>,
     depth: usize,
@@ -708,36 +710,53 @@ fn append_tree_lines(
     };
 
     for message in children {
-        let id = message
-            .id
-            .as_ref()
-            .map(|id| id.as_str())
-            .unwrap_or("<unsaved>");
-        let active_marker =
-            if active_message_id.is_some_and(|active_id| Some(active_id) == message.id.as_ref()) {
-                "*"
-            } else {
-                " "
-            };
+        let id = message.id.as_deref().unwrap_or("<unsaved>");
+        let active_marker = if active_message_id
+            .is_some_and(|active_id| message.id.as_deref() == Some(active_id.as_str()))
+        {
+            "*"
+        } else {
+            " "
+        };
         lines.push(format!(
             "{}{} {}  {}  {}",
             "  ".repeat(depth),
             active_marker,
             message.role.as_str(),
             id,
-            message_preview(message)
+            message_view_preview(message)
         ));
         append_tree_lines(
             lines,
             children_by_parent,
-            message.id.as_ref().map(MessageId::as_str),
+            message.id.as_deref(),
             active_message_id,
             depth + 1,
         );
     }
 }
 
-/// Normalizes one message into a compact, Unicode-safe preview.
+/// Normalizes one metadata-only message into a compact preview.
+fn message_view_preview(message: &MessageView) -> String {
+    let text = text_preview(&message.content);
+    let image_count = message
+        .parts
+        .iter()
+        .filter(|part| matches!(part, MessagePartView::Image { .. }))
+        .count();
+    let preview = match (text.is_empty(), image_count) {
+        (true, 0) => String::new(),
+        (true, 1) => "[image]".to_string(),
+        (true, count) => format!("[{count} images]"),
+        (false, 0) => text,
+        (false, 1) => format!("{text} [image]"),
+        (false, count) => format!("{text} [{count} images]"),
+    };
+
+    truncate_preview(&preview)
+}
+
+/// Normalizes one full message into a compact, Unicode-safe preview.
 fn message_preview(message: &Message) -> String {
     let text = text_preview(&message.content);
     let image_count = message

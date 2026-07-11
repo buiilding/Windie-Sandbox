@@ -311,7 +311,7 @@ fn serializes_inspection_report_with_runtime_state() {
         Some("You are concise.".to_string()),
         ToolApprovalMode::Manual,
         vec![tool_schema],
-        vec![
+        message_views(vec![
             Message {
                 id: Some(MessageId::new("user-id")),
                 parent_message_id: None,
@@ -335,16 +335,16 @@ fn serializes_inspection_report_with_runtime_state() {
                 parts: Vec::new(),
                 metadata: Some(metadata),
             },
-        ],
-        vec![Message {
+        ]),
+        message_views(vec![Message {
             id: Some(MessageId::new("user-id")),
             parent_message_id: None,
             role: Role::User,
             content: "look".to_string(),
             parts: Vec::new(),
             metadata: None,
-        }],
-        vec![
+        }]),
+        message_views(vec![
             Message {
                 id: None,
                 parent_message_id: None,
@@ -361,7 +361,7 @@ fn serializes_inspection_report_with_runtime_state() {
                 parts: Vec::new(),
                 metadata: None,
             },
-        ],
+        ]),
         Some(Compaction {
             id: CompactionId::new("compaction-id"),
             conversation_id: ConversationId::new("conversation-id"),
@@ -399,6 +399,13 @@ fn serializes_inspection_report_with_runtime_state() {
     assert_eq!(value["latest_compaction"]["id"], "compaction-id");
 }
 
+fn message_views(messages: Vec<Message>) -> Vec<MessageView> {
+    messages
+        .into_iter()
+        .map(MessageView::from_message)
+        .collect()
+}
+
 #[test]
 fn formats_message_tree_with_active_marker() {
     let messages = vec![
@@ -428,6 +435,10 @@ fn formats_message_tree_with_active_marker() {
         },
     ];
 
+    let messages = messages
+        .into_iter()
+        .map(MessageView::from_message)
+        .collect::<Vec<_>>();
     let lines = tree_lines(&messages, Some(&MessageId::new("active-id")));
 
     assert_eq!(

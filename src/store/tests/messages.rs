@@ -306,6 +306,11 @@ fn saves_and_loads_image_message_parts() {
     assert!(matches!(&messages[0].parts[0], MessagePart::Text(text) if text == "what is this?"));
     assert!(matches!(&messages[0].parts[1], MessagePart::Image(image)
         if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
+
+    let tree = store.load_message_tree_view(&conversation_id).unwrap();
+    let value = serde_json::to_value(&tree).unwrap();
+    assert_eq!(value[0]["parts"][1]["byte_count"], 3);
+    assert!(value[0]["parts"][1].get("bytes").is_none());
 }
 
 #[test]

@@ -73,7 +73,7 @@ pub fn conversation_tree(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<ConversationTree> {
-    let messages = store.load_message_tree(conversation_id)?;
+    let messages = store.load_message_tree_view(conversation_id)?;
     let active_message_id = store.active_message_id(conversation_id)?;
 
     Ok(ConversationTree {
@@ -92,30 +92,70 @@ pub fn inspect_conversation(
     let reasoning = conversation_reasoning(store, conversation_id)?;
     let active_message_id = store.active_message_id(conversation_id)?;
     let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
-    let messages = store.load_message_tree(conversation_id)?;
+    let messages = store.load_message_tree_view(conversation_id)?;
     let tool_schemas = store.load_tool_schemas(conversation_id)?;
-    let context_parts = ContextBuilder::load_parts(store, conversation_id)?;
+    let active_path = store.load_active_path_view(conversation_id)?;
+    let system_prompt = store.system_prompt(conversation_id)?;
+    let latest_compaction = store.latest_compaction(conversation_id)?;
     let execution_claims = store.tool_execution_records(conversation_id)?;
-    let model_context = ContextBuilder::flatten(ContextParts {
-        active_path: context_parts.active_path.clone(),
-        system_prompt: context_parts.system_prompt.clone(),
-        compaction: context_parts.compaction.clone(),
-    });
+    let model_context = inspection_model_context(
+        active_path.clone(),
+        system_prompt.clone(),
+        latest_compaction.as_ref(),
+    );
 
     Ok(InspectionReport::new(
         conversation_id,
         active_message_id.as_ref(),
         model.as_str(),
         reasoning,
-        context_parts.system_prompt,
+        system_prompt,
         tool_approval_mode,
         tool_schemas,
         messages,
-        context_parts.active_path,
+        active_path,
         model_context,
-        context_parts.compaction,
+        latest_compaction,
         execution_claims,
     ))
+}
+
+fn inspection_model_context(
+    active_path: Vec<MessageView>,
+    system_prompt: Option<String>,
+    compaction: Option<&Compaction>,
+) -> Vec<MessageView> {
+    let mut context = if let Some(compaction) = compaction {
+        if let Some(index) = active_path.iter().position(|message| {
+            message.id.as_deref() == Some(compaction.through_message_id.as_str())
+        }) {
+            let mut messages = vec![inspection_system_message(format!(
+                "Previous conversation summary:\n{}",
+                compaction.content
+            ))];
+            messages.extend(active_path.into_iter().skip(index + 1));
+            messages
+        } else {
+            active_path
+        }
+    } else {
+        active_path
+    };
+    if let Some(system_prompt) = system_prompt {
+        context.insert(0, inspection_system_message(system_prompt));
+    }
+    context
+}
+
+fn inspection_system_message(content: String) -> MessageView {
+    MessageView {
+        id: None,
+        parent_message_id: None,
+        role: Role::System,
+        content,
+        parts: Vec::new(),
+        metadata: None,
+    }
 }
 
 /// Inserts one message below the current active message.

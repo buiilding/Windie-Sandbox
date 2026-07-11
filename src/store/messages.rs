@@ -52,6 +52,85 @@ impl Store {
         self.load_path_to_message(conversation_id, &message_id)
     }
 
+    pub fn load_active_path_view(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<MessageView>> {
+        let Some(message_id) = self.active_message_id(conversation_id)? else {
+            return Ok(Vec::new());
+        };
+        let rows = self.load_path_to_message_rows(conversation_id, &message_id)?;
+        self.message_views_from_rows(rows)
+    }
+
+    pub fn load_message_tree_view(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<MessageView>> {
+        let rows = self.load_message_rows(conversation_id)?;
+        self.message_views_from_rows(rows)
+    }
+
+    fn message_views_from_rows(&self, rows: Vec<Message>) -> Result<Vec<MessageView>> {
+        let mut messages = rows
+            .into_iter()
+            .map(MessageView::from_message)
+            .collect::<Vec<_>>();
+        let message_ids = messages
+            .iter()
+            .filter_map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        if message_ids.is_empty() {
+            return Ok(messages);
+        }
+        let placeholders = (1..=message_ids.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "
+            SELECT message_parts.message_id, message_parts.kind, message_parts.text,
+                   image_assets.id, image_assets.mime_type, length(image_assets.bytes)
+            FROM message_parts
+            LEFT JOIN image_assets ON image_assets.id = message_parts.image_asset_id
+            WHERE message_parts.message_id IN ({placeholders})
+            ORDER BY message_parts.message_id, message_parts.position, message_parts.rowid
+            "
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(message_ids.iter()), |row| {
+            let message_id = row.get::<_, String>(0)?;
+            let kind = row.get::<_, String>(1)?;
+            let part = match kind.as_str() {
+                "text" => MessagePartView::Text { text: row.get(2)? },
+                "image" => MessagePartView::Image {
+                    asset_id: row.get(3)?,
+                    mime_type: row.get(4)?,
+                    byte_count: row.get::<_, i64>(5)?.max(0) as usize,
+                },
+                _ => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        Type::Text,
+                        format!("unknown message part kind: {kind}").into(),
+                    ));
+                }
+            };
+            Ok((message_id, part))
+        })?;
+        let mut parts = HashMap::<String, Vec<MessagePartView>>::new();
+        for row in rows {
+            let (message_id, part) = row?;
+            parts.entry(message_id).or_default().push(part);
+        }
+        for message in &mut messages {
+            if let Some(id) = message.id.as_ref() {
+                message.parts = parts.remove(id).unwrap_or_default();
+            }
+        }
+        Ok(messages)
+    }
+
     /// Loads the root-to-message path for one message inside a conversation.
     pub fn load_path_to_message(
         &self,

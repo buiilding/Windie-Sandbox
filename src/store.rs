@@ -18,7 +18,8 @@ use uuid::Uuid;
 
 use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
-    MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName, UnsavedMessagePart,
+    MessagePart, MessagePartView, MessageView, Role, ToolCallId, ToolSchema, ToolSchemaName,
+    UnsavedMessagePart,
 };
 use crate::error;
 use crate::paths;

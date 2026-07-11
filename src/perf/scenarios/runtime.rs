@@ -226,7 +226,7 @@ fn benchmark_context_after_tool_chain() -> Result<RuntimeContextBenchmark> {
             insert_tool_result(store, &conversation_id, &first_result_id, &second_call.id)?;
 
         let active_path_messages = store.load_active_path(&conversation_id)?.len();
-        let tree_messages = store.load_message_tree(&conversation_id)?.len();
+        let tree_messages = store.load_message_tree_view(&conversation_id)?.len();
 
         let started = Instant::now();
         let _ = ContextBuilder::build(store, &conversation_id)?;

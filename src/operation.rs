@@ -11,12 +11,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::context::{ContextBuilder, ContextParts};
+use crate::context::ContextBuilder;
 use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCallId, ToolSchema,
-    ToolSchemaName, UnsavedImagePart, UnsavedMessagePart,
+    ConversationId, Message, MessageId, MessageView, Role, ToolCallId, ToolSchema, ToolSchemaName,
+    UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
@@ -56,7 +56,7 @@ const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
 
 /// Full message tree plus the selected active node.
 pub struct ConversationTree {
-    pub messages: Vec<Message>,
+    pub messages: Vec<MessageView>,
     pub active_message_id: Option<MessageId>,
 }
 
@@ -144,9 +144,9 @@ pub struct InspectionReport {
     system_prompt: Option<String>,
     tool_approval_mode: ToolApprovalMode,
     tool_schemas: Vec<ToolSchema>,
-    messages: Vec<InspectionMessage>,
-    active_path: Vec<InspectionMessage>,
-    model_context: Vec<InspectionMessage>,
+    messages: Vec<MessageView>,
+    active_path: Vec<MessageView>,
+    model_context: Vec<MessageView>,
     latest_compaction: Option<InspectionCompaction>,
     execution_claims: Vec<ToolExecutionRecord>,
 }
@@ -162,9 +162,9 @@ impl InspectionReport {
         system_prompt: Option<String>,
         tool_approval_mode: ToolApprovalMode,
         tool_schemas: Vec<ToolSchema>,
-        messages: Vec<Message>,
-        active_path: Vec<Message>,
-        model_context: Vec<Message>,
+        messages: Vec<MessageView>,
+        active_path: Vec<MessageView>,
+        model_context: Vec<MessageView>,
         latest_compaction: Option<Compaction>,
         execution_claims: Vec<ToolExecutionRecord>,
     ) -> Self {
@@ -176,38 +176,13 @@ impl InspectionReport {
             system_prompt,
             tool_approval_mode,
             tool_schemas,
-            messages: inspection_messages(messages),
-            active_path: inspection_messages(active_path),
-            model_context: inspection_messages(model_context),
+            messages,
+            active_path,
+            model_context,
             latest_compaction: latest_compaction.map(InspectionCompaction::from_compaction),
             execution_claims,
         }
     }
-}
-
-#[derive(Debug, Serialize)]
-/// Serializable message shape for inspection JSON.
-struct InspectionMessage {
-    id: Option<String>,
-    parent_message_id: Option<String>,
-    role: Role,
-    content: String,
-    parts: Vec<InspectionMessagePart>,
-    metadata: Option<MessageMetadata>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-/// Serializable message part that never includes raw image bytes.
-enum InspectionMessagePart {
-    Text {
-        text: String,
-    },
-    Image {
-        asset_id: String,
-        mime_type: String,
-        byte_count: usize,
-    },
 }
 
 #[derive(Debug, Serialize)]
@@ -231,36 +206,6 @@ impl InspectionCompaction {
             created_at: compaction.created_at,
         }
     }
-}
-
-/// Converts loaded runtime messages into the public inspection message shape.
-fn inspection_messages(messages: Vec<Message>) -> Vec<InspectionMessage> {
-    messages
-        .into_iter()
-        .map(|message| InspectionMessage {
-            id: message.id.map(|id| id.as_str().to_string()),
-            parent_message_id: message.parent_message_id.map(|id| id.as_str().to_string()),
-            role: message.role,
-            content: message.content,
-            parts: inspection_message_parts(message.parts),
-            metadata: message.metadata,
-        })
-        .collect()
-}
-
-/// Converts typed message parts while preserving order and hiding image bytes.
-fn inspection_message_parts(parts: Vec<MessagePart>) -> Vec<InspectionMessagePart> {
-    parts
-        .into_iter()
-        .map(|part| match part {
-            MessagePart::Text(text) => InspectionMessagePart::Text { text },
-            MessagePart::Image(image) => InspectionMessagePart::Image {
-                asset_id: image.asset_id.as_str().to_string(),
-                mime_type: image.mime_type,
-                byte_count: image.bytes.len(),
-            },
-        })
-        .collect()
 }
 
 /// Creates an empty persisted conversation with its default model.
