@@ -255,21 +255,9 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
             }
             Err(error) => {
                 log_api_error(&error);
-                let persist_result = if is_runtime_cancelled(&error) {
-                    open_store(&state)
-                        .and_then(|store| {
-                            store.interrupt_tool_call_executions_for_run(&task_run_id)?;
-                            Ok(())
-                        })
-                        .map(|_| ())
-                } else {
-                    Ok(())
-                };
-                let persist_result = match persist_result {
-                    Ok(()) if is_runtime_cancelled(&error) => {
-                        task_manager.finish_cancelled(&task_run_id).await
-                    }
-                    Ok(()) => {
+                let persist_result = match is_runtime_cancelled(&error) {
+                    true => task_manager.finish_cancelled(&task_run_id).await,
+                    false => {
                         task_manager
                             .fail(
                                 &task_run_id,
@@ -278,7 +266,6 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
                             )
                             .await
                     }
-                    Err(error) => Err(error),
                 };
                 if let Err(persist_error) = persist_result {
                     log_api_error(&persist_error);

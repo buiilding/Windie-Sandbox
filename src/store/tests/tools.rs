@@ -243,6 +243,52 @@ fn interrupted_runtime_owner_marks_unfinished_claim_unknown() {
 }
 
 #[test]
+fn cancelled_run_makes_unfinished_claim_retryable() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use tool", None)
+        .unwrap();
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_cancelled", "run", "{}")],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let call_id = ToolCallId::new("call_cancelled");
+    let first_run = store.create_runtime_run(&conversation_id).unwrap();
+    store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &first_run.id)
+        .unwrap();
+
+    store
+        .finish_runtime_run(
+            &first_run.id,
+            RuntimeRunStatus::Cancelled,
+            None,
+            r#"{"type":"run_cancelled"}"#,
+        )
+        .unwrap();
+    let second_run = store.create_runtime_run(&conversation_id).unwrap();
+    store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &second_run.id)
+        .unwrap();
+
+    let claim = store
+        .tool_execution_records(&conversation_id)
+        .unwrap()
+        .remove(0);
+    assert_eq!(claim.status, ToolExecutionStatus::Executing);
+    assert_eq!(claim.run_id, second_run.id);
+}
+
+#[test]
 fn new_conversation_defaults_to_manual_tool_approval() {
     let store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();

@@ -227,16 +227,22 @@ impl Store {
             return Ok(None);
         }
 
+        let (claim_status, claim_error) = if status == RuntimeRunStatus::Cancelled {
+            ("interrupted", None)
+        } else {
+            (
+                "unknown",
+                Some("runtime ended before the tool result was durably recorded"),
+            )
+        };
         transaction
             .execute(
                 "
                 UPDATE tool_call_executions
-                SET status = 'unknown',
-                    error = 'runtime ended before the tool result was durably recorded',
-                    updated_at = ?2
+                SET status = ?2, error = ?3, updated_at = ?4
                 WHERE run_id = ?1 AND status = 'executing'
                 ",
-                params![run_id, now],
+                params![run_id, claim_status, claim_error, now],
             )
             .context("failed to reconcile unfinished tool executions")?;
 

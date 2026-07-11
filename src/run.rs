@@ -27,6 +27,8 @@ const RUN_EVENT_CHANNEL_CAPACITY: usize = 512;
 const RUN_JOURNAL_COMMAND_CAPACITY: usize = 512;
 const RUN_LEASE_DURATION: Duration = Duration::from_secs(30);
 const RUN_LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(10);
+const TERMINAL_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
+const TERMINAL_RETRY_MAX_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -720,13 +722,25 @@ impl RunManager {
             .ok_or_else(|| {
                 error::not_found(format!("active runtime run does not exist: {run_id}"))
             })?;
-        let Some(_envelope) = self
-            .journal
-            .finish(run_id, status, error_message, event, sender)
-            .await?
-        else {
-            return Ok(false);
-        };
+        let mut retry_delay = TERMINAL_RETRY_INITIAL_DELAY;
+        loop {
+            match self
+                .journal
+                .finish(run_id, status, error_message, event.clone(), sender.clone())
+                .await
+            {
+                Ok(Some(_envelope)) => break,
+                Ok(None) => return Ok(false),
+                Err(error) if error::kind_from_error(&error).is_some() => return Err(error),
+                Err(_) => {
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = retry_delay
+                        .checked_mul(2)
+                        .unwrap_or(TERMINAL_RETRY_MAX_DELAY)
+                        .min(TERMINAL_RETRY_MAX_DELAY);
+                }
+            }
+        }
         self.remove_active(run_id)?;
         Ok(true)
     }
