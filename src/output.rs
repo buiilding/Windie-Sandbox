@@ -352,7 +352,8 @@ impl TerminalOutput {
         println!("pending approvals");
         for approval in approvals {
             println!(
-                "{}  {}  {}  {}",
+                "{}  {}  {}  {}  {}",
+                approval.assistant_message_id,
                 approval.tool_call.id,
                 approval.tool_call.name(),
                 approval.reason,
@@ -454,8 +455,8 @@ fn help_lines() -> Vec<String> {
         "  windie inspect <conversation_id> --json",
         "  windie inspect <conversation_id> --json --model <provider/model>",
         "  windie approvals <conversation_id>",
-        "  windie approve <conversation_id> <tool_call_id>",
-        "  windie deny <conversation_id> <tool_call_id>",
+        "  windie approve <conversation_id> <assistant_message_id> <tool_call_id>",
+        "  windie deny <conversation_id> <assistant_message_id> <tool_call_id>",
         "  windie attach <conversation_id> tool <provider_id> <tool_name>",
         "  windie detach <conversation_id> tool <schema_name>",
         "  windie insert <conversation_id> message --role user --text \"hello\"",

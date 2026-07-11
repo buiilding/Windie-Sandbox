@@ -22,8 +22,10 @@ developer API harness for testing those primitives:
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
-Conversation storage is a tree. Runtime execution uses one selected active path
-through that tree. Model context is the flattened active path.
+Conversation storage is a tree. The selected path is the default context for a
+new operation. Runtime captures that path at admission and owns its execution
+cursor, so later user selection changes do not redirect the in-flight model or
+tool loop. Model context is the flattened run path.
 
 ## Collaboration Rule
 

@@ -29,6 +29,15 @@ fn approved_blender_mcp_provider() -> McpToolProvider {
     McpToolProvider::new(definition)
 }
 
+fn approved_chrome_devtools_provider() -> McpToolProvider {
+    let definition = APPROVED_MCP_PROVIDERS
+        .iter()
+        .copied()
+        .find(|definition| definition.provider_id == "chrome-devtools")
+        .unwrap();
+    McpToolProvider::new(definition)
+}
+
 fn approved_brightdata_provider() -> McpToolProvider {
     let definition = APPROVED_MCP_PROVIDERS
         .iter()
@@ -178,6 +187,32 @@ fn brightdata_mcp_tools_map_to_provider_backed_definitions() {
 }
 
 #[test]
+fn chrome_devtools_mcp_tools_map_to_provider_backed_definitions() {
+    let provider = approved_chrome_devtools_provider();
+    let definition = provider.definition_from_mcp_tool(McpTool {
+        name: "take_screenshot".to_string(),
+        description: "Take a screenshot".to_string(),
+        input_schema: json!({"type":"object"}),
+        annotations: Some(mcp::McpToolAnnotations {
+            read_only_hint: Some(true),
+        }),
+    });
+
+    assert_eq!(
+        definition.schema_name.as_str(),
+        "chrome_devtools__take_screenshot"
+    );
+    assert_eq!(definition.provider.provider_id.as_str(), "chrome-devtools");
+    assert_eq!(definition.provider.tool_name.as_str(), "take_screenshot");
+    assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+    assert_eq!(
+        definition.permissions,
+        vec![ToolPermission::ExternalProcess]
+    );
+    assert_eq!(definition.annotations.read_only, Some(true));
+}
+
+#[test]
 fn exa_mcp_tools_map_to_provider_backed_definitions() {
     let provider = approved_exa_provider();
     let definition = provider.definition_from_mcp_tool(McpTool {
@@ -211,6 +246,29 @@ fn exa_provider_uses_pinned_package_and_explicit_api_key() {
         [McpEnv {
             key: "EXA_API_KEY",
             value: McpEnvValue::UserEnv("EXA_API_KEY"),
+        }]
+    );
+}
+
+#[test]
+fn chrome_devtools_provider_uses_remote_debugging_endpoint() {
+    let provider = approved_chrome_devtools_provider();
+
+    assert_eq!(provider.command.program, "npx");
+    assert_eq!(
+        provider.command.args,
+        [
+            "-y",
+            "chrome-devtools-mcp@1.5.0",
+            "--browser-url=http://127.0.0.1:9222",
+            "--no-usage-statistics",
+        ]
+    );
+    assert_eq!(
+        provider.command.env,
+        [McpEnv {
+            key: "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS",
+            value: McpEnvValue::Literal("true"),
         }]
     );
 }
@@ -403,6 +461,25 @@ fn registry_recognizes_brightdata_as_approved_provider() {
         provider: ToolProviderRef::new(
             ToolProviderId::new("brightdata"),
             ProviderToolName::new("search_engine"),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: vec![ToolPermission::ExternalProcess],
+        annotations: ToolAnnotations::default(),
+    };
+
+    assert!(registry.can_execute(&attached_tool));
+}
+
+#[test]
+fn registry_recognizes_chrome_devtools_as_approved_provider() {
+    let registry = ToolProviderRegistry::new();
+    let attached_tool = AttachedTool {
+        schema_name: ToolSchemaName::new("chrome_devtools__take_screenshot"),
+        description: "Take a screenshot".to_string(),
+        parameters: json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            ToolProviderId::new("chrome-devtools"),
+            ProviderToolName::new("take_screenshot"),
             ToolProviderKind::Mcp,
         ),
         permissions: vec![ToolPermission::ExternalProcess],

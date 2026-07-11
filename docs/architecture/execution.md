@@ -63,9 +63,9 @@ items.
 
 ## Why Calls Resolve in Order
 
-Runtime finds the latest assistant tool-call node on the active path and scans
-the contiguous tool nodes after it. The first requested ID without a result is
-the only call that may resolve next.
+Runtime finds the latest assistant tool-call node on the run path and scans the
+contiguous tool nodes after it. The first requested ID without a result is the
+only call that may resolve next.
 
 Trying to approve call 2 while call 1 is unresolved is rejected. The ordering
 keeps one deterministic parent chain and a valid provider request history.
@@ -102,6 +102,11 @@ one approval request containing:
 - the assistant message ID;
 - the complete tool call;
 - the reason approval is required.
+
+Approval and denial address the pair `(assistant_message_id, tool_call_id)`.
+Provider call IDs may repeat on different tree branches, so the owning
+assistant is required to identify the exact execution branch independently
+from the user's selected path.
 
 Approving reevaluates the attachment and executor, invokes the provider, and
 stores the output. Denying does not invoke the provider; it stores an
@@ -172,8 +177,8 @@ MCP results persist typed image parts so later model requests do not need to
 carry base64 as visible text.
 
 Completing a tool call is one database transaction. Windie inserts the result
-message and parts, conditionally advances the active path, and changes the
-claim to `completed` together. A failed transaction leaves none of those
+message and parts, conditionally advances the user-selected path, and changes
+the claim to `completed` together. A failed transaction leaves none of those
 changes partially visible. Provider-local setup runs before the claim. An
 unexpected task failure after dispatch changes the owned `executing` claim to
 `unknown`, preventing an unsafe automatic retry.
@@ -210,7 +215,9 @@ Generic message insertion cannot create `role: tool` nodes.
 Assistant and tool-result inserts target the branch that initiated the work.
 They advance the selected active message only when that selection still equals
 the captured parent. Selecting or creating another branch while work is in
-flight therefore does not get overwritten by a late result.
+flight therefore does not get overwritten by a late result. Runtime separately
+advances its own path cursor, so automatic tool execution and later model turns
+continue on the initiating branch even after the user selects another branch.
 
 ## Group Deletion
 

@@ -370,7 +370,7 @@ fn deny_tool_persists_tool_result() {
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run command", None)
         .unwrap();
-    store
+    let assistant_id = store
         .insert_message(
             &conversation_id,
             Some(&user_id),
@@ -392,7 +392,7 @@ fn deny_tool_persists_tool_result() {
     let result = deny_tool(
         &mut store,
         &conversation_id,
-        &ToolCallId::new("call_123"),
+        &ToolCallTarget::new(assistant_id, ToolCallId::new("call_123")),
         &run.id,
         &cancellation,
     )

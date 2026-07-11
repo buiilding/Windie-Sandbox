@@ -57,6 +57,12 @@ pub fn inspect() -> DoctorReport {
                 runtime: "uvx --python 3.11 blender-mcp==1.6.0",
                 install: "brew install uv, then install and enable the Blender MCP addon in Blender",
             },
+            IntegrationDiagnostic {
+                name: "Chrome DevTools MCP",
+                available: npx,
+                runtime: "npx -y chrome-devtools-mcp@1.5.0 --browser-url=http://127.0.0.1:9222 --no-usage-statistics",
+                install: "Install Node/npm and start Chrome with remote debugging on http://127.0.0.1:9222",
+            },
         ],
     }
 }

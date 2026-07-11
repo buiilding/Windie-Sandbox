@@ -18,7 +18,9 @@ use crate::output::RuntimeOutput;
 use crate::policy::{PolicyDecision, ToolPolicy};
 use crate::run::{RunCancellation, is_runtime_cancelled};
 use crate::store::{Compaction, Store};
-use crate::tool::{AttachedTool, ToolApprovalMode, ToolApprovalRequest, ToolExecutionResult};
+use crate::tool::{
+    AttachedTool, ToolApprovalMode, ToolApprovalRequest, ToolCallTarget, ToolExecutionResult,
+};
 use crate::tool_provider::ToolProviderRegistry;
 
 /// Receives durable runtime state changes during a query flow.
@@ -39,6 +41,47 @@ pub(crate) trait RuntimeEventSink {
 pub(crate) struct NoopRuntimeEventSink;
 
 impl RuntimeEventSink for NoopRuntimeEventSink {}
+
+#[derive(Debug, Clone)]
+/// Root-to-head context cursor owned by one runtime operation.
+///
+/// The conversation's active message is a user selection. Runtime captures
+/// that selection once, then advances this cursor as it persists assistant and
+/// tool messages. The full path remains derived from message parent links.
+pub(crate) struct ExecutionCursor {
+    head: Option<MessageId>,
+}
+
+impl ExecutionCursor {
+    /// Captures the user-selected path at operation admission.
+    pub(crate) fn capture(store: &Store, conversation_id: &ConversationId) -> Result<Self> {
+        Ok(Self {
+            head: store.active_message_id(conversation_id)?,
+        })
+    }
+
+    /// Starts a continuation at a message already persisted on its branch.
+    pub(crate) fn at(message_id: MessageId) -> Self {
+        Self {
+            head: Some(message_id),
+        }
+    }
+
+    fn head(&self) -> Option<&MessageId> {
+        self.head.as_ref()
+    }
+
+    fn advance(&mut self, message_id: MessageId) {
+        self.head = Some(message_id);
+    }
+
+    fn load(&self, store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
+        match self.head() {
+            Some(message_id) => store.load_path_to_message(conversation_id, message_id),
+            None => Ok(Vec::new()),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 /// Conversation configuration captured once for a complete runtime operation.
@@ -64,26 +107,27 @@ impl RuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Copy)]
-/// Optional model-request controls used for one provider turn.
+/// State and optional model controls owned by one runtime operation.
 ///
-/// Runtime does not interpret these controls. It only carries them from the
-/// operation layer to the LLM boundary so provider-specific serialization stays
-/// in `llm.rs`.
-pub(crate) struct RuntimeModelRequest<'a> {
+/// The run ID, cancellation token, configuration snapshot, and execution cursor
+/// govern the complete model/tool loop. Reasoning and prompt-cache controls
+/// pass through to the LLM boundary without provider-specific interpretation.
+pub(crate) struct RuntimeExecution<'a> {
     run_id: &'a str,
     cancellation: &'a RunCancellation,
     snapshot: &'a RuntimeSnapshot,
+    cursor: ExecutionCursor,
     reasoning: Option<&'a ReasoningRequest>,
     prompt_cache: Option<&'a PromptCacheRequest>,
 }
 
-impl<'a> RuntimeModelRequest<'a> {
-    /// Groups optional reasoning and prompt-cache controls for one query.
+impl<'a> RuntimeExecution<'a> {
+    /// Groups execution ownership and provider controls for one query loop.
     pub(crate) fn new(
         run_id: &'a str,
         cancellation: &'a RunCancellation,
         snapshot: &'a RuntimeSnapshot,
+        cursor: ExecutionCursor,
         reasoning: Option<&'a ReasoningRequest>,
         prompt_cache: Option<&'a PromptCacheRequest>,
     ) -> Self {
@@ -91,6 +135,7 @@ impl<'a> RuntimeModelRequest<'a> {
             run_id,
             cancellation,
             snapshot,
+            cursor,
             reasoning,
             prompt_cache,
         }
@@ -99,8 +144,8 @@ impl<'a> RuntimeModelRequest<'a> {
 
 /// Runs one assistant inference turn and persists the assistant message.
 ///
-/// This is intentionally one model request. The function prepares the active
-/// path before building provider context so callers cannot accidentally query
+/// This is intentionally one model request. The function prepares the run path
+/// before building provider context so callers cannot accidentally query
 /// while tool results are still pending. If the assistant returns tool-call
 /// metadata, Windie stores that assistant message, records failed results for
 /// policy-denied calls, and stops before any approval-required tool execution.
@@ -122,6 +167,9 @@ where
     let snapshot = runtime_snapshot(store, conversation_id)?;
     let run_id = execution_run_id(store, conversation_id)?;
     let cancellation = RunCancellation::default();
+    let cursor = ExecutionCursor::capture(store, conversation_id)?;
+    let mut execution =
+        RuntimeExecution::new(&run_id, &cancellation, &snapshot, cursor, None, None);
 
     query_conversation_once_with_registry_and_events(
         output,
@@ -130,7 +178,7 @@ where
         conversation_id,
         &registry,
         &events,
-        RuntimeModelRequest::new(&run_id, &cancellation, &snapshot, None, None),
+        &mut execution,
     )
     .await
 }
@@ -143,7 +191,7 @@ pub(crate) async fn query_conversation_once_with_registry_and_events<O, L, E>(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &E,
-    model_request: RuntimeModelRequest<'_>,
+    execution: &mut RuntimeExecution<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -155,26 +203,25 @@ where
         conversation_id,
         registry,
         events,
-        model_request.run_id,
-        model_request.cancellation,
-        model_request.snapshot,
+        execution,
     )?;
 
-    let parent_message_id = store.active_message_id(conversation_id)?;
-    let model_messages = ContextBuilder::build_with_configuration(
+    let parent_message_id = execution.cursor.head().cloned();
+    let model_messages = ContextBuilder::build_at(
         store,
         conversation_id,
-        model_request.snapshot.system_prompt.clone(),
-        model_request.snapshot.compaction.clone(),
+        parent_message_id.as_ref(),
+        execution.snapshot.system_prompt.clone(),
+        execution.snapshot.compaction.clone(),
     )?;
-    let tool_schemas = model_request.snapshot.tool_schemas();
+    let tool_schemas = execution.snapshot.tool_schemas();
 
     output.start_assistant_message();
     let stream = llm.stream(
         &model_messages,
         &tool_schemas,
-        model_request.reasoning,
-        model_request.prompt_cache,
+        execution.reasoning,
+        execution.prompt_cache,
         |event| match event {
             LlmStreamEvent::AssistantDelta(text) => output.assistant_delta(text),
             LlmStreamEvent::ReasoningDelta(text) => output.reasoning_delta(text),
@@ -189,7 +236,7 @@ where
     tokio::pin!(stream);
     let assistant_response = tokio::select! {
         response = &mut stream => response?,
-        () = model_request.cancellation.cancelled() => return Err(crate::run::RuntimeCancelled.into()),
+        () = execution.cancellation.cancelled() => return Err(crate::run::RuntimeCancelled.into()),
     };
     output.end_assistant_message();
     output.assistant_tool_calls(&assistant_response.metadata.tool_calls);
@@ -206,19 +253,8 @@ where
         metadata.as_ref(),
     )?;
     events.assistant_message_saved(&assistant_message_id)?;
-    let response_is_active =
-        store.active_message_id(conversation_id)?.as_ref() == Some(&assistant_message_id);
-    if response_is_active {
-        store_policy_denied_tool_results(
-            store,
-            conversation_id,
-            registry,
-            events,
-            model_request.run_id,
-            model_request.cancellation,
-            model_request.snapshot,
-        )?;
-    }
+    execution.cursor.advance(assistant_message_id.clone());
+    store_policy_denied_tool_results(store, conversation_id, registry, events, execution)?;
 
     Ok(Message {
         id: Some(assistant_message_id),
@@ -243,7 +279,7 @@ pub(crate) async fn query_conversation_resolving_automatic_tools<O, L>(
     store: &mut Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
-    model_request: RuntimeModelRequest<'_>,
+    execution: RuntimeExecution<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -257,7 +293,7 @@ where
         conversation_id,
         registry,
         &events,
-        model_request,
+        execution,
     )
     .await
 }
@@ -270,7 +306,7 @@ pub(crate) async fn query_conversation_resolving_automatic_tools_with_events<O, 
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &E,
-    model_request: RuntimeModelRequest<'_>,
+    mut execution: RuntimeExecution<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
@@ -285,21 +321,12 @@ where
             conversation_id,
             registry,
             events,
-            model_request.run_id,
-            model_request.cancellation,
-            model_request.snapshot,
+            &execution,
         )
         .await?
         {
             AutomaticToolResolution::Resolved(result_message_id) => {
-                if store.active_message_id(conversation_id)?.as_ref() != Some(&result_message_id) {
-                    if let Some(message) = last_assistant_message {
-                        return Ok(message);
-                    }
-                    return Err(error::invalid_request(
-                        "active path changed during automatic tool execution",
-                    ));
-                }
+                execution.cursor.advance(result_message_id);
             }
             AutomaticToolResolution::WaitingForApproval => {
                 if let Some(message) = last_assistant_message {
@@ -313,7 +340,7 @@ where
                     conversation_id,
                     registry,
                     events,
-                    model_request,
+                    &mut execution,
                 )
                 .await;
             }
@@ -325,7 +352,7 @@ where
                     conversation_id,
                     registry,
                     events,
-                    model_request,
+                    &mut execution,
                 )
                 .await?;
                 let has_tool_calls = message
@@ -336,17 +363,13 @@ where
                 if !has_tool_calls {
                     return Ok(message);
                 }
-                if store.active_message_id(conversation_id)?.as_ref() != message.id.as_ref() {
-                    return Ok(message);
-                }
-
                 last_assistant_message = Some(message);
             }
         }
     }
 }
 
-/// Prepares the active path for a model query.
+/// Prepares one runtime-owned path for a model query.
 ///
 /// Policy-denied tool calls have no user decision to wait for, so Windie records
 /// failed tool results for them before checking whether any approval-required
@@ -359,15 +382,16 @@ pub(crate) fn prepare_query_turn(
     let snapshot = runtime_snapshot(store, conversation_id)?;
     let run_id = execution_run_id(store, conversation_id)?;
     let cancellation = RunCancellation::default();
+    let cursor = ExecutionCursor::capture(store, conversation_id)?;
+    let mut execution =
+        RuntimeExecution::new(&run_id, &cancellation, &snapshot, cursor, None, None);
 
     prepare_query_turn_with_registry_and_events(
         store,
         conversation_id,
         &registry,
         &NoopRuntimeEventSink,
-        &run_id,
-        &cancellation,
-        &snapshot,
+        &mut execution,
     )
 }
 
@@ -377,36 +401,37 @@ pub(crate) fn prepare_query_turn_with_registry_and_events<E>(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &E,
-    run_id: &str,
-    cancellation: &RunCancellation,
-    snapshot: &RuntimeSnapshot,
+    execution: &mut RuntimeExecution<'_>,
 ) -> Result<()>
 where
     E: RuntimeEventSink,
 {
-    store_policy_denied_tool_results(
-        store,
-        conversation_id,
-        registry,
-        events,
-        run_id,
-        cancellation,
-        snapshot,
-    )?;
-    validate_query_availability(store, conversation_id)
+    store_policy_denied_tool_results(store, conversation_id, registry, events, execution)?;
+    validate_query_path(store, conversation_id, &execution.cursor)
 }
 
-/// Rejects model queries while the active path is waiting for tool results.
+/// Rejects model queries while the selected path is waiting for tool results.
 ///
 /// OpenAI-compatible tool calls require the assistant tool-call message to be
 /// followed by every requested `role: tool` result before the next assistant
-/// turn. Windie's model context is the active path, so this check keeps that
+/// turn. Windie's model context is the run path, so this check keeps that
 /// path valid before any provider request is sent.
+#[cfg(test)]
 pub(crate) fn validate_query_availability(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<()> {
-    let messages = store.load_active_path(conversation_id)?;
+    let cursor = ExecutionCursor::capture(store, conversation_id)?;
+    validate_query_path(store, conversation_id, &cursor)
+}
+
+/// Rejects a model query while one explicit runtime path awaits tool results.
+fn validate_query_path(
+    store: &Store,
+    conversation_id: &ConversationId,
+    cursor: &ExecutionCursor,
+) -> Result<()> {
+    let messages = cursor.load(store, conversation_id)?;
     let Some(execution) = active_tool_execution(&messages) else {
         return Ok(());
     };
@@ -420,10 +445,10 @@ pub(crate) fn validate_query_availability(
     )))
 }
 
-/// Lists the next pending active-path tool call requiring approval.
+/// Lists the next pending selected-path tool call requiring approval.
 ///
 /// Windie exposes only the next pending tool call in assistant metadata
-/// order. This preserves the linear active path shape that the model sees:
+/// order. This preserves the linear path shape that the model sees:
 /// assistant tool-call message, first tool result, second tool result, and so
 /// on.
 pub(crate) fn pending_tool_approvals(
@@ -435,7 +460,7 @@ pub(crate) fn pending_tool_approvals(
     pending_tool_approvals_with_registry(store, conversation_id, &registry)
 }
 
-/// Lists the next pending active-path tool call requiring approval using a
+/// Lists the next pending selected-path tool call requiring approval using a
 /// caller-owned provider registry.
 pub(crate) fn pending_tool_approvals_with_registry(
     store: &Store,
@@ -452,7 +477,18 @@ pub(crate) fn pending_tool_approvals_from_snapshot(
     registry: &ToolProviderRegistry,
     snapshot: &RuntimeSnapshot,
 ) -> Result<Vec<ToolApprovalRequest>> {
-    let messages = store.load_active_path(conversation_id)?;
+    let cursor = ExecutionCursor::capture(store, conversation_id)?;
+    pending_tool_approvals_on_path(store, conversation_id, registry, snapshot, &cursor)
+}
+
+pub(crate) fn pending_tool_approvals_on_path(
+    store: &Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+    snapshot: &RuntimeSnapshot,
+    cursor: &ExecutionCursor,
+) -> Result<Vec<ToolApprovalRequest>> {
+    let messages = cursor.load(store, conversation_id)?;
     let Some(execution) = active_tool_execution(&messages) else {
         return Ok(Vec::new());
     };
@@ -489,45 +525,44 @@ fn store_policy_denied_tool_results(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
-    run_id: &str,
-    cancellation: &RunCancellation,
-    snapshot: &RuntimeSnapshot,
+    execution: &mut RuntimeExecution<'_>,
 ) -> Result<()> {
     let policy = ToolPolicy;
 
     loop {
-        cancellation.check()?;
-        let messages = store.load_active_path(conversation_id)?;
-        let Some(execution) = active_tool_execution(&messages) else {
+        execution.cancellation.check()?;
+        let messages = execution.cursor.load(store, conversation_id)?;
+        let Some(tool_execution) = active_tool_execution(&messages) else {
             return Ok(());
         };
-        let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
+        let Some(tool_call) = tool_execution.next_pending_tool_call().cloned() else {
             return Ok(());
         };
-        let attached_tool = snapshot.attached_tool(&tool_call);
+        let attached_tool = execution.snapshot.attached_tool(&tool_call);
 
         let PolicyDecision::Deny { reason } = policy.decide(
             &tool_call,
             attached_tool,
             attached_tool_can_execute(registry, attached_tool),
-            snapshot.approval_mode,
+            execution.snapshot.approval_mode,
         ) else {
             return Ok(());
         };
         let pending = PendingToolCall {
-            assistant_message_id: execution.assistant_message_id,
-            result_parent_message_id: execution.result_parent_message_id,
+            assistant_message_id: tool_execution.assistant_message_id,
+            result_parent_message_id: tool_execution.result_parent_message_id,
             tool_call,
         };
-        claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
+        claim_pending_tool_call(store, conversation_id, &pending, execution.run_id)?;
         let result = ToolExecutionResult::failure(
             pending.tool_call.id.clone(),
             pending.tool_call.name(),
             reason,
         );
         let message_id =
-            store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
+            store_claimed_tool_result(store, conversation_id, &pending, execution.run_id, &result)?;
         events.tool_result_saved(&message_id)?;
+        execution.cursor.advance(message_id);
     }
 }
 
@@ -549,33 +584,31 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
-    run_id: &str,
-    cancellation: &RunCancellation,
-    snapshot: &RuntimeSnapshot,
+    execution: &RuntimeExecution<'_>,
 ) -> Result<AutomaticToolResolution> {
-    let messages = store.load_active_path(conversation_id)?;
-    let Some(execution) = active_tool_execution(&messages) else {
+    let messages = execution.cursor.load(store, conversation_id)?;
+    let Some(tool_execution) = active_tool_execution(&messages) else {
         return Ok(AutomaticToolResolution::Idle);
     };
-    let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
+    let Some(tool_call) = tool_execution.next_pending_tool_call().cloned() else {
         return Ok(AutomaticToolResolution::Idle);
     };
 
     let pending = PendingToolCall {
-        assistant_message_id: execution.assistant_message_id,
-        result_parent_message_id: execution.result_parent_message_id,
+        assistant_message_id: tool_execution.assistant_message_id,
+        result_parent_message_id: tool_execution.result_parent_message_id,
         tool_call,
     };
     let policy = ToolPolicy;
-    let attached_tool = snapshot.attached_tool(&pending.tool_call);
+    let attached_tool = execution.snapshot.attached_tool(&pending.tool_call);
     let result = match policy.decide(
         &pending.tool_call,
         attached_tool,
         attached_tool_can_execute(registry, attached_tool),
-        snapshot.approval_mode,
+        execution.snapshot.approval_mode,
     ) {
         PolicyDecision::Deny { reason } => {
-            claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
+            claim_pending_tool_call(store, conversation_id, &pending, execution.run_id)?;
             ToolExecutionResult::failure(
                 pending.tool_call.id.clone(),
                 pending.tool_call.name(),
@@ -590,18 +623,25 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
                 ))
             })?;
             registry.prepare_tool(attached_tool)?;
-            claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
-            match execute_pending_tool_call(&pending, attached_tool, registry, cancellation).await {
+            claim_pending_tool_call(store, conversation_id, &pending, execution.run_id)?;
+            match execute_pending_tool_call(
+                &pending,
+                attached_tool,
+                registry,
+                execution.cancellation,
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(execution_error) => {
                     if is_runtime_cancelled(&execution_error) {
-                        store.interrupt_tool_call_executions_for_run(run_id)?;
+                        store.interrupt_tool_call_executions_for_run(execution.run_id)?;
                         return Err(execution_error);
                     }
                     store.mark_tool_call_execution_unknown(
                         &pending.assistant_message_id,
                         &pending.tool_call.id,
-                        run_id,
+                        execution.run_id,
                         &execution_error.to_string(),
                     )?;
                     return Err(execution_error);
@@ -611,7 +651,8 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
 
-    let message_id = store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
+    let message_id =
+        store_claimed_tool_result(store, conversation_id, &pending, execution.run_id, &result)?;
     events.tool_result_saved(&message_id)?;
 
     Ok(AutomaticToolResolution::Resolved(message_id))
@@ -659,7 +700,7 @@ impl ActiveToolExecution {
     }
 }
 
-/// Finds the latest assistant tool execution on the active path.
+/// Finds the latest assistant tool execution on one flattened path.
 ///
 /// Only contiguous `role: tool` messages after that assistant are treated as
 /// results for that execution. If all calls have results, callers may safely
@@ -714,11 +755,11 @@ fn active_tool_execution(messages: &[Message]) -> Option<ActiveToolExecution> {
 pub(crate) async fn approve_tool_call(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
 ) -> Result<ToolExecutionResult> {
     let registry = ToolProviderRegistry::new();
 
-    approve_tool_call_with_registry(store, conversation_id, tool_call_id, &registry).await
+    approve_tool_call_with_registry(store, conversation_id, target, &registry).await
 }
 
 /// Executes one approved pending tool call through a caller-owned provider
@@ -731,10 +772,10 @@ pub(crate) async fn approve_tool_call(
 pub(crate) async fn approve_tool_call_with_registry(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolExecutionResult> {
-    approve_tool_call_with_registry_and_message(store, conversation_id, tool_call_id, registry)
+    approve_tool_call_with_registry_and_message(store, conversation_id, target, registry)
         .await
         .map(|(result, _)| result)
 }
@@ -743,7 +784,7 @@ pub(crate) async fn approve_tool_call_with_registry(
 pub(crate) async fn approve_tool_call_with_registry_and_message(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     registry: &ToolProviderRegistry,
 ) -> Result<(ToolExecutionResult, MessageId)> {
     let snapshot = runtime_snapshot(store, conversation_id)?;
@@ -752,7 +793,7 @@ pub(crate) async fn approve_tool_call_with_registry_and_message(
     approve_tool_call_with_snapshot(
         store,
         conversation_id,
-        tool_call_id,
+        target,
         registry,
         &run_id,
         &cancellation,
@@ -764,13 +805,13 @@ pub(crate) async fn approve_tool_call_with_registry_and_message(
 pub(crate) async fn approve_tool_call_with_snapshot(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     registry: &ToolProviderRegistry,
     run_id: &str,
     cancellation: &RunCancellation,
     snapshot: &RuntimeSnapshot,
 ) -> Result<(ToolExecutionResult, MessageId)> {
-    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let pending = load_pending_tool_call(store, conversation_id, target)?;
     let execution = prepare_pending_tool_execution(&pending, registry, snapshot)?;
     claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
     let result = match execution {
@@ -856,27 +897,27 @@ pub(crate) async fn execute_pending_tool_call(
 pub(crate) fn deny_tool_call(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
 ) -> Result<ToolExecutionResult> {
-    deny_tool_call_with_message(store, conversation_id, tool_call_id).map(|(result, _)| result)
+    deny_tool_call_with_message(store, conversation_id, target).map(|(result, _)| result)
 }
 
 pub(crate) fn deny_tool_call_with_message(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
 ) -> Result<(ToolExecutionResult, MessageId)> {
     let run_id = execution_run_id(store, conversation_id)?;
-    deny_tool_call_for_run(store, conversation_id, tool_call_id, &run_id)
+    deny_tool_call_for_run(store, conversation_id, target, &run_id)
 }
 
 pub(crate) fn deny_tool_call_for_run(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     run_id: &str,
 ) -> Result<(ToolExecutionResult, MessageId)> {
-    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let pending = load_pending_tool_call(store, conversation_id, target)?;
     claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
     let result = deny_pending_tool_call(&pending);
     let message_id = store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
@@ -893,30 +934,39 @@ pub(crate) fn deny_pending_tool_call(pending: &PendingToolCall) -> ToolExecution
     )
 }
 
-/// Finds one pending tool call by provider tool-call ID.
+/// Finds one pending tool call by its owning assistant and provider call ID.
 pub(crate) fn load_pending_tool_call(
     store: &Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
 ) -> Result<PendingToolCall> {
-    let messages = store.load_active_path(conversation_id)?;
+    let messages = store.load_tool_execution_path(conversation_id, &target.assistant_message_id)?;
     let Some(execution) = active_tool_execution(&messages) else {
         return Err(error::not_found(format!(
-            "pending tool call does not exist: {tool_call_id}"
+            "pending tool call does not exist: {}",
+            target.tool_call_id
         )));
     };
-    if execution.has_tool_result(tool_call_id) {
+    if execution.assistant_message_id != target.assistant_message_id {
+        return Err(error::not_found(format!(
+            "assistant tool call does not exist: {}",
+            target.assistant_message_id
+        )));
+    }
+    if execution.has_tool_result(&target.tool_call_id) {
         return Err(error::invalid_request(format!(
-            "tool call already has a result: {tool_call_id}"
+            "tool call already has a result: {}",
+            target.tool_call_id
         )));
     }
     let Some(next_tool_call) = execution.next_pending_tool_call().cloned() else {
         return Err(error::not_found(format!(
-            "pending tool call does not exist: {tool_call_id}"
+            "pending tool call does not exist: {}",
+            target.tool_call_id
         )));
     };
-    if next_tool_call.id != *tool_call_id {
-        if execution.has_requested_tool_call(tool_call_id) {
+    if next_tool_call.id != target.tool_call_id {
+        if execution.has_requested_tool_call(&target.tool_call_id) {
             return Err(error::invalid_request(format!(
                 "tool call must be resolved after previous tool call: {}",
                 next_tool_call.id
@@ -924,7 +974,8 @@ pub(crate) fn load_pending_tool_call(
         }
 
         return Err(error::not_found(format!(
-            "pending tool call does not exist: {tool_call_id}"
+            "pending tool call does not exist: {}",
+            target.tool_call_id
         )));
     }
 

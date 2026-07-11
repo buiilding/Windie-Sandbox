@@ -495,6 +495,26 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         setup: None,
     },
     McpProviderDefinition {
+        provider_id: "chrome-devtools",
+        schema_prefix: "chrome_devtools",
+        display_name: "Chrome DevTools",
+        command: McpCommand {
+            program: "npx",
+            args: &[
+                "-y",
+                "chrome-devtools-mcp@1.5.0",
+                "--browser-url=http://127.0.0.1:9222",
+                "--no-usage-statistics",
+            ],
+            env: &[McpEnv {
+                key: "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS",
+                value: McpEnvValue::Literal("true"),
+            }],
+        },
+        shutdown_command: None,
+        setup: None,
+    },
+    McpProviderDefinition {
         provider_id: "brightdata",
         schema_prefix: "brightdata",
         display_name: "Bright Data",

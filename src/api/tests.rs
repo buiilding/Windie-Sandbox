@@ -646,12 +646,14 @@ async fn remove_tool_result_message_deletes_tool_group() {
 async fn approve_later_multi_tool_call_returns_order_error() {
     let db_path = temp_database_path();
     let app = test_app(db_path.clone());
-    let conversation_id = insert_multi_tool_call_assistant(&db_path);
+    let (conversation_id, assistant_id) = insert_multi_tool_call_assistant(&db_path);
 
     let response = app
         .oneshot(authed_request(
             Method::POST,
-            &format!("/api/conversations/{conversation_id}/approvals/call_2/approve"),
+            &format!(
+                "/api/conversations/{conversation_id}/approvals/{assistant_id}/call_2/approve"
+            ),
             None,
         ))
         .await
@@ -672,12 +674,12 @@ async fn deny_first_multi_tool_call_returns_result_without_querying() {
     let db_path = temp_database_path();
     let registry = Arc::new(registry_with_cached_test_tool());
     let app = test_app_with_tool_registry(db_path.clone(), registry.clone());
-    let conversation_id = insert_attached_multi_tool_call_assistant(&db_path);
+    let (conversation_id, assistant_id) = insert_attached_multi_tool_call_assistant(&db_path);
 
     let response = app
         .oneshot(authed_request(
             Method::POST,
-            &format!("/api/conversations/{conversation_id}/approvals/call_1/deny"),
+            &format!("/api/conversations/{conversation_id}/approvals/{assistant_id}/call_1/deny"),
             None,
         ))
         .await
@@ -701,7 +703,7 @@ async fn deny_first_multi_tool_call_returns_result_without_querying() {
 async fn query_with_unresolved_tool_call_returns_gateway_error_before_runtime_query() {
     let db_path = temp_database_path();
     let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
-    let conversation_id = insert_multi_tool_call_assistant(&db_path);
+    let (conversation_id, _) = insert_multi_tool_call_assistant(&db_path);
 
     let response = app
         .oneshot(authed_request(
@@ -901,13 +903,13 @@ fn desktop_commander_read_file_definition() -> ToolDefinition {
     }
 }
 
-fn insert_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
+fn insert_multi_tool_call_assistant(db_path: &PathBuf) -> (ConversationId, MessageId) {
     let mut store = Store::open_at(db_path).unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run commands", None)
         .unwrap();
-    store
+    let assistant_id = store
         .insert_message(
             &conversation_id,
             Some(&user_id),
@@ -923,10 +925,10 @@ fn insert_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
         )
         .unwrap();
 
-    conversation_id
+    (conversation_id, assistant_id)
 }
 
-fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
+fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> (ConversationId, MessageId) {
     let mut store = Store::open_at(db_path).unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let registry = registry_with_cached_test_tool();
@@ -941,7 +943,7 @@ fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationI
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "read files", None)
         .unwrap();
-    store
+    let assistant_id = store
         .insert_message(
             &conversation_id,
             Some(&user_id),
@@ -965,7 +967,7 @@ fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationI
         )
         .unwrap();
 
-    conversation_id
+    (conversation_id, assistant_id)
 }
 
 fn temp_database_path() -> PathBuf {

@@ -255,11 +255,32 @@ impl AttachedTool {
 ///
 /// The assistant message ID identifies the assistant turn that requested the
 /// call. Runtime decides the exact parent for the later `role: tool` result so
-/// multi-tool results can stay on one linear active path.
+/// multi-tool results can stay on one linear execution path.
 pub struct ToolApprovalRequest {
     pub assistant_message_id: MessageId,
     pub tool_call: ToolCall,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Branch-specific identity of one assistant-requested tool call.
+///
+/// Provider call IDs are not guaranteed to be unique across a conversation
+/// tree. The owning assistant message makes approval independent from the
+/// user's currently selected branch.
+pub struct ToolCallTarget {
+    pub assistant_message_id: MessageId,
+    pub tool_call_id: ToolCallId,
+}
+
+impl ToolCallTarget {
+    /// Combines the persisted assistant turn and provider call ID.
+    pub fn new(assistant_message_id: MessageId, tool_call_id: ToolCallId) -> Self {
+        Self {
+            assistant_message_id,
+            tool_call_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

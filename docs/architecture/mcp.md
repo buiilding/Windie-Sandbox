@@ -42,6 +42,7 @@ MCP providers are code-approved, not loaded from arbitrary user config.
 | `cua-driver` | `cua-driver mcp` | Runs `cua-driver stop` on explicit provider cleanup |
 | `desktop-commander` | `npx -y @wonderwhy-er/desktop-commander@0.2.44` | Isolated provider `HOME` and generated config |
 | `blender-mcp` | `uvx --python 3.11 blender-mcp==1.6.0` | Telemetry disabled; localhost port `9876` |
+| `chrome-devtools` | `npx -y chrome-devtools-mcp@1.5.0 --browser-url=http://127.0.0.1:9222 --no-usage-statistics` | Connects to an already-running Chrome remote debugging endpoint |
 | `brightdata` | `npx -y @brightdata/mcp` | Child `API_TOKEN` comes from `BRIGHTDATA_API_TOKEN` |
 | `exa` | `npx -y exa-mcp-server@3.2.1` | Child `EXA_API_KEY` comes from Windie's `EXA_API_KEY` environment |
 
@@ -62,6 +63,10 @@ only the small command-execution allowlist (`PATH`, `HOME`, temporary-directory
 variables, and `SystemRoot` where applicable), then applies the environment
 declared by the approved provider definition. Unrelated provider keys and
 shell state cannot leak into an MCP child.
+
+Chrome DevTools MCP connects to Chrome's local remote debugging endpoint at
+`http://127.0.0.1:9222`. Windie does not pass Chrome launch flags for this
+provider; Chrome must already be running with remote debugging enabled.
 
 Exa uses its official, version-pinned stdio package. Store its key in Windie's
 canonical provider environment:

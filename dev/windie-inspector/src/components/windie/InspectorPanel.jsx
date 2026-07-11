@@ -397,7 +397,10 @@ export default function InspectorPanel() {
           ) : (
             <div className="space-y-2">
               {approvals.map((approval) => (
-                <div key={approval.tool_call_id} className="border border-border">
+                <div
+                  key={`${approval.assistant_message_id}:${approval.tool_call_id}`}
+                  className="border border-border"
+                >
                   <div className="px-2 py-1 border-b border-border flex items-center justify-between">
                     <span className="font-mono text-[11px] text-[hsl(var(--tool-call))]">
                       {approval.tool_name}
@@ -417,7 +420,11 @@ export default function InspectorPanel() {
                       <button
                         data-testid={`approval-approve-${approval.tool_call_id}`}
                         onClick={() => {
-                          approveToolCall(activeConv.id, approval.tool_call_id);
+                          approveToolCall(
+                            activeConv.id,
+                            approval.assistant_message_id,
+                            approval.tool_call_id
+                          );
                           toast.message("tool approved");
                         }}
                         className="h-7 border border-foreground bg-foreground text-background font-mono text-[10px] uppercase tracking-widest hover:opacity-90"
@@ -427,7 +434,11 @@ export default function InspectorPanel() {
                       <button
                         data-testid={`approval-deny-${approval.tool_call_id}`}
                         onClick={() => {
-                          denyToolCall(activeConv.id, approval.tool_call_id);
+                          denyToolCall(
+                            activeConv.id,
+                            approval.assistant_message_id,
+                            approval.tool_call_id
+                          );
                           toast.message("tool denied");
                         }}
                         className="h-7 border border-border text-[hsl(var(--destructive))] font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"

@@ -216,14 +216,17 @@ Deletes the schema from future model requests.
 
 Lists the next active-path call requiring manual approval. At most one pending
 approval is exposed because calls must resolve in assistant metadata order.
+The output includes both the assistant message ID and tool-call ID required by
+the decision commands.
 
-### `windie approve <conversation_id> <tool_call_id>`
+### `windie approve <conversation_id> <assistant_message_id> <tool_call_id>`
 
 Executes the next approved call through a short-lived provider registry and
-stores its linked tool output. This command does not automatically issue the
-next model query.
+stores its linked tool output. The two IDs identify the branch independently
+from the current selection. This command does not automatically issue the next
+model query.
 
-### `windie deny <conversation_id> <tool_call_id>`
+### `windie deny <conversation_id> <assistant_message_id> <tool_call_id>`
 
 Stores a linked failed output saying the user rejected the call. It does not
 invoke the provider or automatically query again.
@@ -233,7 +236,8 @@ invoke the provider or automatically query again.
 ### `windie query <conversation_id>`
 
 Requires Bifrost, uses the conversation's persisted model and reasoning effort,
-builds active-path context, and streams assistant output to the terminal.
+captures the selected path as its execution cursor, and streams assistant
+output to the terminal.
 
 Runtime automatically resolves policy-denied and auto-approved attached calls.
 It stops when a manual approval is needed or when an assistant response has no

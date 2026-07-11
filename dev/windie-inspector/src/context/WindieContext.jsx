@@ -914,10 +914,10 @@ export function WindieProvider({ children }) {
   );
 
   const approveToolCall = useCallback(
-    (convId, toolCallId) =>
+    (convId, assistantMessageId, toolCallId) =>
       runMutation(
         async () => {
-          const run = await startApproveRun(convId, toolCallId);
+          const run = await startApproveRun(convId, assistantMessageId, toolCallId);
           return followRuntimeRun(convId, run);
         },
         { reload: false }
@@ -926,10 +926,10 @@ export function WindieProvider({ children }) {
   );
 
   const denyToolCall = useCallback(
-    (convId, toolCallId) =>
+    (convId, assistantMessageId, toolCallId) =>
       runMutation(
         async () => {
-          const run = await startDenyRun(convId, toolCallId);
+          const run = await startDenyRun(convId, assistantMessageId, toolCallId);
           return followRuntimeRun(convId, run);
         },
         { reload: false }

@@ -1,10 +1,11 @@
 //! Tool registry, attachment, schema, policy, and direct execution routes.
 
 use super::{
-    ApiResult, ApiState, Arc, Context, ConversationId, DeletedResponse, Deserialize, Json, Path,
-    ProviderToolName, Router, RuntimeRunAction, Serialize, State, ToolApprovalMode,
-    ToolApprovalRequest, ToolCallId, ToolDefinition, ToolExecutionResult, ToolProviderId,
-    ToolSchema, ToolSchemaName, Value, get, open_store, operation, patch, post, run_store,
+    ApiResult, ApiState, Arc, Context, ConversationId, DeletedResponse, Deserialize, Json,
+    MessageId, Path, ProviderToolName, Router, RuntimeRunAction, Serialize, State,
+    ToolApprovalMode, ToolApprovalRequest, ToolCallId, ToolCallTarget, ToolDefinition,
+    ToolExecutionResult, ToolProviderId, ToolSchema, ToolSchemaName, Value, get, open_store,
+    operation, patch, post, run_store,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -40,11 +41,11 @@ pub(super) fn routes() -> Router<ApiState> {
             get(list_approvals),
         )
         .route(
-            "/api/conversations/{conversation_id}/approvals/{tool_call_id}/approve",
+            "/api/conversations/{conversation_id}/approvals/{assistant_message_id}/{tool_call_id}/approve",
             post(approve_tool),
         )
         .route(
-            "/api/conversations/{conversation_id}/approvals/{tool_call_id}/deny",
+            "/api/conversations/{conversation_id}/approvals/{assistant_message_id}/{tool_call_id}/deny",
             post(deny_tool),
         )
 }
@@ -355,10 +356,13 @@ impl From<ToolExecutionResult> for ToolExecutionResponse {
 /// Executes one approved pending tool call and persists its result.
 async fn approve_tool(
     State(state): State<ApiState>,
-    Path((conversation_id, tool_call_id)): Path<(String, String)>,
+    Path((conversation_id, assistant_message_id, tool_call_id)): Path<(String, String, String)>,
 ) -> ApiResult<ToolExecutionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let tool_call_id = ToolCallId::new(tool_call_id);
+    let target = ToolCallTarget::new(
+        MessageId::new(assistant_message_id),
+        ToolCallId::new(tool_call_id),
+    );
     let manager = state.run_manager.clone();
     let task_conversation_id = conversation_id.clone();
     let result = manager
@@ -370,7 +374,7 @@ async fn approve_tool(
                 operation::approve_tool_with_registry(
                     &mut store,
                     &task_conversation_id,
-                    &tool_call_id,
+                    &target,
                     &state.tool_registry,
                     &run_id,
                     &cancellation,
@@ -386,10 +390,13 @@ async fn approve_tool(
 /// Stores a rejected result for one pending tool call.
 async fn deny_tool(
     State(state): State<ApiState>,
-    Path((conversation_id, tool_call_id)): Path<(String, String)>,
+    Path((conversation_id, assistant_message_id, tool_call_id)): Path<(String, String, String)>,
 ) -> ApiResult<ToolExecutionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let tool_call_id = ToolCallId::new(tool_call_id);
+    let target = ToolCallTarget::new(
+        MessageId::new(assistant_message_id),
+        ToolCallId::new(tool_call_id),
+    );
     let manager = state.run_manager.clone();
     let task_conversation_id = conversation_id.clone();
     let result = manager
@@ -401,7 +408,7 @@ async fn deny_tool(
                 operation::deny_tool(
                     &mut store,
                     &task_conversation_id,
-                    &tool_call_id,
+                    &target,
                     &run_id,
                     &cancellation,
                 )

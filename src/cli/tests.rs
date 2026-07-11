@@ -144,6 +144,7 @@ fn reads_approve_tool_command() {
         "windie".to_string(),
         "approve".to_string(),
         "conversation-id".to_string(),
+        "assistant-id".to_string(),
         "call-id".to_string(),
     ]);
 
@@ -151,8 +152,10 @@ fn reads_approve_tool_command() {
         command,
         Command::ApproveTool {
             conversation_id,
-            tool_call_id,
-        } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+            target,
+        } if conversation_id.as_str() == "conversation-id"
+            && target.assistant_message_id.as_str() == "assistant-id"
+            && target.tool_call_id.as_str() == "call-id"
     ));
 }
 
@@ -162,6 +165,7 @@ fn reads_deny_tool_command() {
         "windie".to_string(),
         "deny".to_string(),
         "conversation-id".to_string(),
+        "assistant-id".to_string(),
         "call-id".to_string(),
     ]);
 
@@ -169,8 +173,10 @@ fn reads_deny_tool_command() {
         command,
         Command::DenyTool {
             conversation_id,
-            tool_call_id,
-        } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+            target,
+        } if conversation_id.as_str() == "conversation-id"
+            && target.assistant_message_id.as_str() == "assistant-id"
+            && target.tool_call_id.as_str() == "call-id"
     ));
 }
 

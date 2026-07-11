@@ -29,8 +29,8 @@ use crate::run::{RunEvent, RunManager};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
 use crate::store::{RuntimeRunAction, Store};
 use crate::tool::{
-    ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
-    ToolProviderKind, ToolProviderRef,
+    ProviderToolName, ToolAnnotations, ToolCallTarget, ToolDefinition, ToolPermission,
+    ToolProviderId, ToolProviderKind, ToolProviderRef,
 };
 use crate::tool_provider::ToolProviderRegistry;
 

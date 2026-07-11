@@ -1,7 +1,7 @@
 //! Tools persistence owned by the store module.
 
 use super::{
-    AttachedTool, Context, ConversationId, InsertSelection, MessageId, MessageMetadata,
+    AttachedTool, Context, ConversationId, InsertSelection, Message, MessageId, MessageMetadata,
     OptionalExtension, ProviderToolName, Result, Row, Serialize, Store, ToolAnnotations,
     ToolCallId, ToolPermission, ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema,
     ToolSchemaName, Transaction, Type, UnsavedMessagePart, Uuid, anyhow, encode_message_metadata,
@@ -62,6 +62,50 @@ pub struct ToolExecutionRecord {
 }
 
 impl Store {
+    /// Loads the branch through the deepest persisted tool result belonging to
+    /// one assistant turn.
+    ///
+    /// Approval targets identify the assistant rather than relying on the
+    /// conversation's selected head. Tool outputs form a linear role-tool chain,
+    /// so its deepest node is the current execution head for metadata-order
+    /// validation and the next result parent.
+    pub(crate) fn load_tool_execution_path(
+        &self,
+        conversation_id: &ConversationId,
+        assistant_message_id: &MessageId,
+    ) -> Result<Vec<Message>> {
+        self.ensure_message_belongs_to_conversation(conversation_id, assistant_message_id)?;
+        let head = self
+            .connection
+            .query_row(
+                "
+                WITH RECURSIVE tool_chain(id, depth) AS (
+                    SELECT id, 0
+                    FROM messages
+                    WHERE conversation_id = ?1 AND id = ?2
+
+                    UNION ALL
+
+                    SELECT messages.id, tool_chain.depth + 1
+                    FROM tool_chain
+                    JOIN messages
+                      ON messages.parent_message_id = tool_chain.id
+                     AND messages.conversation_id = ?1
+                     AND messages.role = 'tool'
+                )
+                SELECT id
+                FROM tool_chain
+                ORDER BY depth DESC
+                LIMIT 1
+                ",
+                params![conversation_id.as_str(), assistant_message_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .context("failed to load tool execution head")?;
+
+        self.load_path_to_message(conversation_id, &MessageId::new(head))
+    }
+
     /// Atomically reserves one assistant-requested tool call for execution.
     /// Claims that failed before provider dispatch and interrupted claims may be
     /// retried. Unknown claims never retry because their side effect may have run.

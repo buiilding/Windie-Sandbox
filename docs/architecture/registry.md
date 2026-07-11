@@ -46,6 +46,7 @@ Today the registry is populated only from a code-approved MCP provider list:
 - CUA Driver;
 - Desktop Commander;
 - Blender MCP;
+- Chrome DevTools;
 - Bright Data;
 - Exa.
 

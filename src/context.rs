@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::conversation::{ConversationId, Message, MessageView, Role};
+use crate::conversation::{ConversationId, Message, MessageId, MessageView, Role};
 use crate::store::Compaction;
 use crate::store::Store;
 
@@ -38,15 +38,24 @@ impl ContextBuilder {
         Ok(Self::flatten(parts))
     }
 
-    /// Builds context from a run's immutable prompt and compaction snapshot.
-    pub fn build_with_configuration(
+    /// Builds context for one explicit runtime path head.
+    ///
+    /// Runtime owns this head independently from the conversation's selected
+    /// head, so changing the UI selection cannot redirect an in-flight model
+    /// or tool loop.
+    pub fn build_at(
         store: &Store,
         conversation_id: &ConversationId,
+        message_id: Option<&MessageId>,
         system_prompt: Option<String>,
         compaction: Option<Compaction>,
     ) -> Result<Vec<Message>> {
+        let active_path = match message_id {
+            Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
+            None => Vec::new(),
+        };
         Ok(Self::flatten(ContextParts {
-            active_path: store.load_active_path(conversation_id)?,
+            active_path,
             system_prompt,
             compaction,
         }))

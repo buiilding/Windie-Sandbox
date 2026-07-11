@@ -187,6 +187,8 @@ Windie keeps a code-approved provider list but does not package MCP source:
 - Desktop Commander runs through pinned npm package `0.2.44`.
 - Blender MCP runs through pinned Python package `1.6.0`; its Blender addon is
   installed separately.
+- Chrome DevTools MCP runs through pinned npm package `1.5.0` and connects to
+  an existing Chrome remote debugging endpoint at `http://127.0.0.1:9222`.
 
 Run `windie doctor` for prerequisite status and official setup commands. Tools
 remain unavailable to a model until attached to a conversation through

@@ -4,9 +4,9 @@ use super::{
     ApiError, ApiResult, ApiState, Arc, ConversationId, Deserialize, Event, Infallible, Json,
     KeepAlive, MessageId, ModelName, Path, Query, QueryRequest, ReasoningRequest, Result, Router,
     RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription, RuntimeEventSink,
-    RuntimeOutput, RuntimeRunAction, Serialize, Sse, State, ToolCall, ToolCallId, VecDeque,
-    broadcast, error_causes, get, log_api_error, open_store, operation, post, raw_error_message,
-    runtime_turn_config, stream,
+    RuntimeOutput, RuntimeRunAction, Serialize, Sse, State, ToolCall, ToolCallId, ToolCallTarget,
+    VecDeque, broadcast, error_causes, get, log_api_error, open_store, operation, post,
+    raw_error_message, runtime_turn_config, stream,
 };
 use crate::store::RuntimeRunStatus;
 
@@ -21,11 +21,11 @@ pub(super) fn routes() -> Router<ApiState> {
             get(active_conversation_run),
         )
         .route(
-            "/api/conversations/{conversation_id}/approvals/{tool_call_id}/approve-run",
+            "/api/conversations/{conversation_id}/approvals/{assistant_message_id}/{tool_call_id}/approve-run",
             post(start_approve_run),
         )
         .route(
-            "/api/conversations/{conversation_id}/approvals/{tool_call_id}/deny-run",
+            "/api/conversations/{conversation_id}/approvals/{assistant_message_id}/{tool_call_id}/deny-run",
             post(start_deny_run),
         )
         .route("/api/runs/{run_id}", get(get_run))
@@ -42,11 +42,11 @@ enum RuntimeStreamAction {
     },
     ApproveTool {
         conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
+        target: ToolCallTarget,
     },
     DenyTool {
         conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
+        target: ToolCallTarget,
     },
 }
 
@@ -97,13 +97,16 @@ async fn start_query_run(
 /// Starts a backend-owned approval continuation.
 async fn start_approve_run(
     State(state): State<ApiState>,
-    Path((conversation_id, tool_call_id)): Path<(String, String)>,
+    Path((conversation_id, assistant_message_id, tool_call_id)): Path<(String, String, String)>,
 ) -> ApiResult<RunSnapshot> {
     let snapshot = start_runtime_run(
         state,
         RuntimeStreamAction::ApproveTool {
             conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
+            target: ToolCallTarget::new(
+                MessageId::new(assistant_message_id),
+                ToolCallId::new(tool_call_id),
+            ),
         },
     )
     .await?;
@@ -114,13 +117,16 @@ async fn start_approve_run(
 /// Starts a backend-owned denial continuation.
 async fn start_deny_run(
     State(state): State<ApiState>,
-    Path((conversation_id, tool_call_id)): Path<(String, String)>,
+    Path((conversation_id, assistant_message_id, tool_call_id)): Path<(String, String, String)>,
 ) -> ApiResult<RunSnapshot> {
     let snapshot = start_runtime_run(
         state,
         RuntimeStreamAction::DenyTool {
             conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
+            target: ToolCallTarget::new(
+                MessageId::new(assistant_message_id),
+                ToolCallId::new(tool_call_id),
+            ),
         },
     )
     .await?;
@@ -206,7 +212,7 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
                     }
                     RuntimeStreamAction::ApproveTool {
                         conversation_id,
-                        tool_call_id,
+                        target,
                     } => {
                         let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
                         operation::approve_tool_turn(
@@ -214,14 +220,14 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
                             &events,
                             &mut store,
                             &conversation_id,
-                            &tool_call_id,
+                            &target,
                             runtime,
                         )
                         .await
                     }
                     RuntimeStreamAction::DenyTool {
                         conversation_id,
-                        tool_call_id,
+                        target,
                     } => {
                         let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
                         operation::deny_tool_turn(
@@ -229,7 +235,7 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
                             &events,
                             &mut store,
                             &conversation_id,
-                            &tool_call_id,
+                            &target,
                             runtime,
                         )
                         .await

@@ -2,6 +2,7 @@
 
 use anyhow::{Result, anyhow};
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -262,6 +263,54 @@ struct ToolThenReplyLlm {
     second_turn_messages: Mutex<Vec<Message>>,
 }
 
+struct BranchSwitchingToolThenReplyLlm {
+    calls: Mutex<usize>,
+    store_path: PathBuf,
+    conversation_id: ConversationId,
+    selected_message_id: MessageId,
+    second_turn_messages: Mutex<Vec<Message>>,
+}
+
+impl RuntimeLlm for BranchSwitchingToolThenReplyLlm {
+    async fn stream<F>(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
+        _handle_delta: F,
+    ) -> Result<AssistantResponse>
+    where
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
+    {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        if *calls == 1 {
+            let mut selecting_store = Store::open_at(&self.store_path)?;
+            selecting_store.set_active_message(&self.conversation_id, &self.selected_message_id)?;
+            return Ok(AssistantResponse {
+                content: String::new(),
+                metadata: MessageMetadata {
+                    tool_calls: vec![ToolCall::function(
+                        "call_123",
+                        TEST_TOOL_SCHEMA_NAME,
+                        r#"{"command":"printf windie-shell"}"#,
+                    )],
+                    ..Default::default()
+                },
+                finish_reason: Some(FinishReason::ToolCalls),
+            });
+        }
+
+        *self.second_turn_messages.lock().unwrap() = messages.to_vec();
+        Ok(AssistantResponse {
+            content: "done".to_string(),
+            metadata: MessageMetadata::default(),
+            finish_reason: Some(FinishReason::Stop),
+        })
+    }
+}
+
 impl ToolThenReplyLlm {
     fn new() -> Self {
         Self {
@@ -438,7 +487,10 @@ async fn query_approve_query_composes_provider_tool_flow() {
     let result = approve_tool_call_with_registry(
         &mut store,
         &conversation_id,
-        &ToolCallId::new("call_123"),
+        &ToolCallTarget::new(
+            tool_call_message.id.clone().unwrap(),
+            ToolCallId::new("call_123"),
+        ),
         &registry,
     )
     .await
@@ -495,6 +547,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
     let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
     let run = store.create_runtime_run(&conversation_id).unwrap();
     let cancellation = RunCancellation::default();
+    let cursor = ExecutionCursor::capture(&store, &conversation_id).unwrap();
 
     let assistant_message = query_conversation_resolving_automatic_tools(
         &NoopOutput,
@@ -502,7 +555,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
         &mut store,
         &conversation_id,
         &registry,
-        RuntimeModelRequest::new(&run.id, &cancellation, &snapshot, None, None),
+        RuntimeExecution::new(&run.id, &cancellation, &snapshot, cursor, None, None),
     )
     .await
     .unwrap();
@@ -523,6 +576,98 @@ async fn auto_approval_executes_tool_and_queries_again() {
 }
 
 #[tokio::test]
+async fn automatic_tool_loop_keeps_its_path_when_user_selects_another_branch() {
+    let database_path = std::env::temp_dir().join(format!(
+        "windie-runtime-path-{}-{}.db",
+        std::process::id(),
+        TEMP_MCP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut store = Store::open_at(&database_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    attach_test_mcp_tool(&mut store, &conversation_id);
+    store
+        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
+        .unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let run_head = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::User,
+            "run branch",
+            None,
+        )
+        .unwrap();
+    let selected_head = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::User,
+            "selected branch",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &run_head)
+        .unwrap();
+
+    let llm = BranchSwitchingToolThenReplyLlm {
+        calls: Mutex::new(0),
+        store_path: database_path.clone(),
+        conversation_id: conversation_id.clone(),
+        selected_message_id: selected_head.clone(),
+        second_turn_messages: Mutex::new(Vec::new()),
+    };
+    let registry = test_mcp_registry();
+    let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
+    let run = store.create_runtime_run(&conversation_id).unwrap();
+    let cancellation = RunCancellation::default();
+    let cursor = ExecutionCursor::capture(&store, &conversation_id).unwrap();
+
+    let final_message = query_conversation_resolving_automatic_tools(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        &conversation_id,
+        &registry,
+        RuntimeExecution::new(&run.id, &cancellation, &snapshot, cursor, None, None),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        store.active_message_id(&conversation_id).unwrap(),
+        Some(selected_head)
+    );
+    let run_messages = store
+        .load_path_to_message(&conversation_id, final_message.id.as_ref().unwrap())
+        .unwrap();
+    assert_eq!(
+        run_messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["root", "run branch", "", TEST_TOOL_RESULT, "done"]
+    );
+    assert_eq!(
+        llm.second_turn_messages
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["root", "run branch", "", TEST_TOOL_RESULT]
+    );
+
+    drop(store);
+    let _ = fs::remove_file(&database_path);
+    let _ = fs::remove_file(database_path.with_extension("db-shm"));
+    let _ = fs::remove_file(database_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
@@ -535,6 +680,7 @@ async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
     let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
     let run = store.create_runtime_run(&conversation_id).unwrap();
     let cancellation = RunCancellation::default();
+    let cursor = ExecutionCursor::capture(&store, &conversation_id).unwrap();
 
     let tool_call_message = query_conversation_resolving_automatic_tools(
         &NoopOutput,
@@ -542,7 +688,7 @@ async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
         &mut store,
         &conversation_id,
         &registry,
-        RuntimeModelRequest::new(&run.id, &cancellation, &snapshot, None, None),
+        RuntimeExecution::new(&run.id, &cancellation, &snapshot, cursor, None, None),
     )
     .await
     .unwrap();
@@ -551,7 +697,10 @@ async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
     let result = approve_tool_call_with_registry(
         &mut store,
         &conversation_id,
-        &ToolCallId::new("call_123"),
+        &ToolCallTarget::new(
+            tool_call_message.id.clone().unwrap(),
+            ToolCallId::new("call_123"),
+        ),
         &registry,
     )
     .await
@@ -580,6 +729,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
     let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
     let run = store.create_runtime_run(&conversation_id).unwrap();
     let cancellation = RunCancellation::default();
+    let cursor = ExecutionCursor::capture(&store, &conversation_id).unwrap();
 
     query_conversation_resolving_automatic_tools_with_events(
         &NoopOutput,
@@ -588,7 +738,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
         &conversation_id,
         &registry,
         &events,
-        RuntimeModelRequest::new(&run.id, &cancellation, &snapshot, None, None),
+        RuntimeExecution::new(&run.id, &cancellation, &snapshot, cursor, None, None),
     )
     .await
     .unwrap();
@@ -837,13 +987,14 @@ async fn pending_tool_approvals_lists_pending_provider_calls() {
 }
 
 #[tokio::test]
-async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
+async fn approval_target_resolves_an_inactive_branch_tool_call() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
+    attach_test_mcp_tool(&mut store, &conversation_id);
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
-    store
+    let assistant_id = store
         .insert_message(
             &conversation_id,
             Some(&user_id),
@@ -870,20 +1021,84 @@ async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
         .unwrap();
 
     let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
-    let error = approve_tool_call(
+    let selected_id = store.active_message_id(&conversation_id).unwrap().unwrap();
+    let result = approve_tool_call_with_registry(
         &mut store,
         &conversation_id,
-        &ToolCallId::new("call_inactive"),
+        &ToolCallTarget::new(assistant_id.clone(), ToolCallId::new("call_inactive")),
+        &test_mcp_registry(),
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
     assert!(approvals.is_empty());
-    assert!(
-        error
-            .to_string()
-            .contains("pending tool call does not exist")
+    assert!(result.success);
+    assert_eq!(
+        store.active_message_id(&conversation_id).unwrap(),
+        Some(selected_id)
     );
+    let messages = store.load_messages(&conversation_id).unwrap();
+    assert!(messages.iter().any(|message| {
+        message.parent_message_id.as_ref() == Some(&assistant_id) && message.role == Role::Tool
+    }));
+}
+
+#[tokio::test]
+async fn approval_target_disambiguates_duplicate_call_ids_across_branches() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    attach_test_mcp_tool(&mut store, &conversation_id);
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let metadata = || MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            "shared_call",
+            TEST_TOOL_SCHEMA_NAME,
+            r#"{"command":"printf approved"}"#,
+        )],
+        ..Default::default()
+    };
+    let first_assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::Assistant,
+            "first branch",
+            Some(&metadata()),
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &root_id)
+        .unwrap();
+    let selected_assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::Assistant,
+            "selected branch",
+            Some(&metadata()),
+        )
+        .unwrap();
+
+    approve_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(first_assistant_id.clone(), ToolCallId::new("shared_call")),
+        &test_mcp_registry(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        store.active_message_id(&conversation_id).unwrap(),
+        Some(selected_assistant_id)
+    );
+    let messages = store.load_messages(&conversation_id).unwrap();
+    assert!(messages.iter().any(|message| {
+        message.parent_message_id.as_ref() == Some(&first_assistant_id)
+            && message.role == Role::Tool
+    }));
 }
 
 #[tokio::test]
@@ -894,7 +1109,7 @@ async fn approve_tool_call_executes_provider_and_stores_tool_result() {
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
-    store
+    let assistant_id = store
         .insert_message(
             &conversation_id,
             Some(&user_id),
@@ -915,7 +1130,7 @@ async fn approve_tool_call_executes_provider_and_stores_tool_result() {
     let result = approve_tool_call_with_registry(
         &mut store,
         &conversation_id,
-        &ToolCallId::new("call_123"),
+        &ToolCallTarget::new(assistant_id, ToolCallId::new("call_123")),
         &registry,
     )
     .await
@@ -945,7 +1160,7 @@ fn deny_tool_call_stores_rejected_tool_result() {
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "run a command", None)
         .unwrap();
-    store
+    let assistant_id = store
         .insert_message(
             &conversation_id,
             Some(&user_id),
@@ -962,8 +1177,12 @@ fn deny_tool_call_stores_rejected_tool_result() {
         )
         .unwrap();
 
-    let result =
-        deny_tool_call(&mut store, &conversation_id, &ToolCallId::new("call_123")).unwrap();
+    let result = deny_tool_call(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(assistant_id, ToolCallId::new("call_123")),
+    )
+    .unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
 
     assert!(!result.success);
@@ -992,16 +1211,26 @@ async fn multi_tool_approvals_store_results_as_linear_chain() {
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
     let registry = test_mcp_registry();
 
-    approve_tool_call_with_registry(&mut store, &conversation_id, &first_call_id, &registry)
-        .await
-        .unwrap();
+    approve_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(assistant_id.clone(), first_call_id),
+        &registry,
+    )
+    .await
+    .unwrap();
     let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].tool_call.id.as_str(), "call_2");
 
-    approve_tool_call_with_registry(&mut store, &conversation_id, &second_call_id, &registry)
-        .await
-        .unwrap();
+    approve_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(assistant_id.clone(), second_call_id),
+        &registry,
+    )
+    .await
+    .unwrap();
     let llm = CapturingLlm::new();
     let final_message = query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
         .await
@@ -1054,12 +1283,16 @@ async fn multi_tool_approvals_store_results_as_linear_chain() {
 async fn approving_later_tool_call_before_previous_call_rejects() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let (_assistant_id, _first_call_id, second_call_id) =
+    let (assistant_id, _first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
-    let error = approve_tool_call(&mut store, &conversation_id, &second_call_id)
-        .await
-        .unwrap_err();
+    let error = approve_tool_call(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(assistant_id, second_call_id),
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(
         error.to_string(),
@@ -1071,7 +1304,7 @@ async fn approving_later_tool_call_before_previous_call_rejects() {
 async fn query_rejects_until_all_tool_calls_have_results() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let (_assistant_id, first_call_id, _second_call_id) =
+    let (assistant_id, first_call_id, _second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
     let registry = test_mcp_registry();
 
@@ -1079,9 +1312,14 @@ async fn query_rejects_until_all_tool_calls_have_results() {
         query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
             .await
             .unwrap_err();
-    approve_tool_call_with_registry(&mut store, &conversation_id, &first_call_id, &registry)
-        .await
-        .unwrap();
+    approve_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(assistant_id, first_call_id),
+        &registry,
+    )
+    .await
+    .unwrap();
     let second_error =
         query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
             .await
@@ -1101,11 +1339,21 @@ async fn query_rejects_until_all_tool_calls_have_results() {
 fn denying_multi_tool_call_uses_linear_chain_parent() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let (_assistant_id, first_call_id, second_call_id) =
+    let (assistant_id, first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
-    deny_tool_call(&mut store, &conversation_id, &first_call_id).unwrap();
-    deny_tool_call(&mut store, &conversation_id, &second_call_id).unwrap();
+    deny_tool_call(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(assistant_id.clone(), first_call_id),
+    )
+    .unwrap();
+    deny_tool_call(
+        &mut store,
+        &conversation_id,
+        &ToolCallTarget::new(assistant_id, second_call_id),
+    )
+    .unwrap();
     let messages = store.load_active_path(&conversation_id).unwrap();
 
     assert_eq!(messages[2].role, Role::Tool);

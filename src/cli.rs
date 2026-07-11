@@ -17,7 +17,7 @@ use crate::conversation::{
 };
 use crate::llm::ModelName;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
-use crate::tool::{ProviderToolName, ToolProviderId};
+use crate::tool::{ProviderToolName, ToolCallTarget, ToolProviderId};
 
 /// Parsed startup action for one `windie` process.
 ///
@@ -26,7 +26,7 @@ use crate::tool::{ProviderToolName, ToolProviderId};
 pub enum Command {
     /// Start the localhost developer API server.
     Api,
-    /// Select one message as the active runtime node for a conversation.
+    /// Select one message as the user's current conversation head.
     Activate {
         conversation_id: ConversationId,
         message_id: MessageId,
@@ -38,7 +38,7 @@ pub enum Command {
     /// Execute one approved tool call.
     ApproveTool {
         conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
+        target: ToolCallTarget,
     },
     /// Attach one provider tool to a conversation.
     AttachTool {
@@ -115,7 +115,7 @@ pub enum Command {
     },
     DenyTool {
         conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
+        target: ToolCallTarget,
     },
     /// Inspect installation paths and external integration prerequisites.
     Doctor,
@@ -227,18 +227,22 @@ fn parse_simple_command(command: &str, args: &[String]) -> Command {
 }
 
 fn parse_tool_decision(args: &[String], approve: bool) -> Command {
-    let [conversation_id, tool_call_id] = args else {
+    let [conversation_id, assistant_message_id, tool_call_id] = args else {
         return Command::Invalid;
     };
+    let target = ToolCallTarget::new(
+        MessageId::new(assistant_message_id),
+        ToolCallId::new(tool_call_id),
+    );
     if approve {
         Command::ApproveTool {
             conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
+            target,
         }
     } else {
         Command::DenyTool {
             conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
+            target,
         }
     }
 }

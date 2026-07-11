@@ -1,8 +1,9 @@
 # Conversation Architecture
 
 Windie stores each conversation as a tree of message nodes plus settings that
-apply to the conversation as a whole. Runtime uses one selected path through
-the tree as model context.
+apply to the conversation as a whole. Each root-to-node path is one possible
+conversation context. The tree keeps all of those contexts, including inactive
+branches, without duplicating their shared ancestors.
 
 ## Conversation-Level State
 
@@ -46,10 +47,10 @@ Messages carry one of four typed roles: `system`, `user`, `assistant`, or
 conversation system prompt is normally stored separately and synthesized only
 when context is built.
 
-## Active Path
+## Selected Path
 
 The conversation stores one `active_message_id`. Windie finds that message and
-walks through parent links to produce the root-to-active path.
+walks through parent links to produce the user-selected path.
 
 For the tree above, the active path is:
 
@@ -57,8 +58,8 @@ For the tree above, the active path is:
 user A -> assistant D -> user E
 ```
 
-Only that path is sent to the model. `assistant B -> user C` remains durable
-and can become active later.
+That path is the default context for the next runtime operation.
+`assistant B -> user C` remains durable and can be selected later.
 
 ### Setting the Path
 
@@ -74,7 +75,31 @@ Activating a node:
 - does not query the model;
 - updates the conversation timestamp.
 
-An empty conversation has no active message and therefore an empty active path.
+An empty conversation has no active message and therefore an empty selected
+path.
+
+## Runtime Path
+
+When an operation starts, runtime captures the selected head in an
+`ExecutionCursor`. The run then owns that cursor and advances it after each
+persisted assistant or tool message. Model context is always rebuilt from the
+run cursor, not from the conversation's current `active_message_id`.
+
+The selected head and run head normally advance together. Each runtime insert
+updates the selected head only when it still equals that insert's captured
+parent. If the user selects an older node or creates another branch while the
+run is waiting for a model or tool, the selected head moves but the run keeps
+using its original branch:
+
+```text
+        +-- C -> assistant -> tool -> assistant   run path
+A -> B
+        +-- D                                     selected path
+```
+
+Setting a path, inserting a branch, or forking a conversation therefore does
+not redirect or stop an in-flight agent loop. No path array is persisted for
+the run; its head plus the tree's parent links are sufficient.
 
 ## Inserting Messages
 
@@ -202,23 +227,24 @@ It currently does not copy:
 ## How the Model Sees a Conversation
 
 Windie, not Bifrost, builds model context. `ContextBuilder` is the single
-projection boundary for both stored messages and inspection views. It loads the
-active path, optionally replaces history through an applicable compaction with
-a synthetic summary, and prepends the conversation system prompt. Attached
-tool schemas are loaded separately and sent with the request.
+projection boundary for both stored messages and inspection views. Inspection
+uses the selected path. Inference uses the explicit runtime path. The builder
+optionally replaces history through an applicable compaction with a synthetic
+summary and prepends the conversation system prompt. Attached tool schemas are
+loaded separately and sent with the request.
 
 The complete tree remains in storage. Bifrost receives only the already
 flattened active context.
 
 Inspection and tree commands load image metadata only: asset ID, MIME type, and
-byte count. Inference still loads full bytes for images on the active path, and
+byte count. Inference still loads full bytes for images on the runtime path, and
 the image API remains the binary display boundary.
 
 At operation start, Windie transactionally snapshots model, reasoning, system
 prompt, compaction, approval mode, and attached tools. Those settings remain
-stable through automatic tools and continuation turns. Only the evolving
-active message path is reloaded. Settings changed during a run apply to the
-next run.
+stable through automatic tools and continuation turns. The run cursor evolves
+as runtime persists messages, while user path selection remains independent.
+Settings changed during a run apply to the next run.
 
 ## Core Invariants
 

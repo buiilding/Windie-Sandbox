@@ -134,16 +134,16 @@ export async function startConversationRun(conversationId, model, reasoning) {
   });
 }
 
-export async function startApproveRun(conversationId, toolCallId) {
+export async function startApproveRun(conversationId, assistantMessageId, toolCallId) {
   return apiRequest(
-    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/approve-run`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(assistantMessageId)}/${encodeURIComponent(toolCallId)}/approve-run`,
     { method: "POST" }
   );
 }
 
-export async function startDenyRun(conversationId, toolCallId) {
+export async function startDenyRun(conversationId, assistantMessageId, toolCallId) {
   return apiRequest(
-    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/deny-run`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(assistantMessageId)}/${encodeURIComponent(toolCallId)}/deny-run`,
     { method: "POST" }
   );
 }

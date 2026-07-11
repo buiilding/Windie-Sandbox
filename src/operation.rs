@@ -15,7 +15,7 @@ use crate::context::ContextBuilder;
 use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageView, Role, ToolCallId, ToolSchema, ToolSchemaName,
+    ConversationId, Message, MessageId, MessageView, Role, ToolSchema, ToolSchemaName,
     UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::error;
@@ -28,17 +28,21 @@ use crate::llm::{
 use crate::output::RuntimeOutput;
 use crate::run::RunCancellation;
 use crate::runtime::{
-    RuntimeEventSink, RuntimeModelRequest, RuntimeSnapshot, approve_tool_call_with_snapshot,
-    deny_tool_call_for_run, pending_tool_approvals, pending_tool_approvals_from_snapshot,
-    pending_tool_approvals_with_registry, query_conversation_resolving_automatic_tools,
+    ExecutionCursor, RuntimeEventSink, RuntimeExecution, RuntimeSnapshot,
+    approve_tool_call_with_snapshot, deny_tool_call_for_run, pending_tool_approvals,
+    pending_tool_approvals_on_path, pending_tool_approvals_with_registry,
+    query_conversation_resolving_automatic_tools,
     query_conversation_resolving_automatic_tools_with_events, runtime_snapshot,
 };
 use crate::store::{Compaction, ConversationInfo, Store, ToolExecutionRecord};
 use crate::tool::{
-    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
-    ToolProviderId,
+    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolCallTarget, ToolDefinition,
+    ToolExecutionResult, ToolProviderId,
 };
 use crate::tool_provider::ToolProviderRegistry;
+
+#[cfg(test)]
+use crate::conversation::ToolCallId;
 
 /// One ordered message part accepted by client-facing insert operations.
 ///

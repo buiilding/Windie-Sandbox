@@ -2,11 +2,11 @@
 
 use super::models::prompt_cache_request;
 use super::{
-    BaseUrl, BifrostClient, ConversationId, GatewayUrl, Message, MessageId, ModelName,
-    ReasoningRequest, Result, RunCancellation, RuntimeEventSink, RuntimeModelRequest,
-    RuntimeOutput, RuntimeSnapshot, Store, ToolCallId, ToolExecutionResult, ToolProviderRegistry,
-    approve_tool_call_with_snapshot, deny_tool_call_for_run, llm,
-    pending_tool_approvals_from_snapshot, query_conversation_resolving_automatic_tools,
+    BaseUrl, BifrostClient, ConversationId, ExecutionCursor, GatewayUrl, Message, MessageId,
+    ModelName, ReasoningRequest, Result, RunCancellation, RuntimeEventSink, RuntimeExecution,
+    RuntimeOutput, RuntimeSnapshot, Store, ToolCallTarget, ToolExecutionResult,
+    ToolProviderRegistry, approve_tool_call_with_snapshot, deny_tool_call_for_run, llm,
+    pending_tool_approvals_on_path, query_conversation_resolving_automatic_tools,
     query_conversation_resolving_automatic_tools_with_events, require_gateway_running,
     runtime_snapshot,
 };
@@ -27,6 +27,7 @@ pub async fn query_conversation_with_registry<O>(
 where
     O: RuntimeOutput,
 {
+    let cursor = ExecutionCursor::capture(store, conversation_id)?;
     let (model, reasoning, snapshot) = capture_runtime_snapshot(
         store,
         conversation_id,
@@ -45,10 +46,11 @@ where
         store,
         conversation_id,
         runtime.registry,
-        RuntimeModelRequest::new(
+        RuntimeExecution::new(
             runtime.run_id,
             &runtime.cancellation,
             &snapshot,
+            cursor,
             reasoning.as_ref(),
             prompt_cache.as_ref(),
         ),
@@ -62,6 +64,7 @@ async fn query_runtime_turn_from_snapshot<O, E>(
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
+    cursor: ExecutionCursor,
     runtime: RuntimeTurnConfig<'_>,
     model: ModelName,
     reasoning: Option<ReasoningRequest>,
@@ -84,10 +87,11 @@ where
         conversation_id,
         runtime.registry,
         events,
-        RuntimeModelRequest::new(
+        RuntimeExecution::new(
             runtime.run_id,
             &runtime.cancellation,
             snapshot,
+            cursor,
             reasoning.as_ref(),
             prompt_cache.as_ref(),
         ),
@@ -151,6 +155,7 @@ where
     E: RuntimeEventSink,
 {
     runtime.cancellation.check()?;
+    let cursor = ExecutionCursor::capture(store, conversation_id)?;
     let (model, reasoning, snapshot) = capture_runtime_snapshot(
         store,
         conversation_id,
@@ -162,6 +167,7 @@ where
         events,
         store,
         conversation_id,
+        cursor,
         runtime,
         model,
         reasoning,
@@ -217,7 +223,7 @@ pub(crate) fn resolve_reasoning_request(
 pub async fn approve_tool(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     run_id: &str,
     cancellation: &RunCancellation,
 ) -> Result<ToolExecutionResult> {
@@ -226,7 +232,7 @@ pub async fn approve_tool(
     approve_tool_call_with_snapshot(
         store,
         conversation_id,
-        tool_call_id,
+        target,
         &registry,
         run_id,
         cancellation,
@@ -240,7 +246,7 @@ pub async fn approve_tool(
 pub async fn approve_tool_with_registry(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     registry: &ToolProviderRegistry,
     run_id: &str,
     cancellation: &RunCancellation,
@@ -249,7 +255,7 @@ pub async fn approve_tool_with_registry(
     approve_tool_call_with_snapshot(
         store,
         conversation_id,
-        tool_call_id,
+        target,
         registry,
         run_id,
         cancellation,
@@ -263,19 +269,19 @@ pub async fn approve_tool_with_registry(
 pub fn deny_tool(
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     run_id: &str,
     cancellation: &RunCancellation,
 ) -> Result<ToolExecutionResult> {
     cancellation.check()?;
-    deny_tool_call_for_run(store, conversation_id, tool_call_id, run_id).map(|(result, _)| result)
+    deny_tool_call_for_run(store, conversation_id, target, run_id).map(|(result, _)| result)
 }
 
 /// Executes one approved tool call, emits its persisted result, and continues
 /// the runtime when no later approval is waiting.
 ///
 /// This is the client-facing approval behavior: approval resolves one pending
-/// call and lets Windie advance if the active path is ready. Multi-tool turns
+/// call and lets Windie advance if the run path is ready. Multi-tool turns
 /// stop after the stored result when the next requested call still needs manual
 /// approval.
 pub async fn approve_tool_turn<O, E>(
@@ -283,7 +289,7 @@ pub async fn approve_tool_turn<O, E>(
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     runtime: RuntimeTurnConfig<'_>,
 ) -> Result<Option<Message>>
 where
@@ -300,7 +306,7 @@ where
     let (_, message_id) = approve_tool_call_with_snapshot(
         store,
         conversation_id,
-        tool_call_id,
+        target,
         runtime.registry,
         runtime.run_id,
         &runtime.cancellation,
@@ -333,7 +339,7 @@ pub async fn deny_tool_turn<O, E>(
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
+    target: &ToolCallTarget,
     runtime: RuntimeTurnConfig<'_>,
 ) -> Result<Option<Message>>
 where
@@ -347,8 +353,7 @@ where
         runtime.model_override.clone(),
         runtime.reasoning.clone(),
     )?;
-    let (_, message_id) =
-        deny_tool_call_for_run(store, conversation_id, tool_call_id, runtime.run_id)?;
+    let (_, message_id) = deny_tool_call_for_run(store, conversation_id, target, runtime.run_id)?;
     events.tool_result_saved(&message_id)?;
     let continuation = RuntimeContinuation {
         model,
@@ -388,14 +393,13 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
-    if store.active_message_id(conversation_id)?.as_ref() != Some(result_message_id) {
-        return Ok(None);
-    }
-    if !pending_tool_approvals_from_snapshot(
+    let cursor = ExecutionCursor::at(result_message_id.clone());
+    if !pending_tool_approvals_on_path(
         store,
         conversation_id,
         runtime.registry,
         &continuation.snapshot,
+        &cursor,
     )?
     .is_empty()
     {
@@ -407,6 +411,7 @@ where
         events,
         store,
         conversation_id,
+        cursor,
         runtime,
         continuation.model,
         continuation.reasoning,

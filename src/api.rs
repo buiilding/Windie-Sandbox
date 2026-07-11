@@ -49,8 +49,8 @@ use crate::run::{RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscri
 use crate::runtime::RuntimeEventSink;
 use crate::store::{ConversationInfo, RuntimeRunAction, Store};
 use crate::tool::{
-    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
-    ToolProviderId,
+    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolCallTarget, ToolDefinition,
+    ToolExecutionResult, ToolProviderId,
 };
 use crate::tool_provider::ToolProviderRegistry;
 

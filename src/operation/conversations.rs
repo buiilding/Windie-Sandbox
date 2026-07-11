@@ -193,7 +193,7 @@ pub fn insert_message(
     )
 }
 
-/// Selects one message as the active runtime node.
+/// Selects one message as the user's current conversation head.
 pub fn activate_message(
     store: &mut Store,
     conversation_id: &ConversationId,

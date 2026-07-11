@@ -8,9 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use super::{Command, InsertPart};
-use crate::conversation::{
-    ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
-};
+use crate::conversation::{ConversationId, MessageId, Role, ToolSchema, ToolSchemaName};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::operation::MessageInputPart;
@@ -18,7 +16,7 @@ use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
 use crate::run::RunManager;
 use crate::store::{RuntimeRunAction, Store};
-use crate::tool::{ProviderToolName, ToolProviderId};
+use crate::tool::{ProviderToolName, ToolCallTarget, ToolProviderId};
 use crate::tool_provider::ToolProviderRegistry;
 use crate::{api, doctor, operation, perf};
 
@@ -40,8 +38,8 @@ pub async fn execute(command: Command) -> Result<()> {
         Command::Approvals { conversation_id } => list_approvals(conversation_id),
         Command::ApproveTool {
             conversation_id,
-            tool_call_id,
-        } => approve_tool(conversation_id, tool_call_id).await,
+            target,
+        } => approve_tool(conversation_id, target).await,
         Command::AttachTool {
             conversation_id,
             provider_id,
@@ -103,8 +101,8 @@ pub async fn execute(command: Command) -> Result<()> {
         } => detach_tool(conversation_id, schema_name),
         Command::DenyTool {
             conversation_id,
-            tool_call_id,
-        } => deny_tool(conversation_id, tool_call_id).await,
+            target,
+        } => deny_tool(conversation_id, target).await,
         Command::Show(conversation_id) => show_conversation(conversation_id),
         Command::Status => status().await,
         Command::SetSystemPrompt {
@@ -339,7 +337,7 @@ fn message_input_parts(parts: &[InsertPart]) -> Vec<MessageInputPart> {
         .collect()
 }
 
-/// Selects one message as the active runtime node.
+/// Selects one message as the user's current conversation head.
 fn activate_message(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
@@ -447,7 +445,7 @@ fn list_approvals(conversation_id: ConversationId) -> Result<()> {
 }
 
 /// Executes one approved tool call and stores its tool-result message.
-async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
+async fn approve_tool(conversation_id: ConversationId, target: ToolCallTarget) -> Result<()> {
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
     let task_conversation_id = conversation_id.clone();
@@ -460,7 +458,7 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
                 operation::approve_tool(
                     &mut store,
                     &task_conversation_id,
-                    &tool_call_id,
+                    &target,
                     &run_id,
                     &cancellation,
                 )
@@ -475,7 +473,7 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
 }
 
 /// Stores a rejected tool-result message for one pending tool call.
-async fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
+async fn deny_tool(conversation_id: ConversationId, target: ToolCallTarget) -> Result<()> {
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
     let task_conversation_id = conversation_id.clone();
@@ -488,7 +486,7 @@ async fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) ->
                 operation::deny_tool(
                     &mut store,
                     &task_conversation_id,
-                    &tool_call_id,
+                    &target,
                     &run_id,
                     &cancellation,
                 )

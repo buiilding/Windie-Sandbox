@@ -224,18 +224,21 @@ CLI operations.
 ### `POST /api/conversations/{id}/query`
 
 Body: `{"model":null,"reasoning":null}`. Queries Bifrost against the active
-path and persists the assistant message. The runtime resolves automatically
-allowed or denied tool calls, but stops when a call requires manual approval.
+path captured at operation admission and persists the assistant message. The
+runtime resolves automatically allowed or denied tool calls, but stops when a
+call requires manual approval.
 
-### `POST /api/conversations/{id}/approvals/{call_id}/approve`
+### `POST /api/conversations/{id}/approvals/{assistant_id}/{call_id}/approve`
 
-Executes the selected pending tool call and persists its tool output. It stops
-after that operation and does not automatically query the model again.
+Executes the exactly identified pending tool call and persists its tool output.
+The assistant ID keeps the operation independent from the currently selected
+path. It stops after that operation and does not automatically query the model
+again.
 
-### `POST /api/conversations/{id}/approvals/{call_id}/deny`
+### `POST /api/conversations/{id}/approvals/{assistant_id}/{call_id}/deny`
 
-Persists a rejected tool output for the selected pending call. It also stops
-without automatically querying the model again.
+Persists a rejected tool output for the exactly identified pending call. It
+also stops without automatically querying the model again.
 
 ## Backend-Owned Runs
 
@@ -253,12 +256,13 @@ Body:
 Creates a query run and returns its snapshot immediately. The API spawns the
 runtime task after durable run state exists.
 
-### `POST /api/conversations/{id}/approvals/{call_id}/approve-run`
+### `POST /api/conversations/{id}/approvals/{assistant_id}/{call_id}/approve-run`
 
-Starts a run that approves, executes, and persists the next pending call. It
-may continue into another model turn when no later manual approval remains.
+Starts a run that approves, executes, and persists the identified pending call.
+It may continue on that branch into another model turn when no later manual
+approval remains.
 
-### `POST /api/conversations/{id}/approvals/{call_id}/deny-run`
+### `POST /api/conversations/{id}/approvals/{assistant_id}/{call_id}/deny-run`
 
 Starts a run that persists a rejected tool output and may continue when no
 later approval remains.
