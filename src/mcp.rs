@@ -11,8 +11,9 @@ use std::env;
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -29,6 +30,7 @@ const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SHUTDOWN_RETRY_DELAY: Duration = Duration::from_millis(750);
 const MCP_SHUTDOWN_RETRIES: usize = 4;
 const MCP_STDERR_MAX_BYTES: usize = 16 * 1024;
+const MCP_RUNTIME_ENVIRONMENT: &[&str] = &["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Typed timeout error for one MCP JSON-RPC request.
@@ -232,11 +234,17 @@ pub fn call_tool_with_shutdown(
 /// also runs the provider shutdown hook when one is configured.
 #[derive(Clone)]
 pub struct McpSessionPool {
-    sessions: Arc<Mutex<PersistentMcpSessionMap>>,
+    inner: Arc<McpSessionPoolInner>,
 }
 
 type PersistentMcpSessionSlot = Arc<Mutex<Option<PersistentMcpSession>>>;
 type PersistentMcpSessionMap = HashMap<String, PersistentMcpSessionSlot>;
+
+struct McpSessionPoolInner {
+    sessions: Arc<Mutex<PersistentMcpSessionMap>>,
+    reaper_shutdown: Sender<()>,
+    reaper: Mutex<Option<JoinHandle<()>>>,
+}
 
 impl std::fmt::Debug for McpSessionPool {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -250,9 +258,16 @@ impl McpSessionPool {
     /// Creates a registry-owned persistent MCP session pool.
     pub fn new() -> Self {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
-        spawn_idle_reaper(Arc::clone(&sessions));
+        let (reaper_shutdown, shutdown_receiver) = mpsc::channel();
+        let reaper = spawn_idle_reaper(Arc::clone(&sessions), shutdown_receiver);
 
-        Self { sessions }
+        Self {
+            inner: Arc::new(McpSessionPoolInner {
+                sessions,
+                reaper_shutdown,
+                reaper: Mutex::new(Some(reaper)),
+            }),
+        }
     }
 
     /// Calls one MCP provider tool through this pool's persistent session.
@@ -265,6 +280,7 @@ impl McpSessionPool {
         arguments: Value,
     ) -> Result<Value> {
         let slot = self
+            .inner
             .sessions
             .lock()
             .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?
@@ -275,6 +291,17 @@ impl McpSessionPool {
     }
 }
 
+impl Drop for McpSessionPoolInner {
+    fn drop(&mut self) {
+        let _ = self.reaper_shutdown.send(());
+        if let Ok(reaper) = self.reaper.get_mut()
+            && let Some(reaper) = reaper.take()
+        {
+            let _ = reaper.join();
+        }
+    }
+}
+
 impl Default for McpSessionPool {
     fn default() -> Self {
         Self::new()
@@ -282,10 +309,15 @@ impl Default for McpSessionPool {
 }
 
 /// Starts a small background loop that stops idle persistent MCP sessions.
-fn spawn_idle_reaper(sessions: Arc<Mutex<PersistentMcpSessionMap>>) {
+fn spawn_idle_reaper(
+    sessions: Arc<Mutex<PersistentMcpSessionMap>>,
+    shutdown: Receiver<()>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(MCP_IDLE_REAPER_INTERVAL);
+        while matches!(
+            shutdown.recv_timeout(MCP_IDLE_REAPER_INTERVAL),
+            Err(RecvTimeoutError::Timeout)
+        ) {
             let Ok(session_slots) = sessions.lock().map(|sessions| {
                 sessions
                     .iter()
@@ -320,7 +352,25 @@ fn spawn_idle_reaper(sessions: Arc<Mutex<PersistentMcpSessionMap>>) {
                 }
             }
         }
-    });
+        stop_all_persistent_sessions(&sessions);
+    })
+}
+
+fn stop_all_persistent_sessions(sessions: &Arc<Mutex<PersistentMcpSessionMap>>) {
+    let Ok(session_slots) = sessions
+        .lock()
+        .map(|mut sessions| sessions.drain().map(|(_, slot)| slot).collect::<Vec<_>>())
+    else {
+        return;
+    };
+    for slot in session_slots {
+        let stopped = slot.lock().ok().and_then(|mut session| session.take());
+        if let Some(stopped) = stopped {
+            let shutdown_command = stopped.shutdown_command;
+            drop(stopped);
+            run_shutdown_best_effort(shutdown_command);
+        }
+    }
 }
 
 fn call_persistent_tool(
@@ -618,7 +668,13 @@ fn run_shutdown_command(command: McpCommand) -> Result<()> {
 
 /// Applies the static command definition to a spawned provider process.
 fn configure_process(process: &mut Command, command: McpCommand) -> Result<()> {
+    let runtime_environment = MCP_RUNTIME_ENVIRONMENT
+        .iter()
+        .filter_map(|name| env::var_os(name).map(|value| (*name, value)))
+        .collect::<Vec<_>>();
+    process.env_clear();
     process.args(command.args);
+    process.envs(runtime_environment);
     for variable in command.env {
         process.env(variable.key, resolve_env_value(variable.value)?);
     }
@@ -720,6 +776,15 @@ fn captured_stderr(captured: &Arc<Mutex<Vec<u8>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ENVIRONMENT_TEST_MCP: McpCommand = McpCommand {
+        program: "/bin/echo",
+        args: &[],
+        env: &[McpEnv {
+            key: "WINDIE_DECLARED_VALUE",
+            value: McpEnvValue::Literal("declared"),
+        }],
+    };
 
     const SLOW_TEST_MCP: McpCommand = McpCommand {
         program: "/bin/sh",
@@ -844,6 +909,39 @@ mod tests {
         assert!(error.to_string().contains(
             "missing required provider environment variable: WINDIE_TEST_MISSING_MCP_ENV"
         ));
+    }
+
+    #[test]
+    fn provider_environment_removes_unrelated_values() {
+        let mut process = Command::new(ENVIRONMENT_TEST_MCP.program);
+        process.env("WINDIE_UNRELATED_SECRET", "must-not-leak");
+
+        configure_process(&mut process, ENVIRONMENT_TEST_MCP).unwrap();
+        let environment = process
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert!(!environment.contains_key("WINDIE_UNRELATED_SECRET"));
+        assert_eq!(
+            environment.get("WINDIE_DECLARED_VALUE"),
+            Some(&Some("declared".to_string()))
+        );
+    }
+
+    #[test]
+    fn dropping_session_pool_stops_owned_reaper() {
+        let pool = McpSessionPool::new();
+        let inner = Arc::downgrade(&pool.inner);
+
+        drop(pool);
+
+        assert!(inner.upgrade().is_none());
     }
 
     #[test]
