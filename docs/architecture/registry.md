@@ -46,7 +46,8 @@ Today the registry is populated only from a code-approved MCP provider list:
 - CUA Driver;
 - Desktop Commander;
 - Blender MCP;
-- Bright Data.
+- Bright Data;
+- Exa.
 
 There are currently no Windie-native built-in tool implementations in the
 registry. There is also no working plugin executor or user-configured arbitrary

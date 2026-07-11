@@ -43,6 +43,7 @@ MCP providers are code-approved, not loaded from arbitrary user config.
 | `desktop-commander` | `npx -y @wonderwhy-er/desktop-commander@0.2.44` | Isolated provider `HOME` and generated config |
 | `blender-mcp` | `uvx --python 3.11 blender-mcp==1.6.0` | Telemetry disabled; localhost port `9876` |
 | `brightdata` | `npx -y @brightdata/mcp` | Child `API_TOKEN` comes from `BRIGHTDATA_API_TOKEN` |
+| `exa` | `npx -y exa-mcp-server@3.2.1` | Child `EXA_API_KEY` comes from Windie's `EXA_API_KEY` environment |
 
 Provider definitions also contain a stable ID, model-facing schema prefix,
 display name, optional setup action, and optional shutdown command.
@@ -58,6 +59,18 @@ MCP command environment values are typed as:
 Missing required user environment values fail before the child is started.
 Windie passes only the explicitly defined provider environment plus the normal
 process environment required by command execution.
+
+Exa uses its official, version-pinned stdio package. Store its key in Windie's
+canonical provider environment:
+
+```dotenv
+EXA_API_KEY=...
+```
+
+The default Exa catalog currently includes `web_search_exa` and
+`web_fetch_exa`; Windie exposes them with the `exa__` schema prefix. Search is
+still performed by Exa's hosted API. The local package is the MCP adapter, not
+an offline search engine.
 
 ## Desktop Commander Setup
 

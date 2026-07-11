@@ -19,7 +19,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::paths;
+use crate::{paths, provider_env};
 
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -645,9 +645,7 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
             .to_string_lossy()
             .into_owned()),
         McpEnvValue::Literal(value) => Ok(value.to_string()),
-        McpEnvValue::UserEnv(name) => {
-            env::var(name).with_context(|| format!("missing required environment variable: {name}"))
-        }
+        McpEnvValue::UserEnv(name) => provider_env::required(name),
     }
 }
 
@@ -807,10 +805,8 @@ mod tests {
         let error =
             resolve_env_value(McpEnvValue::UserEnv("WINDIE_TEST_MISSING_MCP_ENV")).unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("missing required environment variable: WINDIE_TEST_MISSING_MCP_ENV")
-        );
+        assert!(error.to_string().contains(
+            "missing required provider environment variable: WINDIE_TEST_MISSING_MCP_ENV"
+        ));
     }
 }

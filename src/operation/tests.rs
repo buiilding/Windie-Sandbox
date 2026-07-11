@@ -1,3 +1,5 @@
+//! Shared operation orchestration tests.
+
 use super::*;
 use crate::conversation::{MessageMetadata, ToolCall};
 use crate::mcp::McpCommand;

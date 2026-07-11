@@ -1,7 +1,8 @@
 # Provider Configuration
 
-Windie delegates model routing and provider configuration to Bifrost. Provider
-secrets remain outside the source checkout in:
+Windie delegates model routing and model-provider configuration to Bifrost.
+Windie and Bifrost share one canonical provider-secret file outside the source
+checkout:
 
 ```text
 ~/.config/windie/providers.env
@@ -21,10 +22,15 @@ Add one environment variable for each provider. For example:
 OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 OPENROUTER_API_KEY=...
+EXA_API_KEY=...
 ```
 
-Do not commit this file. After adding or changing a secret, restart Bifrost so
-the gateway process receives the new environment:
+Do not commit this file. Windie reads named MCP credentials from it when
+starting approved provider processes and passes the complete environment to
+Bifrost. A process environment value overrides the matching file entry.
+
+After adding or changing a secret, restart Windie and Bifrost so existing
+provider processes and sessions receive it:
 
 ```bash
 windie gateway stop
@@ -45,6 +51,10 @@ OpenRouter: env.OPENROUTER_API_KEY
 Use the provider's plain name for the configuration name. Saving these provider
 rows completes Bifrost configuration; the environment file alone does not
 create providers or models.
+
+`WINDIE_ENV_FILE` selects a different canonical file when needed. Without that
+override, Windie checks `~/.config/windie/providers.env`, including during
+development runs that isolate data and other configuration under `target/`.
 
 Verify the models Bifrost exposes to Windie:
 

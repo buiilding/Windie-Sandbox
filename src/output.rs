@@ -792,5 +792,4 @@ fn format_duration_us(micros: u64) -> String {
 }
 
 #[cfg(test)]
-#[path = "output_tests.rs"]
 mod tests;

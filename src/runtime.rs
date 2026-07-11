@@ -782,5 +782,4 @@ pub(crate) fn store_pending_tool_result(
 }
 
 #[cfg(test)]
-#[path = "runtime_tests.rs"]
 mod tests;

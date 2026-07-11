@@ -322,6 +322,21 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         shutdown_command: None,
         setup: None,
     },
+    McpProviderDefinition {
+        provider_id: "exa",
+        schema_prefix: "exa",
+        display_name: "Exa",
+        command: McpCommand {
+            program: "npx",
+            args: &["-y", "exa-mcp-server@3.2.1"],
+            env: &[McpEnv {
+                key: "EXA_API_KEY",
+                value: McpEnvValue::UserEnv("EXA_API_KEY"),
+            }],
+        },
+        shutdown_command: None,
+        setup: None,
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -660,5 +675,4 @@ fn tool_result_preview(parts: &[UnsavedMessagePart]) -> String {
 }
 
 #[cfg(test)]
-#[path = "tool_provider_tests.rs"]
 mod tests;

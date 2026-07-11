@@ -1,3 +1,5 @@
+//! Tool provider registry and dispatch tests.
+
 use super::*;
 
 fn approved_cua_provider() -> McpToolProvider {
@@ -32,6 +34,15 @@ fn approved_brightdata_provider() -> McpToolProvider {
         .iter()
         .copied()
         .find(|definition| definition.provider_id == "brightdata")
+        .unwrap();
+    McpToolProvider::new(definition)
+}
+
+fn approved_exa_provider() -> McpToolProvider {
+    let definition = APPROVED_MCP_PROVIDERS
+        .iter()
+        .copied()
+        .find(|definition| definition.provider_id == "exa")
         .unwrap();
     McpToolProvider::new(definition)
 }
@@ -164,6 +175,44 @@ fn brightdata_mcp_tools_map_to_provider_backed_definitions() {
         vec![ToolPermission::ExternalProcess]
     );
     assert_eq!(definition.annotations.read_only, Some(true));
+}
+
+#[test]
+fn exa_mcp_tools_map_to_provider_backed_definitions() {
+    let provider = approved_exa_provider();
+    let definition = provider.definition_from_mcp_tool(McpTool {
+        name: "web_search_exa".to_string(),
+        description: "Search the web".to_string(),
+        input_schema: json!({"type":"object"}),
+        annotations: Some(mcp::McpToolAnnotations {
+            read_only_hint: Some(true),
+        }),
+    });
+
+    assert_eq!(definition.schema_name.as_str(), "exa__web_search_exa");
+    assert_eq!(definition.provider.provider_id.as_str(), "exa");
+    assert_eq!(definition.provider.tool_name.as_str(), "web_search_exa");
+    assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+    assert_eq!(
+        definition.permissions,
+        vec![ToolPermission::ExternalProcess]
+    );
+    assert_eq!(definition.annotations.read_only, Some(true));
+}
+
+#[test]
+fn exa_provider_uses_pinned_package_and_explicit_api_key() {
+    let provider = approved_exa_provider();
+
+    assert_eq!(provider.command.program, "npx");
+    assert_eq!(provider.command.args, ["-y", "exa-mcp-server@3.2.1"]);
+    assert_eq!(
+        provider.command.env,
+        [McpEnv {
+            key: "EXA_API_KEY",
+            value: McpEnvValue::UserEnv("EXA_API_KEY"),
+        }]
+    );
 }
 
 #[test]
@@ -320,6 +369,25 @@ fn registry_recognizes_brightdata_as_approved_provider() {
         provider: ToolProviderRef::new(
             ToolProviderId::new("brightdata"),
             ProviderToolName::new("search_engine"),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: vec![ToolPermission::ExternalProcess],
+        annotations: ToolAnnotations::default(),
+    };
+
+    assert!(registry.can_execute(&attached_tool));
+}
+
+#[test]
+fn registry_recognizes_exa_as_approved_provider() {
+    let registry = ToolProviderRegistry::new();
+    let attached_tool = AttachedTool {
+        schema_name: ToolSchemaName::new("exa__web_search_exa"),
+        description: "Search the web".to_string(),
+        parameters: json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            ToolProviderId::new("exa"),
+            ProviderToolName::new("web_search_exa"),
             ToolProviderKind::Mcp,
         ),
         permissions: vec![ToolPermission::ExternalProcess],

@@ -1,3 +1,5 @@
+//! CLI parsing tests.
+
 use super::*;
 
 #[test]

@@ -192,5 +192,5 @@ visible text can be changed while metadata links remain.
 - `src/runtime.rs`
 - `src/store.rs`
 - `src/tool_provider.rs`
-- `src/runtime_tests.rs`
-- `src/policy_tests.rs`
+- `src/runtime/tests.rs`
+- `src/policy/tests.rs`

@@ -91,8 +91,9 @@ whole product.
 For each provider Windie wants Bifrost to use, Bifrost needs provider config
 once. The provider row names the provider, such as `anthropic`. The key row
 points to the environment variable, such as `env.ANTHROPIC_API_KEY`. Use the
-same pattern for Gemini, Groq, OpenRouter, and other providers. The actual
-secret value should stay in Windie's explicit `.env` provider-key file.
+same pattern for Gemini, Groq, OpenRouter, and other providers. Actual secrets
+stay in Windie's canonical `~/.config/windie/providers.env`, shared by approved
+MCP providers and Bifrost.
 
 ## Current Scope
 
@@ -145,7 +146,7 @@ Allowed in the current scope:
 - Explicit Bifrost gateway start and stop commands.
 - Version-pinned public Bifrost gateway startup through npm or Docker.
 - Explicit `WINDIE_BIFROST_BIN` override for official local development builds.
-- Explicit `.env` provider-key environment for Bifrost gateway startup.
+- Canonical provider-key environment shared by Windie and Bifrost.
 - Versioned installed binaries and a bundled stable operator UI that remain
   separate from editable source and preview UI builds.
 - Clean module boundaries.
@@ -162,7 +163,7 @@ Not in scope yet:
 - Production/general computer use outside code-approved developer MCP providers.
 - Plugin systems.
 - Production web dashboard.
-- General config files beyond the explicit Bifrost `.env` provider-key file.
+- General config files beyond the canonical provider-key environment.
 - Global model selection.
 - Slash commands.
 - Automatic history compaction.
@@ -186,42 +187,43 @@ The code should stay split by concrete responsibilities:
 
 ```text
 src/main.rs          wires components together
-src/api.rs           localhost developer API server
-src/api_tests.rs     localhost developer API tests
+src/api.rs           localhost API composition, shared state, and errors
+src/api/             API routes by auth, gateway, conversation, tool, and run ownership
 src/cli.rs           startup CLI arguments
-src/cli_tests.rs     startup CLI argument tests
+src/cli/tests.rs     startup CLI argument tests
 src/operation.rs     shared CLI/API operation orchestration
-src/operation_tests.rs shared operation orchestration tests
+src/operation/tests.rs shared operation orchestration tests
 src/output.rs        terminal and JSON output only
-src/output_tests.rs  terminal output tests
+src/output/tests.rs  terminal output tests
 src/policy.rs        tool execution policy and approval boundary
-src/policy_tests.rs  tool execution policy tests
+src/policy/tests.rs  tool execution policy tests
 src/conversation.rs  message types, model-facing tool schema types, and assistant metadata types
 src/context.rs       model-facing context construction
 src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
-src/llm.rs           Bifrost/OpenAI-compatible HTTP client
-src/llm_tests.rs     Bifrost client and wire-format tests
+src/llm.rs           typed LLM contracts and Bifrost client facade
+src/llm/             Bifrost HTTP client, model metadata, Responses wire format, and SSE ownership
 src/mcp.rs           MCP stdio JSON-RPC client and session pool
-src/perf.rs          performance baseline measurement
+src/perf.rs          benchmark facade and public options
+src/perf/            benchmark metrics/reporting, scenarios, and tests
 src/paths.rs         installed and development filesystem locations
 src/run.rs           backend run lifecycle and reconnectable event journal
 src/doctor.rs        installation and integration diagnostics
 src/runtime.rs       one-shot runtime query coordination
-src/runtime_tests.rs runtime flow tests
+src/runtime/tests.rs runtime flow tests
 src/tool.rs          tool provider, attachment, approval, and execution result types
 src/tool_provider.rs tool provider registry and dispatch
-src/tool_provider_tests.rs tool provider registry and dispatch tests
-src/store.rs         SQLite persistence
-src/store_tests.rs   SQLite persistence tests
+src/tool_provider/tests.rs tool provider registry and dispatch tests
+src/store.rs         SQLite transaction and tree-integrity facade
+src/store/           persistence and tests by schema, run, conversation, message, tool, image, and compaction ownership
 ```
 
 Keep boundaries strict:
 
-- Only `llm.rs` should know about provider HTTP request details.
+- Only `llm.rs` and `llm/` should know about provider HTTP request details.
 - Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
-- Only `api.rs` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
+- Only `api.rs` and `api/` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
 - Only `cli.rs` should know about startup CLI argument handling.
 - Only `operation.rs` should own shared CLI/API orchestration over store/runtime
   primitives. It should not parse argv, map HTTP, format terminal output,

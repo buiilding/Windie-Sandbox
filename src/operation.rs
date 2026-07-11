@@ -1198,5 +1198,4 @@ fn insert_content(parts: &[MessageInputPart]) -> String {
 }
 
 #[cfg(test)]
-#[path = "operation_tests.rs"]
 mod tests;

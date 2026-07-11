@@ -19,6 +19,7 @@ mod output;
 mod paths;
 mod perf;
 mod policy;
+mod provider_env;
 mod run;
 mod runtime;
 mod store;

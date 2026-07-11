@@ -227,4 +227,4 @@ flattened active context.
 - `src/context.rs`
 - `src/store.rs`
 - `src/operation.rs`
-- `src/store_tests.rs`
+- `src/store/tests.rs`

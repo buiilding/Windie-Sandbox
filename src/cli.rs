@@ -545,5 +545,4 @@ fn parse_role(role: &str) -> Option<Role> {
 }
 
 #[cfg(test)]
-#[path = "cli_tests.rs"]
 mod tests;

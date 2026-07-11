@@ -62,21 +62,25 @@ Important runtime files:
 
 - `src/main.rs` wires components together.
 - `src/cli.rs` parses startup arguments into typed commands.
-- `src/api.rs` exposes the localhost developer API.
+- `src/api.rs` composes the localhost developer API; `src/api/` owns route
+  families and their private HTTP types.
 - `src/operation.rs` coordinates shared CLI/API operations.
 - `src/conversation.rs` defines message, role, identifier, tool schema, and
   assistant metadata types.
 - `src/context.rs` builds model-facing context from the active conversation
   path.
-- `src/store.rs` owns SQLite persistence.
+- `src/store.rs` owns shared SQLite transaction/tree integrity; `src/store/`
+  separates schema, run, conversation, message, tool, image, and compaction
+  persistence.
 - `src/runtime.rs` coordinates one-shot query flows.
 - `src/run.rs` owns durable backend runs and reconnectable event delivery.
 - `src/paths.rs` owns installed, development, and override filesystem paths.
 - `src/doctor.rs` inspects optional integration prerequisites.
-- `src/llm.rs` owns the OpenAI-compatible Bifrost HTTP request path.
+- `src/llm.rs` exposes typed LLM contracts; `src/llm/` separates Bifrost HTTP
+  calls, model metadata, Responses request serialization, and SSE decoding.
 - `src/policy.rs` owns tool execution policy decisions.
-- `src/shell.rs` executes Windie's built-in `run_shell` tool.
-- `src/perf.rs` owns local benchmark timing.
+- `src/perf.rs` exposes benchmark options; `src/perf/metrics.rs` owns reports
+  and statistics while `src/perf/scenarios.rs` owns measured fixtures.
 
 Developer-facing references:
 
@@ -154,9 +158,10 @@ windie gateway start
 windie gateway stop
 ```
 
-Provider secrets should stay outside source control in the explicit provider
-key environment used for Bifrost startup. The default file is
-`~/.config/windie/providers.env`; `WINDIE_ENV_FILE` can select another file.
+Provider secrets should stay outside source control in Windie's canonical
+provider environment. Windie uses it for approved MCP providers and passes it
+to Bifrost. The default file is `~/.config/windie/providers.env`;
+`WINDIE_ENV_FILE` can select another file.
 
 Windie starts unmodified Bifrost `1.6.3` through its public npm package, or the
 matching Docker image when npm is unavailable. Environment variables make
@@ -197,8 +202,8 @@ Windie is foundation code. Contributions should keep the runtime:
 - boring in the best way
 
 Prefer typed runtime contracts over loose strings and ad hoc JSON. Keep provider
-HTTP details in `src/llm.rs`, API route mapping in `src/api.rs`, CLI argument
-parsing in `src/cli.rs`, persistence in `src/store.rs`, and model context
+HTTP details in `src/llm/`, API route mapping in `src/api/`, CLI argument
+parsing in `src/cli.rs`, persistence in `src/store/`, and model context
 construction in `src/context.rs`.
 
 Do not add broad product surfaces before the primitive exists cleanly. The CLI
