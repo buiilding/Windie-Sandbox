@@ -100,7 +100,9 @@ impl Store {
                     system_prompt TEXT,
                     tool_approval_mode TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
+                    updated_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (active_message_id) REFERENCES messages(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (

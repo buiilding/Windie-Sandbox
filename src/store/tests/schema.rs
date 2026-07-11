@@ -27,6 +27,48 @@ fn creates_performance_indexes() {
 }
 
 #[test]
+fn active_message_pointer_rejects_dangling_message_ids() {
+    let store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+
+    let error = store
+        .connection
+        .execute(
+            "UPDATE conversations SET active_message_id = 'missing' WHERE id = ?1",
+            [conversation_id.as_str()],
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("FOREIGN KEY constraint failed"));
+}
+
+#[test]
+fn stale_mutation_guard_detects_external_commits() {
+    let path = std::env::temp_dir().join(format!(
+        "windie-data-version-{}-{}.db",
+        std::process::id(),
+        Uuid::new_v4()
+    ));
+    let mut first = Store::open_at(&path).unwrap();
+    let data_version = first.data_version().unwrap();
+    let second = Store::open_at(&path).unwrap();
+    second.create_conversation("openai/test").unwrap();
+
+    let transaction = first
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let error = ensure_data_version(&transaction, data_version).unwrap_err();
+
+    assert_eq!(
+        error::kind_from_error(&error),
+        Some(crate::error::WindieErrorKind::Conflict)
+    );
+    drop(transaction);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn rejects_newer_database_schema_version() {
     let store = Store::open_memory().unwrap();
     let newer_version = DATABASE_SCHEMA_VERSION + 1;

@@ -185,6 +185,7 @@ impl IntoResponse for ApiError {
         let status = match error::kind_from_error(&self.0) {
             Some(WindieErrorKind::NotFound) => StatusCode::NOT_FOUND,
             Some(WindieErrorKind::InvalidRequest) => StatusCode::BAD_REQUEST,
+            Some(WindieErrorKind::Conflict) => StatusCode::CONFLICT,
             None => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

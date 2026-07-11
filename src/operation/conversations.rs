@@ -93,36 +93,38 @@ pub fn inspect_conversation(
     conversation_id: &ConversationId,
     model_override: Option<ModelName>,
 ) -> Result<InspectionReport> {
-    let model = resolve_conversation_model(store, conversation_id, model_override)?;
-    let reasoning = conversation_reasoning(store, conversation_id)?;
-    let active_message_id = store.active_message_id(conversation_id)?;
-    let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
-    let messages = store.load_message_tree_view(conversation_id)?;
-    let tool_schemas = store.load_tool_schemas(conversation_id)?;
-    let active_path = store.load_active_path_view(conversation_id)?;
-    let system_prompt = store.system_prompt(conversation_id)?;
-    let latest_compaction = store.latest_compaction(conversation_id)?;
-    let execution_claims = store.tool_execution_records(conversation_id)?;
-    let model_context = ContextBuilder::flatten_view(
-        active_path.clone(),
-        system_prompt.clone(),
-        latest_compaction.as_ref(),
-    );
+    store.read_snapshot(|store| {
+        let model = resolve_conversation_model(store, conversation_id, model_override)?;
+        let reasoning = conversation_reasoning(store, conversation_id)?;
+        let active_message_id = store.active_message_id(conversation_id)?;
+        let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
+        let messages = store.load_message_tree_view(conversation_id)?;
+        let tool_schemas = store.load_tool_schemas(conversation_id)?;
+        let active_path = store.load_active_path_view(conversation_id)?;
+        let system_prompt = store.system_prompt(conversation_id)?;
+        let latest_compaction = store.latest_compaction(conversation_id)?;
+        let execution_claims = store.tool_execution_records(conversation_id)?;
+        let model_context = ContextBuilder::flatten_view(
+            active_path.clone(),
+            system_prompt.clone(),
+            latest_compaction.as_ref(),
+        );
 
-    Ok(InspectionReport::new(
-        conversation_id,
-        active_message_id.as_ref(),
-        model.as_str(),
-        reasoning,
-        system_prompt,
-        tool_approval_mode,
-        tool_schemas,
-        messages,
-        active_path,
-        model_context,
-        latest_compaction,
-        execution_claims,
-    ))
+        Ok(InspectionReport::new(
+            conversation_id,
+            active_message_id.as_ref(),
+            model.as_str(),
+            reasoning,
+            system_prompt,
+            tool_approval_mode,
+            tool_schemas,
+            messages,
+            active_path,
+            model_context,
+            latest_compaction,
+            execution_claims,
+        ))
+    })
 }
 
 /// Inserts one message below the current active message.
