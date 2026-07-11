@@ -4,7 +4,7 @@ use super::*;
 
 /// Runs all provider-free scenarios while keeping fixture construction outside
 /// each measured interval.
-pub(super) fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
+pub(super) async fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let prepare_query_turn = benchmark_prepare_query_turn()?;
     let pending_tool_approval_scan = benchmark_pending_tool_approval_scan()?;
     let tool_result_insert = benchmark_tool_result_insert()?;
@@ -33,7 +33,7 @@ pub(super) fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let context_build_with_image_parts = benchmark_context_with_image_parts()?;
     let provider_tool_attach_load = benchmark_provider_tool_attach_load()?;
     let fake_mcp_list_call = benchmark_fake_mcp_list_call()?;
-    let durable_stream_journal = benchmark_durable_stream_journal()?;
+    let durable_stream_journal = benchmark_durable_stream_journal().await?;
 
     Ok(RuntimeBenchmarkTimings {
         prepare_query_turn,
@@ -608,7 +608,7 @@ fn benchmark_fake_mcp_list_call() -> Result<Duration> {
 
 /// Measures queued persistence after production-style delta coalescing across
 /// concurrent conversations.
-fn benchmark_durable_stream_journal() -> Result<Duration> {
+async fn benchmark_durable_stream_journal() -> Result<Duration> {
     let path = env::temp_dir().join(format!(
         "windie-bench-durable-stream-{}-{}.db",
         process::id(),
@@ -621,32 +621,27 @@ fn benchmark_durable_stream_journal() -> Result<Duration> {
     drop(store);
 
     let manager = RunManager::new(Some(path.clone()))?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()?;
-    let duration = runtime.block_on(async {
-        let mut runs = Vec::new();
-        for conversation_id in &conversation_ids {
-            runs.push(manager.begin(conversation_id).await?);
-        }
-        let started = Instant::now();
-        let mut writes = Vec::new();
-        for run in &runs {
-            writes.push(manager.enqueue(
-                &run.id,
-                RunEvent::AssistantDelta {
-                    text: "x".repeat(125),
-                },
-            )?);
-        }
-        for write in writes {
-            write.persisted().await?;
-        }
-        for run in &runs {
-            manager.complete(&run.id, None).await?;
-        }
-        Ok::<Duration, anyhow::Error>(started.elapsed())
-    })?;
+    let mut runs = Vec::new();
+    for conversation_id in &conversation_ids {
+        runs.push(manager.begin(conversation_id).await?);
+    }
+    let started = Instant::now();
+    let mut writes = Vec::new();
+    for run in &runs {
+        writes.push(manager.enqueue(
+            &run.id,
+            RunEvent::AssistantDelta {
+                text: "x".repeat(125),
+            },
+        )?);
+    }
+    for write in writes {
+        write.persisted().await?;
+    }
+    for run in &runs {
+        manager.complete(&run.id, None).await?;
+    }
+    let duration = started.elapsed();
     drop(manager);
     let _ = fs::remove_file(path);
 

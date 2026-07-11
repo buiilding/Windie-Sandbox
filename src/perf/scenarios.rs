@@ -223,7 +223,7 @@ pub async fn run(
     match mode {
         BenchmarkMode::Conversation => record_conversation_benchmark(&mut baseline)?,
         BenchmarkMode::Runtime => {
-            let runtime = run_runtime_benchmark()?;
+            let runtime = run_runtime_benchmark().await?;
             for (name, value) in runtime.durations() {
                 baseline.record(name, value);
             }
