@@ -26,7 +26,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

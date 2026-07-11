@@ -11,7 +11,10 @@ use anyhow::{Context, Result};
 use uuid::Uuid;
 
 use super::metrics::REPORT_FORMAT_VERSION;
-use super::*;
+use super::{
+    BenchmarkMode, CountName, MetricName, PerformanceBaseline, PerformanceReport,
+    PerformanceSample, PerformanceSummary,
+};
 use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId,
@@ -287,6 +290,10 @@ mod live;
 mod runtime;
 
 use conversation::record_conversation_benchmark;
-use fixtures::*;
+use fixtures::{
+    attach_test_mcp_tool, create_completed_tool_chain, create_message_chain, insert_tool_result,
+    insert_user_message, test_tool_definition, tiny_png_bytes, tool_call, tool_call_metadata,
+    with_runtime_store,
+};
 use live::run_live_request;
 use runtime::run_runtime_benchmark;

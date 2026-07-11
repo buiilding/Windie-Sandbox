@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 
-use super::*;
+use super::{AssistantResponse, FinishReason, LlmStreamEvent, MessageMetadata};
 use crate::conversation::{TokenUsage, ToolCall};
 
 #[derive(Debug, Deserialize)]

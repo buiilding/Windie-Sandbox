@@ -1,6 +1,9 @@
 //! Persisted image asset loading, insertion, and cleanup.
 
-use super::*;
+use super::{
+    Context, ConversationId, Digest, ImageAssetId, ImagePart, MessageId, OptionalExtension, Result,
+    Sha256, Store, Transaction, Uuid, error, params,
+};
 
 impl Store {
     /// Loads one image asset only when it is referenced by the conversation.

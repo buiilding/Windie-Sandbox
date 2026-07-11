@@ -1,6 +1,9 @@
 //! Database opening, configuration, and schema creation.
 
-use super::*;
+use super::{
+    Connection, Context, DATABASE_SCHEMA_VERSION, OptionalExtension, Path, PathBuf, Result, Store,
+    anyhow, fs, params, paths,
+};
 
 impl Store {
     /// Opens the default user database in Windie's data directory.

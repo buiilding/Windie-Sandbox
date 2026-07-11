@@ -1,6 +1,6 @@
 //! Conversation message persistence facade.
 
-use super::*;
+use super::MessageId;
 
 mod codecs;
 mod insert;

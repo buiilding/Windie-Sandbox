@@ -1,6 +1,9 @@
 //! Gateway health, lifecycle, model discovery, and model metadata routes.
 
-use super::*;
+use super::{
+    ApiResult, ApiState, BaseUrl, Deserialize, GatewayUrl, Json, ModelInfo, ModelName, Query,
+    Router, Serialize, get, operation, post,
+};
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
