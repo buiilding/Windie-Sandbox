@@ -111,8 +111,14 @@ Before any external execution, the store atomically claims the pair of
 assistant message ID and provider tool-call ID for the owning runtime run. A
 second direct request or run cannot claim the same call while it is executing
 or after it completed. Claim state is typed as `executing`, `completed`,
-`failed`, or `interrupted`; inspection includes the owner and state so an
-unresolved call is distinguishable from one already in flight.
+`failed`, `interrupted`, or `unknown`; inspection includes the owner and state
+so an unresolved call is distinguishable from one already in flight.
+
+`interrupted` means Windie observed cancellation before the provider result was
+committed and permits an explicit retry. `unknown` means the owning runtime
+ended while the claim was still `executing`, so Windie cannot prove whether an
+external side effect happened. Unknown claims are not retried automatically or
+through the interrupted-claim retry path.
 
 The API's approval and denial runs continue automatically if no later manual
 approval remains. The one-shot CLI `approve` and `deny` commands store one

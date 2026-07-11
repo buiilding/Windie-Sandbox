@@ -143,6 +143,10 @@ route. The API:
 Approval and denial runs use the same infrastructure with different runtime
 actions.
 
+The runtime task is supervised. If Tokio reports that it panicked or was
+aborted unexpectedly, the supervisor durably fails the run and releases its
+conversation ownership instead of leaving a live-looking run with no worker.
+
 ## SSE Replay and Follow
 
 The inspector requests:
@@ -161,6 +165,12 @@ It then sends:
 2. new broadcast events as they arrive;
 3. recovered persisted events if the broadcast receiver reports lag;
 4. terminal completion once a terminal event is observed.
+
+If the run belongs to another API process, the local broadcast sender is
+closed. While the durable snapshot remains `running`, SSE polls persisted
+events every 100 milliseconds and continues following the foreign owner. This
+keeps replay and follow behavior correct across coordinators without sharing
+process memory.
 
 When a run is no longer active, the API still replays its persisted history and
 then closes the stream.
@@ -213,10 +223,12 @@ the subscriber.
 
 ## Terminal Completion and Failure
 
-Completion, failure, and cancellation each use one transaction that changes a
-run only when its current status is `running` and appends the matching terminal
-event. Competing terminal outcomes therefore cannot overwrite each other or
-append two terminal events.
+Completion, failure, interruption, and cancellation each use one transaction
+that changes a run only when its current status is `running`, appends the
+matching terminal event, and marks any remaining `executing` tool claims
+`unknown`. Competing terminal outcomes therefore cannot overwrite each other,
+append two terminal events, or leave a terminal run claiming that work is still
+active.
 
 ## Broadcast Capacity and Lag
 

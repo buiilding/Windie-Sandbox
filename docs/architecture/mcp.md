@@ -122,6 +122,11 @@ While waiting, Windie:
 - turns JSON-RPC error objects into operation errors;
 - requires a `result` field on successful responses.
 
+Stdout enters Windie through a bounded 32-line channel. Each newline-delimited
+JSON-RPC frame is limited to 32 MiB before allocation and decoding. A provider
+that writes faster than Windie consumes responses is backpressured by the
+reader channel instead of growing process memory without bound.
+
 This is a minimal client. It does not currently dispatch server-to-client MCP
 requests or consume dynamic tool-list-changed notifications.
 
@@ -264,6 +269,11 @@ image blocks.
 
 MCP's `isError: true` marks the result unsuccessful, but its content is still
 normalized and persisted as the required output for the call.
+
+The aggregate normalized result is limited to 32 MiB. Decoded image blocks also
+pass through Windie's normal image validation, including supported MIME/header
+matching and the 20 MiB per-image limit. Oversized or invalid provider output
+becomes a failed tool result rather than entering conversation storage.
 
 ## Persistence Boundary
 
