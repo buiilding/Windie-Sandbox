@@ -518,27 +518,87 @@ impl RunManager {
         Ok(record.into())
     }
 
-    /// Spawns runtime work and converts an unexpected task exit into a durable
-    /// failed run so ownership cannot remain live without an executing task.
-    pub fn spawn_supervised<F>(&self, run_id: String, future: F)
+    /// Executes one caller-awaited action on a dedicated runtime and owns its
+    /// persisted begin/finish lifecycle.
+    pub async fn execute_action<T, F, Fut>(
+        &self,
+        conversation_id: &ConversationId,
+        action: RuntimeRunAction,
+        task: F,
+    ) -> Result<T>
     where
-        F: Future<Output = ()> + Send + 'static,
+        T: Send + 'static,
+        F: FnOnce(String, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + 'static,
     {
-        let task = tokio::spawn(future);
+        let run = self.begin_action(conversation_id, action).await?;
+        let run_id = run.id;
+        let cancellation = self.cancellation(&run_id)?;
+        let worker_run_id = run_id.clone();
+        let result = match tokio::task::spawn_blocking(move || {
+            run_task_on_current_thread_runtime(task, worker_run_id, cancellation)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(join_error) => {
+                let operation_error = anyhow!("runtime action task stopped: {join_error}");
+                let message = operation_error.to_string();
+                self.fail(&run_id, message.clone(), vec![join_error.to_string()])
+                    .await?;
+                return Err(operation_error);
+            }
+        };
+
+        self.finish_result(&run_id, result).await
+    }
+
+    /// Starts a detached action whose task and terminal state are backend-owned.
+    pub async fn spawn_action<F, Fut>(
+        &self,
+        conversation_id: &ConversationId,
+        action: RuntimeRunAction,
+        task: F,
+    ) -> Result<RunSnapshot>
+    where
+        F: FnOnce(String, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Option<String>>> + 'static,
+    {
+        let snapshot = self.begin_action(conversation_id, action).await?;
+        let run_id = snapshot.id.clone();
+        let cancellation = self.cancellation(&run_id)?;
+        let worker_run_id = run_id.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            run_task_on_current_thread_runtime(task, worker_run_id, cancellation)
+        });
         let manager = self.clone();
         tokio::spawn(async move {
-            let Err(join_error) = task.await else {
-                return;
-            };
-            let message = if join_error.is_panic() {
-                "runtime task panicked"
-            } else {
-                "runtime task stopped unexpectedly"
-            };
-            let _ = manager
-                .fail(&run_id, message.to_string(), vec![join_error.to_string()])
-                .await;
+            match worker.await {
+                Ok(Ok(message_id)) => {
+                    let _ = manager.complete(&run_id, message_id).await;
+                }
+                Ok(Err(operation_error)) if is_runtime_cancelled(&operation_error) => {
+                    let _ = manager.finish_cancelled(&run_id).await;
+                }
+                Ok(Err(operation_error)) => {
+                    let message = operation_error.to_string();
+                    let causes = operation_error.chain().map(ToString::to_string).collect();
+                    let _ = manager.fail(&run_id, message, causes).await;
+                }
+                Err(join_error) => {
+                    let message = if join_error.is_panic() {
+                        "runtime task panicked"
+                    } else {
+                        "runtime task stopped unexpectedly"
+                    };
+                    let _ = manager
+                        .fail(&run_id, message.to_string(), vec![join_error.to_string()])
+                        .await;
+                }
+            }
         });
+
+        Ok(snapshot)
     }
 
     /// Finalizes one direct operation without changing its client response shape.
@@ -549,6 +609,10 @@ impl RunManager {
                 Ok(value)
             }
             Err(operation_error) => {
+                if is_runtime_cancelled(&operation_error) {
+                    self.finish_cancelled(run_id).await?;
+                    return Err(operation_error);
+                }
                 let message = operation_error.to_string();
                 let causes = operation_error.chain().map(ToString::to_string).collect();
                 self.fail(run_id, message, causes).await?;
@@ -746,6 +810,22 @@ impl RunManager {
     }
 }
 
+fn run_task_on_current_thread_runtime<T, F, Fut>(
+    task: F,
+    run_id: String,
+    cancellation: RunCancellation,
+) -> Result<T>
+where
+    F: FnOnce(String, RunCancellation) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to build runtime action executor")?;
+    runtime.block_on(task(run_id, cancellation))
+}
+
 fn decode_event_record(run_id: &str, record: RuntimeRunEventRecord) -> Result<RunEventEnvelope> {
     Ok(RunEventEnvelope {
         run_id: run_id.to_string(),
@@ -802,6 +882,35 @@ mod tests {
             RuntimeRunStatus::Completed
         );
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn execute_action_runs_off_the_tokio_worker_and_owns_completion() {
+        let path = test_path("execute-action");
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let manager = RunManager::new(Some(path.clone())).unwrap();
+        let caller_thread = std::thread::current().id();
+
+        let worker_thread = manager
+            .execute_action(
+                &conversation_id,
+                RuntimeRunAction::Query,
+                move |_run_id, _cancellation| async move { Ok(std::thread::current().id()) },
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(worker_thread, caller_thread);
+        assert!(
+            manager
+                .active_for_conversation(&conversation_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         let _ = fs::remove_file(path);
     }
 
@@ -980,11 +1089,18 @@ mod tests {
         let conversation_id = store.create_conversation("openai/test").unwrap();
         drop(store);
         let manager = RunManager::new(Some(path.clone())).unwrap();
-        let run = manager.begin(&conversation_id).await.unwrap();
-
-        manager.spawn_supervised(run.id.clone(), async {
-            panic!("test runtime panic");
-        });
+        let run = manager
+            .spawn_action(
+                &conversation_id,
+                RuntimeRunAction::Query,
+                |_run_id, _cancellation| async {
+                    panic!("test runtime panic");
+                    #[allow(unreachable_code)]
+                    Ok::<Option<String>, anyhow::Error>(None)
+                },
+            )
+            .await
+            .unwrap();
 
         let snapshot = tokio::time::timeout(Duration::from_secs(1), async {
             loop {

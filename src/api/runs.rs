@@ -5,8 +5,8 @@ use super::{
     KeepAlive, MessageId, ModelName, Path, Query, QueryRequest, ReasoningRequest, Result, Router,
     RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription, RuntimeEventSink,
     RuntimeOutput, RuntimeRunAction, Serialize, Sse, State, ToolCall, ToolCallId, VecDeque,
-    broadcast, error_causes, get, is_runtime_cancelled, log_api_error, open_store, operation, post,
-    raw_error_message, runtime_turn_config, stream,
+    broadcast, error_causes, get, log_api_error, open_store, operation, post, raw_error_message,
+    runtime_turn_config, stream,
 };
 use crate::store::RuntimeRunStatus;
 
@@ -165,116 +165,85 @@ async fn cancel_run(
 
 /// Starts one task whose lifetime is independent from HTTP subscribers.
 async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<RunSnapshot> {
-    let snapshot = state
-        .run_manager
-        .begin_action(action.conversation_id(), action.run_action())
-        .await?;
-    let run_id = snapshot.id.clone();
-    let task_run_id = run_id.clone();
+    let conversation_id = action.conversation_id().clone();
+    let run_action = action.run_action();
     let manager = state.run_manager.clone();
-    let task_manager = manager.clone();
-    manager.spawn_supervised(task_run_id.clone(), async move {
-        let result = async {
-            let mut store = open_store(&state)?;
-            let pending_writes = PendingRunWrites::default();
-            let events = PersistentRunEventSink {
-                manager: task_manager.clone(),
-                run_id: task_run_id.clone(),
-                pending_writes: pending_writes.clone(),
-            };
-            let output = PersistentRunOutput {
-                manager: task_manager.clone(),
-                run_id: task_run_id.clone(),
-                buffered_delta: std::sync::Mutex::new(None),
-                pending_writes: pending_writes.clone(),
-            };
-            let message = match action {
-                RuntimeStreamAction::Query {
-                    conversation_id,
-                    model_override,
-                    reasoning,
-                } => {
-                    let runtime =
-                        runtime_turn_config(&state, &task_run_id, model_override, reasoning)?;
-                    operation::query_runtime_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        runtime,
-                    )
-                    .await
-                    .map(Some)
-                }
-                RuntimeStreamAction::ApproveTool {
-                    conversation_id,
-                    tool_call_id,
-                } => {
-                    let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
-                    operation::approve_tool_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        &tool_call_id,
-                        runtime,
-                    )
-                    .await
-                }
-                RuntimeStreamAction::DenyTool {
-                    conversation_id,
-                    tool_call_id,
-                } => {
-                    let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
-                    operation::deny_tool_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        &tool_call_id,
-                        runtime,
-                    )
-                    .await
-                }
-            };
-            output.flush()?;
-            pending_writes.flush().await?;
-
-            message
-        }
-        .await;
-
-        match result {
-            Ok(message) => {
-                let message_id = message
-                    .and_then(|message| message.id)
-                    .map(|id| id.as_str().to_string());
-                if let Err(error) = task_manager.complete(&task_run_id, message_id).await {
-                    log_api_error(&error);
-                }
-            }
-            Err(error) => {
-                log_api_error(&error);
-                let persist_result = match is_runtime_cancelled(&error) {
-                    true => task_manager.finish_cancelled(&task_run_id).await,
-                    false => {
-                        task_manager
-                            .fail(
-                                &task_run_id,
-                                raw_error_message(&error),
-                                error_causes(&error),
-                            )
-                            .await
-                    }
+    manager
+        .spawn_action(
+            &conversation_id,
+            run_action,
+            move |task_run_id, _cancellation| async move {
+                let mut store = open_store(&state)?;
+                let pending_writes = PendingRunWrites::default();
+                let events = PersistentRunEventSink {
+                    manager: state.run_manager.clone(),
+                    run_id: task_run_id.clone(),
+                    pending_writes: pending_writes.clone(),
                 };
-                if let Err(persist_error) = persist_result {
-                    log_api_error(&persist_error);
-                }
-            }
-        }
-    });
+                let output = PersistentRunOutput {
+                    manager: state.run_manager.clone(),
+                    run_id: task_run_id.clone(),
+                    buffered_delta: std::sync::Mutex::new(None),
+                    pending_writes: pending_writes.clone(),
+                };
+                let message = match action {
+                    RuntimeStreamAction::Query {
+                        conversation_id,
+                        model_override,
+                        reasoning,
+                    } => {
+                        let runtime =
+                            runtime_turn_config(&state, &task_run_id, model_override, reasoning)?;
+                        operation::query_runtime_turn(
+                            &output,
+                            &events,
+                            &mut store,
+                            &conversation_id,
+                            runtime,
+                        )
+                        .await
+                        .map(Some)
+                    }
+                    RuntimeStreamAction::ApproveTool {
+                        conversation_id,
+                        tool_call_id,
+                    } => {
+                        let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
+                        operation::approve_tool_turn(
+                            &output,
+                            &events,
+                            &mut store,
+                            &conversation_id,
+                            &tool_call_id,
+                            runtime,
+                        )
+                        .await
+                    }
+                    RuntimeStreamAction::DenyTool {
+                        conversation_id,
+                        tool_call_id,
+                    } => {
+                        let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
+                        operation::deny_tool_turn(
+                            &output,
+                            &events,
+                            &mut store,
+                            &conversation_id,
+                            &tool_call_id,
+                            runtime,
+                        )
+                        .await
+                    }
+                }?;
+                output.flush()?;
+                pending_writes.flush().await?;
 
-    Ok(snapshot)
+                Ok(message
+                    .and_then(|message| message.id)
+                    .map(|id| id.as_str().to_string()))
+            },
+        )
+        .await
 }
 
 #[derive(Debug, Deserialize)]

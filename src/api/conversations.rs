@@ -6,7 +6,7 @@ use super::{
     MessageId, MessageInputPart, MessageMetadata, MessagePart, ModelName, Path, PathBuf,
     QueryRequest, ReasoningRequest, Response, Result, Role, Router, RuntimeOutput,
     RuntimeRunAction, Serialize, State, StatusCode, ToolCall, Value, error, get, open_store,
-    operation, patch, post, run_store, runtime_turn_config,
+    operation, patch, post, run_store,
 };
 use anyhow::Context as _;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -567,25 +567,33 @@ async fn query(
     Json(request): Json<QueryRequest>,
 ) -> ApiResult<MessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
-    let run = state
-        .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::Query)
+    let manager = state.run_manager.clone();
+    let task_conversation_id = conversation_id.clone();
+    let message = manager
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::Query,
+            move |run_id, cancellation| async move {
+                let mut store = open_store(&state)?;
+                let runtime = operation::RuntimeTurnConfig::new(
+                    &run_id,
+                    cancellation,
+                    GatewayUrl::new(state.gateway_url.clone()),
+                    BaseUrl::new(state.base_url.clone()),
+                    request.model_override(),
+                    request.reasoning(),
+                    state.tool_registry.as_ref(),
+                );
+                operation::query_conversation_with_registry(
+                    &ApiOutput,
+                    &mut store,
+                    &task_conversation_id,
+                    runtime,
+                )
+                .await
+            },
+        )
         .await?;
-    let runtime = runtime_turn_config(
-        &state,
-        &run.id,
-        request.model_override(),
-        request.reasoning(),
-    )?;
-    let result = operation::query_conversation_with_registry(
-        &ApiOutput,
-        &mut store,
-        &conversation_id,
-        runtime,
-    )
-    .await;
-    let message = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(MessageResponse::from_message(message)))
 }

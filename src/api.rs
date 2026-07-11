@@ -45,9 +45,7 @@ use crate::llm::{BaseUrl, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::paths;
-use crate::run::{
-    RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription, is_runtime_cancelled,
-};
+use crate::run::{RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription};
 use crate::runtime::RuntimeEventSink;
 use crate::store::{ConversationInfo, RuntimeRunAction, Store};
 use crate::tool::{

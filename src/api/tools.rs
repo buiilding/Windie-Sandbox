@@ -359,22 +359,26 @@ async fn approve_tool(
 ) -> ApiResult<ToolExecutionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = open_store(&state)?;
-    let run = state
-        .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::ApproveTool)
+    let manager = state.run_manager.clone();
+    let task_conversation_id = conversation_id.clone();
+    let result = manager
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::ApproveTool,
+            move |run_id, cancellation| async move {
+                let mut store = open_store(&state)?;
+                operation::approve_tool_with_registry(
+                    &mut store,
+                    &task_conversation_id,
+                    &tool_call_id,
+                    &state.tool_registry,
+                    &run_id,
+                    &cancellation,
+                )
+                .await
+            },
+        )
         .await?;
-    let cancellation = state.run_manager.cancellation(&run.id)?;
-    let result = operation::approve_tool_with_registry(
-        &mut store,
-        &conversation_id,
-        &tool_call_id,
-        &state.tool_registry,
-        &run.id,
-        &cancellation,
-    )
-    .await;
-    let result = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(result.into()))
 }
@@ -386,20 +390,24 @@ async fn deny_tool(
 ) -> ApiResult<ToolExecutionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = open_store(&state)?;
-    let run = state
-        .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::DenyTool)
+    let manager = state.run_manager.clone();
+    let task_conversation_id = conversation_id.clone();
+    let result = manager
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::DenyTool,
+            move |run_id, cancellation| async move {
+                let mut store = open_store(&state)?;
+                operation::deny_tool(
+                    &mut store,
+                    &task_conversation_id,
+                    &tool_call_id,
+                    &run_id,
+                    &cancellation,
+                )
+            },
+        )
         .await?;
-    let cancellation = state.run_manager.cancellation(&run.id)?;
-    let result = operation::deny_tool(
-        &mut store,
-        &conversation_id,
-        &tool_call_id,
-        &run.id,
-        &cancellation,
-    );
-    let result = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(result.into()))
 }
