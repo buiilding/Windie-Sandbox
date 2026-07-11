@@ -372,6 +372,28 @@ impl ToolProviderRegistry {
             catalog_loads: Arc::new(CatalogLoads::default()),
         }
     }
+
+    /// Builds one uncached fake provider for the provider-free benchmark suite.
+    pub(crate) fn with_uncached_mcp_provider(
+        provider_id: &'static str,
+        schema_prefix: &'static str,
+        display_name: &'static str,
+        command: McpCommand,
+    ) -> Self {
+        Self {
+            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                provider_id,
+                schema_prefix,
+                display_name,
+                command,
+                shutdown_command: None,
+                setup: None,
+            })],
+            mcp_session_pool: None,
+            catalog_cache: Arc::new(Mutex::new(HashMap::new())),
+            catalog_loads: Arc::new(CatalogLoads::default()),
+        }
+    }
 }
 
 impl Default for ToolProviderRegistry {

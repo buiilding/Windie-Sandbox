@@ -45,6 +45,38 @@ windie bench compare benches/100-messages-baseline.json benches/100-messages-cur
 Negative percentage changes mean the current code is faster. Positive
 percentage changes mean the current code is slower.
 
+## Provider-Free Runtime Benchmarks
+
+The runtime suite builds temporary databases and fake MCP processes. It does
+not call Bifrost or paid providers:
+
+```bash
+scripts/bench.sh runtime 100
+```
+
+In addition to query preparation, context, tree mutation, MCP protocol, and
+durable journal metrics, the suite covers these ownership boundaries:
+
+```text
+inspection snapshot 1000
+fork conversation 1000
+run action lifecycle
+run admission contention
+fake MCP catalog single-flight
+provider catalog process starts
+```
+
+Fixture creation is outside each timing window. The catalog scenario starts two
+concurrent callers and records a count invariant of one provider process. A
+count above one indicates that single-flight coordination regressed.
+
+New metrics are absent from older runtime baselines and therefore do not appear
+in comparisons until a reviewed current report is promoted with:
+
+```bash
+scripts/bench.sh update-baseline
+```
+
 ## 100 Message Stress Fixture
 
 `100-messages-stress-baseline.json` is a local/free benchmark report for one

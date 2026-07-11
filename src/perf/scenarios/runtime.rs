@@ -1,13 +1,14 @@
 //! Provider-free runtime benchmark scenarios.
 
 use super::{
-    BRANCH_CHILDREN, ContextBuilder, Duration, FAKE_MCP_COMMAND, IMAGE_PART_MESSAGES, Instant,
+    Arc, BRANCH_CHILDREN, ContextBuilder, Duration, FAKE_MCP_COMMAND, IMAGE_PART_MESSAGES, Instant,
     LARGE_SCALE_PATH_MESSAGES, LARGE_TRUNCATE_DESCENDANTS, Result, Role, RunEvent, RunManager,
-    RuntimeBenchmarkTimings, RuntimeContextBenchmark, SCALE_PATH_MESSAGES, Store, TEST_PROVIDER_ID,
-    TOOL_CHAIN_RESULTS, ToolProviderKind, UnsavedImagePart, UnsavedMessagePart, Uuid,
-    attach_test_mcp_tool, create_completed_tool_chain, create_message_chain, deny_tool_call, env,
-    fs, insert_tool_result, insert_user_message, mcp, pending_tool_approvals, prepare_query_turn,
-    process, test_tool_definition, tiny_png_bytes, tool_call, tool_call_metadata,
+    RuntimeBenchmarkTimings, RuntimeContextBenchmark, RuntimeRunAction, SCALE_PATH_MESSAGES, Store,
+    TEST_PROVIDER_ID, TOOL_CHAIN_RESULTS, ToolProviderId, ToolProviderKind, ToolProviderRegistry,
+    UnsavedImagePart, UnsavedMessagePart, Uuid, attach_test_mcp_tool, create_completed_tool_chain,
+    create_message_chain, deny_tool_call, env, fs, insert_tool_result, insert_user_message, mcp,
+    operation, pending_tool_approvals, prepare_query_turn, process, remove_runtime_database_files,
+    runtime_database_path, test_tool_definition, tiny_png_bytes, tool_call, tool_call_metadata,
     with_runtime_store,
 };
 
@@ -43,6 +44,12 @@ pub(super) async fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let provider_tool_attach_load = benchmark_provider_tool_attach_load()?;
     let fake_mcp_list_call = benchmark_fake_mcp_list_call()?;
     let durable_stream_journal = benchmark_durable_stream_journal().await?;
+    let inspection_snapshot_1000 = benchmark_inspection_snapshot_1000()?;
+    let fork_conversation_1000 = benchmark_fork_conversation_1000()?;
+    let run_action_lifecycle = benchmark_run_action_lifecycle().await?;
+    let run_admission_contention = benchmark_run_admission_contention().await?;
+    let (fake_mcp_catalog_singleflight, provider_catalog_starts) =
+        benchmark_fake_mcp_catalog_singleflight()?;
 
     Ok(RuntimeBenchmarkTimings {
         prepare_query_turn,
@@ -72,6 +79,11 @@ pub(super) async fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
         provider_tool_attach_load,
         fake_mcp_list_call,
         durable_stream_journal,
+        inspection_snapshot_1000,
+        fork_conversation_1000,
+        run_action_lifecycle,
+        run_admission_contention,
+        fake_mcp_catalog_singleflight,
         active_path_messages: context.active_path_messages,
         tree_messages: context.tree_messages,
         requested_tool_calls: context.requested_tool_calls,
@@ -79,6 +91,7 @@ pub(super) async fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
         deleted_messages,
         promoted_children,
         truncated_messages,
+        provider_catalog_starts,
     })
 }
 
@@ -655,4 +668,150 @@ async fn benchmark_durable_stream_journal() -> Result<Duration> {
     let _ = fs::remove_file(path);
 
     Ok(duration)
+}
+
+/// Measures the complete read-consistent inspector snapshot for a long path.
+fn benchmark_inspection_snapshot_1000() -> Result<Duration> {
+    with_runtime_store("inspection-snapshot-1000", |store| {
+        let conversation_id = store.create_conversation("openai/test")?;
+        create_message_chain(store, &conversation_id, LARGE_SCALE_PATH_MESSAGES)?;
+
+        let started = Instant::now();
+        let _ = operation::inspect_conversation(store, &conversation_id, None)?;
+        Ok(started.elapsed())
+    })
+}
+
+/// Measures copying a long active path into an independently owned conversation.
+fn benchmark_fork_conversation_1000() -> Result<Duration> {
+    with_runtime_store("fork-conversation-1000", |store| {
+        let conversation_id = store.create_conversation("openai/test")?;
+        let checkpoint = create_message_chain(store, &conversation_id, LARGE_SCALE_PATH_MESSAGES)?
+            .expect("fork benchmark fixture should contain messages");
+
+        let started = Instant::now();
+        let forked_id = store.fork_conversation_at_message(&conversation_id, &checkpoint)?;
+        let duration = started.elapsed();
+        debug_assert_eq!(
+            store.load_active_path(&forked_id)?.len(),
+            LARGE_SCALE_PATH_MESSAGES
+        );
+        Ok(duration)
+    })
+}
+
+/// Measures begin, dedicated executor startup, and durable completion.
+async fn benchmark_run_action_lifecycle() -> Result<Duration> {
+    let path = runtime_database_path("run-action-lifecycle");
+    let store = Store::open_at(&path)?;
+    let conversation_id = store.create_conversation("openai/test")?;
+    drop(store);
+    let manager = RunManager::new(Some(path.clone()))?;
+
+    let started = Instant::now();
+    manager
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::Query,
+            |_run_id, _cancellation| async { Ok(()) },
+        )
+        .await?;
+    let duration = started.elapsed();
+    drop(manager);
+    remove_runtime_database_files(&path);
+    Ok(duration)
+}
+
+/// Measures two simultaneous attempts to acquire one conversation run slot.
+async fn benchmark_run_admission_contention() -> Result<Duration> {
+    let path = runtime_database_path("run-admission-contention");
+    let store = Store::open_at(&path)?;
+    let conversation_id = store.create_conversation("openai/test")?;
+    drop(store);
+    let manager = RunManager::new(Some(path.clone()))?;
+
+    let started = Instant::now();
+    let (first, second) = tokio::join!(
+        manager.begin_action(&conversation_id, RuntimeRunAction::Query),
+        manager.begin_action(&conversation_id, RuntimeRunAction::Query)
+    );
+    let duration = started.elapsed();
+    let run = match (first, second) {
+        (Ok(run), Err(_)) | (Err(_), Ok(run)) => run,
+        (Ok(_), Ok(_)) => anyhow::bail!("competing run admissions both succeeded"),
+        (Err(first), Err(second)) => {
+            return Err(anyhow::anyhow!(
+                "competing run admissions both failed: {first}; {second}"
+            ));
+        }
+    };
+    manager.complete(&run.id, None).await?;
+    drop(manager);
+    remove_runtime_database_files(&path);
+    Ok(duration)
+}
+
+/// Measures two concurrent catalog callers sharing one fake MCP process.
+fn benchmark_fake_mcp_catalog_singleflight() -> Result<(Duration, usize)> {
+    let nonce = Uuid::new_v4();
+    let script_path = env::temp_dir().join(format!("windie-catalog-bench-{nonce}.sh"));
+    let starts_path = env::temp_dir().join(format!("windie-catalog-bench-{nonce}.starts"));
+    let script = format!(
+        r#"#!/bin/sh
+printf 'start\n' >> '{}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"bench","version":"1"}}}}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      sleep 0.02
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"search","description":"Search","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+  esac
+done
+"#,
+        starts_path.display()
+    );
+    fs::write(&script_path, script)?;
+    let script_argument: &'static str =
+        Box::leak(script_path.to_string_lossy().into_owned().into_boxed_str());
+    let arguments: &'static [&'static str] = Box::leak(vec![script_argument].into_boxed_slice());
+    let registry = Arc::new(ToolProviderRegistry::with_uncached_mcp_provider(
+        "catalog-benchmark",
+        "catalog_benchmark",
+        "Catalog Benchmark",
+        crate::mcp::McpCommand {
+            program: "/bin/sh",
+            args: arguments,
+            env: &[],
+        },
+    ));
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let workers = (0..2)
+        .map(|_| {
+            let registry = Arc::clone(&registry);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry.list_provider_tools(&ToolProviderId::new("catalog-benchmark"))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let started = Instant::now();
+    barrier.wait();
+    for worker in workers {
+        let tools = worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("catalog benchmark worker panicked"))??;
+        debug_assert_eq!(tools.len(), 1);
+    }
+    let duration = started.elapsed();
+    let starts = fs::read_to_string(&starts_path)?.lines().count();
+    debug_assert_eq!(starts, 1);
+    let _ = fs::remove_file(script_path);
+    let _ = fs::remove_file(starts_path);
+
+    Ok((duration, starts))
 }
