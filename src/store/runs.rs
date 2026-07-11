@@ -224,6 +224,19 @@ impl Store {
             return Ok(None);
         }
 
+        transaction
+            .execute(
+                "
+                UPDATE tool_call_executions
+                SET status = 'unknown',
+                    error = 'runtime ended before the tool result was durably recorded',
+                    updated_at = ?2
+                WHERE run_id = ?1 AND status = 'executing'
+                ",
+                params![run_id, now],
+            )
+            .context("failed to reconcile unfinished tool executions")?;
+
         let next = transaction
             .query_row(
                 "
@@ -301,8 +314,12 @@ impl Store {
     }
 
     /// Marks expired operations abandoned so new work can acquire ownership.
-    pub fn interrupt_expired_runtime_runs(&self, now: i64) -> Result<()> {
-        self.connection
+    pub fn interrupt_expired_runtime_runs(&mut self, now: i64) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start expired runtime recovery transaction")?;
+        transaction
             .execute(
                 "
                 UPDATE runtime_runs
@@ -314,12 +331,38 @@ impl Store {
                 params![now],
             )
             .context("failed to interrupt expired runtime operations")?;
+        transaction
+            .execute(
+                "
+                UPDATE tool_call_executions
+                SET status = 'unknown',
+                    error = 'runtime ownership expired before the tool result was durably recorded',
+                    updated_at = ?1
+                WHERE status = 'executing'
+                  AND run_id IN (
+                      SELECT id FROM runtime_runs
+                      WHERE status = 'interrupted'
+                        AND error = 'Windie runtime ownership lease expired'
+                        AND updated_at = ?1
+                  )
+                ",
+                params![now],
+            )
+            .context("failed to reconcile expired tool executions")?;
+        transaction
+            .commit()
+            .context("failed to commit expired runtime recovery")?;
         Ok(())
     }
 
     /// Marks operations abandoned when their coordinator shuts down cleanly.
-    pub fn interrupt_runtime_runs_for_owner(&self, owner_id: &str) -> Result<()> {
-        self.connection
+    pub fn interrupt_runtime_runs_for_owner(&mut self, owner_id: &str) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start runtime owner shutdown transaction")?;
+        let now = now_millis()?;
+        transaction
             .execute(
                 "
                 UPDATE runtime_runs
@@ -328,9 +371,28 @@ impl Store {
                     updated_at = ?2
                 WHERE owner_id = ?1 AND status = 'running'
                 ",
-                params![owner_id, now_millis()?],
+                params![owner_id, now],
             )
             .context("failed to interrupt owned runtime operations")?;
+        transaction
+            .execute(
+                "
+                UPDATE tool_call_executions
+                SET status = 'unknown',
+                    error = 'runtime coordinator stopped before the tool result was durably recorded',
+                    updated_at = ?2
+                WHERE status = 'executing'
+                  AND run_id IN (
+                      SELECT id FROM runtime_runs
+                      WHERE owner_id = ?1 AND status = 'interrupted'
+                  )
+                ",
+                params![owner_id, now],
+            )
+            .context("failed to reconcile stopped-owner tool executions")?;
+        transaction
+            .commit()
+            .context("failed to commit runtime owner shutdown")?;
         Ok(())
     }
 }

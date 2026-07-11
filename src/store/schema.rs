@@ -191,7 +191,7 @@ impl Store {
                     tool_call_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (
-                        status IN ('executing', 'completed', 'failed', 'interrupted')
+                        status IN ('executing', 'completed', 'failed', 'interrupted', 'unknown')
                     ),
                     result_message_id TEXT,
                     error TEXT,

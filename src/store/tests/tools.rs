@@ -190,6 +190,53 @@ fn failure_transition_requires_an_executing_claim() {
 }
 
 #[test]
+fn interrupted_runtime_owner_marks_unfinished_claim_unknown() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use tool", None)
+        .unwrap();
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_unknown", "run", "{}")],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let call_id = ToolCallId::new("call_unknown");
+    let run = store
+        .create_owned_runtime_run(
+            &conversation_id,
+            RuntimeRunAction::ApproveTool,
+            "stopped-owner",
+            i64::MAX,
+        )
+        .unwrap();
+    store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &run.id)
+        .unwrap();
+
+    store
+        .interrupt_runtime_runs_for_owner("stopped-owner")
+        .unwrap();
+
+    let claim = store
+        .tool_execution_records(&conversation_id)
+        .unwrap()
+        .remove(0);
+    assert_eq!(claim.status, ToolExecutionStatus::Unknown);
+    let error = store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, "retry-run")
+        .unwrap_err();
+    assert!(error.to_string().contains("already unknown"));
+}
+
+#[test]
 fn new_conversation_defaults_to_manual_tool_approval() {
     let store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();

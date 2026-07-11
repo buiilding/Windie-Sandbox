@@ -9,6 +9,7 @@ pub enum ToolExecutionStatus {
     Completed,
     Failed,
     Interrupted,
+    Unknown,
 }
 
 impl ToolExecutionStatus {
@@ -18,6 +19,7 @@ impl ToolExecutionStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Interrupted => "interrupted",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -27,6 +29,7 @@ impl ToolExecutionStatus {
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             "interrupted" => Ok(Self::Interrupted),
+            "unknown" => Ok(Self::Unknown),
             _ => Err(anyhow!("unknown tool execution status: {value}")),
         }
     }

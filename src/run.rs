@@ -6,6 +6,7 @@
 //! persisted status and events let clients reconstruct completed work.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -236,7 +237,7 @@ struct RunJournal {
 
 impl RunJournal {
     fn start(store_path: Option<PathBuf>) -> Result<Self> {
-        let store = match store_path.as_ref() {
+        let mut store = match store_path.as_ref() {
             Some(path) => Store::open_at(path)?,
             None => Store::open()?,
         };
@@ -513,6 +514,29 @@ impl RunManager {
             );
 
         Ok(record.into())
+    }
+
+    /// Spawns runtime work and converts an unexpected task exit into a durable
+    /// failed run so ownership cannot remain live without an executing task.
+    pub fn spawn_supervised<F>(&self, run_id: String, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let task = tokio::spawn(future);
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let Err(join_error) = task.await else {
+                return;
+            };
+            let message = if join_error.is_panic() {
+                "runtime task panicked"
+            } else {
+                "runtime task stopped unexpectedly"
+            };
+            let _ = manager
+                .fail(&run_id, message.to_string(), vec![join_error.to_string()])
+                .await;
+        });
     }
 
     /// Finalizes one direct operation without changing its client response shape.
@@ -932,6 +956,42 @@ mod tests {
         manager.finish_cancelled(&run.id).await.unwrap();
         let snapshot = cancel.await.unwrap().unwrap();
         assert_eq!(snapshot.status, RuntimeRunStatus::Cancelled);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn supervised_task_panic_fails_and_releases_run() {
+        let path = test_path("supervised-panic");
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let manager = RunManager::new(Some(path.clone())).unwrap();
+        let run = manager.begin(&conversation_id).await.unwrap();
+
+        manager.spawn_supervised(run.id.clone(), async {
+            panic!("test runtime panic");
+        });
+
+        let snapshot = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let snapshot = manager.snapshot(&run.id).await.unwrap();
+                if snapshot.status != RuntimeRunStatus::Running {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(snapshot.status, RuntimeRunStatus::Failed);
+        assert!(
+            manager
+                .active_for_conversation(&conversation_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
         let _ = fs::remove_file(path);
     }
 

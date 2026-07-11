@@ -48,7 +48,7 @@ use tools::read_attached_tool_row;
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 13;
+const DATABASE_SCHEMA_VERSION: i32 = 14;
 
 pub use compactions::Compaction;
 pub use conversations::ConversationInfo;

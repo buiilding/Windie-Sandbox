@@ -164,17 +164,18 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
     let run_id = snapshot.id.clone();
     let task_run_id = run_id.clone();
     let manager = state.run_manager.clone();
-    let task = tokio::spawn(async move {
+    let task_manager = manager.clone();
+    manager.spawn_supervised(task_run_id.clone(), async move {
         let result = async {
             let mut store = open_store(&state)?;
             let pending_writes = PendingRunWrites::default();
             let events = PersistentRunEventSink {
-                manager: manager.clone(),
+                manager: task_manager.clone(),
                 run_id: task_run_id.clone(),
                 pending_writes: pending_writes.clone(),
             };
             let output = PersistentRunOutput {
-                manager: manager.clone(),
+                manager: task_manager.clone(),
                 run_id: task_run_id.clone(),
                 buffered_delta: std::sync::Mutex::new(None),
                 pending_writes: pending_writes.clone(),
@@ -240,7 +241,7 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
                 let message_id = message
                     .and_then(|message| message.id)
                     .map(|id| id.as_str().to_string());
-                if let Err(error) = manager.complete(&task_run_id, message_id).await {
+                if let Err(error) = task_manager.complete(&task_run_id, message_id).await {
                     log_api_error(&error);
                 }
             }
@@ -258,10 +259,10 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
                 };
                 let persist_result = match persist_result {
                     Ok(()) if is_runtime_cancelled(&error) => {
-                        manager.finish_cancelled(&task_run_id).await
+                        task_manager.finish_cancelled(&task_run_id).await
                     }
                     Ok(()) => {
-                        manager
+                        task_manager
                             .fail(
                                 &task_run_id,
                                 raw_error_message(&error),
@@ -277,7 +278,6 @@ async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Resu
             }
         }
     });
-    drop(task);
 
     Ok(snapshot)
 }
