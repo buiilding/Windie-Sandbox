@@ -46,7 +46,9 @@ use crate::llm::{BaseUrl, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::paths;
-use crate::run::{RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription};
+use crate::run::{
+    RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription, is_runtime_cancelled,
+};
 use crate::runtime::RuntimeEventSink;
 use crate::store::{ConversationInfo, RuntimeRunAction, Store};
 use crate::tool::{
@@ -244,15 +246,16 @@ fn runtime_turn_config<'a>(
     run_id: &'a str,
     model_override: Option<ModelName>,
     reasoning: Option<ReasoningRequest>,
-) -> operation::RuntimeTurnConfig<'a> {
-    operation::RuntimeTurnConfig::new(
+) -> Result<operation::RuntimeTurnConfig<'a>> {
+    Ok(operation::RuntimeTurnConfig::new(
         run_id,
+        state.run_manager.cancellation(run_id)?,
         GatewayUrl::new(state.gateway_url.clone()),
         BaseUrl::new(state.base_url.clone()),
         model_override,
         reasoning,
         state.tool_registry.as_ref(),
-    )
+    ))
 }
 
 #[cfg(test)]

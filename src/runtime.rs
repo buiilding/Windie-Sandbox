@@ -16,6 +16,7 @@ use crate::error;
 use crate::llm::{LlmStreamEvent, PromptCacheRequest, ReasoningRequest, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::policy::{PolicyDecision, ToolPolicy};
+use crate::run::{RunCancellation, is_runtime_cancelled};
 use crate::store::{Compaction, Store};
 use crate::tool::{AttachedTool, ToolApprovalMode, ToolApprovalRequest, ToolExecutionResult};
 use crate::tool_provider::ToolProviderRegistry;
@@ -67,6 +68,7 @@ impl RuntimeSnapshot {
 /// in `llm.rs`.
 pub(crate) struct RuntimeModelRequest<'a> {
     run_id: &'a str,
+    cancellation: &'a RunCancellation,
     snapshot: &'a RuntimeSnapshot,
     reasoning: Option<&'a ReasoningRequest>,
     prompt_cache: Option<&'a PromptCacheRequest>,
@@ -76,12 +78,14 @@ impl<'a> RuntimeModelRequest<'a> {
     /// Groups optional reasoning and prompt-cache controls for one query.
     pub(crate) fn new(
         run_id: &'a str,
+        cancellation: &'a RunCancellation,
         snapshot: &'a RuntimeSnapshot,
         reasoning: Option<&'a ReasoningRequest>,
         prompt_cache: Option<&'a PromptCacheRequest>,
     ) -> Self {
         Self {
             run_id,
+            cancellation,
             snapshot,
             reasoning,
             prompt_cache,
@@ -113,6 +117,7 @@ where
     let events = NoopRuntimeEventSink;
     let snapshot = runtime_snapshot(store, conversation_id)?;
     let run_id = execution_run_id(store, conversation_id)?;
+    let cancellation = RunCancellation::default();
 
     query_conversation_once_with_registry_and_events(
         output,
@@ -121,7 +126,7 @@ where
         conversation_id,
         &registry,
         &events,
-        RuntimeModelRequest::new(&run_id, &snapshot, None, None),
+        RuntimeModelRequest::new(&run_id, &cancellation, &snapshot, None, None),
     )
     .await
 }
@@ -147,6 +152,7 @@ where
         registry,
         events,
         model_request.run_id,
+        model_request.cancellation,
         model_request.snapshot,
     )?;
 
@@ -160,24 +166,27 @@ where
     let tool_schemas = model_request.snapshot.tool_schemas();
 
     output.start_assistant_message();
-    let assistant_response = llm
-        .stream(
-            &model_messages,
-            &tool_schemas,
-            model_request.reasoning,
-            model_request.prompt_cache,
-            |event| match event {
-                LlmStreamEvent::AssistantDelta(text) => output.assistant_delta(text),
-                LlmStreamEvent::ReasoningDelta(text) => output.reasoning_delta(text),
-                LlmStreamEvent::ToolCallDelta {
-                    index,
-                    id,
-                    name,
-                    arguments_delta,
-                } => output.tool_call_delta(index, id, name, arguments_delta),
-            },
-        )
-        .await?;
+    let stream = llm.stream(
+        &model_messages,
+        &tool_schemas,
+        model_request.reasoning,
+        model_request.prompt_cache,
+        |event| match event {
+            LlmStreamEvent::AssistantDelta(text) => output.assistant_delta(text),
+            LlmStreamEvent::ReasoningDelta(text) => output.reasoning_delta(text),
+            LlmStreamEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments_delta,
+            } => output.tool_call_delta(index, id, name, arguments_delta),
+        },
+    );
+    tokio::pin!(stream);
+    let assistant_response = tokio::select! {
+        response = &mut stream => response?,
+        () = model_request.cancellation.cancelled() => return Err(crate::run::RuntimeCancelled.into()),
+    };
     output.end_assistant_message();
     output.assistant_tool_calls(&assistant_response.metadata.tool_calls);
 
@@ -202,6 +211,7 @@ where
             registry,
             events,
             model_request.run_id,
+            model_request.cancellation,
             model_request.snapshot,
         )?;
     }
@@ -272,6 +282,7 @@ where
             registry,
             events,
             model_request.run_id,
+            model_request.cancellation,
             model_request.snapshot,
         )
         .await?
@@ -343,6 +354,7 @@ pub(crate) fn prepare_query_turn(
     let registry = ToolProviderRegistry::new();
     let snapshot = runtime_snapshot(store, conversation_id)?;
     let run_id = execution_run_id(store, conversation_id)?;
+    let cancellation = RunCancellation::default();
 
     prepare_query_turn_with_registry_and_events(
         store,
@@ -350,6 +362,7 @@ pub(crate) fn prepare_query_turn(
         &registry,
         &NoopRuntimeEventSink,
         &run_id,
+        &cancellation,
         &snapshot,
     )
 }
@@ -361,12 +374,21 @@ pub(crate) fn prepare_query_turn_with_registry_and_events<E>(
     registry: &ToolProviderRegistry,
     events: &E,
     run_id: &str,
+    cancellation: &RunCancellation,
     snapshot: &RuntimeSnapshot,
 ) -> Result<()>
 where
     E: RuntimeEventSink,
 {
-    store_policy_denied_tool_results(store, conversation_id, registry, events, run_id, snapshot)?;
+    store_policy_denied_tool_results(
+        store,
+        conversation_id,
+        registry,
+        events,
+        run_id,
+        cancellation,
+        snapshot,
+    )?;
     validate_query_availability(store, conversation_id)
 }
 
@@ -464,11 +486,13 @@ fn store_policy_denied_tool_results(
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
     run_id: &str,
+    cancellation: &RunCancellation,
     snapshot: &RuntimeSnapshot,
 ) -> Result<()> {
     let policy = ToolPolicy;
 
     loop {
+        cancellation.check()?;
         let messages = store.load_active_path(conversation_id)?;
         let Some(execution) = active_tool_execution(&messages) else {
             return Ok(());
@@ -522,6 +546,7 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
     run_id: &str,
+    cancellation: &RunCancellation,
     snapshot: &RuntimeSnapshot,
 ) -> Result<AutomaticToolResolution> {
     let messages = store.load_active_path(conversation_id)?;
@@ -555,9 +580,14 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         }
         PolicyDecision::Allow => {
             claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
-            match execute_provider_tool_call(&pending, attached_tool, registry).await {
+            match execute_provider_tool_call(&pending, attached_tool, registry, cancellation).await
+            {
                 Ok(result) => result,
                 Err(execution_error) => {
+                    if is_runtime_cancelled(&execution_error) {
+                        store.interrupt_tool_call_executions_for_run(run_id)?;
+                        return Err(execution_error);
+                    }
                     store.fail_tool_call_execution(
                         &pending.assistant_message_id,
                         &pending.tool_call.id,
@@ -708,12 +738,14 @@ pub(crate) async fn approve_tool_call_with_registry_and_message(
 ) -> Result<(ToolExecutionResult, MessageId)> {
     let snapshot = runtime_snapshot(store, conversation_id)?;
     let run_id = execution_run_id(store, conversation_id)?;
+    let cancellation = RunCancellation::default();
     approve_tool_call_with_snapshot(
         store,
         conversation_id,
         tool_call_id,
         registry,
         &run_id,
+        &cancellation,
         &snapshot,
     )
     .await
@@ -725,6 +757,7 @@ pub(crate) async fn approve_tool_call_with_snapshot(
     tool_call_id: &ToolCallId,
     registry: &ToolProviderRegistry,
     run_id: &str,
+    cancellation: &RunCancellation,
     snapshot: &RuntimeSnapshot,
 ) -> Result<(ToolExecutionResult, MessageId)> {
     let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
@@ -733,9 +766,14 @@ pub(crate) async fn approve_tool_call_with_snapshot(
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            match execute_pending_tool_call(&pending, &attached_tool, registry).await {
+            match execute_pending_tool_call(&pending, &attached_tool, registry, cancellation).await
+            {
                 Ok(result) => result,
                 Err(execution_error) => {
+                    if is_runtime_cancelled(&execution_error) {
+                        store.interrupt_tool_call_executions_for_run(run_id)?;
+                        return Err(execution_error);
+                    }
                     store.fail_tool_call_execution(
                         &pending.assistant_message_id,
                         &pending.tool_call.id,
@@ -796,8 +834,11 @@ pub(crate) async fn execute_pending_tool_call(
     pending: &PendingToolCall,
     attached_tool: &AttachedTool,
     registry: &ToolProviderRegistry,
+    cancellation: &RunCancellation,
 ) -> Result<ToolExecutionResult> {
-    registry.call_tool(attached_tool, &pending.tool_call).await
+    registry
+        .call_tool(attached_tool, &pending.tool_call, cancellation)
+        .await
 }
 
 /// Executes one pending tool call through its attached provider mapping.
@@ -805,6 +846,7 @@ async fn execute_provider_tool_call(
     pending: &PendingToolCall,
     attached_tool: Option<&AttachedTool>,
     registry: &ToolProviderRegistry,
+    cancellation: &RunCancellation,
 ) -> Result<ToolExecutionResult> {
     let Some(attached_tool) = attached_tool else {
         return Err(error::invalid_request(format!(
@@ -813,7 +855,7 @@ async fn execute_provider_tool_call(
         )));
     };
 
-    execute_pending_tool_call(pending, attached_tool, registry).await
+    execute_pending_tool_call(pending, attached_tool, registry, cancellation).await
 }
 
 /// Stores an explicit rejection for one pending tool call.

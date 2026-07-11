@@ -26,6 +26,7 @@ use crate::llm::{
     ModelParameter, ModelParameterOption, PromptCacheRequest, ReasoningRequest,
 };
 use crate::output::RuntimeOutput;
+use crate::run::RunCancellation;
 use crate::runtime::{
     RuntimeEventSink, RuntimeModelRequest, RuntimeSnapshot, approve_tool_call_with_snapshot,
     deny_tool_call_for_run, pending_tool_approvals, pending_tool_approvals_from_snapshot,

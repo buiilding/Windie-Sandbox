@@ -19,6 +19,7 @@ use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMes
 use crate::error;
 use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
 use crate::paths;
+use crate::run::{RunCancellation, is_runtime_cancelled};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolExecutionResult,
     ToolPermission, ToolProviderId, ToolProviderKind, ToolProviderRef,
@@ -122,6 +123,7 @@ impl ToolProviderRegistry {
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,
+        cancellation: &RunCancellation,
     ) -> Result<ToolExecutionResult> {
         match attached_tool.provider.kind {
             ToolProviderKind::Mcp => {
@@ -136,8 +138,14 @@ impl ToolProviderRegistry {
                 let attached_tool = attached_tool.clone();
                 let tool_call = tool_call.clone();
                 let session_pool = self.mcp_session_pool.clone();
+                let cancellation = cancellation.clone();
                 tokio::task::spawn_blocking(move || {
-                    provider.call_tool(&attached_tool, &tool_call, session_pool.as_ref())
+                    provider.call_tool(
+                        &attached_tool,
+                        &tool_call,
+                        session_pool.as_ref(),
+                        &cancellation,
+                    )
                 })
                 .await
                 .context("MCP provider task stopped")?
@@ -391,6 +399,7 @@ impl McpToolProvider {
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,
         session_pool: Option<&McpSessionPool>,
+        cancellation: &RunCancellation,
     ) -> Result<ToolExecutionResult> {
         if attached_tool.provider.provider_id != self.provider_id
             || tool_call.name() != attached_tool.schema_name.as_str()
@@ -412,23 +421,28 @@ impl McpToolProvider {
         };
         self.prepare()?;
         let result = match if let Some(session_pool) = session_pool {
-            session_pool.call_tool(
+            session_pool.call_tool_cancellable(
                 self.provider_id.as_str(),
                 self.command,
                 self.shutdown_command,
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
+                cancellation,
             )
         } else {
-            mcp::call_tool_with_shutdown(
+            mcp::call_tool_with_shutdown_cancellable(
                 self.command,
                 self.shutdown_command,
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
+                cancellation,
             )
         } {
             Ok(result) => result,
             Err(error) => {
+                if is_runtime_cancelled(&error) {
+                    return Err(error);
+                }
                 return Ok(mcp_tool_call_failure_result(
                     &self.provider_id,
                     tool_call,

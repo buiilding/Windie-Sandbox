@@ -388,11 +388,13 @@ fn deny_tool_persists_tool_result() {
         .unwrap();
 
     let run = store.create_runtime_run(&conversation_id).unwrap();
+    let cancellation = RunCancellation::default();
     let result = deny_tool(
         &mut store,
         &conversation_id,
         &ToolCallId::new("call_123"),
         &run.id,
+        &cancellation,
     )
     .unwrap();
     let messages = store.load_active_path(&conversation_id).unwrap();

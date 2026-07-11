@@ -148,7 +148,7 @@ async fn cancel_run(
     State(state): State<ApiState>,
     Path(run_id): Path<String>,
 ) -> ApiResult<RunSnapshot> {
-    Ok(Json(state.run_manager.cancel(&run_id)?))
+    Ok(Json(state.run_manager.cancel(&run_id).await?))
 }
 
 /// Starts one task whose lifetime is independent from HTTP subscribers.
@@ -159,7 +159,6 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
     let run_id = snapshot.id.clone();
     let task_run_id = run_id.clone();
     let manager = state.run_manager.clone();
-    let registration_manager = manager.clone();
     let task = tokio::spawn(async move {
         let result = async {
             let mut store = open_store(&state)?;
@@ -179,7 +178,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     reasoning,
                 } => {
                     let runtime =
-                        runtime_turn_config(&state, &task_run_id, model_override, reasoning);
+                        runtime_turn_config(&state, &task_run_id, model_override, reasoning)?;
                     operation::query_runtime_turn(
                         &output,
                         &events,
@@ -194,7 +193,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = runtime_turn_config(&state, &task_run_id, None, None);
+                    let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
                     operation::approve_tool_turn(
                         &output,
                         &events,
@@ -209,7 +208,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = runtime_turn_config(&state, &task_run_id, None, None);
+                    let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
                     operation::deny_tool_turn(
                         &output,
                         &events,
@@ -238,17 +237,27 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
             }
             Err(error) => {
                 log_api_error(&error);
-                if let Err(persist_error) = manager.fail(
-                    &task_run_id,
-                    raw_error_message(&error),
-                    error_causes(&error),
-                ) {
+                let persist_result = if is_runtime_cancelled(&error) {
+                    open_store(&state)
+                        .and_then(|store| {
+                            store.interrupt_tool_call_executions_for_run(&task_run_id)?;
+                            Ok(())
+                        })
+                        .and_then(|_| manager.finish_cancelled(&task_run_id))
+                } else {
+                    manager.fail(
+                        &task_run_id,
+                        raw_error_message(&error),
+                        error_causes(&error),
+                    )
+                };
+                if let Err(persist_error) = persist_result {
                     log_api_error(&persist_error);
                 }
             }
         }
     });
-    registration_manager.register_task(&run_id, task.abort_handle())?;
+    drop(task);
 
     Ok(snapshot)
 }

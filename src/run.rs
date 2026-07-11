@@ -7,14 +7,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
-use tokio::task::AbortHandle;
+use tokio::sync::{Notify, broadcast};
 use uuid::Uuid;
 
 use crate::conversation::ConversationId;
@@ -127,7 +127,58 @@ pub struct RunSubscription {
 
 struct ActiveRun {
     sender: broadcast::Sender<RunEventEnvelope>,
-    abort_handle: Option<AbortHandle>,
+    cancellation: RunCancellation,
+    completion: Arc<Notify>,
+}
+
+#[derive(Clone, Default)]
+pub struct RunCancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl RunCancellation {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn check(&self) -> Result<()> {
+        if self.is_cancelled() {
+            Err(RuntimeCancelled.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RuntimeCancelled;
+
+impl std::fmt::Display for RuntimeCancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("runtime run was cancelled")
+    }
+}
+
+impl std::error::Error for RuntimeCancelled {}
+
+pub fn is_runtime_cancelled(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RuntimeCancelled>().is_some()
 }
 
 enum RunJournalCommand {
@@ -388,7 +439,8 @@ impl RunManager {
                 record.id.clone(),
                 ActiveRun {
                     sender,
-                    abort_handle: None,
+                    cancellation: RunCancellation::default(),
+                    completion: Arc::new(Notify::new()),
                 },
             );
 
@@ -411,17 +463,13 @@ impl RunManager {
         }
     }
 
-    /// Attaches the spawned task's explicit cancellation handle.
-    pub fn register_task(&self, run_id: &str, abort_handle: AbortHandle) -> Result<()> {
-        if let Some(active) = self
-            .active
+    pub fn cancellation(&self, run_id: &str) -> Result<RunCancellation> {
+        self.active
             .lock()
             .map_err(|_| anyhow!("runtime run manager lock was poisoned"))?
             .get_mut(run_id)
-        {
-            active.abort_handle = Some(abort_handle);
-        }
-        Ok(())
+            .map(|active| active.cancellation.clone())
+            .ok_or_else(|| error::not_found(format!("active runtime run does not exist: {run_id}")))
     }
 
     /// Persists and broadcasts one ordered event.
@@ -472,31 +520,38 @@ impl RunManager {
         Ok(())
     }
 
-    /// Explicitly aborts active work and records cancellation.
-    pub fn cancel(&self, run_id: &str) -> Result<RunSnapshot> {
-        let abort_handle = self
+    /// Requests cooperative cancellation and waits for the task to stop.
+    pub async fn cancel(&self, run_id: &str) -> Result<RunSnapshot> {
+        let (cancellation, completion) = self
             .active
             .lock()
             .map_err(|_| anyhow!("runtime run manager lock was poisoned"))?
             .get(run_id)
-            .and_then(|active| active.abort_handle.clone());
-        let finished = self.finish(
+            .map(|active| (active.cancellation.clone(), Arc::clone(&active.completion)))
+            .ok_or_else(|| {
+                error::invalid_request(format!("runtime run is not running: {run_id}"))
+            })?;
+        cancellation.cancel();
+        loop {
+            let snapshot = self.snapshot(run_id)?;
+            if snapshot.status != RuntimeRunStatus::Running {
+                return Ok(snapshot);
+            }
+            tokio::select! {
+                () = completion.notified() => {}
+                () = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+        }
+    }
+
+    pub fn finish_cancelled(&self, run_id: &str) -> Result<()> {
+        self.finish(
             run_id,
             RunEvent::RunCancelled,
             RuntimeRunStatus::Cancelled,
             None,
         )?;
-        if !finished {
-            let snapshot = self.snapshot(run_id)?;
-            return Err(error::invalid_request(format!(
-                "runtime run is not running: {run_id} ({})",
-                snapshot.status
-            )));
-        }
-        if let Some(abort_handle) = abort_handle {
-            abort_handle.abort();
-        }
-        self.snapshot(run_id)
+        Ok(())
     }
 
     /// Loads current persisted run state.
@@ -545,10 +600,14 @@ impl RunManager {
     }
 
     fn remove_active(&self, run_id: &str) -> Result<()> {
-        self.active
+        let removed = self
+            .active
             .lock()
             .map_err(|_| anyhow!("runtime run manager lock was poisoned"))?
             .remove(run_id);
+        if let Some(active) = removed {
+            active.completion.notify_waiters();
+        }
         Ok(())
     }
 
@@ -736,7 +795,7 @@ mod tests {
         let cancel_barrier = Arc::clone(&barrier);
         let cancel = std::thread::spawn(move || {
             cancel_barrier.wait();
-            cancel_manager.cancel(&cancel_id)
+            cancel_manager.finish_cancelled(&cancel_id)
         });
         barrier.wait();
         let _ = complete.join().unwrap();
@@ -779,7 +838,7 @@ mod tests {
         let cancel_barrier = Arc::clone(&barrier);
         let cancel = std::thread::spawn(move || {
             cancel_barrier.wait();
-            cancel_manager.cancel(&cancel_id)
+            cancel_manager.finish_cancelled(&cancel_id)
         });
         barrier.wait();
         let _ = fail.join().unwrap();
@@ -818,6 +877,34 @@ mod tests {
         let events = manager.events_after(&run.id, 0).unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].event.is_terminal());
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn cancellation_waits_for_task_acknowledgement() {
+        let path = test_path("cooperative-cancel");
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let manager = RunManager::new(Some(path.clone())).unwrap();
+        let run = manager.begin(&conversation_id).unwrap();
+        let cancellation = manager.cancellation(&run.id).unwrap();
+        let cancel_manager = manager.clone();
+        let cancel_id = run.id.clone();
+        let cancel = tokio::spawn(async move { cancel_manager.cancel(&cancel_id).await });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !cancellation.is_cancelled() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!cancel.is_finished());
+
+        manager.finish_cancelled(&run.id).unwrap();
+        let snapshot = cancel.await.unwrap().unwrap();
+        assert_eq!(snapshot.status, RuntimeRunStatus::Cancelled);
         let _ = fs::remove_file(path);
     }
 }

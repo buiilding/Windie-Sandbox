@@ -452,8 +452,15 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
     let run = runs.begin_action(&conversation_id, RuntimeRunAction::ApproveTool)?;
-    let result =
-        operation::approve_tool(&mut store, &conversation_id, &tool_call_id, &run.id).await;
+    let cancellation = runs.cancellation(&run.id)?;
+    let result = operation::approve_tool(
+        &mut store,
+        &conversation_id,
+        &tool_call_id,
+        &run.id,
+        &cancellation,
+    )
+    .await;
     let result = runs.finish_result(&run.id, result)?;
 
     output.tool_execution_result(&result);
@@ -467,7 +474,14 @@ fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Resul
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
     let run = runs.begin_action(&conversation_id, RuntimeRunAction::DenyTool)?;
-    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id, &run.id);
+    let cancellation = runs.cancellation(&run.id)?;
+    let result = operation::deny_tool(
+        &mut store,
+        &conversation_id,
+        &tool_call_id,
+        &run.id,
+        &cancellation,
+    );
     let result = runs.finish_result(&run.id, result)?;
 
     output.tool_execution_result(&result);
@@ -545,6 +559,7 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
     let registry = ToolProviderRegistry::new();
     let runtime = operation::RuntimeTurnConfig::new(
         &run.id,
+        runs.cancellation(&run.id)?,
         gateway_url(),
         base_url(),
         model,

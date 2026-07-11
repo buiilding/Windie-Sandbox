@@ -324,6 +324,19 @@ impl Store {
         .collect()
     }
 
+    pub fn interrupt_tool_call_executions_for_run(&self, run_id: &str) -> Result<usize> {
+        self.connection
+            .execute(
+                "
+                UPDATE tool_call_executions
+                SET status = 'interrupted', error = NULL, updated_at = ?2
+                WHERE run_id = ?1 AND status = 'executing'
+                ",
+                params![run_id, now_millis()?],
+            )
+            .context("failed to interrupt tool call executions")
+    }
+
     /// Loads all attached provider tools configured on one conversation.
     ///
     /// Attached tools are conversation-level model inputs plus provider

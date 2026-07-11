@@ -36,6 +36,7 @@ where
         runtime.registry,
         RuntimeModelRequest::new(
             runtime.run_id,
+            &runtime.cancellation,
             &snapshot,
             reasoning.as_ref(),
             prompt_cache.as_ref(),
@@ -74,6 +75,7 @@ where
         events,
         RuntimeModelRequest::new(
             runtime.run_id,
+            &runtime.cancellation,
             snapshot,
             reasoning.as_ref(),
             prompt_cache.as_ref(),
@@ -88,6 +90,7 @@ where
 /// call sites explicit without growing long parameter lists.
 pub struct RuntimeTurnConfig<'a> {
     run_id: &'a str,
+    cancellation: RunCancellation,
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model_override: Option<ModelName>,
@@ -100,6 +103,7 @@ impl<'a> RuntimeTurnConfig<'a> {
     /// provider registry.
     pub fn new(
         run_id: &'a str,
+        cancellation: RunCancellation,
         gateway_url: GatewayUrl,
         base_url: BaseUrl,
         model_override: Option<ModelName>,
@@ -108,6 +112,7 @@ impl<'a> RuntimeTurnConfig<'a> {
     ) -> Self {
         Self {
             run_id,
+            cancellation,
             gateway_url,
             base_url,
             model_override,
@@ -134,6 +139,7 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
+    runtime.cancellation.check()?;
     let (model, reasoning, snapshot) = capture_runtime_snapshot(
         store,
         conversation_id,
@@ -202,6 +208,7 @@ pub async fn approve_tool(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
     run_id: &str,
+    cancellation: &RunCancellation,
 ) -> Result<ToolExecutionResult> {
     let registry = ToolProviderRegistry::new();
     let snapshot = runtime_snapshot(store, conversation_id)?;
@@ -211,6 +218,7 @@ pub async fn approve_tool(
         tool_call_id,
         &registry,
         run_id,
+        cancellation,
         &snapshot,
     )
     .await
@@ -224,6 +232,7 @@ pub async fn approve_tool_with_registry(
     tool_call_id: &ToolCallId,
     registry: &ToolProviderRegistry,
     run_id: &str,
+    cancellation: &RunCancellation,
 ) -> Result<ToolExecutionResult> {
     let snapshot = runtime_snapshot(store, conversation_id)?;
     approve_tool_call_with_snapshot(
@@ -232,6 +241,7 @@ pub async fn approve_tool_with_registry(
         tool_call_id,
         registry,
         run_id,
+        cancellation,
         &snapshot,
     )
     .await
@@ -244,7 +254,9 @@ pub fn deny_tool(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
     run_id: &str,
+    cancellation: &RunCancellation,
 ) -> Result<ToolExecutionResult> {
+    cancellation.check()?;
     deny_tool_call_for_run(store, conversation_id, tool_call_id, run_id).map(|(result, _)| result)
 }
 
@@ -267,6 +279,7 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
+    runtime.cancellation.check()?;
     let (model, reasoning, snapshot) = capture_runtime_snapshot(
         store,
         conversation_id,
@@ -279,6 +292,7 @@ where
         tool_call_id,
         runtime.registry,
         runtime.run_id,
+        &runtime.cancellation,
         &snapshot,
     )
     .await?;
@@ -315,6 +329,7 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
+    runtime.cancellation.check()?;
     let (model, reasoning, snapshot) = capture_runtime_snapshot(
         store,
         conversation_id,
