@@ -81,8 +81,8 @@ impl From<ConversationInfo> for ConversationSummary {
 
 /// Lists persisted conversations without loading their message trees.
 async fn list_conversations(State(state): State<ApiState>) -> ApiResult<ConversationListResponse> {
-    let store = open_store(&state)?;
-    let conversations = operation::list_conversations(&store)?
+    let conversations = run_store(&state, |store| operation::list_conversations(store))
+        .await?
         .into_iter()
         .map(ConversationSummary::from)
         .collect();
@@ -98,8 +98,11 @@ struct ConversationIdResponse {
 
 /// Creates a new empty conversation.
 async fn create_conversation(State(state): State<ApiState>) -> ApiResult<ConversationIdResponse> {
-    let store = open_store(&state)?;
-    let conversation_id = operation::create_conversation(&store, &ModelName::new(state.model))?;
+    let model = ModelName::new(state.model.clone());
+    let conversation_id = run_store(&state, move |store| {
+        operation::create_conversation(store, &model)
+    })
+    .await?;
 
     Ok(Json(ConversationIdResponse {
         conversation_id: conversation_id.as_str().to_string(),
@@ -113,9 +116,11 @@ async fn inspect_conversation(
     query: axum::extract::Query<InspectQuery>,
 ) -> ApiResult<InspectionReport> {
     let conversation_id = ConversationId::new(conversation_id);
-    let store = open_store(&state)?;
     let model_override = query.model.clone().map(ModelName::new);
-    let report = operation::inspect_conversation(&store, &conversation_id, model_override)?;
+    let report = run_store(&state, move |store| {
+        operation::inspect_conversation(store, &conversation_id, model_override)
+    })
+    .await?;
 
     Ok(Json(report))
 }
@@ -146,12 +151,14 @@ async fn activate_message(
 ) -> ApiResult<ActiveMessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(request.message_id);
-    let mut store = open_store(&state)?;
-
-    operation::activate_message(&mut store, &conversation_id, &message_id)?;
+    let response_id = message_id.clone();
+    run_store(&state, move |store| {
+        operation::activate_message(store, &conversation_id, &message_id)
+    })
+    .await?;
 
     Ok(Json(ActiveMessageResponse {
-        active_message_id: message_id.as_str().to_string(),
+        active_message_id: response_id.as_str().to_string(),
     }))
 }
 
@@ -187,8 +194,10 @@ async fn insert_message(
 ) -> ApiResult<MessageIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let parts = normalize_insert_parts(request.text, request.parts)?;
-    let mut store = open_store(&state)?;
-    let message_id = operation::insert_message(&mut store, &conversation_id, request.role, &parts)?;
+    let message_id = run_store(&state, move |store| {
+        operation::insert_message(store, &conversation_id, request.role, &parts)
+    })
+    .await?;
 
     Ok(Json(MessageIdResponse {
         message_id: message_id.as_str().to_string(),
@@ -251,12 +260,14 @@ async fn update_message(
 ) -> ApiResult<MessageIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(message_id);
-    let mut store = open_store(&state)?;
-
-    operation::update_message(&mut store, &conversation_id, &message_id, &request.text)?;
+    let response_id = message_id.clone();
+    run_store(&state, move |store| {
+        operation::update_message(store, &conversation_id, &message_id, &request.text)
+    })
+    .await?;
 
     Ok(Json(MessageIdResponse {
-        message_id: message_id.as_str().to_string(),
+        message_id: response_id.as_str().to_string(),
     }))
 }
 
@@ -267,9 +278,10 @@ async fn remove_message(
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(message_id);
-    let mut store = open_store(&state)?;
-
-    operation::remove_message(&mut store, &conversation_id, &message_id)?;
+    run_store(&state, move |store| {
+        operation::remove_message(store, &conversation_id, &message_id)
+    })
+    .await?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -281,8 +293,10 @@ async fn get_conversation_image(
 ) -> Result<Response, ApiError> {
     let conversation_id = ConversationId::new(conversation_id);
     let asset_id = ImageAssetId::new(asset_id);
-    let store = open_store(&state)?;
-    let image = store.load_conversation_image_asset(&conversation_id, &asset_id)?;
+    let image = run_store(&state, move |store| {
+        store.load_conversation_image_asset(&conversation_id, &asset_id)
+    })
+    .await?;
 
     Response::builder()
         .status(StatusCode::OK)
@@ -298,9 +312,10 @@ async fn remove_conversation(
     Path(conversation_id): Path<String>,
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
-
-    operation::remove_conversation(&mut store, &conversation_id)?;
+    run_store(&state, move |store| {
+        operation::remove_conversation(store, &conversation_id)
+    })
+    .await?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -324,13 +339,13 @@ async fn set_system_prompt(
     Json(request): Json<SystemPromptRequest>,
 ) -> ApiResult<SystemPromptResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
+    let system_prompt = run_store(&state, move |store| {
+        operation::set_system_prompt(store, &conversation_id, &request.text)?;
+        store.system_prompt(&conversation_id)
+    })
+    .await?;
 
-    operation::set_system_prompt(&mut store, &conversation_id, &request.text)?;
-
-    Ok(Json(SystemPromptResponse {
-        system_prompt: store.system_prompt(&conversation_id)?,
-    }))
+    Ok(Json(SystemPromptResponse { system_prompt }))
 }
 
 /// Removes the conversation-level system prompt.
@@ -339,9 +354,10 @@ async fn remove_system_prompt(
     Path(conversation_id): Path<String>,
 ) -> ApiResult<SystemPromptResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
-
-    operation::remove_system_prompt(&mut store, &conversation_id)?;
+    run_store(&state, move |store| {
+        operation::remove_system_prompt(store, &conversation_id)
+    })
+    .await?;
 
     Ok(Json(SystemPromptResponse {
         system_prompt: None,
@@ -367,15 +383,15 @@ async fn set_conversation_model(
     Json(request): Json<ConversationModelRequest>,
 ) -> ApiResult<ConversationModelResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
     let model = ModelName::new(request.model);
-
-    operation::set_conversation_model(&mut store, &conversation_id, &model)?;
+    let model = run_store(&state, move |store| {
+        operation::set_conversation_model(store, &conversation_id, &model)?;
+        operation::conversation_model(store, &conversation_id)
+    })
+    .await?;
 
     Ok(Json(ConversationModelResponse {
-        model: operation::conversation_model(&store, &conversation_id)?
-            .as_str()
-            .to_string(),
+        model: model.as_str().to_string(),
     }))
 }
 
@@ -398,12 +414,14 @@ async fn set_conversation_reasoning(
     Json(request): Json<ConversationReasoningRequest>,
 ) -> ApiResult<ConversationReasoningResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
-    let reasoning = operation::set_conversation_reasoning_effort(
-        &mut store,
-        &conversation_id,
-        request.effort.as_deref(),
-    )?;
+    let reasoning = run_store(&state, move |store| {
+        operation::set_conversation_reasoning_effort(
+            store,
+            &conversation_id,
+            request.effort.as_deref(),
+        )
+    })
+    .await?;
 
     Ok(Json(ConversationReasoningResponse { reasoning }))
 }
@@ -416,13 +434,14 @@ async fn truncate_conversation(
 ) -> ApiResult<ActiveMessageResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(request.message_id);
-    let mut store = open_store(&state)?;
-
-    operation::truncate_conversation(&mut store, &conversation_id, &message_id)?;
+    let active_message_id = run_store(&state, move |store| {
+        operation::truncate_conversation(store, &conversation_id, &message_id)?;
+        store.active_message_id(&conversation_id)
+    })
+    .await?;
 
     Ok(Json(ActiveMessageResponse {
-        active_message_id: store
-            .active_message_id(&conversation_id)?
+        active_message_id: active_message_id
             .map(|id| id.as_str().to_string())
             .unwrap_or_default(),
     }))
@@ -436,9 +455,10 @@ async fn fork_conversation(
 ) -> ApiResult<ConversationIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(request.message_id);
-    let mut store = open_store(&state)?;
-    let forked_conversation_id =
-        operation::fork_conversation(&mut store, &conversation_id, &message_id)?;
+    let forked_conversation_id = run_store(&state, move |store| {
+        operation::fork_conversation(store, &conversation_id, &message_id)
+    })
+    .await?;
 
     Ok(Json(ConversationIdResponse {
         conversation_id: forked_conversation_id.as_str().to_string(),
@@ -508,17 +528,16 @@ async fn count_input_tokens(
     Json(request): Json<InputTokensRequest>,
 ) -> ApiResult<InputTokensResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let store = open_store(&state)?;
-    let model = operation::resolve_conversation_model(
-        &store,
-        &conversation_id,
-        request.model.map(ModelName::new),
-    )?;
-    let context = operation::conversation_input_token_context(&store, &conversation_id)?;
-    let source = context
-        .as_ref()
-        .map(|context| context.source().as_str().to_string());
-    drop(store);
+    let model_override = request.model.map(ModelName::new);
+    let (model, context, source) = run_store(&state, move |store| {
+        let model = operation::resolve_conversation_model(store, &conversation_id, model_override)?;
+        let context = operation::conversation_input_token_context(store, &conversation_id)?;
+        let source = context
+            .as_ref()
+            .map(|context| context.source().as_str().to_string());
+        Ok((model, context, source))
+    })
+    .await?;
     let result = operation::count_input_tokens_for_context(
         GatewayUrl::new(state.gateway_url),
         BaseUrl::new(state.base_url),

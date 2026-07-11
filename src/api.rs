@@ -150,6 +150,23 @@ fn open_store(state: &ApiState) -> Result<Store> {
     }
 }
 
+/// Runs one complete synchronous store operation on Tokio's blocking pool.
+/// The store is opened inside the closure so its SQLite connection never
+/// crosses an async suspension point or occupies an API runtime worker.
+async fn run_store<T, F>(state: &ApiState, operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Store) -> Result<T> + Send + 'static,
+{
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut store = open_store(&state)?;
+        operation(&mut store)
+    })
+    .await
+    .context("store operation task stopped")?
+}
+
 #[derive(Debug, Serialize)]
 /// Stable error response returned by failed API operations.
 struct ErrorResponse {
