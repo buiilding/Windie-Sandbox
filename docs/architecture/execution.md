@@ -108,10 +108,11 @@ stores the output. Denying does not invoke the provider; it stores an
 error-shaped output stating that the user rejected the call.
 
 Before any external execution, the store atomically claims the pair of
-assistant message ID and provider tool-call ID. A second direct request or run
-cannot claim the same call while it is executing or after it completed. Claims
-left executing by a stopped process become `interrupted` and can be retried
-explicitly.
+assistant message ID and provider tool-call ID for the owning runtime run. A
+second direct request or run cannot claim the same call while it is executing
+or after it completed. Claim state is typed as `executing`, `completed`,
+`failed`, or `interrupted`; inspection includes the owner and state so an
+unresolved call is distinguishable from one already in flight.
 
 The API's approval and denial runs continue automatically if no later manual
 approval remains. The one-shot CLI `approve` and `deny` commands store one
@@ -163,6 +164,25 @@ text/image parts. Text-only results can store just `content`. Screenshot-like
 MCP results persist typed image parts so later model requests do not need to
 carry base64 as visible text.
 
+Completing a tool call is one database transaction. Windie inserts the result
+message and parts, conditionally advances the active path, and changes the
+claim to `completed` together. A failed transaction leaves none of those
+changes partially visible. A failed execution similarly changes exactly one
+owned `executing` claim to `failed`.
+
+## Run Ownership and Cancellation
+
+Durable API runs, direct API operations, and CLI operations acquire the same
+per-conversation runtime record. The record identifies the action and owner
+and carries a renewable lease. A second client cannot start conflicting work
+while that lease is active; startup recovery interrupts only expired owners.
+
+Cancellation is cooperative. Model and tool waits observe a cancellation
+token. A cancelled persistent MCP call first drops its child session, then the
+runtime marks the claim interrupted and acknowledges cancellation. The run is
+made terminal only after that acknowledgement, so terminal state does not race
+with a still-running side effect.
+
 ## Store Validation
 
 The store accepts a tool output only when:
@@ -201,7 +221,9 @@ visible text can be changed while metadata links remain.
 - `src/tool.rs`
 - `src/policy.rs`
 - `src/runtime.rs`
-- `src/store.rs`
+- `src/store/runs.rs`
+- `src/store/tools.rs`
+- `src/store/messages/insert.rs`
 - `src/tool_provider.rs`
 - `src/runtime/tests.rs`
 - `src/policy/tests.rs`

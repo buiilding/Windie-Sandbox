@@ -59,11 +59,13 @@ Windie instead creates a backend-owned run before spawning the task.
 The run persists:
 
 - run ID and conversation ID;
+- runtime action, owner ID, and lease expiration;
 - lifecycle status;
 - optional terminal error;
 - ordered event records.
 
-The async task and cancellation handle remain process-only.
+The cooperative cancellation token and live broadcast channel remain
+process-only.
 
 ## Run Statuses
 
@@ -77,8 +79,9 @@ The async task and cancellation handle remain process-only.
 
 Only one running action is allowed per conversation.
 
-At API startup, every database run still marked `running` becomes
-`interrupted`, because its task cannot survive the process restart.
+At API startup, only a `running` record whose ownership lease has expired
+becomes `interrupted`. An unexpired owner remains authoritative, preventing a
+second process from immediately duplicating its work.
 
 ## Run Events
 
@@ -107,14 +110,16 @@ corresponding store mutation succeeds.
 Publishing performs:
 
 1. serialize the typed event;
-2. enqueue it on the bounded journal command channel;
+2. enqueue it on the bounded Tokio MPSC journal channel;
 3. transactionally select the next sequence number;
 4. insert the event and update the run timestamp;
 5. broadcast the same envelope to live subscribers.
 
-One journal worker owns one long-lived store connection. The bounded command
-channel applies backpressure when persistence falls behind production and keeps
-connection ownership out of stream callbacks.
+One journal worker owns one long-lived store connection on a dedicated
+current-thread runtime. Synchronous stream callbacks enqueue commands; async
+flush points await one-shot persistence receipts. The bounded channel applies
+backpressure when persistence falls behind production and keeps connection
+ownership out of stream callbacks.
 
 Adjacent assistant, reasoning, and tool-call fragments are coalesced into
 bounded chunks before publication. This keeps replay exact without opening and
@@ -132,7 +137,7 @@ route. The API:
    constraint that allows one running run per conversation;
 2. creates a process broadcast channel;
 3. spawns the query task;
-4. registers its abort handle;
+4. registers its cooperative cancellation token;
 5. returns the run snapshot immediately.
 
 Approval and denial runs use the same infrastructure with different runtime
@@ -188,7 +193,8 @@ zero and reconstructs display state from replay plus durable conversation
 reload events.
 
 Refreshing the browser therefore does not cancel model or tool work. Restarting
-the API process interrupts it.
+the owning API process removes its live task, but the durable run remains
+`running` until its lease expires and recovery marks it interrupted.
 
 ## Cancellation
 
@@ -197,9 +203,10 @@ local SSE request.
 
 Backend cancellation:
 
-1. atomically changes `running` to `cancelled` and persists `run_cancelled`;
-2. aborts the registered task when available;
-3. removes the process-active entry.
+1. signals the registered cancellation token;
+2. waits for model or tool work to acknowledge cancellation and clean up;
+3. atomically changes `running` to `cancelled` and persists `run_cancelled`;
+4. removes the process-active entry.
 
 Disconnecting or locally aborting SSE without calling cancellation affects only
 the subscriber.
@@ -222,7 +229,7 @@ persisted; the SSE layer loads events after the subscriber's last sequence.
 - `src/llm.rs`
 - `src/runtime.rs`
 - `src/run.rs`
-- `src/api.rs`
-- `src/store.rs`
+- `src/api/runs.rs`
+- `src/store/runs.rs`
 - `dev/windie-inspector/src/lib/windieApi.js`
 - `dev/windie-inspector/src/context/WindieContext.jsx`

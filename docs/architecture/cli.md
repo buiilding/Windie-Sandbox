@@ -16,7 +16,7 @@ It parses one command, performs it, prints terminal or JSON output, and exits.
 
 `windie api` listens on the configured localhost address, creates a per-process
 API token, prints the authenticated UI URL, owns the persistent MCP registry,
-and recovers abandoned run records as interrupted.
+and recovers only runtime records whose ownership leases have expired.
 
 ## Gateway and Models
 
@@ -114,11 +114,8 @@ descendants, images, and active selection. It clears compactions.
 ### `windie rm <conversation_id>`
 
 Deletes the conversation's messages, compactions, attached schemas, and
-orphaned images.
-
-Current limitation: durable runtime run rows are not included, and their
-foreign key prevents deletion after the conversation has run records. In that
-case this command currently fails and rolls back the transaction.
+orphaned images. Durable runtime runs, events, and tool execution claims are
+deleted through their database cascades in the same operation.
 
 ### `windie rm <conversation_id> message <message_id>`
 

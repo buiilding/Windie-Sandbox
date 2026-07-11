@@ -216,8 +216,10 @@ raw provider data. See [token_count.md](../features/token_count.md).
 ## Direct Runtime Operations
 
 These routes remain public API primitives even though the current inspector
-uses durable runs. They return one JSON response and do not create a run or an
-event journal.
+uses durable runs. They return one JSON response without a replay event
+journal, but they acquire and finalize the same durable per-conversation run
+ownership record as the run routes. They therefore cannot race durable runs or
+CLI operations.
 
 ### `POST /api/conversations/{id}/query`
 
@@ -274,9 +276,9 @@ live events. The inspector tracks the highest received sequence.
 
 ### `POST /api/runs/{run_id}/cancel`
 
-Aborts an active process-local task, persists cancellation, and returns the
-updated run snapshot. Disconnecting the SSE request alone does not cancel the
-run.
+Signals cooperative cancellation, waits for active model or tool work to
+acknowledge cleanup, persists cancellation, and returns the updated run
+snapshot. Disconnecting the SSE request alone does not cancel the run.
 
 See [streaming.md](../features/streaming.md) for events and reconnection flow.
 

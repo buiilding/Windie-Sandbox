@@ -57,8 +57,11 @@ MCP command environment values are typed as:
 - a named value copied from Windie's user environment.
 
 Missing required user environment values fail before the child is started.
-Windie passes only the explicitly defined provider environment plus the normal
-process environment required by command execution.
+Windie clears the inherited environment before spawning the child. It restores
+only the small command-execution allowlist (`PATH`, `HOME`, temporary-directory
+variables, and `SystemRoot` where applicable), then applies the environment
+declared by the approved provider definition. Unrelated provider keys and
+shell state cannot leak into an MCP child.
 
 Exa uses its official, version-pinned stdio package. Store its key in Windie's
 canonical provider environment:
@@ -163,6 +166,11 @@ The adapter invokes `tools/call` with the provider-native name:
 
 CLI and API use different session ownership, described below.
 
+Long-running requests poll the runtime cancellation token while waiting for a
+matching JSON-RPC response. Cancelling a persistent call removes and kills that
+provider session before returning control to runtime; a later call starts a
+fresh initialized process.
+
 ## One-Shot Sessions
 
 One-shot CLI execution starts and initializes an MCP process for the call,
@@ -190,13 +198,12 @@ On every call, the pool:
 2. stops and replaces a mismatched session;
 3. starts a session if none exists;
 4. updates its last-used time;
-5. performs `tools/call` while holding the pool lock;
+5. performs `tools/call` while holding only that provider's call lock;
 6. updates last-used time after success.
 
-Calls through the same pool are serialized because session state and the child
-stdio channel are protected by one mutex. Different providers are also behind
-that pool mutex during a call; the current implementation does not execute two
-MCP calls from the same registry in parallel.
+Calls to one provider session are sequential because one stdio channel cannot
+carry overlapping Windie requests. Different providers use independent slots
+and can execute concurrently.
 
 ## Idle Timeout
 
@@ -207,9 +214,10 @@ runs configured provider shutdown hooks.
 If a persistent request fails, Windie immediately removes that provider's
 session and runs its shutdown hook. The next call starts a fresh session.
 
-Dropping the registry kills child processes through `McpSession::drop`, but it
-does not run the separate provider shutdown command. Explicit idle, error, or
-command-change cleanup does run that hook.
+The pool owns its reaper thread. Dropping the final pool owner stops and joins
+the reaper, drains all provider sessions, kills their child processes, and runs
+configured shutdown hooks. Idle, error, cancellation, and command-change
+cleanup use the same session-removal path.
 
 ## Request Timeouts
 

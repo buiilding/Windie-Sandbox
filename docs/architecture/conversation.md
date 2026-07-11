@@ -120,10 +120,10 @@ normalizes their positions, and optionally inserts the replacement text first.
 Updating clears all conversation compactions because an existing summary may
 describe text that no longer exists.
 
-Current behavior: the backend and inspector allow visible text on assistant
-tool-call nodes and tool-output nodes to be edited. Their linking metadata is
-preserved. This is different from deletion, which treats a tool-call group as
-one unit.
+While a run owns the conversation, editing, removal, truncation, and other
+destructive mutations are rejected. Activating an existing path, inserting a
+branch, and forking remain available because they do not invalidate the path
+the in-flight operation captured.
 
 ## Removing One Message
 
@@ -158,10 +158,7 @@ Conversation removal transactionally clears the active pointer, deletes
 compactions, attached tool schemas, messages, and orphaned images, then deletes
 the conversation row.
 
-Runtime run rows are not currently included in that deletion, and their
-conversation foreign key has no delete cascade. A conversation with durable run
-records therefore cannot currently be removed; the transaction fails and rolls
-back. This is current behavior, not a conceptual ownership rule.
+Runtime runs, events, and execution claims cascade with their conversation.
 
 ## Truncating
 
@@ -212,6 +209,16 @@ separately and sent with the request.
 The complete tree remains in storage. Bifrost receives only the already
 flattened active context.
 
+Inspection and tree commands load image metadata only: asset ID, MIME type, and
+byte count. Inference still loads full bytes for images on the active path, and
+the image API remains the binary display boundary.
+
+At operation start, Windie transactionally snapshots model, reasoning, system
+prompt, compaction, approval mode, and attached tools. Those settings remain
+stable through automatic tools and continuation turns. Only the evolving
+active message path is reloaded. Settings changed during a run apply to the
+next run.
+
 ## Core Invariants
 
 - A message parent must belong to the same conversation.
@@ -226,5 +233,6 @@ flattened active context.
 - `src/conversation.rs`
 - `src/context.rs`
 - `src/store.rs`
+- `src/store/messages/`
 - `src/operation.rs`
 - `src/store/tests.rs`

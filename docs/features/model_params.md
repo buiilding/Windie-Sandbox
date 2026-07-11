@@ -151,8 +151,9 @@ Policy and tool execution do not interpret reasoning content.
 
 ## Prompt Cache Capability
 
-Before each query, Windie independently loads the same model parameter record.
-If `supports_prompt_caching` is true, it creates a stable key:
+At the start of each runtime operation, Windie loads parameters for the model
+captured in that operation's immutable configuration snapshot. If
+`supports_prompt_caching` is true, it creates a stable key:
 
 ```text
 windie:<conversation_id>
@@ -167,8 +168,8 @@ The internal request asks for 24-hour retention. The LLM boundary maps it to:
 Parameter lookup failure is treated as no prompt-cache support and does not
 block the model query.
 
-The prompt-cache capability result used during a query is not persisted on the
-conversation.
+The prompt-cache capability result is fixed for that operation but is not
+persisted on the conversation.
 
 ## Ownership Boundary
 
