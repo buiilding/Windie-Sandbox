@@ -490,6 +490,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
         .unwrap();
     let llm = ToolThenReplyLlm::new();
     let registry = test_mcp_registry();
+    let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
 
     let assistant_message = query_conversation_resolving_automatic_tools(
         &NoopOutput,
@@ -497,8 +498,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
         &mut store,
         &conversation_id,
         &registry,
-        None,
-        None,
+        RuntimeModelRequest::new(&snapshot, None, None),
     )
     .await
     .unwrap();
@@ -528,6 +528,7 @@ async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
         .unwrap();
     let llm = ToolThenReplyLlm::new();
     let registry = test_mcp_registry();
+    let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
 
     let tool_call_message = query_conversation_resolving_automatic_tools(
         &NoopOutput,
@@ -535,8 +536,7 @@ async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
         &mut store,
         &conversation_id,
         &registry,
-        None,
-        None,
+        RuntimeModelRequest::new(&snapshot, None, None),
     )
     .await
     .unwrap();
@@ -571,6 +571,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
     let llm = ToolThenReplyLlm::new();
     let registry = test_mcp_registry();
     let events = RecordingRuntimeEvents::new();
+    let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
 
     query_conversation_resolving_automatic_tools_with_events(
         &NoopOutput,
@@ -579,7 +580,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
         &conversation_id,
         &registry,
         &events,
-        RuntimeModelRequest::new(None, None),
+        RuntimeModelRequest::new(&snapshot, None, None),
     )
     .await
     .unwrap();

@@ -1,6 +1,60 @@
 //! Shared operation orchestration tests.
 
 use super::*;
+
+#[test]
+fn runtime_snapshot_is_immutable_after_configuration_changes() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/first").unwrap();
+    store
+        .set_conversation_reasoning_effort(&conversation_id, Some("medium"))
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "first prompt")
+        .unwrap();
+    store
+        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
+        .unwrap();
+    store
+        .insert_tool_schema(
+            &conversation_id,
+            &ToolSchema {
+                name: ToolSchemaName::new("first_tool"),
+                description: "first".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        )
+        .unwrap();
+
+    let (model, reasoning, snapshot) =
+        capture_runtime_snapshot(&store, &conversation_id, None, None).unwrap();
+
+    store
+        .set_conversation_model(&conversation_id, "openai/second")
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "second prompt")
+        .unwrap();
+    store
+        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::Manual)
+        .unwrap();
+    store
+        .remove_tool_schema(&conversation_id, &ToolSchemaName::new("first_tool"))
+        .unwrap();
+
+    assert_eq!(model.as_str(), "openai/first");
+    assert_eq!(reasoning.unwrap().effort.as_deref(), Some("medium"));
+    assert_eq!(snapshot.system_prompt.as_deref(), Some("first prompt"));
+    assert_eq!(
+        snapshot.approval_mode,
+        ToolApprovalMode::AutoApproveAttached
+    );
+    assert_eq!(snapshot.attached_tools.len(), 1);
+    assert_eq!(
+        snapshot.attached_tools[0].schema_name.as_str(),
+        "first_tool"
+    );
+}
 use crate::conversation::{MessageMetadata, ToolCall};
 use crate::mcp::McpCommand;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};

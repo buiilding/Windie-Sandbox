@@ -27,10 +27,10 @@ use crate::llm::{
 };
 use crate::output::RuntimeOutput;
 use crate::runtime::{
-    RuntimeEventSink, RuntimeModelRequest, approve_tool_call, approve_tool_call_with_registry,
-    approve_tool_call_with_registry_and_message, deny_tool_call, deny_tool_call_with_message,
-    pending_tool_approvals, pending_tool_approvals_with_registry,
-    query_conversation_resolving_automatic_tools,
+    RuntimeEventSink, RuntimeModelRequest, RuntimeSnapshot, approve_tool_call,
+    approve_tool_call_with_registry, approve_tool_call_with_snapshot, deny_tool_call,
+    deny_tool_call_with_message, pending_tool_approvals, pending_tool_approvals_from_snapshot,
+    pending_tool_approvals_with_registry, query_conversation_resolving_automatic_tools,
     query_conversation_resolving_automatic_tools_with_events,
 };
 use crate::store::{Compaction, ConversationInfo, Store};
@@ -271,6 +271,8 @@ pub use execution::*;
 pub use models::*;
 pub use tools::*;
 
+#[cfg(test)]
+pub(crate) use execution::capture_runtime_snapshot;
 #[cfg(test)]
 pub(crate) use execution::resolve_reasoning_request;
 #[cfg(test)]

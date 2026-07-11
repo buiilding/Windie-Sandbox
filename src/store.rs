@@ -39,6 +39,7 @@ use images::{
     delete_orphan_image_assets_in_transaction, insert_image_asset_in_transaction,
     insert_image_part_in_transaction,
 };
+use tools::read_attached_tool_row;
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";

@@ -10,14 +10,14 @@ use anyhow::Result;
 
 use crate::context::ContextBuilder;
 use crate::conversation::{
-    ConversationId, Message, MessageId, Role, ToolCall, ToolCallId, ToolSchemaName,
+    ConversationId, Message, MessageId, Role, ToolCall, ToolCallId, ToolSchema,
 };
 use crate::error;
 use crate::llm::{LlmStreamEvent, PromptCacheRequest, ReasoningRequest, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::policy::{PolicyDecision, ToolPolicy};
-use crate::store::Store;
-use crate::tool::{AttachedTool, ToolApprovalRequest, ToolExecutionResult};
+use crate::store::{Compaction, Store};
+use crate::tool::{AttachedTool, ToolApprovalMode, ToolApprovalRequest, ToolExecutionResult};
 use crate::tool_provider::ToolProviderRegistry;
 
 /// Receives durable runtime state changes during a query flow.
@@ -35,6 +35,30 @@ pub(crate) struct NoopRuntimeEventSink;
 
 impl RuntimeEventSink for NoopRuntimeEventSink {}
 
+#[derive(Debug, Clone)]
+/// Conversation configuration captured once for a complete runtime operation.
+pub(crate) struct RuntimeSnapshot {
+    pub(crate) system_prompt: Option<String>,
+    pub(crate) compaction: Option<Compaction>,
+    pub(crate) approval_mode: ToolApprovalMode,
+    pub(crate) attached_tools: Vec<AttachedTool>,
+}
+
+impl RuntimeSnapshot {
+    pub(crate) fn tool_schemas(&self) -> Vec<ToolSchema> {
+        self.attached_tools
+            .iter()
+            .map(AttachedTool::schema)
+            .collect()
+    }
+
+    fn attached_tool(&self, tool_call: &ToolCall) -> Option<&AttachedTool> {
+        self.attached_tools
+            .iter()
+            .find(|tool| tool.schema_name.as_str() == tool_call.name())
+    }
+}
+
 #[derive(Clone, Copy)]
 /// Optional model-request controls used for one provider turn.
 ///
@@ -42,6 +66,7 @@ impl RuntimeEventSink for NoopRuntimeEventSink {}
 /// operation layer to the LLM boundary so provider-specific serialization stays
 /// in `llm.rs`.
 pub(crate) struct RuntimeModelRequest<'a> {
+    snapshot: &'a RuntimeSnapshot,
     reasoning: Option<&'a ReasoningRequest>,
     prompt_cache: Option<&'a PromptCacheRequest>,
 }
@@ -49,10 +74,12 @@ pub(crate) struct RuntimeModelRequest<'a> {
 impl<'a> RuntimeModelRequest<'a> {
     /// Groups optional reasoning and prompt-cache controls for one query.
     pub(crate) fn new(
+        snapshot: &'a RuntimeSnapshot,
         reasoning: Option<&'a ReasoningRequest>,
         prompt_cache: Option<&'a PromptCacheRequest>,
     ) -> Self {
         Self {
+            snapshot,
             reasoning,
             prompt_cache,
         }
@@ -81,6 +108,7 @@ where
 {
     let registry = ToolProviderRegistry::new();
     let events = NoopRuntimeEventSink;
+    let snapshot = runtime_snapshot(store, conversation_id)?;
 
     query_conversation_once_with_registry_and_events(
         output,
@@ -89,7 +117,7 @@ where
         conversation_id,
         &registry,
         &events,
-        RuntimeModelRequest::new(None, None),
+        RuntimeModelRequest::new(&snapshot, None, None),
     )
     .await
 }
@@ -109,11 +137,22 @@ where
     L: RuntimeLlm,
     E: RuntimeEventSink,
 {
-    prepare_query_turn_with_registry_and_events(store, conversation_id, registry, events)?;
+    prepare_query_turn_with_registry_and_events(
+        store,
+        conversation_id,
+        registry,
+        events,
+        model_request.snapshot,
+    )?;
 
     let parent_message_id = store.active_message_id(conversation_id)?;
-    let model_messages = ContextBuilder::build(store, conversation_id)?;
-    let tool_schemas = store.load_tool_schemas(conversation_id)?;
+    let model_messages = ContextBuilder::build_with_configuration(
+        store,
+        conversation_id,
+        model_request.snapshot.system_prompt.clone(),
+        model_request.snapshot.compaction.clone(),
+    )?;
+    let tool_schemas = model_request.snapshot.tool_schemas();
 
     output.start_assistant_message();
     let assistant_response = llm
@@ -152,7 +191,13 @@ where
     let response_is_active =
         store.active_message_id(conversation_id)?.as_ref() == Some(&assistant_message_id);
     if response_is_active {
-        store_policy_denied_tool_results(store, conversation_id, registry, events)?;
+        store_policy_denied_tool_results(
+            store,
+            conversation_id,
+            registry,
+            events,
+            model_request.snapshot,
+        )?;
     }
 
     Ok(Message {
@@ -178,15 +223,13 @@ pub(crate) async fn query_conversation_resolving_automatic_tools<O, L>(
     store: &mut Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
-    reasoning: Option<&ReasoningRequest>,
-    prompt_cache: Option<&PromptCacheRequest>,
+    model_request: RuntimeModelRequest<'_>,
 ) -> Result<Message>
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
     let events = NoopRuntimeEventSink;
-
     query_conversation_resolving_automatic_tools_with_events(
         output,
         llm,
@@ -194,7 +237,7 @@ where
         conversation_id,
         registry,
         &events,
-        RuntimeModelRequest::new(reasoning, prompt_cache),
+        model_request,
     )
     .await
 }
@@ -222,6 +265,7 @@ where
             conversation_id,
             registry,
             events,
+            model_request.snapshot,
         )
         .await?
         {
@@ -290,20 +334,15 @@ pub(crate) fn prepare_query_turn(
     conversation_id: &ConversationId,
 ) -> Result<()> {
     let registry = ToolProviderRegistry::new();
+    let snapshot = runtime_snapshot(store, conversation_id)?;
 
-    prepare_query_turn_with_registry(store, conversation_id, &registry)
-}
-
-/// Prepares the active path for a model query using a caller-owned provider
-/// registry.
-pub(crate) fn prepare_query_turn_with_registry(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    registry: &ToolProviderRegistry,
-) -> Result<()> {
-    let events = NoopRuntimeEventSink;
-
-    prepare_query_turn_with_registry_and_events(store, conversation_id, registry, &events)
+    prepare_query_turn_with_registry_and_events(
+        store,
+        conversation_id,
+        &registry,
+        &NoopRuntimeEventSink,
+        &snapshot,
+    )
 }
 
 /// Prepares a model query and emits events for policy-denied tool results.
@@ -312,11 +351,12 @@ pub(crate) fn prepare_query_turn_with_registry_and_events<E>(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &E,
+    snapshot: &RuntimeSnapshot,
 ) -> Result<()>
 where
     E: RuntimeEventSink,
 {
-    store_policy_denied_tool_results(store, conversation_id, registry, events)?;
+    store_policy_denied_tool_results(store, conversation_id, registry, events, snapshot)?;
     validate_query_availability(store, conversation_id)
 }
 
@@ -366,6 +406,16 @@ pub(crate) fn pending_tool_approvals_with_registry(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
 ) -> Result<Vec<ToolApprovalRequest>> {
+    let snapshot = runtime_snapshot(store, conversation_id)?;
+    pending_tool_approvals_from_snapshot(store, conversation_id, registry, &snapshot)
+}
+
+pub(crate) fn pending_tool_approvals_from_snapshot(
+    store: &Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+    snapshot: &RuntimeSnapshot,
+) -> Result<Vec<ToolApprovalRequest>> {
     let messages = store.load_active_path(conversation_id)?;
     let Some(execution) = active_tool_execution(&messages) else {
         return Ok(Vec::new());
@@ -374,14 +424,13 @@ pub(crate) fn pending_tool_approvals_with_registry(
         return Ok(Vec::new());
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
-    let approval_mode = store.tool_approval_mode(conversation_id)?;
+    let attached_tool = snapshot.attached_tool(&tool_call);
 
     if let PolicyDecision::Ask { reason } = policy.decide(
         &tool_call,
-        attached_tool.as_ref(),
-        attached_tool_can_execute(registry, attached_tool.as_ref()),
-        approval_mode,
+        attached_tool,
+        attached_tool_can_execute(registry, attached_tool),
+        snapshot.approval_mode,
     ) {
         return Ok(vec![ToolApprovalRequest {
             assistant_message_id: execution.assistant_message_id,
@@ -404,6 +453,7 @@ fn store_policy_denied_tool_results(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
+    snapshot: &RuntimeSnapshot,
 ) -> Result<()> {
     let policy = ToolPolicy;
 
@@ -415,14 +465,13 @@ fn store_policy_denied_tool_results(
         let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
             return Ok(());
         };
-        let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
-        let approval_mode = store.tool_approval_mode(conversation_id)?;
+        let attached_tool = snapshot.attached_tool(&tool_call);
 
         let PolicyDecision::Deny { reason } = policy.decide(
             &tool_call,
-            attached_tool.as_ref(),
-            attached_tool_can_execute(registry, attached_tool.as_ref()),
-            approval_mode,
+            attached_tool,
+            attached_tool_can_execute(registry, attached_tool),
+            snapshot.approval_mode,
         ) else {
             return Ok(());
         };
@@ -460,6 +509,7 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
+    snapshot: &RuntimeSnapshot,
 ) -> Result<AutomaticToolResolution> {
     let messages = store.load_active_path(conversation_id)?;
     let Some(execution) = active_tool_execution(&messages) else {
@@ -475,13 +525,12 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         tool_call,
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
-    let approval_mode = store.tool_approval_mode(conversation_id)?;
+    let attached_tool = snapshot.attached_tool(&pending.tool_call);
     let result = match policy.decide(
         &pending.tool_call,
-        attached_tool.as_ref(),
-        attached_tool_can_execute(registry, attached_tool.as_ref()),
-        approval_mode,
+        attached_tool,
+        attached_tool_can_execute(registry, attached_tool),
+        snapshot.approval_mode,
     ) {
         PolicyDecision::Deny { reason } => {
             claim_pending_tool_call(store, conversation_id, &pending)?;
@@ -493,7 +542,7 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         }
         PolicyDecision::Allow => {
             claim_pending_tool_call(store, conversation_id, &pending)?;
-            match execute_provider_tool_call(&pending, attached_tool.as_ref(), registry).await {
+            match execute_provider_tool_call(&pending, attached_tool, registry).await {
                 Ok(result) => result,
                 Err(execution_error) => {
                     store.fail_tool_call_execution(
@@ -640,9 +689,20 @@ pub(crate) async fn approve_tool_call_with_registry_and_message(
     tool_call_id: &ToolCallId,
     registry: &ToolProviderRegistry,
 ) -> Result<(ToolExecutionResult, MessageId)> {
+    let snapshot = runtime_snapshot(store, conversation_id)?;
+    approve_tool_call_with_snapshot(store, conversation_id, tool_call_id, registry, &snapshot).await
+}
+
+pub(crate) async fn approve_tool_call_with_snapshot(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    registry: &ToolProviderRegistry,
+    snapshot: &RuntimeSnapshot,
+) -> Result<(ToolExecutionResult, MessageId)> {
     let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
     claim_pending_tool_call(store, conversation_id, &pending)?;
-    let execution = prepare_pending_tool_execution(store, conversation_id, &pending, registry)?;
+    let execution = prepare_pending_tool_execution(&pending, registry, snapshot)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
@@ -671,20 +731,18 @@ pub(crate) async fn approve_tool_call_with_registry_and_message(
 /// finished failed result. If policy allows or asks, the caller receives the
 /// attached provider mapping needed for execution.
 pub(crate) fn prepare_pending_tool_execution(
-    store: &Store,
-    conversation_id: &ConversationId,
     pending: &PendingToolCall,
     registry: &ToolProviderRegistry,
+    snapshot: &RuntimeSnapshot,
 ) -> Result<PendingToolExecution> {
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
-    let approval_mode = store.tool_approval_mode(conversation_id)?;
+    let attached_tool = snapshot.attached_tool(&pending.tool_call).cloned();
 
     match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
         attached_tool_can_execute(registry, attached_tool.as_ref()),
-        approval_mode,
+        snapshot.approval_mode,
     ) {
         PolicyDecision::Deny { reason } => Ok(PendingToolExecution::Finished(
             ToolExecutionResult::failure(
@@ -836,13 +894,18 @@ fn store_claimed_tool_result(
     Ok(message_id)
 }
 
-/// Loads the attached tool matching one model-requested function name.
-fn load_attached_tool_for_call(
+/// Captures policy and context configuration for one runtime operation.
+pub(crate) fn runtime_snapshot(
     store: &Store,
     conversation_id: &ConversationId,
-    tool_call: &ToolCall,
-) -> Result<Option<AttachedTool>> {
-    store.load_attached_tool(conversation_id, &ToolSchemaName::new(tool_call.name()))
+) -> Result<RuntimeSnapshot> {
+    let configuration = store.load_runtime_configuration(conversation_id)?;
+    Ok(RuntimeSnapshot {
+        system_prompt: configuration.system_prompt,
+        compaction: configuration.compaction,
+        approval_mode: configuration.tool_approval_mode,
+        attached_tools: configuration.attached_tools,
+    })
 }
 
 /// Returns whether a loaded attached tool has an executor in the current

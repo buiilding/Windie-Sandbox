@@ -3,6 +3,100 @@
 use super::*;
 
 impl Store {
+    /// Loads all conversation-level inputs that must remain stable for one run.
+    pub(crate) fn load_runtime_configuration(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<RuntimeConfiguration> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .context("failed to start runtime configuration transaction")?;
+        let (model, reasoning_effort, system_prompt, approval_mode) = transaction
+            .query_row(
+                "
+                SELECT model, reasoning_effort, system_prompt, tool_approval_mode
+                FROM conversations
+                WHERE id = ?1
+                ",
+                params![conversation_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed to load runtime conversation configuration")?
+            .ok_or_else(|| {
+                error::not_found(format!("conversation does not exist: {conversation_id}"))
+            })?;
+        let tool_approval_mode = ToolApprovalMode::from_storage(&approval_mode)
+            .ok_or_else(|| anyhow!("unknown tool approval mode: {approval_mode}"))?;
+        let compaction = transaction
+            .query_row(
+                "
+                SELECT id, conversation_id, through_message_id, content, created_at
+                FROM compactions
+                WHERE conversation_id = ?1
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                ",
+                params![conversation_id.as_str()],
+                |row| {
+                    Ok(Compaction {
+                        id: CompactionId::new(row.get::<_, String>(0)?),
+                        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+                        through_message_id: MessageId::new(row.get::<_, String>(2)?),
+                        content: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to load runtime compaction")?;
+        let attached_tools = {
+            let mut statement = transaction
+                .prepare(
+                    "
+                    SELECT
+                        name,
+                        description,
+                        parameters_json,
+                        provider_id,
+                        provider_tool_name,
+                        provider_kind,
+                        permissions_json,
+                        annotations_json
+                    FROM tool_schemas
+                    WHERE conversation_id = ?1
+                    ORDER BY created_at, rowid
+                    ",
+                )
+                .context("failed to prepare runtime attached tool load")?;
+            statement
+                .query_map(params![conversation_id.as_str()], read_attached_tool_row)
+                .context("failed to load runtime attached tools")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read runtime attached tools")?
+        };
+        transaction
+            .commit()
+            .context("failed to finish runtime configuration transaction")?;
+
+        Ok(RuntimeConfiguration {
+            model,
+            reasoning_effort,
+            system_prompt,
+            tool_approval_mode,
+            compaction,
+            attached_tools,
+        })
+    }
+
     /// Creates an empty conversation with a generated ID and persisted model.
     pub fn create_conversation(&self, model: &str) -> Result<ConversationId> {
         let model = normalize_conversation_model(model)?;
@@ -396,6 +490,17 @@ pub struct ConversationInfo {
     pub id: ConversationId,
     pub model: String,
     pub message_count: i64,
+}
+
+#[derive(Debug, Clone)]
+/// Conversation-level inputs captured atomically at runtime operation start.
+pub(crate) struct RuntimeConfiguration {
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub system_prompt: Option<String>,
+    pub tool_approval_mode: ToolApprovalMode,
+    pub compaction: Option<Compaction>,
+    pub attached_tools: Vec<AttachedTool>,
 }
 
 fn normalize_conversation_model(model: &str) -> Result<&str> {

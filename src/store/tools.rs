@@ -402,7 +402,7 @@ impl Store {
     }
 }
 
-fn read_attached_tool_row(row: &Row<'_>) -> rusqlite::Result<AttachedTool> {
+pub(super) fn read_attached_tool_row(row: &Row<'_>) -> rusqlite::Result<AttachedTool> {
     let parameters_json = row.get::<_, String>(2)?;
     let parameters = serde_json::from_str(&parameters_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))

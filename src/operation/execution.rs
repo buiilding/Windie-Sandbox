@@ -15,9 +15,9 @@ pub async fn query_conversation<O>(
 where
     O: RuntimeOutput,
 {
+    let (model, reasoning, snapshot) =
+        capture_runtime_snapshot(store, conversation_id, model_override, reasoning)?;
     require_gateway_running(gateway_url).await?;
-    let model = resolve_conversation_model(store, conversation_id, model_override)?;
-    let reasoning = resolve_reasoning_request(store, conversation_id, reasoning)?;
     let reasoning = llm::reasoning_request_for_model(&model, reasoning);
     let prompt_cache = prompt_cache_request(base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(base_url, model);
@@ -29,8 +29,7 @@ where
         store,
         conversation_id,
         &registry,
-        reasoning.as_ref(),
-        prompt_cache.as_ref(),
+        RuntimeModelRequest::new(&snapshot, reasoning.as_ref(), prompt_cache.as_ref()),
     )
     .await
 }
@@ -48,9 +47,13 @@ pub async fn query_conversation_with_registry<O>(
 where
     O: RuntimeOutput,
 {
+    let (model, reasoning, snapshot) = capture_runtime_snapshot(
+        store,
+        conversation_id,
+        runtime.model_override.clone(),
+        runtime.reasoning.clone(),
+    )?;
     require_gateway_running(runtime.gateway_url).await?;
-    let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
-    let reasoning = resolve_reasoning_request(store, conversation_id, runtime.reasoning)?;
     let reasoning = llm::reasoning_request_for_model(&model, reasoning);
     let prompt_cache =
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
@@ -62,8 +65,40 @@ where
         store,
         conversation_id,
         runtime.registry,
-        reasoning.as_ref(),
-        prompt_cache.as_ref(),
+        RuntimeModelRequest::new(&snapshot, reasoning.as_ref(), prompt_cache.as_ref()),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn query_runtime_turn_from_snapshot<O, E>(
+    output: &O,
+    events: &E,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    runtime: RuntimeTurnConfig<'_>,
+    model: ModelName,
+    reasoning: Option<ReasoningRequest>,
+    snapshot: &RuntimeSnapshot,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    E: RuntimeEventSink,
+{
+    require_gateway_running(runtime.gateway_url).await?;
+    let reasoning = llm::reasoning_request_for_model(&model, reasoning);
+    let prompt_cache =
+        prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
+    let llm = BifrostClient::new(runtime.base_url, model);
+
+    query_conversation_resolving_automatic_tools_with_events(
+        output,
+        &llm,
+        store,
+        conversation_id,
+        runtime.registry,
+        events,
+        RuntimeModelRequest::new(snapshot, reasoning.as_ref(), prompt_cache.as_ref()),
     )
     .await
 }
@@ -117,24 +152,49 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
-    require_gateway_running(runtime.gateway_url).await?;
-    let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
-    let reasoning = resolve_reasoning_request(store, conversation_id, runtime.reasoning)?;
-    let reasoning = llm::reasoning_request_for_model(&model, reasoning);
-    let prompt_cache =
-        prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
-    let llm = BifrostClient::new(runtime.base_url, model);
-
-    query_conversation_resolving_automatic_tools_with_events(
-        output,
-        &llm,
+    let (model, reasoning, snapshot) = capture_runtime_snapshot(
         store,
         conversation_id,
-        runtime.registry,
+        runtime.model_override.clone(),
+        runtime.reasoning.clone(),
+    )?;
+    query_runtime_turn_from_snapshot(
+        output,
         events,
-        RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
+        store,
+        conversation_id,
+        runtime,
+        model,
+        reasoning,
+        &snapshot,
     )
     .await
+}
+
+pub(crate) fn capture_runtime_snapshot(
+    store: &Store,
+    conversation_id: &ConversationId,
+    model_override: Option<ModelName>,
+    reasoning_override: Option<ReasoningRequest>,
+) -> Result<(ModelName, Option<ReasoningRequest>, RuntimeSnapshot)> {
+    let configuration = store.load_runtime_configuration(conversation_id)?;
+    let model = model_override.unwrap_or_else(|| ModelName::new(configuration.model));
+    let reasoning = reasoning_override.or_else(|| {
+        configuration
+            .reasoning_effort
+            .map(|effort| ReasoningRequest {
+                effort: Some(effort),
+                summary: None,
+            })
+    });
+    let snapshot = RuntimeSnapshot {
+        system_prompt: configuration.system_prompt,
+        compaction: configuration.compaction,
+        approval_mode: configuration.tool_approval_mode,
+        attached_tools: configuration.attached_tools,
+    };
+
+    Ok((model, reasoning, snapshot))
 }
 
 /// Resolves the reasoning request for a runtime operation.
@@ -142,6 +202,7 @@ where
 /// A caller-supplied request is a one-query override. When it is absent,
 /// Windie uses the conversation-level persisted effort so CLI, API, and
 /// inspector clients all flow through the same primitive.
+#[cfg(test)]
 pub(crate) fn resolve_reasoning_request(
     store: &Store,
     conversation_id: &ConversationId,
@@ -200,16 +261,37 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
-    let (_, message_id) = approve_tool_call_with_registry_and_message(
+    let (model, reasoning, snapshot) = capture_runtime_snapshot(
+        store,
+        conversation_id,
+        runtime.model_override.clone(),
+        runtime.reasoning.clone(),
+    )?;
+    let (_, message_id) = approve_tool_call_with_snapshot(
         store,
         conversation_id,
         tool_call_id,
         runtime.registry,
+        &snapshot,
     )
     .await?;
     events.tool_result_saved(&message_id);
+    let continuation = RuntimeContinuation {
+        model,
+        reasoning,
+        snapshot,
+    };
 
-    continue_after_tool_result(output, events, store, conversation_id, &message_id, runtime).await
+    continue_after_tool_result(
+        output,
+        events,
+        store,
+        conversation_id,
+        &message_id,
+        runtime,
+        continuation,
+    )
+    .await
 }
 
 /// Stores one denied tool result, emits it, and continues the runtime when
@@ -226,10 +308,36 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
+    let (model, reasoning, snapshot) = capture_runtime_snapshot(
+        store,
+        conversation_id,
+        runtime.model_override.clone(),
+        runtime.reasoning.clone(),
+    )?;
     let (_, message_id) = deny_tool_call_with_message(store, conversation_id, tool_call_id)?;
     events.tool_result_saved(&message_id);
+    let continuation = RuntimeContinuation {
+        model,
+        reasoning,
+        snapshot,
+    };
 
-    continue_after_tool_result(output, events, store, conversation_id, &message_id, runtime).await
+    continue_after_tool_result(
+        output,
+        events,
+        store,
+        conversation_id,
+        &message_id,
+        runtime,
+        continuation,
+    )
+    .await
+}
+
+struct RuntimeContinuation {
+    model: ModelName,
+    reasoning: Option<ReasoningRequest>,
+    snapshot: RuntimeSnapshot,
 }
 
 /// Continues after a stored tool result only when no manual approval remains.
@@ -240,6 +348,7 @@ async fn continue_after_tool_result<O, E>(
     conversation_id: &ConversationId,
     result_message_id: &MessageId,
     runtime: RuntimeTurnConfig<'_>,
+    continuation: RuntimeContinuation,
 ) -> Result<Option<Message>>
 where
     O: RuntimeOutput,
@@ -248,11 +357,27 @@ where
     if store.active_message_id(conversation_id)?.as_ref() != Some(result_message_id) {
         return Ok(None);
     }
-    if !pending_tool_approvals_with_registry(store, conversation_id, runtime.registry)?.is_empty() {
+    if !pending_tool_approvals_from_snapshot(
+        store,
+        conversation_id,
+        runtime.registry,
+        &continuation.snapshot,
+    )?
+    .is_empty()
+    {
         return Ok(None);
     }
 
-    query_runtime_turn(output, events, store, conversation_id, runtime)
-        .await
-        .map(Some)
+    query_runtime_turn_from_snapshot(
+        output,
+        events,
+        store,
+        conversation_id,
+        runtime,
+        continuation.model,
+        continuation.reasoning,
+        &continuation.snapshot,
+    )
+    .await
+    .map(Some)
 }
