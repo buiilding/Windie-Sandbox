@@ -63,8 +63,8 @@ pub struct ToolExecutionRecord {
 
 impl Store {
     /// Atomically reserves one assistant-requested tool call for execution.
-    /// Interrupted claims may be explicitly retried; every other existing claim
-    /// prevents the external side effect from running again.
+    /// Claims that failed before provider dispatch and interrupted claims may be
+    /// retried. Unknown claims never retry because their side effect may have run.
     pub fn claim_tool_call_execution(
         &self,
         conversation_id: &ConversationId,
@@ -104,7 +104,7 @@ impl Store {
                 SET run_id = ?3, status = 'executing', error = NULL, updated_at = ?4
                 WHERE assistant_message_id = ?1
                   AND tool_call_id = ?2
-                  AND status = 'interrupted'
+                  AND status IN ('interrupted', 'failed')
                 ",
                 params![
                     assistant_message_id.as_str(),
@@ -113,7 +113,7 @@ impl Store {
                     now
                 ],
             )
-            .context("failed to retry interrupted tool call")?;
+            .context("failed to retry recoverable tool call")?;
         if retried == 1 {
             return Ok(());
         }
@@ -136,6 +136,7 @@ impl Store {
     }
 
     /// Preserves an execution failure that did not produce a model-facing result.
+    #[cfg(test)]
     pub fn fail_tool_call_execution(
         &self,
         assistant_message_id: &MessageId,
@@ -163,6 +164,42 @@ impl Store {
                 ],
             )
             .context("failed to record tool call execution failure")?;
+        if changed != 1 {
+            return Err(error::invalid_request(format!(
+                "tool call execution is not executing: {tool_call_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Marks a claimed execution unsafe to retry because dispatch may have run.
+    pub fn mark_tool_call_execution_unknown(
+        &self,
+        assistant_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        run_id: &str,
+        execution_error: &str,
+    ) -> Result<()> {
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE tool_call_executions
+                SET status = 'unknown', error = ?4, updated_at = ?5
+                WHERE assistant_message_id = ?1
+                  AND tool_call_id = ?2
+                  AND run_id = ?3
+                  AND status = 'executing'
+                ",
+                params![
+                    assistant_message_id.as_str(),
+                    tool_call_id.as_str(),
+                    run_id,
+                    execution_error,
+                    now_millis()?
+                ],
+            )
+            .context("failed to mark tool call execution unknown")?;
         if changed != 1 {
             return Err(error::invalid_request(format!(
                 "tool call execution is not executing: {tool_call_id}"

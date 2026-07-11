@@ -583,16 +583,22 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
             )
         }
         PolicyDecision::Allow => {
+            let attached_tool = attached_tool.ok_or_else(|| {
+                error::invalid_request(format!(
+                    "Tool is not attached: {}",
+                    pending.tool_call.name()
+                ))
+            })?;
+            registry.prepare_tool(attached_tool)?;
             claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
-            match execute_provider_tool_call(&pending, attached_tool, registry, cancellation).await
-            {
+            match execute_pending_tool_call(&pending, attached_tool, registry, cancellation).await {
                 Ok(result) => result,
                 Err(execution_error) => {
                     if is_runtime_cancelled(&execution_error) {
                         store.interrupt_tool_call_executions_for_run(run_id)?;
                         return Err(execution_error);
                     }
-                    store.fail_tool_call_execution(
+                    store.mark_tool_call_execution_unknown(
                         &pending.assistant_message_id,
                         &pending.tool_call.id,
                         run_id,
@@ -765,8 +771,8 @@ pub(crate) async fn approve_tool_call_with_snapshot(
     snapshot: &RuntimeSnapshot,
 ) -> Result<(ToolExecutionResult, MessageId)> {
     let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
-    claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
     let execution = prepare_pending_tool_execution(&pending, registry, snapshot)?;
+    claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
@@ -778,7 +784,7 @@ pub(crate) async fn approve_tool_call_with_snapshot(
                         store.interrupt_tool_call_executions_for_run(run_id)?;
                         return Err(execution_error);
                     }
-                    store.fail_tool_call_execution(
+                    store.mark_tool_call_execution_unknown(
                         &pending.assistant_message_id,
                         &pending.tool_call.id,
                         run_id,
@@ -828,6 +834,7 @@ pub(crate) fn prepare_pending_tool_execution(
                     pending.tool_call.name()
                 )));
             };
+            registry.prepare_tool(&attached_tool)?;
             Ok(PendingToolExecution::Execute(attached_tool))
         }
     }
@@ -843,23 +850,6 @@ pub(crate) async fn execute_pending_tool_call(
     registry
         .call_tool(attached_tool, &pending.tool_call, cancellation)
         .await
-}
-
-/// Executes one pending tool call through its attached provider mapping.
-async fn execute_provider_tool_call(
-    pending: &PendingToolCall,
-    attached_tool: Option<&AttachedTool>,
-    registry: &ToolProviderRegistry,
-    cancellation: &RunCancellation,
-) -> Result<ToolExecutionResult> {
-    let Some(attached_tool) = attached_tool else {
-        return Err(error::invalid_request(format!(
-            "Tool is not attached: {}",
-            pending.tool_call.name()
-        )));
-    };
-
-    execute_pending_tool_call(pending, attached_tool, registry, cancellation).await
 }
 
 /// Stores an explicit rejection for one pending tool call.

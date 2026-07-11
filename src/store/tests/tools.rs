@@ -182,8 +182,14 @@ fn failure_transition_requires_an_executing_claim() {
     store
         .fail_tool_call_execution(&assistant_id, &call_id, &run.id, "failed")
         .unwrap();
+    store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &run.id)
+        .unwrap();
+    store
+        .fail_tool_call_execution(&assistant_id, &call_id, &run.id, "failed again")
+        .unwrap();
     let error = store
-        .fail_tool_call_execution(&assistant_id, &call_id, &run.id, "failed twice")
+        .fail_tool_call_execution(&assistant_id, &call_id, &run.id, "failed without retry")
         .unwrap_err();
 
     assert!(error.to_string().contains("not executing"));

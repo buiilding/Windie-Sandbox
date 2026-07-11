@@ -122,6 +122,27 @@ impl ToolProviderRegistry {
         }
     }
 
+    /// Completes provider-local setup before runtime claims a side effect.
+    pub(crate) fn prepare_tool(&self, attached_tool: &AttachedTool) -> Result<()> {
+        match attached_tool.provider.kind {
+            ToolProviderKind::Mcp => {
+                let provider = self
+                    .mcp_provider(&attached_tool.provider.provider_id)
+                    .ok_or_else(|| {
+                        error::invalid_request(format!(
+                            "unknown tool provider: {}",
+                            attached_tool.provider.provider_id
+                        ))
+                    })?;
+                provider.prepare()
+            }
+            ToolProviderKind::SchemaOnly => Err(error::invalid_request(format!(
+                "tool has no executor: {}",
+                attached_tool.schema_name
+            ))),
+        }
+    }
+
     /// Executes one approved model tool call through its attached provider.
     pub async fn call_tool(
         &self,
@@ -423,7 +444,6 @@ impl McpToolProvider {
                 ));
             }
         };
-        self.prepare()?;
         let result = match if let Some(session_pool) = session_pool {
             session_pool.call_tool_cancellable(
                 self.provider_id.as_str(),
