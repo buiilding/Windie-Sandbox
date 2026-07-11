@@ -5,6 +5,7 @@ use crate::conversation::{
     ImageAssetId, MessageId, MessageMetadata, Role, ToolCall, ToolCallFunction, ToolCallId,
     ToolCallKind, ToolSchema, ToolSchemaName,
 };
+use crate::llm::reasoning_request_for_model;
 
 #[test]
 fn selects_original_image_detail_for_supported_openai_models() {

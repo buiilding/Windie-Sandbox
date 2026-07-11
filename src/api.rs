@@ -26,7 +26,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -46,9 +45,7 @@ use crate::llm::{BaseUrl, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::paths;
-use crate::run::{
-    RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription, is_runtime_cancelled,
-};
+use crate::run::{RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription};
 use crate::runtime::RuntimeEventSink;
 use crate::store::{ConversationInfo, RuntimeRunAction, Store};
 use crate::tool::{
@@ -150,6 +147,23 @@ fn open_store(state: &ApiState) -> Result<Store> {
     }
 }
 
+/// Runs one complete synchronous store operation on Tokio's blocking pool.
+/// The store is opened inside the closure so its SQLite connection never
+/// crosses an async suspension point or occupies an API runtime worker.
+async fn run_store<T, F>(state: &ApiState, operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Store) -> Result<T> + Send + 'static,
+{
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut store = open_store(&state)?;
+        operation(&mut store)
+    })
+    .await
+    .context("store operation task stopped")?
+}
+
 #[derive(Debug, Serialize)]
 /// Stable error response returned by failed API operations.
 struct ErrorResponse {
@@ -169,6 +183,7 @@ impl IntoResponse for ApiError {
         let status = match error::kind_from_error(&self.0) {
             Some(WindieErrorKind::NotFound) => StatusCode::NOT_FOUND,
             Some(WindieErrorKind::InvalidRequest) => StatusCode::BAD_REQUEST,
+            Some(WindieErrorKind::Conflict) => StatusCode::CONFLICT,
             None => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

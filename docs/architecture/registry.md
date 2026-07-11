@@ -21,8 +21,8 @@ The provider reference contains:
 - provider-native tool name;
 - provider kind.
 
-The current provider kinds are `Mcp` and `Plugin`. `Plugin` is a reserved typed
-lane; no plugin executor exists today.
+The current provider kinds are `Mcp` and `SchemaOnly`. `SchemaOnly` identifies
+a model-visible schema that deliberately has no executor.
 
 ## Registry Responsibilities
 
@@ -50,8 +50,7 @@ Today the registry is populated only from a code-approved MCP provider list:
 - Exa.
 
 There are currently no Windie-native built-in tool implementations in the
-registry. There is also no working plugin executor or user-configured arbitrary
-MCP provider path.
+registry and no user-configured arbitrary MCP provider path.
 
 The unified type design allows those sources to be added without changing the
 runtime contract:
@@ -59,7 +58,6 @@ runtime contract:
 ```text
 built-in provider ---+
 MCP provider --------+--> ToolDefinition --> AttachedTool --> runtime call
-plugin provider ------+
 ```
 
 Only the MCP branch is implemented now.
@@ -88,14 +86,21 @@ one conversation.
 
 ## Catalog Loading and Cache
 
-Listing all available tools asks every registered provider for its catalog.
-Unavailable providers are skipped by the all-tools listing. Listing one
-specific provider returns its error directly.
+Listing all available tools asks registered providers for their catalogs in
+parallel. Partial results remain available when one provider fails; if every
+provider fails, the all-tools request returns an error. Listing one specific
+provider returns its error directly.
 
 After a provider catalog loads successfully, it is cached by provider ID for
 the life of the registry. The long-running API shares one registry, so later
 attachment requests reuse the cached definitions. Separate CLI processes start
 with separate empty caches.
+
+Catalog loading is single-flight per provider. Concurrent API requests wait for
+the same in-progress provider load instead of starting duplicate MCP processes.
+Different providers still load concurrently. Failures are cached for five
+seconds so overlapping callers share the failure while later requests can
+retry transient provider availability.
 
 The cache is not persisted. Attached tool definitions are persisted.
 
@@ -120,8 +125,8 @@ reloaded for every tool. All attachments are then inserted atomically.
 ## Manual Schemas
 
 Windie also supports manually inserting a raw model-facing schema. Internally
-it is represented with provider ID `manual` and provider kind `Plugin`. No
-executor owns that reference, so it can be sent to the model for protocol
+it is represented with provider ID `manual` and provider kind `SchemaOnly`.
+No executor owns that reference, so it can be sent to the model for protocol
 testing but policy denies execution.
 
 ## Dispatch
@@ -129,7 +134,8 @@ testing but policy denies execution.
 After policy approves a call, registry dispatch is based on provider kind:
 
 - `Mcp`: find the approved MCP provider by ID and call its adapter;
-- `Plugin`: return an unknown-tool error because plugin execution is absent.
+- `SchemaOnly`: return an unknown-tool error because execution is deliberately
+  unavailable.
 
 The MCP adapter parses the model's JSON argument text, calls the
 provider-native name, and normalizes text/image result blocks into one
@@ -137,7 +143,7 @@ provider-native name, and normalizes text/image result blocks into one
 
 ## Adding a New Provider Kind
 
-A real built-in or plugin implementation would need to provide the same
+A real built-in or extension implementation would need to provide the same
 provider-neutral operations:
 
 1. list `ToolDefinition` values;
@@ -147,7 +153,8 @@ provider-neutral operations:
 5. expose no provider-specific protocol details to runtime.
 
 The registry is the ownership point for that unification. MCP JSON-RPC remains
-inside `mcp.rs`, and plugin loading would need its own protocol boundary.
+inside `mcp.rs`; any future extension mechanism needs its own protocol boundary
+rather than a speculative registry type.
 
 ## Relevant Code
 

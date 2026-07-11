@@ -1,6 +1,14 @@
 //! Backend-owned runtime run lifecycle and reconnectable SSE routes.
 
-use super::*;
+use super::{
+    ApiError, ApiResult, ApiState, Arc, ConversationId, Deserialize, Event, Infallible, Json,
+    KeepAlive, MessageId, ModelName, Path, Query, QueryRequest, ReasoningRequest, Result, Router,
+    RunEvent, RunEventEnvelope, RunManager, RunSnapshot, RunSubscription, RuntimeEventSink,
+    RuntimeOutput, RuntimeRunAction, Serialize, Sse, State, ToolCall, ToolCallId, VecDeque,
+    broadcast, error_causes, get, log_api_error, open_store, operation, post, raw_error_message,
+    runtime_turn_config, stream,
+};
+use crate::store::RuntimeRunStatus;
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
@@ -157,129 +165,85 @@ async fn cancel_run(
 
 /// Starts one task whose lifetime is independent from HTTP subscribers.
 async fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<RunSnapshot> {
-    let snapshot = state
-        .run_manager
-        .begin_action(action.conversation_id(), action.run_action())
-        .await?;
-    let run_id = snapshot.id.clone();
-    let task_run_id = run_id.clone();
+    let conversation_id = action.conversation_id().clone();
+    let run_action = action.run_action();
     let manager = state.run_manager.clone();
-    let task = tokio::spawn(async move {
-        let result = async {
-            let mut store = open_store(&state)?;
-            let pending_writes = PendingRunWrites::default();
-            let events = PersistentRunEventSink {
-                manager: manager.clone(),
-                run_id: task_run_id.clone(),
-                pending_writes: pending_writes.clone(),
-            };
-            let output = PersistentRunOutput {
-                manager: manager.clone(),
-                run_id: task_run_id.clone(),
-                buffered_delta: std::sync::Mutex::new(None),
-                pending_writes: pending_writes.clone(),
-            };
-            let message = match action {
-                RuntimeStreamAction::Query {
-                    conversation_id,
-                    model_override,
-                    reasoning,
-                } => {
-                    let runtime =
-                        runtime_turn_config(&state, &task_run_id, model_override, reasoning)?;
-                    operation::query_runtime_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        runtime,
-                    )
-                    .await
-                    .map(Some)
-                }
-                RuntimeStreamAction::ApproveTool {
-                    conversation_id,
-                    tool_call_id,
-                } => {
-                    let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
-                    operation::approve_tool_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        &tool_call_id,
-                        runtime,
-                    )
-                    .await
-                }
-                RuntimeStreamAction::DenyTool {
-                    conversation_id,
-                    tool_call_id,
-                } => {
-                    let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
-                    operation::deny_tool_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        &tool_call_id,
-                        runtime,
-                    )
-                    .await
-                }
-            };
-            output.flush()?;
-            pending_writes.flush().await?;
+    manager
+        .spawn_action(
+            &conversation_id,
+            run_action,
+            move |task_run_id, _cancellation| async move {
+                let mut store = open_store(&state)?;
+                let pending_writes = PendingRunWrites::default();
+                let events = PersistentRunEventSink {
+                    manager: state.run_manager.clone(),
+                    run_id: task_run_id.clone(),
+                    pending_writes: pending_writes.clone(),
+                };
+                let output = PersistentRunOutput {
+                    manager: state.run_manager.clone(),
+                    run_id: task_run_id.clone(),
+                    buffered_delta: std::sync::Mutex::new(None),
+                    pending_writes: pending_writes.clone(),
+                };
+                let message = match action {
+                    RuntimeStreamAction::Query {
+                        conversation_id,
+                        model_override,
+                        reasoning,
+                    } => {
+                        let runtime =
+                            runtime_turn_config(&state, &task_run_id, model_override, reasoning)?;
+                        operation::query_runtime_turn(
+                            &output,
+                            &events,
+                            &mut store,
+                            &conversation_id,
+                            runtime,
+                        )
+                        .await
+                        .map(Some)
+                    }
+                    RuntimeStreamAction::ApproveTool {
+                        conversation_id,
+                        tool_call_id,
+                    } => {
+                        let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
+                        operation::approve_tool_turn(
+                            &output,
+                            &events,
+                            &mut store,
+                            &conversation_id,
+                            &tool_call_id,
+                            runtime,
+                        )
+                        .await
+                    }
+                    RuntimeStreamAction::DenyTool {
+                        conversation_id,
+                        tool_call_id,
+                    } => {
+                        let runtime = runtime_turn_config(&state, &task_run_id, None, None)?;
+                        operation::deny_tool_turn(
+                            &output,
+                            &events,
+                            &mut store,
+                            &conversation_id,
+                            &tool_call_id,
+                            runtime,
+                        )
+                        .await
+                    }
+                }?;
+                output.flush()?;
+                pending_writes.flush().await?;
 
-            message
-        }
-        .await;
-
-        match result {
-            Ok(message) => {
-                let message_id = message
+                Ok(message
                     .and_then(|message| message.id)
-                    .map(|id| id.as_str().to_string());
-                if let Err(error) = manager.complete(&task_run_id, message_id).await {
-                    log_api_error(&error);
-                }
-            }
-            Err(error) => {
-                log_api_error(&error);
-                let persist_result = if is_runtime_cancelled(&error) {
-                    open_store(&state)
-                        .and_then(|store| {
-                            store.interrupt_tool_call_executions_for_run(&task_run_id)?;
-                            Ok(())
-                        })
-                        .map(|_| ())
-                } else {
-                    Ok(())
-                };
-                let persist_result = match persist_result {
-                    Ok(()) if is_runtime_cancelled(&error) => {
-                        manager.finish_cancelled(&task_run_id).await
-                    }
-                    Ok(()) => {
-                        manager
-                            .fail(
-                                &task_run_id,
-                                raw_error_message(&error),
-                                error_causes(&error),
-                            )
-                            .await
-                    }
-                    Err(error) => Err(error),
-                };
-                if let Err(persist_error) = persist_result {
-                    log_api_error(&persist_error);
-                }
-            }
-        }
-    });
-    drop(task);
-
-    Ok(snapshot)
+                    .map(|id| id.as_str().to_string()))
+            },
+        )
+        .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -369,7 +333,13 @@ fn persistent_run_event_sse(
                     Err(broadcast::error::RecvError::Closed) => {
                         match state.manager.events_after(&state.run_id, state.after).await {
                             Ok(events) if !events.is_empty() => state.pending.extend(events),
-                            _ => return None,
+                            Ok(_) => match state.manager.snapshot(&state.run_id).await {
+                                Ok(snapshot) if snapshot.status == RuntimeRunStatus::Running => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+                                _ => return None,
+                            },
+                            Err(_) => return None,
                         }
                     }
                 }
@@ -635,6 +605,9 @@ impl RuntimeOutput for PersistentRunOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
+    use axum::response::IntoResponse;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn durable_output_coalesces_small_deltas_without_losing_text() {
@@ -676,6 +649,52 @@ mod tests {
 
         drop(output);
         drop(manager);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sse_polls_events_owned_by_another_run_manager() {
+        let path = std::env::temp_dir().join(format!(
+            "windie-run-nonlocal-sse-{}-{}.db",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let owner = Arc::new(RunManager::new(Some(path.clone())).unwrap());
+        let follower = Arc::new(RunManager::new(Some(path.clone())).unwrap());
+        let run = owner.begin(&conversation_id).await.unwrap();
+        let subscription = follower.subscribe(&run.id, 0).await.unwrap();
+        let response =
+            persistent_run_event_sse(subscription, Arc::clone(&follower), run.id.clone(), 0)
+                .into_response();
+        let owner_for_task = Arc::clone(&owner);
+        let run_id = run.id.clone();
+        let producer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            owner_for_task
+                .publish(
+                    &run_id,
+                    RunEvent::AssistantDelta {
+                        text: "remote".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            owner_for_task.complete(&run_id, None).await.unwrap();
+        });
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        producer.await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("event: assistant_delta"));
+        assert!(body.contains("event: query_done"));
+
+        drop(follower);
+        drop(owner);
         let _ = std::fs::remove_file(path);
     }
 }

@@ -1,6 +1,11 @@
 //! Tool registry, attachment, schema, policy, and direct execution routes.
 
-use super::*;
+use super::{
+    ApiResult, ApiState, Arc, Context, ConversationId, DeletedResponse, Deserialize, Json, Path,
+    ProviderToolName, Router, RuntimeRunAction, Serialize, State, ToolApprovalMode,
+    ToolApprovalRequest, ToolCallId, ToolDefinition, ToolExecutionResult, ToolProviderId,
+    ToolSchema, ToolSchemaName, Value, get, open_store, operation, patch, post, run_store,
+};
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
@@ -95,13 +100,13 @@ async fn set_tool_approval_mode(
     Json(request): Json<ToolApprovalModeRequest>,
 ) -> ApiResult<ToolApprovalModeResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
+    let tool_approval_mode = run_store(&state, move |store| {
+        operation::set_tool_approval_mode(store, &conversation_id, request.mode)?;
+        store.tool_approval_mode(&conversation_id)
+    })
+    .await?;
 
-    operation::set_tool_approval_mode(&mut store, &conversation_id, request.mode)?;
-
-    Ok(Json(ToolApprovalModeResponse {
-        tool_approval_mode: store.tool_approval_mode(&conversation_id)?,
-    }))
+    Ok(Json(ToolApprovalModeResponse { tool_approval_mode }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,12 +225,14 @@ async fn insert_tool_schema(
 ) -> ApiResult<ToolSchemaResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_schema = request.into_tool_schema();
-    let mut store = open_store(&state)?;
-
-    operation::insert_tool_schema(&mut store, &conversation_id, &tool_schema)?;
+    let response_name = tool_schema.name.clone();
+    run_store(&state, move |store| {
+        operation::insert_tool_schema(store, &conversation_id, &tool_schema)
+    })
+    .await?;
 
     Ok(Json(ToolSchemaResponse {
-        name: tool_schema.name.as_str().to_string(),
+        name: response_name.as_str().to_string(),
     }))
 }
 
@@ -238,12 +245,14 @@ async fn update_tool_schema(
     let conversation_id = ConversationId::new(conversation_id);
     let current_name = ToolSchemaName::new(name);
     let tool_schema = request.into_tool_schema();
-    let mut store = open_store(&state)?;
-
-    operation::update_tool_schema(&mut store, &conversation_id, &current_name, &tool_schema)?;
+    let response_name = tool_schema.name.clone();
+    run_store(&state, move |store| {
+        operation::update_tool_schema(store, &conversation_id, &current_name, &tool_schema)
+    })
+    .await?;
 
     Ok(Json(ToolSchemaResponse {
-        name: tool_schema.name.as_str().to_string(),
+        name: response_name.as_str().to_string(),
     }))
 }
 
@@ -254,9 +263,10 @@ async fn remove_tool_schema(
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let name = ToolSchemaName::new(name);
-    let mut store = open_store(&state)?;
-
-    operation::remove_tool_schema(&mut store, &conversation_id, &name)?;
+    run_store(&state, move |store| {
+        operation::remove_tool_schema(store, &conversation_id, &name)
+    })
+    .await?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -268,9 +278,10 @@ async fn detach_tool(
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let schema_name = ToolSchemaName::new(schema_name);
-    let mut store = open_store(&state)?;
-
-    operation::detach_tool(&mut store, &conversation_id, &schema_name)?;
+    run_store(&state, move |store| {
+        operation::detach_tool(store, &conversation_id, &schema_name)
+    })
+    .await?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -309,12 +320,11 @@ async fn list_approvals(
     Path(conversation_id): Path<String>,
 ) -> ApiResult<ApprovalListResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let store = open_store(&state)?;
-    let approvals = operation::list_tool_approvals_with_registry(
-        &store,
-        &conversation_id,
-        &state.tool_registry,
-    )?
+    let registry = Arc::clone(&state.tool_registry);
+    let approvals = run_store(&state, move |store| {
+        operation::list_tool_approvals_with_registry(store, &conversation_id, &registry)
+    })
+    .await?
     .into_iter()
     .map(ApprovalResponse::from)
     .collect();
@@ -349,22 +359,26 @@ async fn approve_tool(
 ) -> ApiResult<ToolExecutionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = open_store(&state)?;
-    let run = state
-        .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::ApproveTool)
+    let manager = state.run_manager.clone();
+    let task_conversation_id = conversation_id.clone();
+    let result = manager
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::ApproveTool,
+            move |run_id, cancellation| async move {
+                let mut store = open_store(&state)?;
+                operation::approve_tool_with_registry(
+                    &mut store,
+                    &task_conversation_id,
+                    &tool_call_id,
+                    &state.tool_registry,
+                    &run_id,
+                    &cancellation,
+                )
+                .await
+            },
+        )
         .await?;
-    let cancellation = state.run_manager.cancellation(&run.id)?;
-    let result = operation::approve_tool_with_registry(
-        &mut store,
-        &conversation_id,
-        &tool_call_id,
-        &state.tool_registry,
-        &run.id,
-        &cancellation,
-    )
-    .await;
-    let result = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(result.into()))
 }
@@ -376,20 +390,24 @@ async fn deny_tool(
 ) -> ApiResult<ToolExecutionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let tool_call_id = ToolCallId::new(tool_call_id);
-    let mut store = open_store(&state)?;
-    let run = state
-        .run_manager
-        .begin_action(&conversation_id, RuntimeRunAction::DenyTool)
+    let manager = state.run_manager.clone();
+    let task_conversation_id = conversation_id.clone();
+    let result = manager
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::DenyTool,
+            move |run_id, cancellation| async move {
+                let mut store = open_store(&state)?;
+                operation::deny_tool(
+                    &mut store,
+                    &task_conversation_id,
+                    &tool_call_id,
+                    &run_id,
+                    &cancellation,
+                )
+            },
+        )
         .await?;
-    let cancellation = state.run_manager.cancellation(&run.id)?;
-    let result = operation::deny_tool(
-        &mut store,
-        &conversation_id,
-        &tool_call_id,
-        &run.id,
-        &cancellation,
-    );
-    let result = state.run_manager.finish_result(&run.id, result).await?;
 
     Ok(Json(result.into()))
 }

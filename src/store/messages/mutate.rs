@@ -1,6 +1,11 @@
 //! Conversation tree mutation and forking.
 
-use super::super::*;
+use super::super::{
+    Context, ConversationId, HashMap, HashSet, MessageId, MessageMetadata, OptionalExtension,
+    Result, Role, Store, ToolCallId, Transaction, TransactionBehavior, Uuid, anyhow,
+    delete_orphan_image_assets_in_transaction, ensure_data_version, error, now_millis, params,
+    params_from_iter, touch_conversation_in_transaction,
+};
 use super::codecs::{encode_message_metadata, read_message_tree_row};
 use super::insert::{insert_message_parts_in_transaction, insert_text_part_in_transaction};
 
@@ -10,14 +15,16 @@ impl Store {
         conversation_id: &ConversationId,
         message_id: &MessageId,
     ) -> Result<()> {
+        let data_version = self.data_version()?;
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
         let now = now_millis()?;
         let transaction = self
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to start active message transaction")?;
+        ensure_data_version(&transaction, data_version)?;
 
         set_active_message_in_transaction(&transaction, conversation_id, Some(message_id))
             .context("failed to set active message")?;
@@ -40,14 +47,16 @@ impl Store {
         message_id: &MessageId,
         content: &str,
     ) -> Result<()> {
+        let data_version = self.data_version()?;
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
         let now = now_millis()?;
         let transaction = self
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to start message update transaction")?;
+        ensure_data_version(&transaction, data_version)?;
 
         transaction
             .execute(
@@ -87,6 +96,7 @@ impl Store {
         conversation_id: &ConversationId,
         message_id: &MessageId,
     ) -> Result<()> {
+        let data_version = self.data_version()?;
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
@@ -108,8 +118,9 @@ impl Store {
         let now = now_millis()?;
         let transaction = self
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to start message delete transaction")?;
+        ensure_data_version(&transaction, data_version)?;
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message delete")?;
@@ -168,9 +179,8 @@ impl Store {
 
     /// Computes the exact message IDs and child promotions for splice delete.
     ///
-    /// This is intentionally built before the transaction because all validation
-    /// happens against the current tree shape. The transaction then applies only
-    /// the already-decided link updates and deletes.
+    /// A data-version guard validates this plan after the write lock is acquired,
+    /// before any links or rows are changed.
     fn message_splice_delete(
         &self,
         conversation_id: &ConversationId,
@@ -235,6 +245,7 @@ impl Store {
         conversation_id: &ConversationId,
         message_id: &MessageId,
     ) -> Result<()> {
+        let data_version = self.data_version()?;
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
         let descendant_ids = self
@@ -253,8 +264,9 @@ impl Store {
         let now = now_millis()?;
         let transaction = self
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to start conversation truncate transaction")?;
+        ensure_data_version(&transaction, data_version)?;
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after conversation truncate")?;
@@ -306,6 +318,7 @@ impl Store {
         conversation_id: &ConversationId,
         message_id: &MessageId,
     ) -> Result<ConversationId> {
+        let data_version = self.data_version()?;
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
@@ -320,8 +333,9 @@ impl Store {
         let now = now_millis()?;
         let transaction = self
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to start conversation fork transaction")?;
+        ensure_data_version(&transaction, data_version)?;
 
         transaction
             .execute(

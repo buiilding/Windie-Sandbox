@@ -1,6 +1,13 @@
 //! Conversations persistence owned by the store module.
 
-use super::*;
+use super::{
+    AttachedTool, Compaction, CompactionId, Context, ConversationId, MessageId, OptionalExtension,
+    Result, Store, ToolApprovalMode, Uuid, anyhow, delete_orphan_image_assets_in_transaction,
+    error, now_millis, params, read_attached_tool_row, touch_conversation_in_transaction,
+};
+
+#[cfg(test)]
+use super::{DEFAULT_CONVERSATION_ID, Message};
 
 impl Store {
     /// Loads all conversation-level inputs that must remain stable for one run.

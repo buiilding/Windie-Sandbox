@@ -1,6 +1,9 @@
 //! Message and part loading.
 
-use super::super::*;
+use super::super::{
+    Context, ConversationId, HashMap, Message, MessageId, MessagePart, MessagePartView,
+    MessageView, Result, Store, Type, params, params_from_iter,
+};
 use super::codecs::{read_message_part_row, read_message_row};
 
 impl Store {

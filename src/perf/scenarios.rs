@@ -5,13 +5,17 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
 use super::metrics::REPORT_FORMAT_VERSION;
-use super::*;
+use super::{
+    BenchmarkMode, CountName, MetricName, PerformanceBaseline, PerformanceReport,
+    PerformanceSample, PerformanceSummary,
+};
 use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId,
@@ -20,13 +24,15 @@ use crate::conversation::{
 use crate::gateway::{BifrostGateway, GatewayUrl};
 use crate::llm::{BaseUrl, BifrostClient, LlmStreamEvent, ModelName};
 use crate::mcp::{self, McpCommand};
+use crate::operation;
 use crate::run::{RunEvent, RunManager};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
-use crate::store::Store;
+use crate::store::{RuntimeRunAction, Store};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef,
 };
+use crate::tool_provider::ToolProviderRegistry;
 
 const BENCH_PROMPT: &str = "Reply with exactly: ok";
 const SCALE_PATH_MESSAGES: usize = 100;
@@ -80,6 +86,11 @@ struct RuntimeBenchmarkTimings {
     provider_tool_attach_load: Duration,
     fake_mcp_list_call: Duration,
     durable_stream_journal: Duration,
+    inspection_snapshot_1000: Duration,
+    fork_conversation_1000: Duration,
+    run_action_lifecycle: Duration,
+    run_admission_contention: Duration,
+    fake_mcp_catalog_singleflight: Duration,
     active_path_messages: usize,
     tree_messages: usize,
     requested_tool_calls: usize,
@@ -87,10 +98,11 @@ struct RuntimeBenchmarkTimings {
     deleted_messages: usize,
     promoted_children: usize,
     truncated_messages: usize,
+    provider_catalog_starts: usize,
 }
 
 impl RuntimeBenchmarkTimings {
-    fn durations(&self) -> [(MetricName, Duration); 27] {
+    fn durations(&self) -> [(MetricName, Duration); 32] {
         [
             (MetricName::PrepareQueryTurn, self.prepare_query_turn),
             (
@@ -176,10 +188,27 @@ impl RuntimeBenchmarkTimings {
                 MetricName::DurableStreamJournal,
                 self.durable_stream_journal,
             ),
+            (
+                MetricName::InspectionSnapshot1000,
+                self.inspection_snapshot_1000,
+            ),
+            (
+                MetricName::ForkConversation1000,
+                self.fork_conversation_1000,
+            ),
+            (MetricName::RunActionLifecycle, self.run_action_lifecycle),
+            (
+                MetricName::RunAdmissionContention,
+                self.run_admission_contention,
+            ),
+            (
+                MetricName::FakeMcpCatalogSingleflight,
+                self.fake_mcp_catalog_singleflight,
+            ),
         ]
     }
 
-    fn counts(&self) -> [(CountName, usize); 7] {
+    fn counts(&self) -> [(CountName, usize); 8] {
         [
             (CountName::ActivePathMessages, self.active_path_messages),
             (CountName::TreeMessages, self.tree_messages),
@@ -188,6 +217,10 @@ impl RuntimeBenchmarkTimings {
             (CountName::DeletedMessages, self.deleted_messages),
             (CountName::PromotedChildren, self.promoted_children),
             (CountName::TruncatedMessages, self.truncated_messages),
+            (
+                CountName::ProviderCatalogStarts,
+                self.provider_catalog_starts,
+            ),
         ]
     }
 }
@@ -287,6 +320,10 @@ mod live;
 mod runtime;
 
 use conversation::record_conversation_benchmark;
-use fixtures::*;
+use fixtures::{
+    attach_test_mcp_tool, create_completed_tool_chain, create_message_chain, insert_tool_result,
+    insert_user_message, remove_runtime_database_files, runtime_database_path,
+    test_tool_definition, tiny_png_bytes, tool_call, tool_call_metadata, with_runtime_store,
+};
 use live::run_live_request;
 use runtime::run_runtime_benchmark;

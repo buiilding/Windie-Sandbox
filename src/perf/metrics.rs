@@ -12,7 +12,7 @@ use super::BenchmarkMode;
 use crate::conversation::ConversationId;
 use crate::llm::ModelName;
 
-pub(super) const REPORT_FORMAT_VERSION: u32 = 5;
+pub(super) const REPORT_FORMAT_VERSION: u32 = 6;
 
 macro_rules! metric_catalog {
     ($name:ident; $( $variant:ident => ($key:literal, $label:literal) ),+ $(,)?) => {
@@ -80,6 +80,11 @@ metric_catalog! {
     ProviderToolAttachLoad => ("provider_tool_attach_load", "provider tool attach/load"),
     FakeMcpListCall => ("fake_mcp_list_call", "fake mcp list/call"),
     DurableStreamJournal => ("durable_stream_journal", "durable stream journal (500 events)"),
+    InspectionSnapshot1000 => ("inspection_snapshot_1000", "inspection snapshot 1000"),
+    ForkConversation1000 => ("fork_conversation_1000", "fork conversation 1000"),
+    RunActionLifecycle => ("run_action_lifecycle", "run action lifecycle"),
+    RunAdmissionContention => ("run_admission_contention", "run admission contention"),
+    FakeMcpCatalogSingleflight => ("fake_mcp_catalog_singleflight", "fake MCP catalog single-flight"),
     GatewayReady => ("gateway_ready", "gateway ready"),
     FirstToken => ("first_token", "first token"),
     FullResponse => ("full_response", "full response"),
@@ -95,6 +100,7 @@ metric_catalog! {
     PromotedChildren => ("promoted_children", "promoted children"),
     TruncatedMessages => ("truncated_messages", "truncated messages"),
     ResponseBytes => ("response_bytes", "response bytes"),
+    ProviderCatalogStarts => ("provider_catalog_starts", "provider catalog process starts"),
 }
 
 /// Timings and counts collected by one benchmark run.

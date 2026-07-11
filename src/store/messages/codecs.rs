@@ -1,6 +1,9 @@
 //! SQLite codecs for persisted messages.
 
-use super::super::*;
+use super::super::{
+    Context, FromSql, FromSqlError, FromSqlResult, ImageAssetId, ImagePart, Message, MessageId,
+    MessageMetadata, MessagePart, Result, Role, Row, Type, ValueRef,
+};
 use super::mutate::MessageTreeRow;
 
 impl FromSql for Role {

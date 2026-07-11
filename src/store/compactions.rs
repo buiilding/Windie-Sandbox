@@ -1,6 +1,9 @@
 //! Compactions persistence owned by the store module.
 
-use super::*;
+use super::{
+    CompactionId, Context, ConversationId, MessageId, OptionalExtension, Result, Store, Uuid,
+    now_millis, params, touch_conversation_in_transaction,
+};
 
 impl Store {
     /// Loads the newest compaction checkpoint for one conversation.

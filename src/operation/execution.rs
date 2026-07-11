@@ -1,7 +1,18 @@
 //! Shared query, approval-continuation, and runtime-turn operations.
 
 use super::models::prompt_cache_request;
-use super::*;
+use super::{
+    BaseUrl, BifrostClient, ConversationId, GatewayUrl, Message, MessageId, ModelName,
+    ReasoningRequest, Result, RunCancellation, RuntimeEventSink, RuntimeModelRequest,
+    RuntimeOutput, RuntimeSnapshot, Store, ToolCallId, ToolExecutionResult, ToolProviderRegistry,
+    approve_tool_call_with_snapshot, deny_tool_call_for_run, llm,
+    pending_tool_approvals_from_snapshot, query_conversation_resolving_automatic_tools,
+    query_conversation_resolving_automatic_tools_with_events, require_gateway_running,
+    runtime_snapshot,
+};
+
+#[cfg(test)]
+use super::conversation_reasoning;
 
 /// Runs the shared query sequence with a caller-owned provider registry.
 ///

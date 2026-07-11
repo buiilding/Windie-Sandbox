@@ -5,7 +5,32 @@ use futures_util::StreamExt;
 
 use super::responses::{input_tokens_request, responses_request};
 use super::stream::ResponseStreamDecoder;
-use super::*;
+use super::{
+    AssistantResponse, BaseUrl, BifrostClient, Client, HTTP_REQUEST_TIMEOUT, InputTokenCount,
+    InputTokenCountOutcome, LLM_STREAM_TIMEOUT, LlmStreamEvent, MAX_HTTP_RESPONSE_BYTES,
+    MAX_LLM_STREAM_BYTES, Message, ModelName, PromptCacheRequest, ReasoningRequest, RuntimeLlm,
+    ToolSchema,
+};
+
+pub(super) async fn bounded_response_bytes(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("failed to read HTTP response body")?;
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| anyhow!("HTTP response size overflow"))?;
+        if next_len > limit {
+            return Err(anyhow!("HTTP response exceeds {limit} bytes"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 impl BifrostClient {
     /// Creates a reusable HTTP client bound to one base URL and model.
@@ -43,13 +68,15 @@ impl BifrostClient {
             .http
             .post(self.input_tokens_endpoint())
             .json(&request)
+            .timeout(HTTP_REQUEST_TIMEOUT)
             .send()
             .await
             .context("failed to send responses input token request")?;
 
         let status = response.status();
+        let body = bounded_response_bytes(response, MAX_HTTP_RESPONSE_BYTES).await?;
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = String::from_utf8_lossy(&body);
             if is_unsupported_input_token_count_response(&body) {
                 return Ok(InputTokenCountOutcome::Unsupported);
             }
@@ -59,9 +86,7 @@ impl BifrostClient {
             ));
         }
 
-        let raw = response
-            .json::<serde_json::Value>()
-            .await
+        let raw = serde_json::from_slice::<serde_json::Value>(&body)
             .context("failed to parse responses input token response")?;
 
         input_token_count_from_raw(raw).map(InputTokenCountOutcome::Count)
@@ -87,21 +112,32 @@ impl BifrostClient {
             .http
             .post(self.responses_endpoint())
             .json(&request)
+            .timeout(LLM_STREAM_TIMEOUT)
             .send()
             .await
             .context("failed to send responses request")?;
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = bounded_response_bytes(response, MAX_HTTP_RESPONSE_BYTES).await?;
+            let body = String::from_utf8_lossy(&body);
             return Err(anyhow!("responses request failed with {status}: {body}"));
         }
 
         let mut stream = response.bytes_stream();
         let mut decoder = ResponseStreamDecoder::new();
+        let mut stream_bytes = 0_usize;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("failed to read responses stream")?;
+            stream_bytes = stream_bytes
+                .checked_add(chunk.len())
+                .ok_or_else(|| anyhow!("responses stream size overflow"))?;
+            if stream_bytes > MAX_LLM_STREAM_BYTES {
+                return Err(anyhow!(
+                    "responses stream exceeds {MAX_LLM_STREAM_BYTES} bytes"
+                ));
+            }
 
             decoder.push(&chunk, &mut handle_delta)?;
         }

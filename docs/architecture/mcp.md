@@ -122,6 +122,11 @@ While waiting, Windie:
 - turns JSON-RPC error objects into operation errors;
 - requires a `result` field on successful responses.
 
+Stdout enters Windie through a bounded 32-line channel. Each newline-delimited
+JSON-RPC frame is limited to 32 MiB before allocation and decoding. A provider
+that writes faster than Windie consumes responses is backpressured by the
+reader channel instead of growing process memory without bound.
+
 This is a minimal client. It does not currently dispatch server-to-client MCP
 requests or consume dynamic tool-list-changed notifications.
 
@@ -249,8 +254,9 @@ reader, an MCP error response, or a missing result is treated as failure.
 
 ## Result Normalization
 
-The provider adapter converts an MCP `tools/call` result into ordered Windie
-message parts:
+`mcp.rs` first decodes MCP wire fields into a typed tool result. The provider
+adapter then converts that protocol-neutral result into ordered Windie message
+parts:
 
 - `text` blocks become text parts;
 - `image` blocks are base64-decoded with their MIME type;
@@ -258,12 +264,18 @@ message parts:
 - non-null `structuredContent` is appended as text;
 - an otherwise empty result falls back to its complete JSON string.
 
-The visible tool-message preview joins text and image summaries. The ordered
-parts are persisted separately so image-capable model requests can replay real
-image blocks.
+The visible tool-message preview includes text and image summaries up to 4 KiB,
+then adds a truncation marker. Full ordered parts are persisted separately so
+large text is not duplicated on the message row and image-capable model
+requests can replay real image blocks.
 
 MCP's `isError: true` marks the result unsuccessful, but its content is still
 normalized and persisted as the required output for the call.
+
+The aggregate normalized result is limited to 32 MiB. Decoded image blocks also
+pass through Windie's normal image validation, including supported MIME/header
+matching and the 20 MiB per-image limit. Oversized or invalid provider output
+becomes a failed tool result rather than entering conversation storage.
 
 ## Persistence Boundary
 

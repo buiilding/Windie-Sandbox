@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::conversation::{ConversationId, Message, Role};
+use crate::conversation::{ConversationId, Message, MessageView, Role};
 use crate::store::Compaction;
 use crate::store::Store;
 
@@ -76,34 +76,61 @@ impl ContextBuilder {
             compaction,
         } = parts;
 
-        let Some(compaction) = compaction else {
-            return with_system_prompt(system_prompt, active_path);
-        };
-        let Some(compaction_index) = active_path
-            .iter()
-            .position(|message| message.id.as_ref() == Some(&compaction.through_message_id))
-        else {
-            return with_system_prompt(system_prompt, active_path);
-        };
+        flatten_context(
+            active_path,
+            system_prompt,
+            compaction.as_ref(),
+            |message| message.id.as_ref().map(|id| id.as_str()),
+            system_prompt_message,
+        )
+    }
 
-        let mut messages = vec![compaction_message(&compaction.content)];
-        messages.extend(active_path.into_iter().skip(compaction_index + 1));
-
-        with_system_prompt(system_prompt, messages)
+    /// Builds the metadata-only projection used by inspection without loading
+    /// image bytes or duplicating model-context ordering rules.
+    pub fn flatten_view(
+        active_path: Vec<MessageView>,
+        system_prompt: Option<String>,
+        compaction: Option<&Compaction>,
+    ) -> Vec<MessageView> {
+        flatten_context(
+            active_path,
+            system_prompt,
+            compaction,
+            |message| message.id.as_deref(),
+            system_prompt_message_view,
+        )
     }
 }
 
-/// Prepends the conversation-level system prompt when one is set.
-fn with_system_prompt(system_prompt: Option<String>, messages: Vec<Message>) -> Vec<Message> {
-    let Some(system_prompt) = system_prompt else {
-        return messages;
+/// Applies compaction and system-prompt ordering to any message projection.
+fn flatten_context<T>(
+    active_path: Vec<T>,
+    system_prompt: Option<String>,
+    compaction: Option<&Compaction>,
+    message_id: impl Fn(&T) -> Option<&str>,
+    system_message: impl Fn(String) -> T,
+) -> Vec<T> {
+    let mut messages = if let Some(compaction) = compaction {
+        if let Some(index) = active_path
+            .iter()
+            .position(|message| message_id(message) == Some(compaction.through_message_id.as_str()))
+        {
+            let mut compacted = vec![system_message(format!(
+                "{COMPACTION_PREFIX}{}",
+                compaction.content
+            ))];
+            compacted.extend(active_path.into_iter().skip(index + 1));
+            compacted
+        } else {
+            active_path
+        }
+    } else {
+        active_path
     };
-
-    let mut model_messages = Vec::with_capacity(messages.len() + 1);
-    model_messages.push(system_prompt_message(system_prompt));
-    model_messages.extend(messages);
-
-    model_messages
+    if let Some(system_prompt) = system_prompt {
+        messages.insert(0, system_message(system_prompt));
+    }
+    messages
 }
 
 /// Converts a saved system prompt into a model-facing system message.
@@ -118,13 +145,13 @@ fn system_prompt_message(content: String) -> Message {
     }
 }
 
-/// Converts a saved compaction into a system message for the model.
-fn compaction_message(content: &str) -> Message {
-    Message {
+/// Converts synthetic context text into a metadata-only system message.
+fn system_prompt_message_view(content: String) -> MessageView {
+    MessageView {
         id: None,
         parent_message_id: None,
         role: Role::System,
-        content: format!("{COMPACTION_PREFIX}{content}"),
+        content,
         parts: Vec::new(),
         metadata: None,
     }

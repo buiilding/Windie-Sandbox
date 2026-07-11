@@ -136,12 +136,18 @@ route. The API:
 1. atomically creates the durable `running` record under a database uniqueness
    constraint that allows one running run per conversation;
 2. creates a process broadcast channel;
-3. spawns the query task;
+3. spawns the query task on a dedicated blocking thread with its own
+   current-thread async runtime;
 4. registers its cooperative cancellation token;
 5. returns the run snapshot immediately.
 
 Approval and denial runs use the same infrastructure with different runtime
 actions.
+
+`RunManager` supervises the runtime task. If the worker panics or stops
+unexpectedly, the manager durably fails the run and releases its conversation
+ownership instead of leaving a live-looking run with no worker. Terminal
+persistence retries with capped backoff while the task remains owned.
 
 ## SSE Replay and Follow
 
@@ -161,6 +167,12 @@ It then sends:
 2. new broadcast events as they arrive;
 3. recovered persisted events if the broadcast receiver reports lag;
 4. terminal completion once a terminal event is observed.
+
+If the run belongs to another API process, the local broadcast sender is
+closed. While the durable snapshot remains `running`, SSE polls persisted
+events every 100 milliseconds and continues following the foreign owner. This
+keeps replay and follow behavior correct across coordinators without sharing
+process memory.
 
 When a run is no longer active, the API still replays its persisted history and
 then closes the stream.
@@ -213,10 +225,14 @@ the subscriber.
 
 ## Terminal Completion and Failure
 
-Completion, failure, and cancellation each use one transaction that changes a
-run only when its current status is `running` and appends the matching terminal
-event. Competing terminal outcomes therefore cannot overwrite each other or
-append two terminal events.
+Completion, failure, interruption, and cancellation each use one transaction
+that changes a run only when its current status is `running`, appends the
+matching terminal event, and reconciles remaining `executing` tool claims.
+Cancellation marks them `interrupted` so an acknowledged cancellation can be
+retried; other terminal outcomes mark them `unknown` because execution may
+have started. Competing terminal outcomes therefore cannot overwrite each
+other, append two terminal events, or leave a terminal run claiming that work
+is still active.
 
 ## Broadcast Capacity and Lag
 

@@ -11,7 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
+use rusqlite::{
+    Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -48,7 +50,7 @@ use tools::read_attached_tool_row;
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 13;
+const DATABASE_SCHEMA_VERSION: i32 = 16;
 
 pub use compactions::Compaction;
 pub use conversations::ConversationInfo;
@@ -64,6 +66,26 @@ pub struct Store {
 }
 
 impl Store {
+    /// Runs related loaders against one stable SQLite read snapshot.
+    pub(crate) fn read_snapshot<T>(&self, load: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .context("failed to start store read snapshot")?;
+        let loaded = load(self)?;
+        transaction
+            .commit()
+            .context("failed to finish store read snapshot")?;
+        Ok(loaded)
+    }
+
+    /// Returns SQLite's external-commit counter for optimistic mutation guards.
+    fn data_version(&self) -> Result<i64> {
+        self.connection
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .context("failed to load SQLite data version")
+    }
+
     /// Returns an error instead of silently treating missing conversations as
     /// empty.
     fn ensure_conversation_exists(&self, conversation_id: &ConversationId) -> Result<()> {
@@ -91,6 +113,18 @@ impl Store {
 
         Ok(exists)
     }
+}
+
+fn ensure_data_version(transaction: &Transaction<'_>, expected_data_version: i64) -> Result<()> {
+    let current_data_version = transaction
+        .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+        .context("failed to validate SQLite data version")?;
+    if current_data_version != expected_data_version {
+        return Err(error::conflict(
+            "conversation changed while the operation was being prepared; retry the operation",
+        ));
+    }
+    Ok(())
 }
 
 /// Updates conversation ordering metadata inside an existing transaction.

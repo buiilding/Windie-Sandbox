@@ -48,6 +48,35 @@ fn reads_legacy_null_metrics() {
 }
 
 #[test]
+fn reads_runtime_ownership_metrics() {
+    let sample: PerformanceSample = serde_json::from_value(serde_json::json!({
+        "inspection_snapshot_1000_us": 2300,
+        "fork_conversation_1000_us": 6100,
+        "run_action_lifecycle_us": 190,
+        "run_admission_contention_us": 120,
+        "fake_mcp_catalog_singleflight_us": 32000,
+        "provider_catalog_starts": 1
+    }))
+    .unwrap();
+
+    assert_eq!(
+        sample.durations_us[&MetricName::InspectionSnapshot1000],
+        2300
+    );
+    assert_eq!(sample.durations_us[&MetricName::ForkConversation1000], 6100);
+    assert_eq!(sample.durations_us[&MetricName::RunActionLifecycle], 190);
+    assert_eq!(
+        sample.durations_us[&MetricName::RunAdmissionContention],
+        120
+    );
+    assert_eq!(
+        sample.durations_us[&MetricName::FakeMcpCatalogSingleflight],
+        32000
+    );
+    assert_eq!(sample.counts[&CountName::ProviderCatalogStarts], 1);
+}
+
+#[test]
 fn compares_report_medians() {
     let mut baseline_summary = PerformanceSummary::default();
     baseline_summary.insert(MetricName::ActivePathLoad, fixed_metric(100));

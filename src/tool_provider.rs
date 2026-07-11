@@ -3,13 +3,13 @@
 //! This module is the execution boundary for tool providers. Runtime asks this
 //! registry which tools are available and asks it to execute an approved tool
 //! call through the provider reference stored on the conversation attachment.
-//! Approved MCP servers and future plugins should enter runtime through this
-//! same registry shape.
+//! Approved MCP servers enter runtime through this shared registry shape.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -17,7 +17,10 @@ use serde_json::{Value, json};
 
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
-use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
+use crate::image_input::validate_image_input_bytes;
+use crate::mcp::{
+    self, McpCommand, McpContentBlock, McpEnv, McpEnvValue, McpSessionPool, McpTool, McpToolResult,
+};
 use crate::paths;
 use crate::run::{RunCancellation, is_runtime_cancelled};
 use crate::tool::{
@@ -26,17 +29,33 @@ use crate::tool::{
 };
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
+const MCP_TOOL_RESULT_MAX_BYTES: usize = 32 * 1024 * 1024;
+const TOOL_RESULT_PREVIEW_MAX_BYTES: usize = 4 * 1024;
+const CATALOG_FAILURE_CACHE_DURATION: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
 ///
 /// The registry deliberately exposes provider-neutral operations. Runtime does
-/// not branch on shell, MCP, or plugin details; it resolves the conversation's
-/// attached tool to a provider reference and calls this registry.
+/// does not know MCP process details; it resolves the conversation's attached
+/// tool to a provider reference and calls this registry.
 pub struct ToolProviderRegistry {
     mcp_providers: Vec<McpToolProvider>,
     mcp_session_pool: Option<McpSessionPool>,
     catalog_cache: Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>>,
+    catalog_loads: Arc<CatalogLoads>,
+}
+
+#[derive(Debug, Default)]
+struct CatalogLoads {
+    provider_locks: Mutex<HashMap<ToolProviderId, Arc<Mutex<()>>>>,
+    recent_failures: Mutex<HashMap<ToolProviderId, CatalogFailure>>,
+}
+
+#[derive(Debug)]
+struct CatalogFailure {
+    recorded_at: Instant,
+    message: String,
 }
 
 impl ToolProviderRegistry {
@@ -65,11 +84,45 @@ impl ToolProviderRegistry {
     /// catalogs loaded here are cached for later attachment requests in the same
     /// process.
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
+        let results = std::thread::scope(|scope| {
+            self.mcp_providers
+                .iter()
+                .map(|provider| {
+                    let provider_id = provider.id().clone();
+                    (
+                        provider_id.clone(),
+                        scope.spawn(move || self.list_provider_tools(&provider_id)),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|(provider_id, worker)| {
+                    let result = worker
+                        .join()
+                        .map_err(|_| anyhow!("provider catalog task panicked"))
+                        .and_then(|result| result);
+                    (provider_id, result)
+                })
+                .collect::<Vec<_>>()
+        });
+
         let mut tools = Vec::new();
-        for provider in &self.mcp_providers {
-            if let Ok(provider_tools) = self.list_provider_tools(provider.id()) {
-                tools.extend(provider_tools);
+        let mut errors = Vec::new();
+        for (provider_id, result) in results {
+            match result {
+                Ok(provider_tools) => tools.extend(provider_tools),
+                Err(error) => errors.push(format!("{provider_id}: {error:#}")),
             }
+        }
+
+        if tools.is_empty() && !errors.is_empty() {
+            return Err(anyhow!(
+                "failed to load provider catalogs: {}",
+                errors.join("; ")
+            ));
+        }
+        for error in errors {
+            eprintln!("warning: failed to load provider catalog: {error}");
         }
 
         Ok(tools)
@@ -85,10 +138,28 @@ impl ToolProviderRegistry {
         if let Some(tools) = self.cached_provider_tools(provider_id)? {
             return Ok(tools);
         }
-        if let Some(provider) = self.mcp_provider(provider_id) {
-            let tools = provider.list_tools()?;
-            self.cache_provider_tools(provider_id, &tools)?;
+        let provider_lock = self.catalog_provider_lock(provider_id)?;
+        let _load = provider_lock
+            .lock()
+            .map_err(|_| anyhow!("provider catalog load lock was poisoned: {provider_id}"))?;
+        if let Some(tools) = self.cached_provider_tools(provider_id)? {
             return Ok(tools);
+        }
+        if let Some(error) = self.recent_catalog_failure(provider_id)? {
+            return Err(anyhow!(error));
+        }
+        if let Some(provider) = self.mcp_provider(provider_id) {
+            return match provider.list_tools() {
+                Ok(tools) => {
+                    self.cache_provider_tools(provider_id, &tools)?;
+                    self.clear_catalog_failure(provider_id)?;
+                    Ok(tools)
+                }
+                Err(error) => {
+                    self.cache_catalog_failure(provider_id, &error)?;
+                    Err(error)
+                }
+            };
         }
 
         Ok(Vec::new())
@@ -114,7 +185,28 @@ impl ToolProviderRegistry {
             ToolProviderKind::Mcp => self
                 .mcp_provider(&attached_tool.provider.provider_id)
                 .is_some(),
-            ToolProviderKind::Plugin => false,
+            ToolProviderKind::SchemaOnly => false,
+        }
+    }
+
+    /// Completes provider-local setup before runtime claims a side effect.
+    pub(crate) fn prepare_tool(&self, attached_tool: &AttachedTool) -> Result<()> {
+        match attached_tool.provider.kind {
+            ToolProviderKind::Mcp => {
+                let provider = self
+                    .mcp_provider(&attached_tool.provider.provider_id)
+                    .ok_or_else(|| {
+                        error::invalid_request(format!(
+                            "unknown tool provider: {}",
+                            attached_tool.provider.provider_id
+                        ))
+                    })?;
+                provider.prepare()
+            }
+            ToolProviderKind::SchemaOnly => Err(error::invalid_request(format!(
+                "tool has no executor: {}",
+                attached_tool.schema_name
+            ))),
         }
     }
 
@@ -150,7 +242,7 @@ impl ToolProviderRegistry {
                 .await
                 .context("MCP provider task stopped")?
             }
-            ToolProviderKind::Plugin => Err(error::invalid_request(format!(
+            ToolProviderKind::SchemaOnly => Err(error::invalid_request(format!(
                 "unknown tool: {}",
                 tool_call.name()
             ))),
@@ -176,6 +268,63 @@ impl ToolProviderRegistry {
             .map_err(|_| anyhow!("tool provider catalog cache lock was poisoned"))?;
 
         Ok(cache.get(provider_id).cloned())
+    }
+
+    fn catalog_provider_lock(&self, provider_id: &ToolProviderId) -> Result<Arc<Mutex<()>>> {
+        let mut locks = self
+            .catalog_loads
+            .provider_locks
+            .lock()
+            .map_err(|_| anyhow!("provider catalog lock map was poisoned"))?;
+        Ok(Arc::clone(
+            locks
+                .entry(provider_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        ))
+    }
+
+    fn recent_catalog_failure(&self, provider_id: &ToolProviderId) -> Result<Option<String>> {
+        let mut failures = self
+            .catalog_loads
+            .recent_failures
+            .lock()
+            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?;
+        let recent = failures.get(provider_id).and_then(|failure| {
+            (failure.recorded_at.elapsed() < CATALOG_FAILURE_CACHE_DURATION)
+                .then(|| failure.message.clone())
+        });
+        if recent.is_none() {
+            failures.remove(provider_id);
+        }
+        Ok(recent)
+    }
+
+    fn cache_catalog_failure(
+        &self,
+        provider_id: &ToolProviderId,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        self.catalog_loads
+            .recent_failures
+            .lock()
+            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?
+            .insert(
+                provider_id.clone(),
+                CatalogFailure {
+                    recorded_at: Instant::now(),
+                    message: format!("{error:#}"),
+                },
+            );
+        Ok(())
+    }
+
+    fn clear_catalog_failure(&self, provider_id: &ToolProviderId) -> Result<()> {
+        self.catalog_loads
+            .recent_failures
+            .lock()
+            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?
+            .remove(provider_id);
+        Ok(())
     }
 
     /// Stores one backend-owned provider catalog for reuse by later operations.
@@ -220,6 +369,29 @@ impl ToolProviderRegistry {
             })],
             mcp_session_pool: None,
             catalog_cache,
+            catalog_loads: Arc::new(CatalogLoads::default()),
+        }
+    }
+
+    /// Builds one uncached fake provider for the provider-free benchmark suite.
+    pub(crate) fn with_uncached_mcp_provider(
+        provider_id: &'static str,
+        schema_prefix: &'static str,
+        display_name: &'static str,
+        command: McpCommand,
+    ) -> Self {
+        Self {
+            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                provider_id,
+                schema_prefix,
+                display_name,
+                command,
+                shutdown_command: None,
+                setup: None,
+            })],
+            mcp_session_pool: None,
+            catalog_cache: Arc::new(Mutex::new(HashMap::new())),
+            catalog_loads: Arc::new(CatalogLoads::default()),
         }
     }
 }
@@ -234,6 +406,7 @@ impl Default for ToolProviderRegistry {
                 .collect(),
             mcp_session_pool: None,
             catalog_cache: Arc::new(Mutex::new(HashMap::new())),
+            catalog_loads: Arc::new(CatalogLoads::default()),
         }
     }
 }
@@ -419,7 +592,6 @@ impl McpToolProvider {
                 ));
             }
         };
-        self.prepare()?;
         let result = match if let Some(session_pool) = session_pool {
             session_pool.call_tool_cancellable(
                 self.provider_id.as_str(),
@@ -450,10 +622,7 @@ impl McpToolProvider {
                 ));
             }
         };
-        let success = !result
-            .get("isError")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let success = !result.is_error;
 
         let normalized = match mcp_tool_result_parts(&result) {
             Ok(parts) => parts,
@@ -624,74 +793,107 @@ fn mcp_schema_name(schema_prefix: &str, tool_name: &str) -> String {
 /// MCP can return text and binary images in the same content array. Windie
 /// stores those images through `message_parts` and `image_assets` so the
 /// Responses request can replay them as image blocks instead of base64 text.
-fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
+fn mcp_tool_result_parts(result: &McpToolResult) -> Result<Vec<UnsavedMessagePart>> {
     let mut parts = Vec::new();
+    let mut result_bytes = 0_usize;
 
-    if let Some(content) = result.get("content").and_then(Value::as_array) {
-        for item in content {
-            match item.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    if let Some(text) = item.get("text").and_then(Value::as_str) {
-                        parts.push(UnsavedMessagePart::Text(text.to_string()));
-                    }
-                }
-                Some("image") => {
-                    let data = item
-                        .get("data")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| anyhow!("MCP image result did not include data"))?;
-                    let mime_type = item
-                        .get("mimeType")
-                        .or_else(|| item.get("mime_type"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("image/png");
-                    let bytes = STANDARD
-                        .decode(data)
-                        .context("failed to decode MCP image result")?;
-                    parts.push(UnsavedMessagePart::Image(UnsavedImagePart {
-                        mime_type: mime_type.to_string(),
-                        bytes,
-                    }));
-                }
-                Some(other) => parts.push(UnsavedMessagePart::Text(format!(
-                    "Unsupported MCP content block: {other}"
-                ))),
-                None => {}
+    for block in &result.content {
+        match block {
+            McpContentBlock::Text(text) => {
+                add_mcp_result_bytes(&mut result_bytes, text.len())?;
+                parts.push(UnsavedMessagePart::Text(text.clone()));
+            }
+            McpContentBlock::Image { data, mime_type } => {
+                let bytes = STANDARD
+                    .decode(data)
+                    .context("failed to decode MCP image result")?;
+                validate_image_input_bytes(mime_type, &bytes)
+                    .context("invalid MCP image result")?;
+                add_mcp_result_bytes(&mut result_bytes, bytes.len())?;
+                parts.push(UnsavedMessagePart::Image(UnsavedImagePart {
+                    mime_type: mime_type.to_string(),
+                    bytes,
+                }));
+            }
+            McpContentBlock::Unsupported { kind } => {
+                let text = format!("Unsupported MCP content block: {kind}");
+                add_mcp_result_bytes(&mut result_bytes, text.len())?;
+                parts.push(UnsavedMessagePart::Text(text));
             }
         }
     }
 
-    if let Some(structured_content) = result.get("structuredContent")
-        && !structured_content.is_null()
-    {
-        parts.push(UnsavedMessagePart::Text(format!(
-            "structuredContent: {structured_content}"
-        )));
+    if let Some(structured_content) = &result.structured_content {
+        let text = format!("structuredContent: {structured_content}");
+        add_mcp_result_bytes(&mut result_bytes, text.len())?;
+        parts.push(UnsavedMessagePart::Text(text));
     }
 
     if parts.is_empty() {
-        parts.push(UnsavedMessagePart::Text(result.to_string()));
+        let text = result.raw_json.clone();
+        add_mcp_result_bytes(&mut result_bytes, text.len())?;
+        parts.push(UnsavedMessagePart::Text(text));
     }
 
     Ok(parts)
 }
 
+/// Accounts for decoded tool-result bytes before they enter conversation
+/// storage. The JSON-RPC frame is bounded separately in `mcp.rs`; this limit
+/// covers the normalized text and decoded image representation.
+fn add_mcp_result_bytes(total: &mut usize, added: usize) -> Result<()> {
+    *total = total
+        .checked_add(added)
+        .ok_or_else(|| anyhow!("MCP tool result size overflow"))?;
+    if *total > MCP_TOOL_RESULT_MAX_BYTES {
+        return Err(anyhow!(
+            "MCP tool result exceeds {MCP_TOOL_RESULT_MAX_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
 /// Builds the compact visible text stored on the tool message row.
 fn tool_result_preview(parts: &[UnsavedMessagePart]) -> String {
-    let mut lines = Vec::new();
+    let mut preview = String::new();
+    let mut truncated = false;
 
-    for part in parts {
-        match part {
-            UnsavedMessagePart::Text(text) => lines.push(text.clone()),
-            UnsavedMessagePart::Image(image) => lines.push(format!(
-                "[image: {}, {} bytes]",
-                image.mime_type,
-                image.bytes.len()
-            )),
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            truncated |= !push_preview_text(&mut preview, "\n");
+        }
+        let complete = match part {
+            UnsavedMessagePart::Text(text) => push_preview_text(&mut preview, text),
+            UnsavedMessagePart::Image(image) => push_preview_text(
+                &mut preview,
+                &format!("[image: {}, {} bytes]", image.mime_type, image.bytes.len()),
+            ),
+        };
+        if !complete {
+            truncated = true;
+            break;
         }
     }
 
-    lines.join("\n")
+    if truncated {
+        preview.push_str("\n[truncated]");
+    }
+    preview
+}
+
+fn push_preview_text(preview: &mut String, text: &str) -> bool {
+    let remaining = TOOL_RESULT_PREVIEW_MAX_BYTES.saturating_sub(preview.len());
+    if text.len() <= remaining {
+        preview.push_str(text);
+        return true;
+    }
+
+    let mut boundary = remaining.min(text.len());
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    preview.push_str(&text[..boundary]);
+    false
 }
 
 #[cfg(test)]

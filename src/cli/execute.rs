@@ -448,22 +448,26 @@ fn list_approvals(conversation_id: ConversationId) -> Result<()> {
 
 /// Executes one approved tool call and stores its tool-result message.
 async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open()?;
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
-    let run = runs
-        .begin_action(&conversation_id, RuntimeRunAction::ApproveTool)
+    let task_conversation_id = conversation_id.clone();
+    let result = runs
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::ApproveTool,
+            move |run_id, cancellation| async move {
+                let mut store = Store::open()?;
+                operation::approve_tool(
+                    &mut store,
+                    &task_conversation_id,
+                    &tool_call_id,
+                    &run_id,
+                    &cancellation,
+                )
+                .await
+            },
+        )
         .await?;
-    let cancellation = runs.cancellation(&run.id)?;
-    let result = operation::approve_tool(
-        &mut store,
-        &conversation_id,
-        &tool_call_id,
-        &run.id,
-        &cancellation,
-    )
-    .await;
-    let result = runs.finish_result(&run.id, result).await?;
 
     output.tool_execution_result(&result);
 
@@ -472,21 +476,25 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
 
 /// Stores a rejected tool-result message for one pending tool call.
 async fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open()?;
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
-    let run = runs
-        .begin_action(&conversation_id, RuntimeRunAction::DenyTool)
+    let task_conversation_id = conversation_id.clone();
+    let result = runs
+        .execute_action(
+            &conversation_id,
+            RuntimeRunAction::DenyTool,
+            move |run_id, cancellation| async move {
+                let mut store = Store::open()?;
+                operation::deny_tool(
+                    &mut store,
+                    &task_conversation_id,
+                    &tool_call_id,
+                    &run_id,
+                    &cancellation,
+                )
+            },
+        )
         .await?;
-    let cancellation = runs.cancellation(&run.id)?;
-    let result = operation::deny_tool(
-        &mut store,
-        &conversation_id,
-        &tool_call_id,
-        &run.id,
-        &cancellation,
-    );
-    let result = runs.finish_result(&run.id, result).await?;
 
     output.tool_execution_result(&result);
 
@@ -555,27 +563,33 @@ async fn list_models() -> Result<()> {
 /// steps with `windie approvals`, `windie approve` or `windie deny`, and another
 /// `windie query`.
 async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
-    let mut store = Store::open()?;
-    let output = TerminalOutput;
     let runs = RunManager::new(None)?;
-    let run = runs
-        .begin_action(&conversation_id, RuntimeRunAction::Query)
-        .await?;
-
-    let registry = ToolProviderRegistry::new();
-    let runtime = operation::RuntimeTurnConfig::new(
-        &run.id,
-        runs.cancellation(&run.id)?,
-        gateway_url(),
-        base_url(),
-        model,
-        None,
-        &registry,
-    );
-    let result =
-        operation::query_conversation_with_registry(&output, &mut store, &conversation_id, runtime)
-            .await;
-    runs.finish_result(&run.id, result).await?;
+    let task_conversation_id = conversation_id.clone();
+    runs.execute_action(
+        &conversation_id,
+        RuntimeRunAction::Query,
+        move |run_id, cancellation| async move {
+            let mut store = Store::open()?;
+            let registry = ToolProviderRegistry::new();
+            let runtime = operation::RuntimeTurnConfig::new(
+                &run_id,
+                cancellation,
+                gateway_url(),
+                base_url(),
+                model,
+                None,
+                &registry,
+            );
+            operation::query_conversation_with_registry(
+                &TerminalOutput,
+                &mut store,
+                &task_conversation_id,
+                runtime,
+            )
+            .await
+        },
+    )
+    .await?;
 
     Ok(())
 }

@@ -31,6 +31,8 @@ const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SHUTDOWN_RETRY_DELAY: Duration = Duration::from_millis(750);
 const MCP_SHUTDOWN_RETRIES: usize = 4;
 const MCP_STDERR_MAX_BYTES: usize = 16 * 1024;
+const MCP_STDOUT_CHANNEL_CAPACITY: usize = 32;
+const MCP_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MCP_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MCP_RUNTIME_ENVIRONMENT: &[&str] = &["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot"];
 
@@ -140,6 +142,26 @@ struct McpToolsList {
     tools: Vec<McpTool>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+/// Provider-neutral representation of an MCP `tools/call` result.
+///
+/// MCP wire field names and content-block decoding stay in this module. Tool
+/// providers receive this type and only own Windie's storage normalization.
+pub struct McpToolResult {
+    pub content: Vec<McpContentBlock>,
+    pub structured_content: Option<Value>,
+    pub is_error: bool,
+    pub raw_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One decoded MCP tool-result content block.
+pub enum McpContentBlock {
+    Text(String),
+    Image { data: String, mime_type: String },
+    Unsupported { kind: String },
+}
+
 #[derive(Debug, Deserialize)]
 /// JSON-RPC response envelope from an MCP server.
 struct JsonRpcResponse {
@@ -191,17 +213,18 @@ pub fn list_tools_with_shutdown(
     result
 }
 
-/// Calls one MCP provider tool and returns the raw MCP result value.
-pub fn call_tool(command: McpCommand, name: &str, arguments: Value) -> Result<Value> {
+/// Calls one MCP provider tool and returns its decoded result.
+pub fn call_tool(command: McpCommand, name: &str, arguments: Value) -> Result<McpToolResult> {
     let mut session = McpSession::start(command)?;
 
-    session.call(
+    let result = session.call(
         "tools/call",
         Some(json!({
             "name": name,
             "arguments": arguments
         })),
-    )
+    )?;
+    decode_tool_result(result)
 }
 
 pub fn call_tool_with_shutdown_cancellable(
@@ -210,7 +233,7 @@ pub fn call_tool_with_shutdown_cancellable(
     name: &str,
     arguments: Value,
     cancellation: &RunCancellation,
-) -> Result<Value> {
+) -> Result<McpToolResult> {
     let result = {
         let mut session = McpSession::start(command)?;
         session.call_cancellable(
@@ -224,7 +247,7 @@ pub fn call_tool_with_shutdown_cancellable(
     };
 
     run_shutdown_best_effort(shutdown_command);
-    result
+    result.and_then(decode_tool_result)
 }
 
 /// Owns persistent MCP provider sessions for one registry/client.
@@ -280,7 +303,7 @@ impl McpSessionPool {
         shutdown_command: Option<McpCommand>,
         name: &str,
         arguments: Value,
-    ) -> Result<Value> {
+    ) -> Result<McpToolResult> {
         self.call_tool_cancellable(
             provider_id,
             command,
@@ -299,7 +322,7 @@ impl McpSessionPool {
         name: &str,
         arguments: Value,
         cancellation: &RunCancellation,
-    ) -> Result<Value> {
+    ) -> Result<McpToolResult> {
         let slot = self
             .inner
             .sessions
@@ -308,15 +331,64 @@ impl McpSessionPool {
             .entry(provider_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(None)))
             .clone();
-        call_persistent_tool(
+        let result = call_persistent_tool(
             slot,
             command,
             shutdown_command,
             name,
             arguments,
             cancellation,
-        )
+        )?;
+        decode_tool_result(result)
     }
+}
+
+/// Decodes MCP-owned wire fields before results cross into tool-provider code.
+pub(crate) fn decode_tool_result(result: Value) -> Result<McpToolResult> {
+    let mut content = Vec::new();
+    if let Some(blocks) = result.get("content").and_then(Value::as_array) {
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        content.push(McpContentBlock::Text(text.to_string()));
+                    }
+                }
+                Some("image") => {
+                    let data = block
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow!("MCP image result did not include data"))?;
+                    let mime_type = block
+                        .get("mimeType")
+                        .or_else(|| block.get("mime_type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("image/png");
+                    content.push(McpContentBlock::Image {
+                        data: data.to_string(),
+                        mime_type: mime_type.to_string(),
+                    });
+                }
+                Some(kind) => content.push(McpContentBlock::Unsupported {
+                    kind: kind.to_string(),
+                }),
+                None => {}
+            }
+        }
+    }
+
+    Ok(McpToolResult {
+        content,
+        structured_content: result
+            .get("structuredContent")
+            .filter(|value| !value.is_null())
+            .cloned(),
+        is_error: result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        raw_json: result.to_string(),
+    })
 }
 
 impl Drop for McpSessionPoolInner {
@@ -763,26 +835,24 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
 
 /// Reads provider stdout on a dedicated thread so protocol waits can time out.
 fn spawn_stdout_reader(stdout: ChildStdout) -> Receiver<Result<String, String>> {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(MCP_STDOUT_CHANNEL_CAPACITY);
 
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
 
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => {
+            match read_bounded_stdout_line(&mut reader, MCP_MAX_FRAME_BYTES) {
+                Ok(None) => {
                     let _ = sender.send(Err("MCP provider closed stdout".to_string()));
                     break;
                 }
-                Ok(_) => {
-                    if sender.send(Ok(line.clone())).is_err() {
+                Ok(Some(line)) => {
+                    if sender.send(Ok(line)).is_err() {
                         break;
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(Err(format!("failed to read MCP response: {error}")));
+                    let _ = sender.send(Err(error));
                     break;
                 }
             }
@@ -790,6 +860,29 @@ fn spawn_stdout_reader(stdout: ChildStdout) -> Receiver<Result<String, String>> 
     });
 
     receiver
+}
+
+/// Reads one UTF-8 line without allowing an MCP process to allocate an
+/// unbounded protocol frame before JSON decoding.
+fn read_bounded_stdout_line(
+    reader: &mut impl BufRead,
+    max_bytes: usize,
+) -> std::result::Result<Option<String>, String> {
+    let mut bytes = Vec::new();
+    let read = reader
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|error| format!("failed to read MCP response: {error}"))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if read > max_bytes {
+        return Err(format!("MCP response frame exceeds {max_bytes} bytes"));
+    }
+
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| format!("MCP response was not valid UTF-8: {error}"))
 }
 
 /// Captures bounded provider stderr for later operation errors.
@@ -905,6 +998,24 @@ mod tests {
         let captured = Arc::new(Mutex::new(b"missing permission".to_vec()));
 
         assert_eq!(captured_stderr(&captured), "missing permission");
+    }
+
+    #[test]
+    fn stdout_reader_rejects_oversized_protocol_frame() {
+        let mut reader = std::io::Cursor::new(b"12345\n");
+
+        let error = read_bounded_stdout_line(&mut reader, 4).unwrap_err();
+
+        assert_eq!(error, "MCP response frame exceeds 4 bytes");
+    }
+
+    #[test]
+    fn stdout_reader_accepts_bounded_utf8_line() {
+        let mut reader = std::io::Cursor::new("ok\n".as_bytes());
+
+        let line = read_bounded_stdout_line(&mut reader, 3).unwrap();
+
+        assert_eq!(line.as_deref(), Some("ok\n"));
     }
 
     #[test]

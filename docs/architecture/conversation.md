@@ -201,10 +201,11 @@ It currently does not copy:
 
 ## How the Model Sees a Conversation
 
-Windie, not Bifrost, builds model context. It loads the active path, optionally
-replaces history through an applicable compaction with a synthetic summary,
-and prepends the conversation system prompt. Attached tool schemas are loaded
-separately and sent with the request.
+Windie, not Bifrost, builds model context. `ContextBuilder` is the single
+projection boundary for both stored messages and inspection views. It loads the
+active path, optionally replaces history through an applicable compaction with
+a synthetic summary, and prepends the conversation system prompt. Attached
+tool schemas are loaded separately and sent with the request.
 
 The complete tree remains in storage. Bifrost receives only the already
 flattened active context.

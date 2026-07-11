@@ -1,6 +1,9 @@
 //! Database opening, configuration, and schema creation.
 
-use super::*;
+use super::{
+    Connection, Context, DATABASE_SCHEMA_VERSION, OptionalExtension, Path, PathBuf, Result, Store,
+    anyhow, fs, params, paths,
+};
 
 impl Store {
     /// Opens the default user database in Windie's data directory.
@@ -97,7 +100,9 @@ impl Store {
                     system_prompt TEXT,
                     tool_approval_mode TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
+                    updated_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (active_message_id) REFERENCES messages(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (
@@ -191,7 +196,7 @@ impl Store {
                     tool_call_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (
-                        status IN ('executing', 'completed', 'failed', 'interrupted')
+                        status IN ('executing', 'completed', 'failed', 'interrupted', 'unknown')
                     ),
                     result_message_id TEXT,
                     error TEXT,

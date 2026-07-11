@@ -1,6 +1,10 @@
 //! Tool catalog, attachment, schema, and approval operations.
 
-use super::*;
+use super::{
+    ConversationId, HashMap, ProviderToolName, Result, Store, ToolApprovalMode,
+    ToolApprovalRequest, ToolDefinition, ToolProviderId, ToolProviderRegistry, ToolSchema,
+    ToolSchemaName, error, pending_tool_approvals, pending_tool_approvals_with_registry,
+};
 
 pub fn set_tool_approval_mode(
     store: &mut Store,

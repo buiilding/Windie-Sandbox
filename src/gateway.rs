@@ -36,6 +36,7 @@ const PUBLIC_BIFROST_DOCKER_NAME: &str = "windie-bifrost";
 const BIFROST_PORT: &str = "8080";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(200);
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the local Bifrost gateway health endpoint.
@@ -59,6 +60,7 @@ impl std::fmt::Display for GatewayUrl {
     }
 }
 
+#[derive(Clone)]
 /// Local Bifrost gateway lifecycle and readiness client.
 pub struct BifrostGateway {
     http: Client,
@@ -119,7 +121,10 @@ impl BifrostGateway {
             return Ok(GatewayStart::AlreadyRunning);
         }
 
-        self.start_process()?;
+        let gateway = self.clone();
+        tokio::task::spawn_blocking(move || gateway.start_process())
+            .await
+            .context("Bifrost startup task stopped")??;
         self.wait_until_running().await?;
 
         Ok(GatewayStart::Started)
@@ -131,27 +136,17 @@ impl BifrostGateway {
             return Ok(GatewayStop::NotRunning);
         }
 
-        if stop_docker_container()? {
+        if tokio::task::spawn_blocking(stop_docker_container)
+            .await
+            .context("Bifrost Docker stop task stopped")??
+        {
             self.wait_until_stopped().await?;
             return Ok(GatewayStop::Stopped);
         }
 
-        let process_ids = bifrost_process_ids_on_port(BIFROST_PORT)?;
-        if process_ids.is_empty() {
-            return Err(anyhow!(
-                "Bifrost appears to be running on port {BIFROST_PORT}, but Windie could not find a Bifrost process to stop"
-            ));
-        }
-
-        for process_id in process_ids {
-            let status = Command::new("kill")
-                .arg(process_id.to_string())
-                .status()
-                .with_context(|| format!("failed to stop Bifrost process {process_id}"))?;
-            if !status.success() {
-                return Err(anyhow!("failed to stop Bifrost process {process_id}"));
-            }
-        }
+        tokio::task::spawn_blocking(stop_local_bifrost_processes)
+            .await
+            .context("Bifrost process stop task stopped")??;
 
         self.wait_until_stopped().await?;
 
@@ -183,14 +178,14 @@ impl BifrostGateway {
         let response = self
             .http
             .get(&health_url)
+            .timeout(HEALTH_CHECK_TIMEOUT)
             .send()
             .await
             .context("failed to reach Bifrost health endpoint")?;
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Bifrost health check failed with {status}: {body}"));
+            return Err(anyhow!("Bifrost health check failed with {status}"));
         }
 
         Ok(())
@@ -251,6 +246,28 @@ impl BifrostGateway {
             START_TIMEOUT.as_secs()
         ))
     }
+}
+
+/// Finds and stops non-Docker Bifrost processes without occupying an async
+/// runtime worker while invoking `lsof`, `ps`, and `kill`.
+fn stop_local_bifrost_processes() -> Result<()> {
+    let process_ids = bifrost_process_ids_on_port(BIFROST_PORT)?;
+    if process_ids.is_empty() {
+        return Err(anyhow!(
+            "Bifrost appears to be running on port {BIFROST_PORT}, but Windie could not find a Bifrost process to stop"
+        ));
+    }
+
+    for process_id in process_ids {
+        let status = Command::new("kill")
+            .arg(process_id.to_string())
+            .status()
+            .with_context(|| format!("failed to stop Bifrost process {process_id}"))?;
+        if !status.success() {
+            return Err(anyhow!("failed to stop Bifrost process {process_id}"));
+        }
+    }
+    Ok(())
 }
 
 /// Starts the locally built development Bifrost binary.

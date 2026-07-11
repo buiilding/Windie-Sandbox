@@ -6,6 +6,7 @@
 //! persisted status and events let clients reconstruct completed work.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,8 @@ const RUN_EVENT_CHANNEL_CAPACITY: usize = 512;
 const RUN_JOURNAL_COMMAND_CAPACITY: usize = 512;
 const RUN_LEASE_DURATION: Duration = Duration::from_secs(30);
 const RUN_LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(10);
+const TERMINAL_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
+const TERMINAL_RETRY_MAX_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -236,7 +239,7 @@ struct RunJournal {
 
 impl RunJournal {
     fn start(store_path: Option<PathBuf>) -> Result<Self> {
-        let store = match store_path.as_ref() {
+        let mut store = match store_path.as_ref() {
             Some(path) => Store::open_at(path)?,
             None => Store::open()?,
         };
@@ -515,6 +518,89 @@ impl RunManager {
         Ok(record.into())
     }
 
+    /// Executes one caller-awaited action on a dedicated runtime and owns its
+    /// persisted begin/finish lifecycle.
+    pub async fn execute_action<T, F, Fut>(
+        &self,
+        conversation_id: &ConversationId,
+        action: RuntimeRunAction,
+        task: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(String, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + 'static,
+    {
+        let run = self.begin_action(conversation_id, action).await?;
+        let run_id = run.id;
+        let cancellation = self.cancellation(&run_id)?;
+        let worker_run_id = run_id.clone();
+        let result = match tokio::task::spawn_blocking(move || {
+            run_task_on_current_thread_runtime(task, worker_run_id, cancellation)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(join_error) => {
+                let operation_error = anyhow!("runtime action task stopped: {join_error}");
+                let message = operation_error.to_string();
+                self.fail(&run_id, message.clone(), vec![join_error.to_string()])
+                    .await?;
+                return Err(operation_error);
+            }
+        };
+
+        self.finish_result(&run_id, result).await
+    }
+
+    /// Starts a detached action whose task and terminal state are backend-owned.
+    pub async fn spawn_action<F, Fut>(
+        &self,
+        conversation_id: &ConversationId,
+        action: RuntimeRunAction,
+        task: F,
+    ) -> Result<RunSnapshot>
+    where
+        F: FnOnce(String, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Option<String>>> + 'static,
+    {
+        let snapshot = self.begin_action(conversation_id, action).await?;
+        let run_id = snapshot.id.clone();
+        let cancellation = self.cancellation(&run_id)?;
+        let worker_run_id = run_id.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            run_task_on_current_thread_runtime(task, worker_run_id, cancellation)
+        });
+        let manager = self.clone();
+        tokio::spawn(async move {
+            match worker.await {
+                Ok(Ok(message_id)) => {
+                    let _ = manager.complete(&run_id, message_id).await;
+                }
+                Ok(Err(operation_error)) if is_runtime_cancelled(&operation_error) => {
+                    let _ = manager.finish_cancelled(&run_id).await;
+                }
+                Ok(Err(operation_error)) => {
+                    let message = operation_error.to_string();
+                    let causes = operation_error.chain().map(ToString::to_string).collect();
+                    let _ = manager.fail(&run_id, message, causes).await;
+                }
+                Err(join_error) => {
+                    let message = if join_error.is_panic() {
+                        "runtime task panicked"
+                    } else {
+                        "runtime task stopped unexpectedly"
+                    };
+                    let _ = manager
+                        .fail(&run_id, message.to_string(), vec![join_error.to_string()])
+                        .await;
+                }
+            }
+        });
+
+        Ok(snapshot)
+    }
+
     /// Finalizes one direct operation without changing its client response shape.
     pub async fn finish_result<T>(&self, run_id: &str, result: Result<T>) -> Result<T> {
         match result {
@@ -523,6 +609,10 @@ impl RunManager {
                 Ok(value)
             }
             Err(operation_error) => {
+                if is_runtime_cancelled(&operation_error) {
+                    self.finish_cancelled(run_id).await?;
+                    return Err(operation_error);
+                }
                 let message = operation_error.to_string();
                 let causes = operation_error.chain().map(ToString::to_string).collect();
                 self.fail(run_id, message, causes).await?;
@@ -696,16 +786,44 @@ impl RunManager {
             .ok_or_else(|| {
                 error::not_found(format!("active runtime run does not exist: {run_id}"))
             })?;
-        let Some(_envelope) = self
-            .journal
-            .finish(run_id, status, error_message, event, sender)
-            .await?
-        else {
-            return Ok(false);
-        };
+        let mut retry_delay = TERMINAL_RETRY_INITIAL_DELAY;
+        loop {
+            match self
+                .journal
+                .finish(run_id, status, error_message, event.clone(), sender.clone())
+                .await
+            {
+                Ok(Some(_envelope)) => break,
+                Ok(None) => return Ok(false),
+                Err(error) if error::kind_from_error(&error).is_some() => return Err(error),
+                Err(_) => {
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = retry_delay
+                        .checked_mul(2)
+                        .unwrap_or(TERMINAL_RETRY_MAX_DELAY)
+                        .min(TERMINAL_RETRY_MAX_DELAY);
+                }
+            }
+        }
         self.remove_active(run_id)?;
         Ok(true)
     }
+}
+
+fn run_task_on_current_thread_runtime<T, F, Fut>(
+    task: F,
+    run_id: String,
+    cancellation: RunCancellation,
+) -> Result<T>
+where
+    F: FnOnce(String, RunCancellation) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to build runtime action executor")?;
+    runtime.block_on(task(run_id, cancellation))
 }
 
 fn decode_event_record(run_id: &str, record: RuntimeRunEventRecord) -> Result<RunEventEnvelope> {
@@ -764,6 +882,35 @@ mod tests {
             RuntimeRunStatus::Completed
         );
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn execute_action_runs_off_the_tokio_worker_and_owns_completion() {
+        let path = test_path("execute-action");
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let manager = RunManager::new(Some(path.clone())).unwrap();
+        let caller_thread = std::thread::current().id();
+
+        let worker_thread = manager
+            .execute_action(
+                &conversation_id,
+                RuntimeRunAction::Query,
+                move |_run_id, _cancellation| async move { Ok(std::thread::current().id()) },
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(worker_thread, caller_thread);
+        assert!(
+            manager
+                .active_for_conversation(&conversation_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         let _ = fs::remove_file(path);
     }
 
@@ -932,6 +1079,49 @@ mod tests {
         manager.finish_cancelled(&run.id).await.unwrap();
         let snapshot = cancel.await.unwrap().unwrap();
         assert_eq!(snapshot.status, RuntimeRunStatus::Cancelled);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn supervised_task_panic_fails_and_releases_run() {
+        let path = test_path("supervised-panic");
+        let store = Store::open_at(&path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        drop(store);
+        let manager = RunManager::new(Some(path.clone())).unwrap();
+        let run = manager
+            .spawn_action(
+                &conversation_id,
+                RuntimeRunAction::Query,
+                |_run_id, _cancellation| async {
+                    panic!("test runtime panic");
+                    #[allow(unreachable_code)]
+                    Ok::<Option<String>, anyhow::Error>(None)
+                },
+            )
+            .await
+            .unwrap();
+
+        let snapshot = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let snapshot = manager.snapshot(&run.id).await.unwrap();
+                if snapshot.status != RuntimeRunStatus::Running {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(snapshot.status, RuntimeRunStatus::Failed);
+        assert!(
+            manager
+                .active_for_conversation(&conversation_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
         let _ = fs::remove_file(path);
     }
 
