@@ -44,13 +44,12 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 10;
+const DATABASE_SCHEMA_VERSION: i32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
 pub struct ConversationInfo {
     pub id: ConversationId,
-    pub title: Option<String>,
     pub model: String,
     pub message_count: i64,
 }
@@ -261,7 +260,6 @@ impl Store {
                 "
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
-                    title TEXT,
                     model TEXT NOT NULL,
                     reasoning_effort TEXT,
                     active_message_id TEXT,
@@ -604,7 +602,6 @@ impl Store {
                 "
                 INSERT INTO conversations (
                     id,
-                    title,
                     model,
                     reasoning_effort,
                     active_message_id,
@@ -613,7 +610,7 @@ impl Store {
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
+                VALUES (?1, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     id.as_str(),
@@ -639,7 +636,6 @@ impl Store {
                 "
                 INSERT OR IGNORE INTO conversations (
                     id,
-                    title,
                     model,
                     reasoning_effort,
                     active_message_id,
@@ -648,7 +644,7 @@ impl Store {
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
+                VALUES (?1, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     DEFAULT_CONVERSATION_ID,
@@ -670,7 +666,6 @@ impl Store {
                 "
                 SELECT
                     conversations.id,
-                    conversations.title,
                     conversations.model,
                     COUNT(messages.id) AS message_count
                 FROM conversations
@@ -685,9 +680,8 @@ impl Store {
             .query_map([], |row| {
                 Ok(ConversationInfo {
                     id: ConversationId::new(row.get::<_, String>(0)?),
-                    title: row.get(1)?,
-                    model: row.get(2)?,
-                    message_count: row.get(3)?,
+                    model: row.get(1)?,
+                    message_count: row.get(2)?,
                 })
             })
             .context("failed to list conversations")?
@@ -1322,61 +1316,6 @@ impl Store {
             .context("failed to load active path")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read active path")
-    }
-
-    /// Loads messages after an optional checkpoint message in insertion order.
-    ///
-    /// This is intentionally not part of the active query path. It is kept as a
-    /// future compaction/checkpoint primitive for code that needs chronological
-    /// suffixes rather than root-to-active tree paths.
-    #[allow(dead_code)]
-    pub fn load_messages_after(
-        &self,
-        conversation_id: &ConversationId,
-        message_id: Option<&MessageId>,
-    ) -> Result<Vec<Message>> {
-        self.ensure_conversation_exists(conversation_id)?;
-
-        let Some(message_id) = message_id else {
-            return self.load_messages(conversation_id);
-        };
-
-        let (created_at, rowid) = self
-            .message_position(conversation_id, message_id)?
-            .ok_or_else(|| {
-                error::not_found(format!(
-                    "message does not exist in conversation: {message_id}"
-                ))
-            })?;
-
-        let mut statement = self
-            .connection
-            .prepare(
-                "
-                SELECT id, parent_message_id, role, content, metadata
-                FROM messages
-                WHERE conversation_id = ?1
-                  AND (
-                    created_at > ?2
-                    OR (created_at = ?2 AND rowid > ?3)
-                  )
-                ORDER BY created_at, rowid
-                ",
-            )
-            .context("failed to prepare message load after checkpoint")?;
-
-        let mut messages = statement
-            .query_map(
-                params![conversation_id.as_str(), created_at, rowid],
-                read_message_row,
-            )
-            .context("failed to load messages after checkpoint")?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read messages after checkpoint")?;
-        self.attach_message_parts(&mut messages)
-            .context("failed to load message parts after checkpoint")?;
-
-        Ok(messages)
     }
 
     /// Attaches ordered text/image parts to already-loaded message rows.
@@ -2036,7 +1975,6 @@ impl Store {
                 "
                 INSERT INTO conversations (
                     id,
-                    title,
                     model,
                     reasoning_effort,
                     active_message_id,
@@ -2045,7 +1983,7 @@ impl Store {
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, ?3, NULL, NULL, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5, ?5)
                 ",
                 params![
                     forked_conversation_id.as_str(),
@@ -2255,31 +2193,6 @@ impl Store {
             .context("failed to commit compaction save")?;
 
         Ok(id)
-    }
-
-    /// Returns insertion position for a message inside a conversation.
-    ///
-    /// This helper exists only for chronological suffix loading used by
-    /// compaction/checkpoint work. `rowid` breaks ties when multiple rows share
-    /// the same millisecond timestamp.
-    #[allow(dead_code)]
-    fn message_position(
-        &self,
-        conversation_id: &ConversationId,
-        message_id: &MessageId,
-    ) -> Result<Option<(i64, i64)>> {
-        self.connection
-            .query_row(
-                "
-                SELECT created_at, rowid
-                FROM messages
-                WHERE conversation_id = ?1 AND id = ?2
-                ",
-                params![conversation_id.as_str(), message_id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .context("failed to load message position")
     }
 
     /// Loads one message row with the fields needed for tree mutation.

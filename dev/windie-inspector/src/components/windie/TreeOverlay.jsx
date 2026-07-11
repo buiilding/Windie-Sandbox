@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useWindie } from "@/context/WindieContext";
-import { ROLE_TOKENS } from "@/lib/mockData";
+import { ROLE_TOKENS } from "@/lib/roleTokens";
 import { X, GitBranch, Route, Scissors, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 

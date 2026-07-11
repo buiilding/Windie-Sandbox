@@ -582,7 +582,6 @@ impl ConversationListReport {
 /// Serializable summary for one persisted conversation.
 struct ConversationSummary {
     id: String,
-    title: Option<String>,
     model: String,
     message_count: i64,
 }
@@ -592,7 +591,6 @@ impl ConversationSummary {
     fn from_info(info: &ConversationInfo) -> Self {
         Self {
             id: info.id.as_str().to_string(),
-            title: info.title.clone(),
             model: info.model.clone(),
             message_count: info.message_count,
         }
@@ -1023,16 +1021,7 @@ fn conversation_lines(conversations: &[ConversationInfo]) -> Vec<String> {
 
     for conversation in conversations {
         let count = message_count(conversation.message_count);
-
-        if let Some(title) = conversation
-            .title
-            .as_deref()
-            .filter(|title| !title.is_empty())
-        {
-            lines.push(format!("{}  {count}  {title}", conversation.id));
-        } else {
-            lines.push(format!("{}  {count}", conversation.id));
-        }
+        lines.push(format!("{}  {count}", conversation.id));
     }
 
     lines

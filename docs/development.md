@@ -1,64 +1,89 @@
 # Development Mode
 
-Development mode runs the current checkout with isolated Windie data and a
-hot-reloading UI.
+Development mode runs the current Rust checkout and hot-reloading inspector
+with state isolated from the installed Windie release.
 
-## API and UI Processes
+## First Setup
 
-Both API commands listen on port `8787`, but they run different Rust builds:
-
-| Command | Rust runtime | UI served on port `8787` |
-| --- | --- | --- |
-| `windie api` | Installed release binary | UI bundled by the last local installation |
-| `scripts/dev-api.sh` | Current source checkout through `cargo run` | Existing compiled development UI, when available |
-
-The UI served on port `8787` is static and does not automatically reload when
-frontend source files change. `scripts/dev-api.sh` lets developers run current
-Rust source without first promoting it through `scripts/install-local.sh`.
-
-`scripts/dev-ui.sh` starts a separate React development server at
-`http://localhost:3000`. This server compiles the current frontend source and
-automatically reloads UI changes. It talks to the Windie API on port `8787` and
-does not replace the API process.
-
-Start the API in the first terminal:
+Install the pinned frontend dependencies once:
 
 ```bash
-scripts/dev-api.sh
+scripts/setup.sh
 ```
 
-The script uses `cargo run`, which incrementally builds and runs the current
-Rust source in debug mode. It stores development state under `target/` instead
-of modifying the installed Windie database.
+The setup command uses `npm ci` and does not start services or install Git
+hooks.
 
-Start the UI in a second terminal:
+## Start Development
 
 ```bash
-scripts/dev-ui.sh
+scripts/dev.sh
 ```
 
-The UI runs on port `3000`, talks to the API on port `8787`, and automatically
-reloads frontend source changes. The API script stores its generated
-development token under `target/`, and the UI script uses that token to print
-the correct authenticated port-3000 URL. After the frontend finishes compiling,
-the script opens that authenticated URL in the default browser. React's bare,
-unauthenticated URL is suppressed.
+One command starts:
 
-A UI reload disconnects and reconnects the browser client, but the active agent
-run remains owned by the API process and continues running. Restarting the API
-process itself interrupts an active run.
+- the current Rust checkout through `cargo run -- api` on port `8787`;
+- the React development server on port `3000`;
+- one stable development API token shared by both processes.
 
-The development API uses an isolated configuration directory. To let it start
-Bifrost with the normal provider secrets, select the provider file explicitly:
+The script prints the authenticated inspector URL. It does not open a browser
+or install dependencies implicitly.
+
+Development state defaults to:
+
+```text
+target/windie-dev-data
+target/windie-dev-config
+target/windie-dev-api-token
+```
+
+The installed Windie database and bundled UI are not modified.
+
+Frontend source changes hot reload. Rust source changes require stopping and
+restarting `scripts/dev.sh`. Stopping the script stops both child processes.
+Restarting the API interrupts active backend runs; a frontend hot reload only
+disconnects and replays their event subscriptions.
+
+To let the development API launch Bifrost with the normal provider secrets,
+select the provider file explicitly:
 
 ```bash
-WINDIE_ENV_FILE="$HOME/.config/windie/providers.env" scripts/dev-api.sh
+WINDIE_ENV_FILE="$HOME/.config/windie/providers.env" scripts/dev.sh
 ```
 
-Rust source changes require restarting `scripts/dev-api.sh`. Frontend changes
-do not require an API restart. Once development changes are tested, promote the
-checkout to the installed runtime with:
+## Check the Checkout
 
 ```bash
-./scripts/install-local.sh
+scripts/check.sh
 ```
+
+The check runs:
+
+1. `cargo fmt --check`;
+2. `cargo test`;
+3. `cargo clippy --all-targets -- -D warnings`;
+4. the production frontend build.
+
+It does not build benchmark baselines, call Bifrost, or send provider requests.
+
+## Benchmarks
+
+Benchmarks are explicit and separate from correctness checks:
+
+```bash
+scripts/bench.sh runtime
+scripts/bench.sh conversation <conversation_id>
+```
+
+See `benches/README.md` for fixtures and comparison details.
+
+## Promote a Local Release
+
+After checks pass:
+
+```bash
+scripts/install.sh
+```
+
+The install command builds and promotes the release binary and operator UI. It
+does not rerun `scripts/check.sh`.

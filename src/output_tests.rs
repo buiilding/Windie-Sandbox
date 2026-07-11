@@ -163,13 +163,11 @@ fn formats_conversations() {
     let conversations = vec![
         ConversationInfo {
             id: ConversationId::new("first"),
-            title: None,
             model: "openai/test".to_string(),
             message_count: 1,
         },
         ConversationInfo {
             id: ConversationId::new("second"),
-            title: None,
             model: "openai/test".to_string(),
             message_count: 2,
         },
@@ -184,27 +182,9 @@ fn formats_conversations() {
 }
 
 #[test]
-fn formats_conversation_title() {
-    let conversations = vec![ConversationInfo {
-        id: ConversationId::new("chat-id"),
-        title: Some("work notes".to_string()),
-        model: "openai/test".to_string(),
-        message_count: 3,
-    }];
-
-    let lines = conversation_lines(&conversations);
-
-    assert_eq!(
-        lines,
-        vec!["conversations", "chat-id  3 messages  work notes"]
-    );
-}
-
-#[test]
 fn serializes_conversation_list_report() {
     let conversations = vec![ConversationInfo {
         id: ConversationId::new("chat-id"),
-        title: Some("work notes".to_string()),
         model: "anthropic/test".to_string(),
         message_count: 3,
     }];
@@ -213,7 +193,7 @@ fn serializes_conversation_list_report() {
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversations"][0]["id"], "chat-id");
-    assert_eq!(value["conversations"][0]["title"], "work notes");
+    assert!(value["conversations"][0].get("title").is_none());
     assert_eq!(value["conversations"][0]["model"], "anthropic/test");
     assert_eq!(value["conversations"][0]["message_count"], 3);
 }

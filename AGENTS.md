@@ -274,40 +274,26 @@ versions clearly instead of carrying partial legacy migrations.
 
 ## Commit Workflow
 
-When making commits in this repository, do not call `git commit` directly. Use
-the project commit wrapper instead:
+Use normal Git commands. Before committing a meaningful code change, run the
+project correctness check:
 
 ```bash
-scripts/commit-with-bench.sh \
-  -m "commit subject" \
-  -m "what changed, why it changed, and which boundary it affects"
+scripts/check.sh
+git commit
+git push
 ```
 
-Use repeated `-m` flags or `-F` because every commit requires an explicit body:
+Keep commit messages explicit about what changed, why, and which behavior or
+ownership boundary is affected. Documentation-only and similarly narrow changes
+do not require performance measurements.
+
+Benchmarks are opt-in and belong to performance-sensitive work:
 
 ```bash
-scripts/commit-with-bench.sh \
-  -m "commit subject" \
-  -m "what changed, why it changed, and which boundary it affects"
-
-scripts/commit-with-bench.sh -F commit-message.txt
+scripts/bench.sh runtime
+scripts/bench.sh conversation <conversation_id>
 ```
 
-Install the repository hooks before making commits or pushes:
-
-```bash
-scripts/install-git-hooks.sh
-```
-
-The installed hooks reject direct `git commit` and direct `git push`. The
-commit and push wrappers set narrow environment markers for their internal Git
-calls, so normal project workflow must go through the wrappers.
-
-When pushing commits, use the project push wrapper instead of `git push`:
-
-```bash
-scripts/push-with-bench.sh
-```
-
-The push wrapper promotes the successful current benchmark to the local
-baseline after `git push` succeeds, then removes the current report.
+Do not put machine-local benchmark output into commit messages. Preserve a
+reviewed report as a local baseline with `scripts/bench.sh update-baseline` when
+that comparison is useful.

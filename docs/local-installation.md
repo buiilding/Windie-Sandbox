@@ -1,15 +1,21 @@
 # Local Installation
 
-From the Windie repository root, run:
+From a source checkout, install dependencies once and verify the checkout:
 
 ```bash
-./scripts/install-local.sh
+scripts/setup.sh
+scripts/check.sh
 ```
 
-This command runs the project checks, builds the optimized Rust binary, builds
-the operator UI, installs both in a versioned directory under
-`~/.local/lib/windie/releases/`, and atomically updates
-`~/.local/bin/windie` to the new release.
+Build and promote a local release:
+
+```bash
+scripts/install.sh
+```
+
+The install command builds the optimized Rust binary and operator UI, installs
+both under `~/.local/lib/windie/releases/`, and atomically updates
+`~/.local/bin/windie`. It does not rerun checks or install frontend dependencies.
 
 Add the local binary directory to the current shell and configure it for future
 shells:
@@ -20,31 +26,28 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-The `.zshrc` update is a one-time setup. Verify the installation with:
+Verify the installed paths and integrations:
 
 ```bash
 windie doctor
 ```
 
-Start the installed runtime with:
+Start the installed runtime:
 
 ```bash
 windie api
 ```
 
-The API starts Bifrost when necessary and prints an authenticated operator UI
-URL. The installed UI is served by the same Rust process on port `8787`; it
-does not require a separate Node development server. Both the binary and UI
-come from the most recent successful `scripts/install-local.sh` run. Editing
-files in the source checkout does not change this installed release.
+The installed UI is served by the Rust process on port `8787`; it does not need
+the React development server. Editing the source checkout does not change the
+installed release.
 
-Editing the source checkout does not update a running Windie installation. To
-activate UI or Rust changes:
+To activate later source changes:
 
-1. Run `./scripts/install-local.sh` from the repository root.
-2. Stop the current `windie api` process with `Ctrl-C`.
-3. Run `windie api` again.
+1. Run `scripts/check.sh`.
+2. Run `scripts/install.sh`.
+3. Stop the existing `windie api` process with `Ctrl-C`.
+4. Start `windie api` again.
 
-The restarted process uses the newly installed binary and UI. Windie does not
-restart itself during installation, which prevents an active runtime from being
-interrupted without an explicit user action.
+Installation does not restart a running process, so it cannot silently
+interrupt active work.

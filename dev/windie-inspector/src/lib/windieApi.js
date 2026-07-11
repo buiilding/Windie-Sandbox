@@ -127,57 +127,6 @@ function parseSseBlock(block) {
   };
 }
 
-async function streamRuntime(path, body, fallbackError, onEvent, options = {}) {
-  const token = apiToken();
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { "X-Windie-Api-Token": token } : {}),
-    },
-    body: JSON.stringify(body || {}),
-    signal: options.signal,
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    const body = parseApiBody(text);
-    throw new Error(body?.error || `${fallbackError}: ${response.status}`);
-  }
-
-  if (!response.body) return;
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() || "";
-
-    for (const block of blocks) {
-      const parsed = parseSseBlock(block.trim());
-      if (!parsed) continue;
-      await onEvent(parsed);
-      if (parsed.data?.type === "query_error") {
-        throw new Error(parsed.data.error || fallbackError);
-      }
-    }
-
-    if (done) break;
-  }
-
-  const final = parseSseBlock(buffer.trim());
-  if (final) {
-    await onEvent(final);
-    if (final.data?.type === "query_error") {
-      throw new Error(final.data.error || fallbackError);
-    }
-  }
-}
-
 export async function startConversationRun(conversationId, model, reasoning) {
   return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/runs`, {
     method: "POST",
@@ -257,52 +206,6 @@ export async function streamRunEvents(runId, after, onEvent, options = {}) {
   if (final) await onEvent(final);
 }
 
-export async function streamConversationQuery(
-  conversationId,
-  model,
-  reasoning,
-  onEvent,
-  options = {}
-) {
-  return streamRuntime(
-    `/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
-    { model: model || null, reasoning: reasoning || null },
-    "Windie query stream failed",
-    onEvent,
-    options
-  );
-}
-
-export async function streamApproveTool(
-  conversationId,
-  toolCallId,
-  onEvent,
-  options = {}
-) {
-  return streamRuntime(
-    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/approve`,
-    {},
-    "Windie approval stream failed",
-    onEvent,
-    options
-  );
-}
-
-export async function streamDenyTool(
-  conversationId,
-  toolCallId,
-  onEvent,
-  options = {}
-) {
-  return streamRuntime(
-    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/deny`,
-    {},
-    "Windie denial stream failed",
-    onEvent,
-    options
-  );
-}
-
 export async function setConversationModel(conversationId, model) {
   return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/model`, {
     method: "PATCH",
@@ -320,7 +223,7 @@ export async function setConversationReasoning(conversationId, effort) {
 export function conversationSummaryFromApi(summary) {
   return {
     id: summary.id,
-    name: summary.title || `conversation ${summary.id.slice(0, 8)}`,
+    name: `conversation ${summary.id.slice(0, 8)}`,
     model: summary.model || DEFAULT_MODEL,
     systemPrompt: "",
     toolApprovalMode: "manual",

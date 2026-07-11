@@ -1,19 +1,12 @@
-import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "sonner";
 import Windie from "@/pages/Windie";
 import { WindieProvider } from "@/context/WindieContext";
 
 function App() {
   return (
-    <div className="App h-full">
+    <div className="h-full">
       <WindieProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<Windie />} />
-            <Route path="*" element={<Windie />} />
-          </Routes>
-        </BrowserRouter>
+        <Windie />
         <Toaster
           position="bottom-right"
           theme="system"

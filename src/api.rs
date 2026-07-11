@@ -517,7 +517,6 @@ struct ConversationListResponse {
 /// One persisted conversation row used by UI sidebars.
 struct ConversationSummary {
     id: String,
-    title: Option<String>,
     model: String,
     message_count: i64,
 }
@@ -526,7 +525,6 @@ impl From<ConversationInfo> for ConversationSummary {
     fn from(info: ConversationInfo) -> Self {
         Self {
             id: info.id.as_str().to_string(),
-            title: info.title,
             model: info.model,
             message_count: info.message_count,
         }

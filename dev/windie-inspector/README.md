@@ -6,8 +6,8 @@ for the compiled operator UI bundled into releases.
 From the repository root:
 
 ```bash
-scripts/dev-api.sh
-scripts/dev-ui.sh
+scripts/setup.sh
+scripts/dev.sh
 ```
 
 Open `http://localhost:3000?windie_token=<printed token>`. The development page
