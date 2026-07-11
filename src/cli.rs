@@ -169,137 +169,167 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     let _program = args.next();
     let args = args.collect::<Vec<_>>();
 
-    if args.first().is_some_and(|arg| arg == "bench") {
-        return parse_bench_command(&args[1..]);
+    let Some((command, rest)) = args.split_first() else {
+        return Command::Noop;
+    };
+    match command.as_str() {
+        "bench" => parse_bench_command(rest),
+        "insert" => parse_insert_command(rest),
+        "update" => parse_update_command(rest),
+        "rm" => parse_remove_command(rest),
+        "set" => parse_set_command(rest),
+        "query" => parse_query_command(rest),
+        "inspect" => parse_inspect_command(rest),
+        "attach" => parse_attach_command(rest),
+        "detach" => parse_detach_command(rest),
+        "approve" => parse_tool_decision(rest, true),
+        "deny" => parse_tool_decision(rest, false),
+        _ => parse_simple_command(command, rest),
     }
+}
 
-    match args.as_slice() {
-        [] => Command::Noop,
-        [arg] if arg == "--help" || arg == "-h" => Command::Help,
-        [arg] if arg == "--version" || arg == "-V" => Command::Version,
-        [arg] if arg == "api" => Command::Api,
-        [arg] if arg == "doctor" => Command::Doctor,
-        [arg] if arg == "tools" => Command::Tools { provider_id: None },
-        [arg] if arg == "models" => Command::Models,
-        [command, provider_id] if command == "tools" => Command::Tools {
-            provider_id: Some(ToolProviderId::new(provider_id.as_str())),
+fn parse_simple_command(command: &str, args: &[String]) -> Command {
+    match (command, args) {
+        ("--help" | "-h", []) => Command::Help,
+        ("--version" | "-V", []) => Command::Version,
+        ("api", []) => Command::Api,
+        ("doctor", []) => Command::Doctor,
+        ("models", []) => Command::Models,
+        ("new", []) => Command::New,
+        ("status", []) => Command::Status,
+        ("tools", []) => Command::Tools { provider_id: None },
+        ("tools", [provider_id]) => Command::Tools {
+            provider_id: Some(ToolProviderId::new(provider_id)),
         },
-        [command, conversation_id] if command == "approvals" => Command::Approvals {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
+        ("approvals", [conversation_id]) => Command::Approvals {
+            conversation_id: ConversationId::new(conversation_id),
         },
-        [command, conversation_id, tool_call_id] if command == "approve" => Command::ApproveTool {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
+        ("gateway", [action]) if action == "start" => Command::GatewayStart,
+        ("gateway", [action]) if action == "stop" => Command::GatewayStop,
+        ("ls", []) => Command::List { json: false },
+        ("ls", [flag]) if flag == "--json" => Command::List { json: true },
+        ("show", [conversation_id]) => Command::Show(ConversationId::new(conversation_id)),
+        ("tree", [conversation_id]) => Command::Tree(ConversationId::new(conversation_id)),
+        ("activate", [conversation_id, message_id]) => Command::Activate {
+            conversation_id: ConversationId::new(conversation_id),
+            message_id: MessageId::new(message_id),
         },
-        [command, conversation_id, subject, provider_id, tool_name]
-            if command == "attach" && subject == "tool" =>
-        {
+        ("truncate", [conversation_id, message_id]) => Command::Truncate {
+            conversation_id: ConversationId::new(conversation_id),
+            message_id: MessageId::new(message_id),
+        },
+        ("fork", [conversation_id, message_id]) => Command::Fork {
+            conversation_id: ConversationId::new(conversation_id),
+            message_id: MessageId::new(message_id),
+        },
+        _ => Command::Invalid,
+    }
+}
+
+fn parse_tool_decision(args: &[String], approve: bool) -> Command {
+    let [conversation_id, tool_call_id] = args else {
+        return Command::Invalid;
+    };
+    if approve {
+        Command::ApproveTool {
+            conversation_id: ConversationId::new(conversation_id),
+            tool_call_id: ToolCallId::new(tool_call_id),
+        }
+    } else {
+        Command::DenyTool {
+            conversation_id: ConversationId::new(conversation_id),
+            tool_call_id: ToolCallId::new(tool_call_id),
+        }
+    }
+}
+
+fn parse_attach_command(args: &[String]) -> Command {
+    match args {
+        [conversation_id, subject, provider_id, tool_name] if subject == "tool" => {
             Command::AttachTool {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                provider_id: ToolProviderId::new(provider_id.as_str()),
-                tool_name: ProviderToolName::new(tool_name.as_str()),
+                conversation_id: ConversationId::new(conversation_id),
+                provider_id: ToolProviderId::new(provider_id),
+                tool_name: ProviderToolName::new(tool_name),
             }
         }
-        [command, conversation_id, subject, schema_name]
-            if command == "detach" && subject == "tool" =>
-        {
-            Command::DetachTool {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                schema_name: ToolSchemaName::new(schema_name.as_str()),
-            }
-        }
-        [command, conversation_id, tool_call_id] if command == "deny" => Command::DenyTool {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
+        _ => Command::Invalid,
+    }
+}
+
+fn parse_detach_command(args: &[String]) -> Command {
+    match args {
+        [conversation_id, subject, schema_name] if subject == "tool" => Command::DetachTool {
+            conversation_id: ConversationId::new(conversation_id),
+            schema_name: ToolSchemaName::new(schema_name),
         },
-        [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
-        [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
-        [arg] if arg == "new" => Command::New,
-        [arg] if arg == "ls" => Command::List { json: false },
-        [command, json_flag] if command == "ls" && json_flag == "--json" => {
-            Command::List { json: true }
-        }
-        [command, conversation_id, message_id] if command == "activate" => Command::Activate {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            message_id: MessageId::new(message_id.as_str()),
+        _ => Command::Invalid,
+    }
+}
+
+fn parse_inspect_command(args: &[String]) -> Command {
+    match args {
+        [conversation_id, json_flag] if json_flag == "--json" => Command::Inspect {
+            conversation_id: ConversationId::new(conversation_id),
+            model: None,
         },
-        [command, conversation_id] if command == "show" => {
-            Command::Show(ConversationId::new(conversation_id.as_str()))
-        }
-        [command, conversation_id] if command == "tree" => {
-            Command::Tree(ConversationId::new(conversation_id.as_str()))
-        }
-        [command, conversation_id, json_flag] if command == "inspect" && json_flag == "--json" => {
-            Command::Inspect {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                model: None,
-            }
-        }
-        [command, conversation_id, json_flag, model_flag, model]
-            if command == "inspect" && json_flag == "--json" && model_flag == "--model" =>
+        [conversation_id, json_flag, model_flag, model]
+            if json_flag == "--json" && model_flag == "--model" =>
         {
             Command::Inspect {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                model: Some(ModelName::new(model.as_str())),
+                conversation_id: ConversationId::new(conversation_id),
+                model: Some(ModelName::new(model)),
             }
         }
-        [command, rest @ ..] if command == "insert" => parse_insert_command(rest),
-        [command, rest @ ..] if command == "update" => parse_update_command(rest),
-        [command, conversation_id] if command == "rm" => {
-            Command::RemoveConversation(ConversationId::new(conversation_id.as_str()))
-        }
-        [command, conversation_id, subject, message_id]
-            if command == "rm" && subject == "message" =>
-        {
-            Command::RemoveMessage {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                message_id: MessageId::new(message_id.as_str()),
-            }
-        }
-        [command, conversation_id, subject] if command == "rm" && subject == "systemprompt" => {
-            Command::RemoveSystemPrompt(ConversationId::new(conversation_id.as_str()))
-        }
-        [command, conversation_id, subject, name] if command == "rm" && subject == "toolschema" => {
-            Command::RemoveToolSchema {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                name: ToolSchemaName::new(name.as_str()),
-            }
-        }
-        [command, conversation_id, message_id] if command == "truncate" => Command::Truncate {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            message_id: MessageId::new(message_id.as_str()),
+        _ => Command::Invalid,
+    }
+}
+
+fn parse_query_command(args: &[String]) -> Command {
+    match args {
+        [conversation_id] => Command::Query {
+            conversation_id: ConversationId::new(conversation_id),
+            model: None,
         },
-        [command, conversation_id, message_id] if command == "fork" => Command::Fork {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            message_id: MessageId::new(message_id.as_str()),
+        [conversation_id, model_flag, model] if model_flag == "--model" => Command::Query {
+            conversation_id: ConversationId::new(conversation_id),
+            model: Some(ModelName::new(model)),
         },
-        [command, conversation_id, subject, text_flag, text]
-            if command == "set" && subject == "systemprompt" && text_flag == "--text" =>
+        _ => Command::Invalid,
+    }
+}
+
+fn parse_set_command(args: &[String]) -> Command {
+    match args {
+        [conversation_id, subject, text_flag, text]
+            if subject == "systemprompt" && text_flag == "--text" =>
         {
             Command::SetSystemPrompt {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
+                conversation_id: ConversationId::new(conversation_id),
                 text: text.to_string(),
             }
         }
-        [command, conversation_id, subject, model] if command == "set" && subject == "model" => {
-            Command::SetModel {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                model: ModelName::new(model.as_str()),
-            }
-        }
-        [command, conversation_id] if command == "query" => Command::Query {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            model: None,
+        [conversation_id, subject, model] if subject == "model" => Command::SetModel {
+            conversation_id: ConversationId::new(conversation_id),
+            model: ModelName::new(model),
         },
-        [command, conversation_id, model_flag, model]
-            if command == "query" && model_flag == "--model" =>
-        {
-            Command::Query {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                model: Some(ModelName::new(model.as_str())),
-            }
+        _ => Command::Invalid,
+    }
+}
+
+fn parse_remove_command(args: &[String]) -> Command {
+    match args {
+        [conversation_id] => Command::RemoveConversation(ConversationId::new(conversation_id)),
+        [conversation_id, subject, message_id] if subject == "message" => Command::RemoveMessage {
+            conversation_id: ConversationId::new(conversation_id),
+            message_id: MessageId::new(message_id),
+        },
+        [conversation_id, subject] if subject == "systemprompt" => {
+            Command::RemoveSystemPrompt(ConversationId::new(conversation_id))
         }
-        [arg] if arg == "status" => Command::Status,
+        [conversation_id, subject, name] if subject == "toolschema" => Command::RemoveToolSchema {
+            conversation_id: ConversationId::new(conversation_id),
+            name: ToolSchemaName::new(name),
+        },
         _ => Command::Invalid,
     }
 }

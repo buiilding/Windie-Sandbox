@@ -691,25 +691,14 @@ fn tree_lines(messages: &[MessageView], active_message_id: Option<&MessageId>) -
     }
 
     let mut lines = vec!["tree".to_string()];
-    append_tree_lines(&mut lines, &children_by_parent, None, active_message_id, 0);
-
-    lines
-}
-
-/// Recursively appends indented tree lines under one parent message.
-fn append_tree_lines(
-    lines: &mut Vec<String>,
-    children_by_parent: &HashMap<Option<String>, Vec<&MessageView>>,
-    parent_id: Option<&str>,
-    active_message_id: Option<&MessageId>,
-    depth: usize,
-) {
-    let parent_key = parent_id.map(str::to_string);
-    let Some(children) = children_by_parent.get(&parent_key) else {
-        return;
-    };
-
-    for message in children {
+    let mut stack = children_by_parent
+        .get(&None)
+        .into_iter()
+        .flatten()
+        .rev()
+        .map(|message| (*message, 0_usize))
+        .collect::<Vec<_>>();
+    while let Some((message, depth)) = stack.pop() {
         let id = message.id.as_deref().unwrap_or("<unsaved>");
         let active_marker = if active_message_id
             .is_some_and(|active_id| message.id.as_deref() == Some(active_id.as_str()))
@@ -726,14 +715,17 @@ fn append_tree_lines(
             id,
             message_view_preview(message)
         ));
-        append_tree_lines(
-            lines,
-            children_by_parent,
-            message.id.as_deref(),
-            active_message_id,
-            depth + 1,
-        );
+        if let Some(children) = children_by_parent.get(&message.id) {
+            stack.extend(
+                children
+                    .iter()
+                    .rev()
+                    .map(|child| (*child, depth.saturating_add(1))),
+            );
+        }
     }
+
+    lines
 }
 
 /// Normalizes one metadata-only message into a compact preview.

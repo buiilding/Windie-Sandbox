@@ -69,11 +69,45 @@ impl ToolProviderRegistry {
     /// catalogs loaded here are cached for later attachment requests in the same
     /// process.
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
+        let results = std::thread::scope(|scope| {
+            self.mcp_providers
+                .iter()
+                .map(|provider| {
+                    let provider_id = provider.id().clone();
+                    (
+                        provider_id.clone(),
+                        scope.spawn(move || self.list_provider_tools(&provider_id)),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|(provider_id, worker)| {
+                    let result = worker
+                        .join()
+                        .map_err(|_| anyhow!("provider catalog task panicked"))
+                        .and_then(|result| result);
+                    (provider_id, result)
+                })
+                .collect::<Vec<_>>()
+        });
+
         let mut tools = Vec::new();
-        for provider in &self.mcp_providers {
-            if let Ok(provider_tools) = self.list_provider_tools(provider.id()) {
-                tools.extend(provider_tools);
+        let mut errors = Vec::new();
+        for (provider_id, result) in results {
+            match result {
+                Ok(provider_tools) => tools.extend(provider_tools),
+                Err(error) => errors.push(format!("{provider_id}: {error:#}")),
             }
+        }
+
+        if tools.is_empty() && !errors.is_empty() {
+            return Err(anyhow!(
+                "failed to load provider catalogs: {}",
+                errors.join("; ")
+            ));
+        }
+        for error in errors {
+            eprintln!("warning: failed to load provider catalog: {error}");
         }
 
         Ok(tools)
