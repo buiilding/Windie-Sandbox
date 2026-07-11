@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
+use crate::image_input::validate_image_input_bytes;
 use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
 use crate::paths;
 use crate::run::{RunCancellation, is_runtime_cancelled};
@@ -26,6 +27,7 @@ use crate::tool::{
 };
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
+const MCP_TOOL_RESULT_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -626,12 +628,14 @@ fn mcp_schema_name(schema_prefix: &str, tool_name: &str) -> String {
 /// Responses request can replay them as image blocks instead of base64 text.
 fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
     let mut parts = Vec::new();
+    let mut result_bytes = 0_usize;
 
     if let Some(content) = result.get("content").and_then(Value::as_array) {
         for item in content {
             match item.get("type").and_then(Value::as_str) {
                 Some("text") => {
                     if let Some(text) = item.get("text").and_then(Value::as_str) {
+                        add_mcp_result_bytes(&mut result_bytes, text.len())?;
                         parts.push(UnsavedMessagePart::Text(text.to_string()));
                     }
                 }
@@ -648,14 +652,19 @@ fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
                     let bytes = STANDARD
                         .decode(data)
                         .context("failed to decode MCP image result")?;
+                    validate_image_input_bytes(mime_type, &bytes)
+                        .context("invalid MCP image result")?;
+                    add_mcp_result_bytes(&mut result_bytes, bytes.len())?;
                     parts.push(UnsavedMessagePart::Image(UnsavedImagePart {
                         mime_type: mime_type.to_string(),
                         bytes,
                     }));
                 }
-                Some(other) => parts.push(UnsavedMessagePart::Text(format!(
-                    "Unsupported MCP content block: {other}"
-                ))),
+                Some(other) => {
+                    let text = format!("Unsupported MCP content block: {other}");
+                    add_mcp_result_bytes(&mut result_bytes, text.len())?;
+                    parts.push(UnsavedMessagePart::Text(text));
+                }
                 None => {}
             }
         }
@@ -664,16 +673,33 @@ fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
     if let Some(structured_content) = result.get("structuredContent")
         && !structured_content.is_null()
     {
-        parts.push(UnsavedMessagePart::Text(format!(
-            "structuredContent: {structured_content}"
-        )));
+        let text = format!("structuredContent: {structured_content}");
+        add_mcp_result_bytes(&mut result_bytes, text.len())?;
+        parts.push(UnsavedMessagePart::Text(text));
     }
 
     if parts.is_empty() {
-        parts.push(UnsavedMessagePart::Text(result.to_string()));
+        let text = result.to_string();
+        add_mcp_result_bytes(&mut result_bytes, text.len())?;
+        parts.push(UnsavedMessagePart::Text(text));
     }
 
     Ok(parts)
+}
+
+/// Accounts for decoded tool-result bytes before they enter conversation
+/// storage. The JSON-RPC frame is bounded separately in `mcp.rs`; this limit
+/// covers the normalized text and decoded image representation.
+fn add_mcp_result_bytes(total: &mut usize, added: usize) -> Result<()> {
+    *total = total
+        .checked_add(added)
+        .ok_or_else(|| anyhow!("MCP tool result size overflow"))?;
+    if *total > MCP_TOOL_RESULT_MAX_BYTES {
+        return Err(anyhow!(
+            "MCP tool result exceeds {MCP_TOOL_RESULT_MAX_BYTES} bytes"
+        ));
+    }
+    Ok(())
 }
 
 /// Builds the compact visible text stored on the tool message row.

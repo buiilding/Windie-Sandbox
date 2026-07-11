@@ -31,6 +31,8 @@ const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SHUTDOWN_RETRY_DELAY: Duration = Duration::from_millis(750);
 const MCP_SHUTDOWN_RETRIES: usize = 4;
 const MCP_STDERR_MAX_BYTES: usize = 16 * 1024;
+const MCP_STDOUT_CHANNEL_CAPACITY: usize = 32;
+const MCP_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MCP_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MCP_RUNTIME_ENVIRONMENT: &[&str] = &["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot"];
 
@@ -763,26 +765,24 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
 
 /// Reads provider stdout on a dedicated thread so protocol waits can time out.
 fn spawn_stdout_reader(stdout: ChildStdout) -> Receiver<Result<String, String>> {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(MCP_STDOUT_CHANNEL_CAPACITY);
 
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
 
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => {
+            match read_bounded_stdout_line(&mut reader, MCP_MAX_FRAME_BYTES) {
+                Ok(None) => {
                     let _ = sender.send(Err("MCP provider closed stdout".to_string()));
                     break;
                 }
-                Ok(_) => {
-                    if sender.send(Ok(line.clone())).is_err() {
+                Ok(Some(line)) => {
+                    if sender.send(Ok(line)).is_err() {
                         break;
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(Err(format!("failed to read MCP response: {error}")));
+                    let _ = sender.send(Err(error));
                     break;
                 }
             }
@@ -790,6 +790,29 @@ fn spawn_stdout_reader(stdout: ChildStdout) -> Receiver<Result<String, String>> 
     });
 
     receiver
+}
+
+/// Reads one UTF-8 line without allowing an MCP process to allocate an
+/// unbounded protocol frame before JSON decoding.
+fn read_bounded_stdout_line(
+    reader: &mut impl BufRead,
+    max_bytes: usize,
+) -> std::result::Result<Option<String>, String> {
+    let mut bytes = Vec::new();
+    let read = reader
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|error| format!("failed to read MCP response: {error}"))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if read > max_bytes {
+        return Err(format!("MCP response frame exceeds {max_bytes} bytes"));
+    }
+
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| format!("MCP response was not valid UTF-8: {error}"))
 }
 
 /// Captures bounded provider stderr for later operation errors.
@@ -905,6 +928,24 @@ mod tests {
         let captured = Arc::new(Mutex::new(b"missing permission".to_vec()));
 
         assert_eq!(captured_stderr(&captured), "missing permission");
+    }
+
+    #[test]
+    fn stdout_reader_rejects_oversized_protocol_frame() {
+        let mut reader = std::io::Cursor::new(b"12345\n");
+
+        let error = read_bounded_stdout_line(&mut reader, 4).unwrap_err();
+
+        assert_eq!(error, "MCP response frame exceeds 4 bytes");
+    }
+
+    #[test]
+    fn stdout_reader_accepts_bounded_utf8_line() {
+        let mut reader = std::io::Cursor::new("ok\n".as_bytes());
+
+        let line = read_bounded_stdout_line(&mut reader, 3).unwrap();
+
+        assert_eq!(line.as_deref(), Some("ok\n"));
     }
 
     #[test]
