@@ -241,10 +241,12 @@ impl QueryRequest {
 /// Builds shared runtime settings for an API-driven runtime action.
 fn runtime_turn_config<'a>(
     state: &'a ApiState,
+    run_id: &'a str,
     model_override: Option<ModelName>,
     reasoning: Option<ReasoningRequest>,
 ) -> operation::RuntimeTurnConfig<'a> {
     operation::RuntimeTurnConfig::new(
+        run_id,
         GatewayUrl::new(state.gateway_url.clone()),
         BaseUrl::new(state.base_url.clone()),
         model_override,

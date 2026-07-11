@@ -358,6 +358,7 @@ async fn approve_tool(
         &conversation_id,
         &tool_call_id,
         &state.tool_registry,
+        &run.id,
     )
     .await;
     let result = state.run_manager.finish_result(&run.id, result)?;
@@ -376,7 +377,7 @@ async fn deny_tool(
     let run = state
         .run_manager
         .begin_action(&conversation_id, RuntimeRunAction::DenyTool)?;
-    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id);
+    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id, &run.id);
     let result = state.run_manager.finish_result(&run.id, result)?;
 
     Ok(Json(result.into()))

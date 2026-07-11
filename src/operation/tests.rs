@@ -387,7 +387,14 @@ fn deny_tool_persists_tool_result() {
         )
         .unwrap();
 
-    let result = deny_tool(&mut store, &conversation_id, &ToolCallId::new("call_123")).unwrap();
+    let run = store.create_runtime_run(&conversation_id).unwrap();
+    let result = deny_tool(
+        &mut store,
+        &conversation_id,
+        &ToolCallId::new("call_123"),
+        &run.id,
+    )
+    .unwrap();
     let messages = store.load_active_path(&conversation_id).unwrap();
 
     assert!(!result.success);

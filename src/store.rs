@@ -39,6 +39,10 @@ use images::{
     delete_orphan_image_assets_in_transaction, insert_image_asset_in_transaction,
     insert_image_part_in_transaction,
 };
+use messages::{
+    InsertSelection, encode_message_metadata, insert_unsaved_message_parts_in_transaction,
+    select_inserted_message,
+};
 use tools::read_attached_tool_row;
 
 #[cfg(test)]
@@ -48,6 +52,9 @@ const DATABASE_SCHEMA_VERSION: i32 = 13;
 pub use compactions::Compaction;
 pub use conversations::ConversationInfo;
 pub use runs::{RuntimeRunAction, RuntimeRunEventRecord, RuntimeRunRecord, RuntimeRunStatus};
+pub use tools::ToolExecutionRecord;
+#[cfg(test)]
+use tools::ToolExecutionStatus;
 
 /// SQLite-backed persistence boundary for conversations, messages, tools, runs,
 /// images, and compactions.

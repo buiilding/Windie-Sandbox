@@ -66,6 +66,7 @@ impl RuntimeSnapshot {
 /// operation layer to the LLM boundary so provider-specific serialization stays
 /// in `llm.rs`.
 pub(crate) struct RuntimeModelRequest<'a> {
+    run_id: &'a str,
     snapshot: &'a RuntimeSnapshot,
     reasoning: Option<&'a ReasoningRequest>,
     prompt_cache: Option<&'a PromptCacheRequest>,
@@ -74,11 +75,13 @@ pub(crate) struct RuntimeModelRequest<'a> {
 impl<'a> RuntimeModelRequest<'a> {
     /// Groups optional reasoning and prompt-cache controls for one query.
     pub(crate) fn new(
+        run_id: &'a str,
         snapshot: &'a RuntimeSnapshot,
         reasoning: Option<&'a ReasoningRequest>,
         prompt_cache: Option<&'a PromptCacheRequest>,
     ) -> Self {
         Self {
+            run_id,
             snapshot,
             reasoning,
             prompt_cache,
@@ -109,6 +112,7 @@ where
     let registry = ToolProviderRegistry::new();
     let events = NoopRuntimeEventSink;
     let snapshot = runtime_snapshot(store, conversation_id)?;
+    let run_id = execution_run_id(store, conversation_id)?;
 
     query_conversation_once_with_registry_and_events(
         output,
@@ -117,7 +121,7 @@ where
         conversation_id,
         &registry,
         &events,
-        RuntimeModelRequest::new(&snapshot, None, None),
+        RuntimeModelRequest::new(&run_id, &snapshot, None, None),
     )
     .await
 }
@@ -142,6 +146,7 @@ where
         conversation_id,
         registry,
         events,
+        model_request.run_id,
         model_request.snapshot,
     )?;
 
@@ -196,6 +201,7 @@ where
             conversation_id,
             registry,
             events,
+            model_request.run_id,
             model_request.snapshot,
         )?;
     }
@@ -265,6 +271,7 @@ where
             conversation_id,
             registry,
             events,
+            model_request.run_id,
             model_request.snapshot,
         )
         .await?
@@ -335,12 +342,14 @@ pub(crate) fn prepare_query_turn(
 ) -> Result<()> {
     let registry = ToolProviderRegistry::new();
     let snapshot = runtime_snapshot(store, conversation_id)?;
+    let run_id = execution_run_id(store, conversation_id)?;
 
     prepare_query_turn_with_registry_and_events(
         store,
         conversation_id,
         &registry,
         &NoopRuntimeEventSink,
+        &run_id,
         &snapshot,
     )
 }
@@ -351,12 +360,13 @@ pub(crate) fn prepare_query_turn_with_registry_and_events<E>(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &E,
+    run_id: &str,
     snapshot: &RuntimeSnapshot,
 ) -> Result<()>
 where
     E: RuntimeEventSink,
 {
-    store_policy_denied_tool_results(store, conversation_id, registry, events, snapshot)?;
+    store_policy_denied_tool_results(store, conversation_id, registry, events, run_id, snapshot)?;
     validate_query_availability(store, conversation_id)
 }
 
@@ -453,6 +463,7 @@ fn store_policy_denied_tool_results(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
+    run_id: &str,
     snapshot: &RuntimeSnapshot,
 ) -> Result<()> {
     let policy = ToolPolicy;
@@ -480,13 +491,14 @@ fn store_policy_denied_tool_results(
             result_parent_message_id: execution.result_parent_message_id,
             tool_call,
         };
-        claim_pending_tool_call(store, conversation_id, &pending)?;
+        claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
         let result = ToolExecutionResult::failure(
             pending.tool_call.id.clone(),
             pending.tool_call.name(),
             reason,
         );
-        let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
+        let message_id =
+            store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
         events.tool_result_saved(&message_id);
     }
 }
@@ -509,6 +521,7 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
     events: &impl RuntimeEventSink,
+    run_id: &str,
     snapshot: &RuntimeSnapshot,
 ) -> Result<AutomaticToolResolution> {
     let messages = store.load_active_path(conversation_id)?;
@@ -533,7 +546,7 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         snapshot.approval_mode,
     ) {
         PolicyDecision::Deny { reason } => {
-            claim_pending_tool_call(store, conversation_id, &pending)?;
+            claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
             ToolExecutionResult::failure(
                 pending.tool_call.id.clone(),
                 pending.tool_call.name(),
@@ -541,13 +554,14 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
             )
         }
         PolicyDecision::Allow => {
-            claim_pending_tool_call(store, conversation_id, &pending)?;
+            claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
             match execute_provider_tool_call(&pending, attached_tool, registry).await {
                 Ok(result) => result,
                 Err(execution_error) => {
                     store.fail_tool_call_execution(
                         &pending.assistant_message_id,
                         &pending.tool_call.id,
+                        run_id,
                         &execution_error.to_string(),
                     )?;
                     return Err(execution_error);
@@ -557,7 +571,7 @@ async fn resolve_next_automatic_tool_call_with_registry_and_events(
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
 
-    let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
     events.tool_result_saved(&message_id);
 
     Ok(AutomaticToolResolution::Resolved(message_id))
@@ -656,6 +670,7 @@ fn active_tool_execution(messages: &[Message]) -> Option<ActiveToolExecution> {
 }
 
 /// Executes one approved pending tool call and stores its result.
+#[cfg(test)]
 pub(crate) async fn approve_tool_call(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -672,6 +687,7 @@ pub(crate) async fn approve_tool_call(
 /// Long-lived clients such as the API server pass a registry configured for
 /// persistent MCP sessions. One-shot CLI commands use `approve_tool_call`,
 /// which builds the default short-lived registry.
+#[cfg(test)]
 pub(crate) async fn approve_tool_call_with_registry(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -683,6 +699,7 @@ pub(crate) async fn approve_tool_call_with_registry(
         .map(|(result, _)| result)
 }
 
+#[cfg(test)]
 pub(crate) async fn approve_tool_call_with_registry_and_message(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -690,7 +707,16 @@ pub(crate) async fn approve_tool_call_with_registry_and_message(
     registry: &ToolProviderRegistry,
 ) -> Result<(ToolExecutionResult, MessageId)> {
     let snapshot = runtime_snapshot(store, conversation_id)?;
-    approve_tool_call_with_snapshot(store, conversation_id, tool_call_id, registry, &snapshot).await
+    let run_id = execution_run_id(store, conversation_id)?;
+    approve_tool_call_with_snapshot(
+        store,
+        conversation_id,
+        tool_call_id,
+        registry,
+        &run_id,
+        &snapshot,
+    )
+    .await
 }
 
 pub(crate) async fn approve_tool_call_with_snapshot(
@@ -698,10 +724,11 @@ pub(crate) async fn approve_tool_call_with_snapshot(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
     registry: &ToolProviderRegistry,
+    run_id: &str,
     snapshot: &RuntimeSnapshot,
 ) -> Result<(ToolExecutionResult, MessageId)> {
     let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
-    claim_pending_tool_call(store, conversation_id, &pending)?;
+    claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
     let execution = prepare_pending_tool_execution(&pending, registry, snapshot)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
@@ -712,6 +739,7 @@ pub(crate) async fn approve_tool_call_with_snapshot(
                     store.fail_tool_call_execution(
                         &pending.assistant_message_id,
                         &pending.tool_call.id,
+                        run_id,
                         &execution_error.to_string(),
                     )?;
                     return Err(execution_error);
@@ -719,7 +747,7 @@ pub(crate) async fn approve_tool_call_with_snapshot(
             }
         }
     };
-    let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
 
     Ok((result, message_id))
 }
@@ -802,10 +830,20 @@ pub(crate) fn deny_tool_call_with_message(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<(ToolExecutionResult, MessageId)> {
+    let run_id = execution_run_id(store, conversation_id)?;
+    deny_tool_call_for_run(store, conversation_id, tool_call_id, &run_id)
+}
+
+pub(crate) fn deny_tool_call_for_run(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    run_id: &str,
+) -> Result<(ToolExecutionResult, MessageId)> {
     let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
-    claim_pending_tool_call(store, conversation_id, &pending)?;
+    claim_pending_tool_call(store, conversation_id, &pending, run_id)?;
     let result = deny_pending_tool_call(&pending);
-    let message_id = store_claimed_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_claimed_tool_result(store, conversation_id, &pending, run_id, &result)?;
 
     Ok((result, message_id))
 }
@@ -865,11 +903,13 @@ fn claim_pending_tool_call(
     store: &Store,
     conversation_id: &ConversationId,
     pending: &PendingToolCall,
+    run_id: &str,
 ) -> Result<()> {
     store.claim_tool_call_execution(
         conversation_id,
         &pending.assistant_message_id,
         &pending.tool_call.id,
+        run_id,
     )
 }
 
@@ -877,21 +917,25 @@ fn store_claimed_tool_result(
     store: &mut Store,
     conversation_id: &ConversationId,
     pending: &PendingToolCall,
+    run_id: &str,
     result: &ToolExecutionResult,
 ) -> Result<MessageId> {
-    let message_id = store.insert_tool_result_message_on_branch(
+    store.complete_tool_call_with_result(
         conversation_id,
+        &pending.assistant_message_id,
         &pending.result_parent_message_id,
         &result.tool_call_id,
+        run_id,
         &result.content,
         &result.parts,
-    )?;
-    store.complete_tool_call_execution(
-        &pending.assistant_message_id,
-        &pending.tool_call.id,
-        &message_id,
-    )?;
-    Ok(message_id)
+    )
+}
+
+fn execution_run_id(store: &Store, conversation_id: &ConversationId) -> Result<String> {
+    if let Some(run) = store.active_runtime_run(conversation_id)? {
+        return Ok(run.id);
+    }
+    Ok(store.create_runtime_run(conversation_id)?.id)
 }
 
 /// Captures policy and context configuration for one runtime operation.

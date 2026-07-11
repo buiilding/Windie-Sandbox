@@ -189,14 +189,20 @@ impl Store {
                     conversation_id TEXT NOT NULL,
                     assistant_message_id TEXT NOT NULL,
                     tool_call_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('executing', 'completed', 'failed', 'interrupted')
+                    ),
                     result_message_id TEXT,
                     error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
 
                     PRIMARY KEY (assistant_message_id, tool_call_id),
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                    FOREIGN KEY (assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES runtime_runs(id) ON DELETE CASCADE,
+                    FOREIGN KEY (result_message_id) REFERENCES messages(id) ON DELETE SET NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx

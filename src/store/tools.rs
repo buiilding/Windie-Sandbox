@@ -2,6 +2,55 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionStatus {
+    Executing,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+impl ToolExecutionStatus {
+    fn as_storage(self) -> &'static str {
+        match self {
+            Self::Executing => "executing",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "executing" => Ok(Self::Executing),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "interrupted" => Ok(Self::Interrupted),
+            _ => Err(anyhow!("unknown tool execution status: {value}")),
+        }
+    }
+}
+
+impl std::fmt::Display for ToolExecutionStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_storage())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToolExecutionRecord {
+    pub conversation_id: ConversationId,
+    pub assistant_message_id: MessageId,
+    pub tool_call_id: ToolCallId,
+    pub run_id: String,
+    pub status: ToolExecutionStatus,
+    pub result_message_id: Option<MessageId>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 impl Store {
     /// Atomically reserves one assistant-requested tool call for execution.
     /// Interrupted claims may be explicitly retried; every other existing claim
@@ -11,6 +60,7 @@ impl Store {
         conversation_id: &ConversationId,
         assistant_message_id: &MessageId,
         tool_call_id: &ToolCallId,
+        run_id: &str,
     ) -> Result<()> {
         self.ensure_message_belongs_to_conversation(conversation_id, assistant_message_id)?;
         let now = now_millis()?;
@@ -19,14 +69,15 @@ impl Store {
             .execute(
                 "
                 INSERT OR IGNORE INTO tool_call_executions (
-                    conversation_id, assistant_message_id, tool_call_id, status,
+                    conversation_id, assistant_message_id, tool_call_id, run_id, status,
                     result_message_id, error, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, 'executing', NULL, NULL, ?4, ?4)
+                ) VALUES (?1, ?2, ?3, ?4, 'executing', NULL, NULL, ?5, ?5)
                 ",
                 params![
                     conversation_id.as_str(),
                     assistant_message_id.as_str(),
                     tool_call_id.as_str(),
+                    run_id,
                     now
                 ],
             )
@@ -40,12 +91,17 @@ impl Store {
             .execute(
                 "
                 UPDATE tool_call_executions
-                SET status = 'executing', error = NULL, updated_at = ?3
+                SET run_id = ?3, status = 'executing', error = NULL, updated_at = ?4
                 WHERE assistant_message_id = ?1
                   AND tool_call_id = ?2
                   AND status = 'interrupted'
                 ",
-                params![assistant_message_id.as_str(), tool_call_id.as_str(), now],
+                params![
+                    assistant_message_id.as_str(),
+                    tool_call_id.as_str(),
+                    run_id,
+                    now
+                ],
             )
             .context("failed to retry interrupted tool call")?;
         if retried == 1 {
@@ -69,31 +125,34 @@ impl Store {
         )))
     }
 
-    /// Marks a claimed tool call complete after its linked result is durable.
-    pub fn complete_tool_call_execution(
+    /// Preserves an execution failure that did not produce a model-facing result.
+    pub fn fail_tool_call_execution(
         &self,
         assistant_message_id: &MessageId,
         tool_call_id: &ToolCallId,
-        result_message_id: &MessageId,
+        run_id: &str,
+        execution_error: &str,
     ) -> Result<()> {
         let changed = self
             .connection
             .execute(
                 "
                 UPDATE tool_call_executions
-                SET status = 'completed', result_message_id = ?3, updated_at = ?4
+                SET status = 'failed', error = ?4, updated_at = ?5
                 WHERE assistant_message_id = ?1
                   AND tool_call_id = ?2
+                  AND run_id = ?3
                   AND status = 'executing'
                 ",
                 params![
                     assistant_message_id.as_str(),
                     tool_call_id.as_str(),
-                    result_message_id.as_str(),
+                    run_id,
+                    execution_error,
                     now_millis()?
                 ],
             )
-            .context("failed to complete tool call execution")?;
+            .context("failed to record tool call execution failure")?;
         if changed != 1 {
             return Err(error::invalid_request(format!(
                 "tool call execution is not executing: {tool_call_id}"
@@ -102,31 +161,167 @@ impl Store {
         Ok(())
     }
 
-    /// Preserves an execution failure that did not produce a model-facing result.
-    pub fn fail_tool_call_execution(
-        &self,
+    /// Stores a tool result and completes its execution claim in one commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_tool_call_with_result(
+        &mut self,
+        conversation_id: &ConversationId,
         assistant_message_id: &MessageId,
+        parent_message_id: &MessageId,
         tool_call_id: &ToolCallId,
-        execution_error: &str,
-    ) -> Result<()> {
-        self.connection
+        run_id: &str,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        self.ensure_tool_result_parent_matches_call(
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+        )?;
+        let id = MessageId::new(Uuid::new_v4().to_string());
+        let now = now_millis()?;
+        let metadata = MessageMetadata {
+            tool_call_id: Some(tool_call_id.clone()),
+            ..Default::default()
+        };
+        let metadata_json = encode_message_metadata(Some(&metadata))?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start atomic tool result transaction")?;
+        let executing = transaction
+            .query_row(
+                "
+                SELECT 1
+                FROM tool_call_executions
+                WHERE assistant_message_id = ?1
+                  AND tool_call_id = ?2
+                  AND run_id = ?3
+                  AND status = 'executing'
+                ",
+                params![assistant_message_id.as_str(), tool_call_id.as_str(), run_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .context("failed to validate executing tool claim")?
+            .is_some();
+        if !executing {
+            return Err(error::invalid_request(format!(
+                "tool call execution is not executing for run {run_id}: {tool_call_id}"
+            )));
+        }
+
+        transaction
+            .execute(
+                "
+                INSERT INTO messages (
+                    id, conversation_id, parent_message_id, role, content, metadata, created_at
+                ) VALUES (?1, ?2, ?3, 'tool', ?4, ?5, ?6)
+                ",
+                params![
+                    id.as_str(),
+                    conversation_id.as_str(),
+                    parent_message_id.as_str(),
+                    content,
+                    metadata_json.as_deref(),
+                    now
+                ],
+            )
+            .context("failed to save claimed tool result")?;
+        if !parts.is_empty() {
+            insert_unsaved_message_parts_in_transaction(&transaction, &id, parts, now)
+                .context("failed to save claimed tool result parts")?;
+        }
+        select_inserted_message(
+            &transaction,
+            conversation_id,
+            &id,
+            InsertSelection::IfCurrent(Some(parent_message_id)),
+        )?;
+        touch_conversation_in_transaction(&transaction, conversation_id, now)?;
+        let changed = transaction
             .execute(
                 "
                 UPDATE tool_call_executions
-                SET status = 'failed', error = ?3, updated_at = ?4
+                SET status = 'completed', result_message_id = ?4, error = NULL, updated_at = ?5
                 WHERE assistant_message_id = ?1
                   AND tool_call_id = ?2
+                  AND run_id = ?3
                   AND status = 'executing'
                 ",
                 params![
                     assistant_message_id.as_str(),
                     tool_call_id.as_str(),
-                    execution_error,
-                    now_millis()?
+                    run_id,
+                    id.as_str(),
+                    now
                 ],
             )
-            .context("failed to record tool call execution failure")?;
-        Ok(())
+            .context("failed to complete claimed tool result")?;
+        if changed != 1 {
+            return Err(error::invalid_request(format!(
+                "tool call execution changed before completion: {tool_call_id}"
+            )));
+        }
+        transaction
+            .commit()
+            .context("failed to commit claimed tool result")?;
+        Ok(id)
+    }
+
+    pub fn tool_execution_records(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<ToolExecutionRecord>> {
+        self.ensure_conversation_exists(conversation_id)?;
+        let mut statement = self.connection.prepare(
+            "
+            SELECT conversation_id, assistant_message_id, tool_call_id, run_id,
+                   status, result_message_id, error, created_at, updated_at
+            FROM tool_call_executions
+            WHERE conversation_id = ?1
+            ORDER BY created_at, rowid
+            ",
+        )?;
+        let rows = statement.query_map(params![conversation_id.as_str()], |row| {
+            let status = row.get::<_, String>(4)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                status,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (
+                conversation_id,
+                assistant_message_id,
+                tool_call_id,
+                run_id,
+                status,
+                result_message_id,
+                error,
+                created_at,
+                updated_at,
+            ) = row?;
+            Ok(ToolExecutionRecord {
+                conversation_id: ConversationId::new(conversation_id),
+                assistant_message_id: MessageId::new(assistant_message_id),
+                tool_call_id: ToolCallId::new(tool_call_id),
+                run_id,
+                status: ToolExecutionStatus::from_storage(&status)?,
+                result_message_id: result_message_id.map(MessageId::new),
+                error,
+                created_at,
+                updated_at,
+            })
+        })
+        .collect()
     }
 
     /// Loads all attached provider tools configured on one conversation.

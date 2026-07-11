@@ -3,37 +3,6 @@
 use super::models::prompt_cache_request;
 use super::*;
 
-pub async fn query_conversation<O>(
-    output: &O,
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    gateway_url: GatewayUrl,
-    base_url: BaseUrl,
-    model_override: Option<ModelName>,
-    reasoning: Option<ReasoningRequest>,
-) -> Result<Message>
-where
-    O: RuntimeOutput,
-{
-    let (model, reasoning, snapshot) =
-        capture_runtime_snapshot(store, conversation_id, model_override, reasoning)?;
-    require_gateway_running(gateway_url).await?;
-    let reasoning = llm::reasoning_request_for_model(&model, reasoning);
-    let prompt_cache = prompt_cache_request(base_url.clone(), &model, conversation_id).await;
-    let llm = BifrostClient::new(base_url, model);
-    let registry = ToolProviderRegistry::new();
-
-    query_conversation_resolving_automatic_tools(
-        output,
-        &llm,
-        store,
-        conversation_id,
-        &registry,
-        RuntimeModelRequest::new(&snapshot, reasoning.as_ref(), prompt_cache.as_ref()),
-    )
-    .await
-}
-
 /// Runs the shared query sequence with a caller-owned provider registry.
 ///
 /// Long-lived clients such as the API server use this path so auto-approved MCP
@@ -65,7 +34,12 @@ where
         store,
         conversation_id,
         runtime.registry,
-        RuntimeModelRequest::new(&snapshot, reasoning.as_ref(), prompt_cache.as_ref()),
+        RuntimeModelRequest::new(
+            runtime.run_id,
+            &snapshot,
+            reasoning.as_ref(),
+            prompt_cache.as_ref(),
+        ),
     )
     .await
 }
@@ -98,7 +72,12 @@ where
         conversation_id,
         runtime.registry,
         events,
-        RuntimeModelRequest::new(snapshot, reasoning.as_ref(), prompt_cache.as_ref()),
+        RuntimeModelRequest::new(
+            runtime.run_id,
+            snapshot,
+            reasoning.as_ref(),
+            prompt_cache.as_ref(),
+        ),
     )
     .await
 }
@@ -108,6 +87,7 @@ where
 /// Query, approval, and denial flows share these values. Grouping them keeps
 /// call sites explicit without growing long parameter lists.
 pub struct RuntimeTurnConfig<'a> {
+    run_id: &'a str,
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model_override: Option<ModelName>,
@@ -119,6 +99,7 @@ impl<'a> RuntimeTurnConfig<'a> {
     /// Groups the gateway, Bifrost endpoint, optional model override, and
     /// provider registry.
     pub fn new(
+        run_id: &'a str,
         gateway_url: GatewayUrl,
         base_url: BaseUrl,
         model_override: Option<ModelName>,
@@ -126,6 +107,7 @@ impl<'a> RuntimeTurnConfig<'a> {
         registry: &'a ToolProviderRegistry,
     ) -> Self {
         Self {
+            run_id,
             gateway_url,
             base_url,
             model_override,
@@ -219,8 +201,20 @@ pub async fn approve_tool(
     store: &mut Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
+    run_id: &str,
 ) -> Result<ToolExecutionResult> {
-    approve_tool_call(store, conversation_id, tool_call_id).await
+    let registry = ToolProviderRegistry::new();
+    let snapshot = runtime_snapshot(store, conversation_id)?;
+    approve_tool_call_with_snapshot(
+        store,
+        conversation_id,
+        tool_call_id,
+        &registry,
+        run_id,
+        &snapshot,
+    )
+    .await
+    .map(|(result, _)| result)
 }
 
 /// Executes one approved pending tool call with a caller-owned provider registry.
@@ -229,8 +223,19 @@ pub async fn approve_tool_with_registry(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
     registry: &ToolProviderRegistry,
+    run_id: &str,
 ) -> Result<ToolExecutionResult> {
-    approve_tool_call_with_registry(store, conversation_id, tool_call_id, registry).await
+    let snapshot = runtime_snapshot(store, conversation_id)?;
+    approve_tool_call_with_snapshot(
+        store,
+        conversation_id,
+        tool_call_id,
+        registry,
+        run_id,
+        &snapshot,
+    )
+    .await
+    .map(|(result, _)| result)
 }
 
 /// Persists a rejected result for one pending tool call.
@@ -238,8 +243,9 @@ pub fn deny_tool(
     store: &mut Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
+    run_id: &str,
 ) -> Result<ToolExecutionResult> {
-    deny_tool_call(store, conversation_id, tool_call_id)
+    deny_tool_call_for_run(store, conversation_id, tool_call_id, run_id).map(|(result, _)| result)
 }
 
 /// Executes one approved tool call, emits its persisted result, and continues
@@ -272,6 +278,7 @@ where
         conversation_id,
         tool_call_id,
         runtime.registry,
+        runtime.run_id,
         &snapshot,
     )
     .await?;
@@ -314,7 +321,8 @@ where
         runtime.model_override.clone(),
         runtime.reasoning.clone(),
     )?;
-    let (_, message_id) = deny_tool_call_with_message(store, conversation_id, tool_call_id)?;
+    let (_, message_id) =
+        deny_tool_call_for_run(store, conversation_id, tool_call_id, runtime.run_id)?;
     events.tool_result_saved(&message_id);
     let continuation = RuntimeContinuation {
         model,

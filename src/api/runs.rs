@@ -178,7 +178,8 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     model_override,
                     reasoning,
                 } => {
-                    let runtime = runtime_turn_config(&state, model_override, reasoning);
+                    let runtime =
+                        runtime_turn_config(&state, &task_run_id, model_override, reasoning);
                     operation::query_runtime_turn(
                         &output,
                         &events,
@@ -193,7 +194,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = runtime_turn_config(&state, None, None);
+                    let runtime = runtime_turn_config(&state, &task_run_id, None, None);
                     operation::approve_tool_turn(
                         &output,
                         &events,
@@ -208,7 +209,7 @@ fn start_runtime_run(state: ApiState, action: RuntimeStreamAction) -> Result<Run
                     conversation_id,
                     tool_call_id,
                 } => {
-                    let runtime = runtime_turn_config(&state, None, None);
+                    let runtime = runtime_turn_config(&state, &task_run_id, None, None);
                     operation::deny_tool_turn(
                         &output,
                         &events,

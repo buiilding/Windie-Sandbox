@@ -27,13 +27,12 @@ use crate::llm::{
 };
 use crate::output::RuntimeOutput;
 use crate::runtime::{
-    RuntimeEventSink, RuntimeModelRequest, RuntimeSnapshot, approve_tool_call,
-    approve_tool_call_with_registry, approve_tool_call_with_snapshot, deny_tool_call,
-    deny_tool_call_with_message, pending_tool_approvals, pending_tool_approvals_from_snapshot,
+    RuntimeEventSink, RuntimeModelRequest, RuntimeSnapshot, approve_tool_call_with_snapshot,
+    deny_tool_call_for_run, pending_tool_approvals, pending_tool_approvals_from_snapshot,
     pending_tool_approvals_with_registry, query_conversation_resolving_automatic_tools,
-    query_conversation_resolving_automatic_tools_with_events,
+    query_conversation_resolving_automatic_tools_with_events, runtime_snapshot,
 };
-use crate::store::{Compaction, ConversationInfo, Store};
+use crate::store::{Compaction, ConversationInfo, Store, ToolExecutionRecord};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
     ToolProviderId,
@@ -148,6 +147,7 @@ pub struct InspectionReport {
     active_path: Vec<InspectionMessage>,
     model_context: Vec<InspectionMessage>,
     latest_compaction: Option<InspectionCompaction>,
+    execution_claims: Vec<ToolExecutionRecord>,
 }
 
 impl InspectionReport {
@@ -165,6 +165,7 @@ impl InspectionReport {
         active_path: Vec<Message>,
         model_context: Vec<Message>,
         latest_compaction: Option<Compaction>,
+        execution_claims: Vec<ToolExecutionRecord>,
     ) -> Self {
         Self {
             conversation_id: conversation_id.as_str().to_string(),
@@ -178,6 +179,7 @@ impl InspectionReport {
             active_path: inspection_messages(active_path),
             model_context: inspection_messages(model_context),
             latest_compaction: latest_compaction.map(InspectionCompaction::from_compaction),
+            execution_claims,
         }
     }
 }

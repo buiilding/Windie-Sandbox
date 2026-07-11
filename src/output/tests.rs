@@ -369,6 +369,7 @@ fn serializes_inspection_report_with_runtime_state() {
             content: "summary".to_string(),
             created_at: 123,
         }),
+        Vec::new(),
     );
 
     let value = serde_json::to_value(report).unwrap();
@@ -380,6 +381,7 @@ fn serializes_inspection_report_with_runtime_state() {
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_approval_mode"], "manual");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
+    assert_eq!(value["execution_claims"], serde_json::json!([]));
     assert_eq!(value["messages"][0]["parts"][0]["type"], "text");
     assert_eq!(value["messages"][0]["parts"][1]["type"], "image");
     assert_eq!(value["messages"][0]["parts"][1]["asset_id"], "image-id");

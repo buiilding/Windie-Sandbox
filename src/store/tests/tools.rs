@@ -22,12 +22,13 @@ fn tool_call_execution_can_only_be_claimed_once() {
         )
         .unwrap();
     let call_id = ToolCallId::new("call_once");
+    let run = store.create_runtime_run(&conversation_id).unwrap();
 
     store
-        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id)
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &run.id)
         .unwrap();
     let error = store
-        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id)
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &run.id)
         .unwrap_err();
 
     assert!(error.to_string().contains("already executing"));
@@ -57,6 +58,7 @@ fn concurrent_tool_claims_gate_the_side_effect_once() {
             }),
         )
         .unwrap();
+    let run_id = setup.create_runtime_run(&conversation_id).unwrap().id;
     drop(setup);
 
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
@@ -66,6 +68,7 @@ fn concurrent_tool_claims_gate_the_side_effect_once() {
         let path = path.clone();
         let conversation_id = conversation_id.clone();
         let assistant_id = assistant_id.clone();
+        let run_id = run_id.clone();
         let barrier = std::sync::Arc::clone(&barrier);
         let side_effects = std::sync::Arc::clone(&side_effects);
         workers.push(std::thread::spawn(move || {
@@ -76,6 +79,7 @@ fn concurrent_tool_claims_gate_the_side_effect_once() {
                     &conversation_id,
                     &assistant_id,
                     &ToolCallId::new("call_once"),
+                    &run_id,
                 )
                 .is_ok()
             {
@@ -90,6 +94,99 @@ fn concurrent_tool_claims_gate_the_side_effect_once() {
 
     assert_eq!(side_effects.load(std::sync::atomic::Ordering::SeqCst), 1);
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn tool_result_and_claim_completion_are_atomic() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use tool", None)
+        .unwrap();
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_once", "run", "{}")],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let call_id = ToolCallId::new("call_once");
+    let run = store.create_runtime_run(&conversation_id).unwrap();
+    store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &run.id)
+        .unwrap();
+
+    let before = store.load_messages(&conversation_id).unwrap().len();
+    let error = store
+        .complete_tool_call_with_result(
+            &conversation_id,
+            &assistant_id,
+            &assistant_id,
+            &call_id,
+            "wrong-run",
+            "result",
+            &[],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("not executing for run"));
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), before);
+
+    let result_id = store
+        .complete_tool_call_with_result(
+            &conversation_id,
+            &assistant_id,
+            &assistant_id,
+            &call_id,
+            &run.id,
+            "result",
+            &[],
+        )
+        .unwrap();
+    let claims = store.tool_execution_records(&conversation_id).unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].run_id, run.id);
+    assert_eq!(claims[0].status, ToolExecutionStatus::Completed);
+    assert_eq!(claims[0].result_message_id.as_ref(), Some(&result_id));
+}
+
+#[test]
+fn failure_transition_requires_an_executing_claim() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use tool", None)
+        .unwrap();
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&MessageMetadata {
+                tool_calls: vec![ToolCall::function("call_once", "run", "{}")],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let call_id = ToolCallId::new("call_once");
+    let run = store.create_runtime_run(&conversation_id).unwrap();
+    store
+        .claim_tool_call_execution(&conversation_id, &assistant_id, &call_id, &run.id)
+        .unwrap();
+
+    store
+        .fail_tool_call_execution(&assistant_id, &call_id, &run.id, "failed")
+        .unwrap();
+    let error = store
+        .fail_tool_call_execution(&assistant_id, &call_id, &run.id, "failed twice")
+        .unwrap_err();
+
+    assert!(error.to_string().contains("not executing"));
 }
 
 #[test]

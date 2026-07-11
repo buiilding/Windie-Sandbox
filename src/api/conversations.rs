@@ -543,7 +543,12 @@ async fn query(
     let run = state
         .run_manager
         .begin_action(&conversation_id, RuntimeRunAction::Query)?;
-    let runtime = runtime_turn_config(&state, request.model_override(), request.reasoning());
+    let runtime = runtime_turn_config(
+        &state,
+        &run.id,
+        request.model_override(),
+        request.reasoning(),
+    );
     let result = operation::query_conversation_with_registry(
         &ApiOutput,
         &mut store,

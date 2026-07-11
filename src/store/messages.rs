@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-enum InsertSelection<'a> {
+pub(super) enum InsertSelection<'a> {
     Always,
     IfCurrent(Option<&'a MessageId>),
 }
@@ -309,6 +309,7 @@ impl Store {
 
     /// Appends a tool result to the execution branch without overriding a path
     /// the user selected while the external tool was running.
+    #[cfg(test)]
     pub fn insert_tool_result_message_on_branch(
         &mut self,
         conversation_id: &ConversationId,
@@ -899,7 +900,7 @@ impl Store {
     }
 }
 
-fn select_inserted_message(
+pub(super) fn select_inserted_message(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
     message_id: &MessageId,
@@ -1030,7 +1031,7 @@ impl Store {
     /// `role: tool` result in the same linear result chain. In both cases the
     /// owning assistant must have requested the provider tool-call ID being
     /// stored.
-    fn ensure_tool_result_parent_matches_call(
+    pub(super) fn ensure_tool_result_parent_matches_call(
         &self,
         conversation_id: &ConversationId,
         parent_message_id: &MessageId,
@@ -1301,7 +1302,9 @@ fn read_message_part_row(row: &Row<'_>) -> rusqlite::Result<(String, MessagePart
 }
 
 /// Serializes typed message metadata for SQLite storage.
-fn encode_message_metadata(metadata: Option<&MessageMetadata>) -> Result<Option<String>> {
+pub(super) fn encode_message_metadata(
+    metadata: Option<&MessageMetadata>,
+) -> Result<Option<String>> {
     metadata
         .map(serde_json::to_string)
         .transpose()
@@ -1320,7 +1323,7 @@ fn decode_message_metadata(metadata: Option<String>) -> rusqlite::Result<Option<
 }
 
 /// Serializes a tool's JSON schema parameters for SQLite storage.
-fn insert_unsaved_message_parts_in_transaction(
+pub(super) fn insert_unsaved_message_parts_in_transaction(
     transaction: &Transaction<'_>,
     message_id: &MessageId,
     parts: &[UnsavedMessagePart],

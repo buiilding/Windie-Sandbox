@@ -19,6 +19,7 @@ use crate::perf::{BenchmarkMode, BenchmarkOptions};
 use crate::run::RunManager;
 use crate::store::{RuntimeRunAction, Store};
 use crate::tool::{ProviderToolName, ToolProviderId};
+use crate::tool_provider::ToolProviderRegistry;
 use crate::{api, doctor, operation, perf};
 
 const BASE_URL: &str = "http://localhost:8080/v1";
@@ -451,7 +452,8 @@ async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId)
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
     let run = runs.begin_action(&conversation_id, RuntimeRunAction::ApproveTool)?;
-    let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await;
+    let result =
+        operation::approve_tool(&mut store, &conversation_id, &tool_call_id, &run.id).await;
     let result = runs.finish_result(&run.id, result)?;
 
     output.tool_execution_result(&result);
@@ -465,7 +467,7 @@ fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Resul
     let output = TerminalOutput;
     let runs = RunManager::new(None)?;
     let run = runs.begin_action(&conversation_id, RuntimeRunAction::DenyTool)?;
-    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id);
+    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id, &run.id);
     let result = runs.finish_result(&run.id, result)?;
 
     output.tool_execution_result(&result);
@@ -540,16 +542,18 @@ async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Res
     let runs = RunManager::new(None)?;
     let run = runs.begin_action(&conversation_id, RuntimeRunAction::Query)?;
 
-    let result = operation::query_conversation(
-        &output,
-        &mut store,
-        &conversation_id,
+    let registry = ToolProviderRegistry::new();
+    let runtime = operation::RuntimeTurnConfig::new(
+        &run.id,
         gateway_url(),
         base_url(),
         model,
         None,
-    )
-    .await;
+        &registry,
+    );
+    let result =
+        operation::query_conversation_with_registry(&output, &mut store, &conversation_id, runtime)
+            .await;
     runs.finish_result(&run.id, result)?;
 
     Ok(())

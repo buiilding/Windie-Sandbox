@@ -4,8 +4,10 @@ use super::*;
 
 impl Store {
     /// Creates one backend-owned runtime run for an existing conversation.
-    #[cfg(test)]
-    pub fn create_runtime_run(&self, conversation_id: &ConversationId) -> Result<RuntimeRunRecord> {
+    pub(crate) fn create_runtime_run(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<RuntimeRunRecord> {
         let now = now_millis()?;
         self.create_owned_runtime_run(
             conversation_id,

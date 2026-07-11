@@ -95,6 +95,7 @@ pub fn inspect_conversation(
     let messages = store.load_message_tree(conversation_id)?;
     let tool_schemas = store.load_tool_schemas(conversation_id)?;
     let context_parts = ContextBuilder::load_parts(store, conversation_id)?;
+    let execution_claims = store.tool_execution_records(conversation_id)?;
     let model_context = ContextBuilder::flatten(ContextParts {
         active_path: context_parts.active_path.clone(),
         system_prompt: context_parts.system_prompt.clone(),
@@ -113,6 +114,7 @@ pub fn inspect_conversation(
         context_parts.active_path,
         model_context,
         context_parts.compaction,
+        execution_claims,
     ))
 }
 
