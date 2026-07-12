@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useWindie } from "@/context/WindieContext";
-import { ROLE_TOKENS } from "@/lib/roleTokens";
+import { ROLE_TOKENS } from "@/lib/mockData";
 import {
   ChevronRight,
   Pencil,

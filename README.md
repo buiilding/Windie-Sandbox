@@ -11,22 +11,7 @@ through the same explicit boundaries.
 
 Windie currently provides a Rust CLI, a localhost developer API, SQLite-backed
 conversation storage, model-facing context construction, and a small developer
-frontend under `dev/` for exercising the runtime primitives. Release packages
-also include a compiled operator UI served by the localhost API.
-
-## Install
-
-Install the latest published binary and bundled operator UI:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/buiilding/Windie-Sandbox/main/install.sh | bash
-windie doctor
-windie api
-```
-
-`windie api` prints the authenticated operator UI URL. A normal installation
-contains Windie only. Bifrost and approved MCP servers use their public,
-version-pinned launch interfaces; their source repositories are not bundled.
+frontend under `dev/` for exercising the runtime primitives.
 
 ## Why This Exists
 
@@ -61,87 +46,59 @@ interface surfaces.
 Important runtime files:
 
 - `src/main.rs` wires components together.
-- `src/cli.rs` parses startup arguments into typed commands;
-  `src/cli/execute.rs` owns the CLI adapter.
-- `src/api.rs` composes the localhost developer API; `src/api/` owns route
-  families and their private HTTP types.
-- `src/operation.rs` exposes shared contracts; `src/operation/` separates
-  conversation, model, tool, and execution operations.
+- `src/cli.rs` parses startup arguments into typed commands.
+- `src/api.rs` exposes the localhost developer API.
+- `src/operation.rs` coordinates shared CLI/API operations.
 - `src/conversation.rs` defines message, role, identifier, tool schema, and
   assistant metadata types.
 - `src/context.rs` builds model-facing context from the active conversation
   path.
-- `src/store.rs` owns shared SQLite transaction/tree integrity; `src/store/`
-  separates schema, run, conversation, message, tool, image, and compaction
-  persistence.
+- `src/store.rs` owns SQLite persistence.
 - `src/runtime.rs` coordinates one-shot query flows.
-- `src/run.rs` owns durable backend runs and reconnectable event delivery.
-- `src/paths.rs` owns installed, development, and override filesystem paths.
-- `src/doctor.rs` inspects optional integration prerequisites.
-- `src/llm.rs` exposes typed LLM contracts; `src/llm/` separates Bifrost HTTP
-  calls, model metadata, Responses request serialization, and SSE decoding.
+- `src/llm.rs` owns the OpenAI-compatible Bifrost HTTP request path.
 - `src/policy.rs` owns tool execution policy decisions.
-- `src/perf.rs` exposes benchmark options; `src/perf/metrics.rs` owns reports
-  and statistics while `src/perf/scenarios/` separates conversation, runtime,
-  fixture, and live-provider behavior.
+- `src/shell.rs` executes Windie's built-in `run_shell` tool.
+- `src/perf.rs` owns local benchmark timing.
 
 Developer-facing references:
 
-- `docs/architecture/cli.md` is the concrete CLI command reference.
+- `commands.md` is the concrete CLI command reference.
 - `dev/README.md` explains the localhost developer clients.
 - `benches/README.md` explains benchmark fixtures and comparison.
 - `AGENTS.md` records the project rules, boundaries, and current scope.
 
 ## Local Development
 
-Install frontend dependencies once:
+Build and check the Rust runtime:
 
 ```bash
-scripts/setup.sh
+cargo fmt
+cargo check
 ```
 
-Start the isolated Rust API and hot-reloading inspector together:
+Start the localhost developer API:
 
 ```bash
-scripts/dev.sh
+target/release/windie api
 ```
 
 The API listens on `http://127.0.0.1:8787` and prints a per-process API token.
-The inspector runs at the URL printed by the script:
+Local developer clients must send that token in the `X-Windie-Api-Token`
+header.
+
+Run the developer inspector:
+
+```bash
+cd dev/windie-inspector
+npm install --legacy-peer-deps
+npm run start
+```
+
+Then open it with the API token:
 
 ```text
 http://localhost:3000?windie_token=<printed token>
 ```
-
-Development state defaults to `target/windie-dev-data`, not the installed
-runtime database. Frontend changes hot reload. Restart `scripts/dev.sh` after
-Rust changes.
-
-The installed operator UI and editable preview are separate surfaces. The
-operator UI is bundled beside the installed binary and remains unchanged while
-the preview hot reloads. Runtime loops are backend-owned runs, so either UI can
-disconnect and replay events without cancelling model or tool work.
-
-Run the full local correctness check before committing:
-
-```bash
-scripts/check.sh
-```
-
-This runs Rust formatting, tests, clippy, and a production frontend build. It
-does not call Bifrost, a model provider, or performance benchmarks.
-
-Promote a tested checkout into a versioned local release:
-
-```bash
-scripts/install.sh
-```
-
-The install script builds the release binary and operator UI, installs both
-under `~/.local/lib/windie/releases/<version>-<revision>/`, and atomically
-switches `~/.local/bin/windie`. It assumes checks have already passed and does
-not rerun them. A running process continues to use its old release until
-explicitly restarted.
 
 ## Provider Path
 
@@ -161,36 +118,8 @@ windie gateway start
 windie gateway stop
 ```
 
-Provider secrets should stay outside source control in Windie's canonical
-provider environment. Windie uses it for approved MCP providers and passes it
-to Bifrost. The default file is `~/.config/windie/providers.env`;
-`WINDIE_ENV_FILE` can select another file.
-
-Windie starts unmodified Bifrost `1.6.3` through its public npm package, or the
-matching Docker image when npm is unavailable. Environment variables make
-configured `env.KEY` references available, but Windie does not create provider
-rows. Configure providers through Bifrost at `http://localhost:8080`.
-
-`windie models` returns the configured models reported by public Bifrost. It
-does not apply a private chat-completion allowlist; the selected provider owns
-capability validation for Windie's Responses request.
-
-Developers testing an official local Bifrost build can set
-`WINDIE_BIFROST_BIN=/absolute/path/to/bifrost-http`. Windie never discovers a
-sibling checkout implicitly.
-
-## External MCPs
-
-Windie keeps a code-approved provider list but does not package MCP source:
-
-- CUA runs through an explicitly installed `cua-driver mcp`.
-- Desktop Commander runs through pinned npm package `0.2.44`.
-- Blender MCP runs through pinned Python package `1.6.0`; its Blender addon is
-  installed separately.
-
-Run `windie doctor` for prerequisite status and official setup commands. Tools
-remain unavailable to a model until attached to a conversation through
-Windie's permission boundary.
+Provider secrets should stay outside source control in the explicit provider
+key environment used for Bifrost startup.
 
 ## Contribution Bar
 
@@ -205,27 +134,13 @@ Windie is foundation code. Contributions should keep the runtime:
 - boring in the best way
 
 Prefer typed runtime contracts over loose strings and ad hoc JSON. Keep provider
-HTTP details in `src/llm/`, API route mapping in `src/api/`, CLI argument
-parsing in `src/cli.rs`, persistence in `src/store/`, and model context
+HTTP details in `src/llm.rs`, API route mapping in `src/api.rs`, CLI argument
+parsing in `src/cli.rs`, persistence in `src/store.rs`, and model context
 construction in `src/context.rs`.
 
 Do not add broad product surfaces before the primitive exists cleanly. The CLI
 and localhost API are current test harnesses for the runtime, not the whole
 product.
-
-## Commit Workflow
-
-Use normal Git after the local correctness check:
-
-```bash
-scripts/check.sh
-git commit
-git push
-```
-
-Performance-sensitive changes can run explicit provider-free benchmarks with
-`scripts/bench.sh`. Benchmarks are not required for ordinary commits and their
-machine-local output is not appended to commit messages.
 
 ## Good First Areas
 
@@ -236,7 +151,7 @@ Good contributions are small and boundary-respecting:
 - tighten API/CLI parity for an existing operation
 - improve provider-free benchmark coverage
 - make inspection output clearer without moving ownership
-- document command behavior in `docs/architecture/cli.md`
+- document command behavior in `commands.md`
 
 Before changing architecture, read `AGENTS.md`. It is the source of truth for
 current scope and ownership boundaries.

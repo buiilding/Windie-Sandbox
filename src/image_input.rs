@@ -34,13 +34,6 @@ pub fn read_image_input(path: &Path) -> Result<ImageInput> {
 
     let bytes =
         fs::read(path).with_context(|| format!("failed to read image: {}", path.display()))?;
-    if bytes.len() as u64 > MAX_IMAGE_INPUT_BYTES {
-        return Err(anyhow!(
-            "image is too large: {} bytes exceeds {} bytes",
-            bytes.len(),
-            MAX_IMAGE_INPUT_BYTES
-        ));
-    }
     validate_image_header(&mime_type, &bytes)
         .with_context(|| format!("invalid image header: {}", path.display()))?;
 

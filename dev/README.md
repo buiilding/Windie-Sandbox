@@ -10,12 +10,18 @@ It is not part of the runtime boundary: it must call explicit API primitives
 and must not own provider logic, persistence, context construction, runtime
 state transitions, tool execution, or permission policy.
 
-Install dependencies once, then start the current API and hot-reloading preview
-together:
+Run it from this repo with:
 
 ```bash
-scripts/setup.sh
-scripts/dev.sh
+cd dev/windie-inspector
+npm install --legacy-peer-deps
+npm run start
+```
+
+Start the API from the repository root:
+
+```bash
+target/release/windie api
 ```
 
 Open the inspector with the printed API token:
@@ -23,8 +29,3 @@ Open the inspector with the printed API token:
 ```text
 http://localhost:3000?windie_token=<printed token>
 ```
-
-For self-editing work, keep the active coding conversation in the operator UI
-served by an installed `windie api`. Use this port-3000 client only as the
-editable preview. Hot reload disconnects its event subscription, then replays
-the active backend run; it does not own or cancel the loop.

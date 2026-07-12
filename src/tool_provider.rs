@@ -3,13 +3,14 @@
 //! This module is the execution boundary for tool providers. Runtime asks this
 //! registry which tools are available and asks it to execute an approved tool
 //! call through the provider reference stored on the conversation attachment.
-//! Approved MCP servers enter runtime through this shared registry shape.
+//! Approved MCP servers and future plugins should enter runtime through this
+//! same registry shape.
 
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -17,45 +18,24 @@ use serde_json::{Value, json};
 
 use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
-use crate::image_input::validate_image_input_bytes;
-use crate::mcp::{
-    self, McpCommand, McpContentBlock, McpEnv, McpEnvValue, McpSessionPool, McpTool, McpToolResult,
-};
-use crate::paths;
-use crate::run::{RunCancellation, is_runtime_cancelled};
+use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolExecutionResult,
     ToolPermission, ToolProviderId, ToolProviderKind, ToolProviderRef,
 };
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
-const MCP_TOOL_RESULT_MAX_BYTES: usize = 32 * 1024 * 1024;
-const TOOL_RESULT_PREVIEW_MAX_BYTES: usize = 4 * 1024;
-const CATALOG_FAILURE_CACHE_DURATION: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
 ///
 /// The registry deliberately exposes provider-neutral operations. Runtime does
-/// does not know MCP process details; it resolves the conversation's attached
-/// tool to a provider reference and calls this registry.
+/// not branch on shell, MCP, or plugin details; it resolves the conversation's
+/// attached tool to a provider reference and calls this registry.
 pub struct ToolProviderRegistry {
     mcp_providers: Vec<McpToolProvider>,
     mcp_session_pool: Option<McpSessionPool>,
     catalog_cache: Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>>,
-    catalog_loads: Arc<CatalogLoads>,
-}
-
-#[derive(Debug, Default)]
-struct CatalogLoads {
-    provider_locks: Mutex<HashMap<ToolProviderId, Arc<Mutex<()>>>>,
-    recent_failures: Mutex<HashMap<ToolProviderId, CatalogFailure>>,
-}
-
-#[derive(Debug)]
-struct CatalogFailure {
-    recorded_at: Instant,
-    message: String,
 }
 
 impl ToolProviderRegistry {
@@ -84,45 +64,11 @@ impl ToolProviderRegistry {
     /// catalogs loaded here are cached for later attachment requests in the same
     /// process.
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
-        let results = std::thread::scope(|scope| {
-            self.mcp_providers
-                .iter()
-                .map(|provider| {
-                    let provider_id = provider.id().clone();
-                    (
-                        provider_id.clone(),
-                        scope.spawn(move || self.list_provider_tools(&provider_id)),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|(provider_id, worker)| {
-                    let result = worker
-                        .join()
-                        .map_err(|_| anyhow!("provider catalog task panicked"))
-                        .and_then(|result| result);
-                    (provider_id, result)
-                })
-                .collect::<Vec<_>>()
-        });
-
         let mut tools = Vec::new();
-        let mut errors = Vec::new();
-        for (provider_id, result) in results {
-            match result {
-                Ok(provider_tools) => tools.extend(provider_tools),
-                Err(error) => errors.push(format!("{provider_id}: {error:#}")),
+        for provider in &self.mcp_providers {
+            if let Ok(provider_tools) = self.list_provider_tools(provider.id()) {
+                tools.extend(provider_tools);
             }
-        }
-
-        if tools.is_empty() && !errors.is_empty() {
-            return Err(anyhow!(
-                "failed to load provider catalogs: {}",
-                errors.join("; ")
-            ));
-        }
-        for error in errors {
-            eprintln!("warning: failed to load provider catalog: {error}");
         }
 
         Ok(tools)
@@ -138,28 +84,10 @@ impl ToolProviderRegistry {
         if let Some(tools) = self.cached_provider_tools(provider_id)? {
             return Ok(tools);
         }
-        let provider_lock = self.catalog_provider_lock(provider_id)?;
-        let _load = provider_lock
-            .lock()
-            .map_err(|_| anyhow!("provider catalog load lock was poisoned: {provider_id}"))?;
-        if let Some(tools) = self.cached_provider_tools(provider_id)? {
-            return Ok(tools);
-        }
-        if let Some(error) = self.recent_catalog_failure(provider_id)? {
-            return Err(anyhow!(error));
-        }
         if let Some(provider) = self.mcp_provider(provider_id) {
-            return match provider.list_tools() {
-                Ok(tools) => {
-                    self.cache_provider_tools(provider_id, &tools)?;
-                    self.clear_catalog_failure(provider_id)?;
-                    Ok(tools)
-                }
-                Err(error) => {
-                    self.cache_catalog_failure(provider_id, &error)?;
-                    Err(error)
-                }
-            };
+            let tools = provider.list_tools()?;
+            self.cache_provider_tools(provider_id, &tools)?;
+            return Ok(tools);
         }
 
         Ok(Vec::new())
@@ -185,28 +113,7 @@ impl ToolProviderRegistry {
             ToolProviderKind::Mcp => self
                 .mcp_provider(&attached_tool.provider.provider_id)
                 .is_some(),
-            ToolProviderKind::SchemaOnly => false,
-        }
-    }
-
-    /// Completes provider-local setup before runtime claims a side effect.
-    pub(crate) fn prepare_tool(&self, attached_tool: &AttachedTool) -> Result<()> {
-        match attached_tool.provider.kind {
-            ToolProviderKind::Mcp => {
-                let provider = self
-                    .mcp_provider(&attached_tool.provider.provider_id)
-                    .ok_or_else(|| {
-                        error::invalid_request(format!(
-                            "unknown tool provider: {}",
-                            attached_tool.provider.provider_id
-                        ))
-                    })?;
-                provider.prepare()
-            }
-            ToolProviderKind::SchemaOnly => Err(error::invalid_request(format!(
-                "tool has no executor: {}",
-                attached_tool.schema_name
-            ))),
+            ToolProviderKind::Plugin => false,
         }
     }
 
@@ -215,7 +122,6 @@ impl ToolProviderRegistry {
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,
-        cancellation: &RunCancellation,
     ) -> Result<ToolExecutionResult> {
         match attached_tool.provider.kind {
             ToolProviderKind::Mcp => {
@@ -226,23 +132,11 @@ impl ToolProviderRegistry {
                     )));
                 };
 
-                let provider = provider.clone();
-                let attached_tool = attached_tool.clone();
-                let tool_call = tool_call.clone();
-                let session_pool = self.mcp_session_pool.clone();
-                let cancellation = cancellation.clone();
-                tokio::task::spawn_blocking(move || {
-                    provider.call_tool(
-                        &attached_tool,
-                        &tool_call,
-                        session_pool.as_ref(),
-                        &cancellation,
-                    )
-                })
-                .await
-                .context("MCP provider task stopped")?
+                provider
+                    .call_tool(attached_tool, tool_call, self.mcp_session_pool.as_ref())
+                    .await
             }
-            ToolProviderKind::SchemaOnly => Err(error::invalid_request(format!(
+            ToolProviderKind::Plugin => Err(error::invalid_request(format!(
                 "unknown tool: {}",
                 tool_call.name()
             ))),
@@ -268,63 +162,6 @@ impl ToolProviderRegistry {
             .map_err(|_| anyhow!("tool provider catalog cache lock was poisoned"))?;
 
         Ok(cache.get(provider_id).cloned())
-    }
-
-    fn catalog_provider_lock(&self, provider_id: &ToolProviderId) -> Result<Arc<Mutex<()>>> {
-        let mut locks = self
-            .catalog_loads
-            .provider_locks
-            .lock()
-            .map_err(|_| anyhow!("provider catalog lock map was poisoned"))?;
-        Ok(Arc::clone(
-            locks
-                .entry(provider_id.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(()))),
-        ))
-    }
-
-    fn recent_catalog_failure(&self, provider_id: &ToolProviderId) -> Result<Option<String>> {
-        let mut failures = self
-            .catalog_loads
-            .recent_failures
-            .lock()
-            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?;
-        let recent = failures.get(provider_id).and_then(|failure| {
-            (failure.recorded_at.elapsed() < CATALOG_FAILURE_CACHE_DURATION)
-                .then(|| failure.message.clone())
-        });
-        if recent.is_none() {
-            failures.remove(provider_id);
-        }
-        Ok(recent)
-    }
-
-    fn cache_catalog_failure(
-        &self,
-        provider_id: &ToolProviderId,
-        error: &anyhow::Error,
-    ) -> Result<()> {
-        self.catalog_loads
-            .recent_failures
-            .lock()
-            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?
-            .insert(
-                provider_id.clone(),
-                CatalogFailure {
-                    recorded_at: Instant::now(),
-                    message: format!("{error:#}"),
-                },
-            );
-        Ok(())
-    }
-
-    fn clear_catalog_failure(&self, provider_id: &ToolProviderId) -> Result<()> {
-        self.catalog_loads
-            .recent_failures
-            .lock()
-            .map_err(|_| anyhow!("provider catalog failure cache was poisoned"))?
-            .remove(provider_id);
-        Ok(())
     }
 
     /// Stores one backend-owned provider catalog for reuse by later operations.
@@ -369,29 +206,6 @@ impl ToolProviderRegistry {
             })],
             mcp_session_pool: None,
             catalog_cache,
-            catalog_loads: Arc::new(CatalogLoads::default()),
-        }
-    }
-
-    /// Builds one uncached fake provider for the provider-free benchmark suite.
-    pub(crate) fn with_uncached_mcp_provider(
-        provider_id: &'static str,
-        schema_prefix: &'static str,
-        display_name: &'static str,
-        command: McpCommand,
-    ) -> Self {
-        Self {
-            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
-                provider_id,
-                schema_prefix,
-                display_name,
-                command,
-                shutdown_command: None,
-                setup: None,
-            })],
-            mcp_session_pool: None,
-            catalog_cache: Arc::new(Mutex::new(HashMap::new())),
-            catalog_loads: Arc::new(CatalogLoads::default()),
         }
     }
 }
@@ -406,7 +220,6 @@ impl Default for ToolProviderRegistry {
                 .collect(),
             mcp_session_pool: None,
             catalog_cache: Arc::new(Mutex::new(HashMap::new())),
-            catalog_loads: Arc::new(CatalogLoads::default()),
         }
     }
 }
@@ -459,8 +272,8 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         schema_prefix: "desktop_commander",
         display_name: "Desktop Commander",
         command: McpCommand {
-            program: "npx",
-            args: &["-y", "@wonderwhy-er/desktop-commander@0.2.44"],
+            program: "desktop-commander",
+            args: &[],
             env: &[McpEnv {
                 key: "HOME",
                 value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
@@ -475,7 +288,7 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         display_name: "Blender MCP",
         command: McpCommand {
             program: "uvx",
-            args: &["--python", "3.11", "blender-mcp==1.6.0"],
+            args: &["blender-mcp"],
             env: &[
                 McpEnv {
                     key: "DISABLE_TELEMETRY",
@@ -504,21 +317,6 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
             env: &[McpEnv {
                 key: "API_TOKEN",
                 value: McpEnvValue::UserEnv("BRIGHTDATA_API_TOKEN"),
-            }],
-        },
-        shutdown_command: None,
-        setup: None,
-    },
-    McpProviderDefinition {
-        provider_id: "exa",
-        schema_prefix: "exa",
-        display_name: "Exa",
-        command: McpCommand {
-            program: "npx",
-            args: &["-y", "exa-mcp-server@3.2.1"],
-            env: &[McpEnv {
-                key: "EXA_API_KEY",
-                value: McpEnvValue::UserEnv("EXA_API_KEY"),
             }],
         },
         shutdown_command: None,
@@ -567,12 +365,11 @@ impl McpToolProvider {
     }
 
     /// Executes one approved MCP tool call.
-    fn call_tool(
+    async fn call_tool(
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,
         session_pool: Option<&McpSessionPool>,
-        cancellation: &RunCancellation,
     ) -> Result<ToolExecutionResult> {
         if attached_tool.provider.provider_id != self.provider_id
             || tool_call.name() != attached_tool.schema_name.as_str()
@@ -592,29 +389,25 @@ impl McpToolProvider {
                 ));
             }
         };
+        self.prepare()?;
         let result = match if let Some(session_pool) = session_pool {
-            session_pool.call_tool_cancellable(
+            session_pool.call_tool(
                 self.provider_id.as_str(),
                 self.command,
                 self.shutdown_command,
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
-                cancellation,
             )
         } else {
-            mcp::call_tool_with_shutdown_cancellable(
+            mcp::call_tool_with_shutdown(
                 self.command,
                 self.shutdown_command,
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
-                cancellation,
             )
         } {
             Ok(result) => result,
             Err(error) => {
-                if is_runtime_cancelled(&error) {
-                    return Err(error);
-                }
                 return Ok(mcp_tool_call_failure_result(
                     &self.provider_id,
                     tool_call,
@@ -622,7 +415,10 @@ impl McpToolProvider {
                 ));
             }
         };
-        let success = !result.is_error;
+        let success = !result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let normalized = match mcp_tool_result_parts(&result) {
             Ok(parts) => parts,
@@ -757,7 +553,15 @@ fn write_desktop_commander_config() -> Result<()> {
 
 /// Returns the HOME directory Windie assigns to Desktop Commander.
 fn desktop_commander_home() -> PathBuf {
-    paths::data_dir().join(DESKTOP_COMMANDER_HOME_RELATIVE)
+    windie_data_dir().join(DESKTOP_COMMANDER_HOME_RELATIVE)
+}
+
+/// Returns Windie's per-user data directory.
+fn windie_data_dir() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".windie")
 }
 
 /// Keeps Desktop Commander's default high-risk shell command blocklist.
@@ -793,108 +597,486 @@ fn mcp_schema_name(schema_prefix: &str, tool_name: &str) -> String {
 /// MCP can return text and binary images in the same content array. Windie
 /// stores those images through `message_parts` and `image_assets` so the
 /// Responses request can replay them as image blocks instead of base64 text.
-fn mcp_tool_result_parts(result: &McpToolResult) -> Result<Vec<UnsavedMessagePart>> {
+fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
     let mut parts = Vec::new();
-    let mut result_bytes = 0_usize;
 
-    for block in &result.content {
-        match block {
-            McpContentBlock::Text(text) => {
-                add_mcp_result_bytes(&mut result_bytes, text.len())?;
-                parts.push(UnsavedMessagePart::Text(text.clone()));
-            }
-            McpContentBlock::Image { data, mime_type } => {
-                let bytes = STANDARD
-                    .decode(data)
-                    .context("failed to decode MCP image result")?;
-                validate_image_input_bytes(mime_type, &bytes)
-                    .context("invalid MCP image result")?;
-                add_mcp_result_bytes(&mut result_bytes, bytes.len())?;
-                parts.push(UnsavedMessagePart::Image(UnsavedImagePart {
-                    mime_type: mime_type.to_string(),
-                    bytes,
-                }));
-            }
-            McpContentBlock::Unsupported { kind } => {
-                let text = format!("Unsupported MCP content block: {kind}");
-                add_mcp_result_bytes(&mut result_bytes, text.len())?;
-                parts.push(UnsavedMessagePart::Text(text));
+    if let Some(content) = result.get("content").and_then(Value::as_array) {
+        for item in content {
+            match item.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = item.get("text").and_then(Value::as_str) {
+                        parts.push(UnsavedMessagePart::Text(text.to_string()));
+                    }
+                }
+                Some("image") => {
+                    let data = item
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow!("MCP image result did not include data"))?;
+                    let mime_type = item
+                        .get("mimeType")
+                        .or_else(|| item.get("mime_type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("image/png");
+                    let bytes = STANDARD
+                        .decode(data)
+                        .context("failed to decode MCP image result")?;
+                    parts.push(UnsavedMessagePart::Image(UnsavedImagePart {
+                        mime_type: mime_type.to_string(),
+                        bytes,
+                    }));
+                }
+                Some(other) => parts.push(UnsavedMessagePart::Text(format!(
+                    "Unsupported MCP content block: {other}"
+                ))),
+                None => {}
             }
         }
     }
 
-    if let Some(structured_content) = &result.structured_content {
-        let text = format!("structuredContent: {structured_content}");
-        add_mcp_result_bytes(&mut result_bytes, text.len())?;
-        parts.push(UnsavedMessagePart::Text(text));
+    if let Some(structured_content) = result.get("structuredContent")
+        && !structured_content.is_null()
+    {
+        parts.push(UnsavedMessagePart::Text(format!(
+            "structuredContent: {structured_content}"
+        )));
     }
 
     if parts.is_empty() {
-        let text = result.raw_json.clone();
-        add_mcp_result_bytes(&mut result_bytes, text.len())?;
-        parts.push(UnsavedMessagePart::Text(text));
+        parts.push(UnsavedMessagePart::Text(result.to_string()));
     }
 
     Ok(parts)
 }
 
-/// Accounts for decoded tool-result bytes before they enter conversation
-/// storage. The JSON-RPC frame is bounded separately in `mcp.rs`; this limit
-/// covers the normalized text and decoded image representation.
-fn add_mcp_result_bytes(total: &mut usize, added: usize) -> Result<()> {
-    *total = total
-        .checked_add(added)
-        .ok_or_else(|| anyhow!("MCP tool result size overflow"))?;
-    if *total > MCP_TOOL_RESULT_MAX_BYTES {
-        return Err(anyhow!(
-            "MCP tool result exceeds {MCP_TOOL_RESULT_MAX_BYTES} bytes"
-        ));
-    }
-    Ok(())
-}
-
 /// Builds the compact visible text stored on the tool message row.
 fn tool_result_preview(parts: &[UnsavedMessagePart]) -> String {
-    let mut preview = String::new();
-    let mut truncated = false;
+    let mut lines = Vec::new();
 
-    for (index, part) in parts.iter().enumerate() {
-        if index > 0 {
-            truncated |= !push_preview_text(&mut preview, "\n");
-        }
-        let complete = match part {
-            UnsavedMessagePart::Text(text) => push_preview_text(&mut preview, text),
-            UnsavedMessagePart::Image(image) => push_preview_text(
-                &mut preview,
-                &format!("[image: {}, {} bytes]", image.mime_type, image.bytes.len()),
-            ),
-        };
-        if !complete {
-            truncated = true;
-            break;
+    for part in parts {
+        match part {
+            UnsavedMessagePart::Text(text) => lines.push(text.clone()),
+            UnsavedMessagePart::Image(image) => lines.push(format!(
+                "[image: {}, {} bytes]",
+                image.mime_type,
+                image.bytes.len()
+            )),
         }
     }
 
-    if truncated {
-        preview.push_str("\n[truncated]");
-    }
-    preview
-}
-
-fn push_preview_text(preview: &mut String, text: &str) -> bool {
-    let remaining = TOOL_RESULT_PREVIEW_MAX_BYTES.saturating_sub(preview.len());
-    if text.len() <= remaining {
-        preview.push_str(text);
-        return true;
-    }
-
-    let mut boundary = remaining.min(text.len());
-    while !text.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    preview.push_str(&text[..boundary]);
-    false
+    lines.join("\n")
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    fn approved_cua_provider() -> McpToolProvider {
+        let definition = APPROVED_MCP_PROVIDERS
+            .iter()
+            .copied()
+            .find(|definition| definition.provider_id == "cua-driver")
+            .unwrap();
+        McpToolProvider::new(definition)
+    }
+
+    fn approved_desktop_commander_provider() -> McpToolProvider {
+        let definition = APPROVED_MCP_PROVIDERS
+            .iter()
+            .copied()
+            .find(|definition| definition.provider_id == "desktop-commander")
+            .unwrap();
+        McpToolProvider::new(definition)
+    }
+
+    fn approved_blender_mcp_provider() -> McpToolProvider {
+        let definition = APPROVED_MCP_PROVIDERS
+            .iter()
+            .copied()
+            .find(|definition| definition.provider_id == "blender-mcp")
+            .unwrap();
+        McpToolProvider::new(definition)
+    }
+
+    fn approved_brightdata_provider() -> McpToolProvider {
+        let definition = APPROVED_MCP_PROVIDERS
+            .iter()
+            .copied()
+            .find(|definition| definition.provider_id == "brightdata")
+            .unwrap();
+        McpToolProvider::new(definition)
+    }
+
+    fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    fn cached_test_tool(provider_id: &str, tool_name: &str) -> ToolDefinition {
+        ToolDefinition {
+            schema_name: ToolSchemaName::new(format!("{provider_id}__{tool_name}")),
+            display_name: tool_name.to_string(),
+            description: format!("{tool_name} description"),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new(provider_id),
+                ProviderToolName::new(tool_name),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        }
+    }
+
+    #[test]
+    fn mcp_schema_names_are_provider_prefixed() {
+        assert_eq!(mcp_schema_name("cua_driver", "click"), "cua_driver__click");
+        assert_eq!(
+            mcp_schema_name("cua_driver", "type text"),
+            "cua_driver__type_text"
+        );
+    }
+
+    #[test]
+    fn cua_mcp_tools_map_to_provider_backed_definitions() {
+        let provider = approved_cua_provider();
+        let definition = provider.definition_from_mcp_tool(McpTool {
+            name: "click".to_string(),
+            description: "Click somewhere".to_string(),
+            input_schema: json!({"type":"object"}),
+            annotations: Some(mcp::McpToolAnnotations {
+                read_only_hint: Some(false),
+            }),
+        });
+
+        assert_eq!(definition.schema_name.as_str(), "cua_driver__click");
+        assert_eq!(definition.provider.provider_id.as_str(), "cua-driver");
+        assert_eq!(definition.provider.tool_name.as_str(), "click");
+        assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+        assert_eq!(
+            definition.permissions,
+            vec![ToolPermission::ExternalProcess]
+        );
+        assert_eq!(definition.annotations.read_only, Some(false));
+    }
+
+    #[test]
+    fn desktop_commander_mcp_tools_map_to_provider_backed_definitions() {
+        let provider = approved_desktop_commander_provider();
+        let definition = provider.definition_from_mcp_tool(McpTool {
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: json!({"type":"object"}),
+            annotations: Some(mcp::McpToolAnnotations {
+                read_only_hint: Some(true),
+            }),
+        });
+
+        assert_eq!(
+            definition.schema_name.as_str(),
+            "desktop_commander__read_file"
+        );
+        assert_eq!(
+            definition.provider.provider_id.as_str(),
+            "desktop-commander"
+        );
+        assert_eq!(definition.provider.tool_name.as_str(), "read_file");
+        assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+        assert_eq!(
+            definition.permissions,
+            vec![ToolPermission::ExternalProcess]
+        );
+        assert_eq!(definition.annotations.read_only, Some(true));
+    }
+
+    #[test]
+    fn blender_mcp_tools_map_to_provider_backed_definitions() {
+        let provider = approved_blender_mcp_provider();
+        let definition = provider.definition_from_mcp_tool(McpTool {
+            name: "get_scene_info".to_string(),
+            description: "Get scene info".to_string(),
+            input_schema: json!({"type":"object"}),
+            annotations: Some(mcp::McpToolAnnotations {
+                read_only_hint: Some(true),
+            }),
+        });
+
+        assert_eq!(
+            definition.schema_name.as_str(),
+            "blender_mcp__get_scene_info"
+        );
+        assert_eq!(definition.provider.provider_id.as_str(), "blender-mcp");
+        assert_eq!(definition.provider.tool_name.as_str(), "get_scene_info");
+        assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+        assert_eq!(
+            definition.permissions,
+            vec![ToolPermission::ExternalProcess]
+        );
+        assert_eq!(definition.annotations.read_only, Some(true));
+    }
+
+    #[test]
+    fn brightdata_mcp_tools_map_to_provider_backed_definitions() {
+        let provider = approved_brightdata_provider();
+        let definition = provider.definition_from_mcp_tool(McpTool {
+            name: "search_engine".to_string(),
+            description: "Search live web results".to_string(),
+            input_schema: json!({"type":"object"}),
+            annotations: Some(mcp::McpToolAnnotations {
+                read_only_hint: Some(true),
+            }),
+        });
+
+        assert_eq!(definition.schema_name.as_str(), "brightdata__search_engine");
+        assert_eq!(definition.provider.provider_id.as_str(), "brightdata");
+        assert_eq!(definition.provider.tool_name.as_str(), "search_engine");
+        assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
+        assert_eq!(
+            definition.permissions,
+            vec![ToolPermission::ExternalProcess]
+        );
+        assert_eq!(definition.annotations.read_only, Some(true));
+    }
+
+    #[test]
+    fn desktop_commander_config_allows_every_directory() {
+        let config = json!({
+            "blockedCommands": desktop_commander_blocked_commands(),
+            "allowedDirectories": [],
+            "telemetryEnabled": false,
+            "fileWriteLineLimit": 50,
+            "fileReadLineLimit": 1000,
+            "pendingWelcomeOnboarding": false
+        });
+
+        assert_eq!(config["allowedDirectories"].as_array().unwrap().len(), 0);
+        assert_eq!(config["telemetryEnabled"], false);
+    }
+
+    #[test]
+    fn mcp_tool_result_parts_decode_text_images_and_structured_content() {
+        let result = json!({
+            "content": [
+                {"type": "text", "text": "desktop screenshot"},
+                {"type": "image", "mimeType": "image/png", "data": "AQID"}
+            ],
+            "structuredContent": {
+                "screen_width": 1710
+            }
+        });
+
+        let parts = mcp_tool_result_parts(&result).unwrap();
+
+        assert_eq!(parts.len(), 3);
+        assert!(
+            matches!(&parts[0], UnsavedMessagePart::Text(text) if text == "desktop screenshot")
+        );
+        assert!(matches!(&parts[1], UnsavedMessagePart::Image(image)
+            if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
+        assert!(matches!(&parts[2], UnsavedMessagePart::Text(text)
+            if text == "structuredContent: {\"screen_width\":1710}"));
+        assert_eq!(
+            tool_result_preview(&parts),
+            "desktop screenshot\n[image: image/png, 3 bytes]\nstructuredContent: {\"screen_width\":1710}"
+        );
+    }
+
+    #[test]
+    fn mcp_tool_call_timeout_becomes_failed_tool_result() {
+        let error: anyhow::Error = mcp::McpRequestTimeout::new(
+            "desktop-commander",
+            "tools/call",
+            std::time::Duration::from_secs(300),
+        )
+        .into();
+        let tool_call = ToolCall::function("call_123", "desktop_commander__read_file", "{}");
+
+        let result = mcp_tool_call_failure_result(
+            &ToolProviderId::new("desktop-commander"),
+            &tool_call,
+            &error,
+        );
+        let content = serde_json::from_str::<Value>(&result.content).unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.tool_call_id.as_str(), "call_123");
+        assert_eq!(result.tool_name, "desktop_commander__read_file");
+        assert_eq!(content["error"], "MCP provider timed out");
+        assert_eq!(content["provider"], "desktop-commander");
+        assert_eq!(content["method"], "tools/call");
+        assert_eq!(content["timeout_ms"], 300_000);
+        assert_eq!(content["timeout_seconds"], 300);
+    }
+
+    #[test]
+    fn mcp_tool_call_process_error_becomes_failed_tool_result() {
+        let error = anyhow!("provider exited early");
+        let tool_call = ToolCall::function("call_123", "desktop_commander__read_file", "{}");
+
+        let result = mcp_tool_call_failure_result(
+            &ToolProviderId::new("desktop-commander"),
+            &tool_call,
+            &error,
+        );
+        let content = serde_json::from_str::<Value>(&result.content).unwrap();
+
+        assert!(!result.success);
+        assert_eq!(content["error"], "MCP provider tool call failed");
+        assert_eq!(content["detail"], "provider exited early");
+        assert_eq!(content["provider"], "desktop-commander");
+        assert_eq!(content["method"], "tools/call");
+    }
+
+    #[test]
+    fn registry_executes_only_approved_mcp_provider_ids() {
+        let registry = ToolProviderRegistry::new();
+        let attached_tool = AttachedTool {
+            schema_name: ToolSchemaName::new("other__click"),
+            description: "Click somewhere".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("other-mcp"),
+                ProviderToolName::new("click"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        };
+
+        assert!(!registry.can_execute(&attached_tool));
+    }
+
+    #[test]
+    fn registry_recognizes_cua_driver_as_approved_mcp_provider() {
+        let registry = ToolProviderRegistry::new();
+        let attached_tool = AttachedTool {
+            schema_name: ToolSchemaName::new("cua_driver__click"),
+            description: "Click somewhere".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("cua-driver"),
+                ProviderToolName::new("click"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        };
+
+        assert!(registry.can_execute(&attached_tool));
+    }
+
+    #[test]
+    fn registry_recognizes_blender_mcp_as_approved_provider() {
+        let registry = ToolProviderRegistry::new();
+        let attached_tool = AttachedTool {
+            schema_name: ToolSchemaName::new("blender_mcp__get_scene_info"),
+            description: "Get scene info".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("blender-mcp"),
+                ProviderToolName::new("get_scene_info"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        };
+
+        assert!(registry.can_execute(&attached_tool));
+    }
+
+    #[test]
+    fn registry_recognizes_brightdata_as_approved_provider() {
+        let registry = ToolProviderRegistry::new();
+        let attached_tool = AttachedTool {
+            schema_name: ToolSchemaName::new("brightdata__search_engine"),
+            description: "Search live web results".to_string(),
+            parameters: json!({"type":"object"}),
+            provider: ToolProviderRef::new(
+                ToolProviderId::new("brightdata"),
+                ProviderToolName::new("search_engine"),
+                ToolProviderKind::Mcp,
+            ),
+            permissions: vec![ToolPermission::ExternalProcess],
+            annotations: ToolAnnotations::default(),
+        };
+
+        assert!(registry.can_execute(&attached_tool));
+    }
+
+    #[test]
+    fn registry_finds_tools_from_cached_provider_catalog() {
+        let provider_id = ToolProviderId::new("missing-mcp");
+        let tool = cached_test_tool(provider_id.as_str(), "cached_tool");
+        let catalog_cache = test_cache();
+        catalog_cache
+            .lock()
+            .unwrap()
+            .insert(provider_id.clone(), vec![tool.clone()]);
+        let registry = ToolProviderRegistry {
+            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                provider_id: "missing-mcp",
+                schema_prefix: "missing_mcp",
+                display_name: "Missing MCP",
+                command: McpCommand {
+                    program: "windie-missing-mcp-provider",
+                    args: &[],
+                    env: &[],
+                },
+                shutdown_command: None,
+                setup: None,
+            })],
+            mcp_session_pool: None,
+            catalog_cache,
+        };
+
+        let found = registry
+            .find_tool(&provider_id, &ProviderToolName::new("cached_tool"))
+            .unwrap();
+
+        assert_eq!(found, Some(tool));
+    }
+
+    #[test]
+    fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
+        let available_provider_id = ToolProviderId::new("available-mcp");
+        let available_tool = cached_test_tool(available_provider_id.as_str(), "cached_tool");
+        let catalog_cache = test_cache();
+        catalog_cache
+            .lock()
+            .unwrap()
+            .insert(available_provider_id, vec![available_tool.clone()]);
+        let registry = ToolProviderRegistry {
+            mcp_providers: vec![
+                McpToolProvider::new(McpProviderDefinition {
+                    provider_id: "available-mcp",
+                    schema_prefix: "available_mcp",
+                    display_name: "Available MCP",
+                    command: McpCommand {
+                        program: "windie-missing-mcp-provider",
+                        args: &[],
+                        env: &[],
+                    },
+                    shutdown_command: None,
+                    setup: None,
+                }),
+                McpToolProvider::new(McpProviderDefinition {
+                    provider_id: "missing-mcp",
+                    schema_prefix: "missing_mcp",
+                    display_name: "Missing MCP",
+                    command: McpCommand {
+                        program: "windie-missing-mcp-provider",
+                        args: &[],
+                        env: &[],
+                    },
+                    shutdown_command: None,
+                    setup: None,
+                }),
+            ],
+            mcp_session_pool: None,
+            catalog_cache,
+        };
+
+        let tools = registry.list_available_tools().unwrap();
+
+        assert_eq!(tools, vec![available_tool]);
+    }
+}

@@ -415,53 +415,6 @@ pub enum MessagePart {
     Image(ImagePart),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MessagePartView {
-    Text {
-        text: String,
-    },
-    Image {
-        asset_id: String,
-        mime_type: String,
-        byte_count: usize,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct MessageView {
-    pub id: Option<String>,
-    pub parent_message_id: Option<String>,
-    pub role: Role,
-    pub content: String,
-    pub parts: Vec<MessagePartView>,
-    pub metadata: Option<MessageMetadata>,
-}
-
-impl MessageView {
-    pub fn from_message(message: Message) -> Self {
-        Self {
-            id: message.id.map(|id| id.as_str().to_string()),
-            parent_message_id: message.parent_message_id.map(|id| id.as_str().to_string()),
-            role: message.role,
-            content: message.content,
-            parts: message
-                .parts
-                .into_iter()
-                .map(|part| match part {
-                    MessagePart::Text(text) => MessagePartView::Text { text },
-                    MessagePart::Image(image) => MessagePartView::Image {
-                        asset_id: image.asset_id.as_str().to_string(),
-                        mime_type: image.mime_type,
-                        byte_count: image.bytes.len(),
-                    },
-                })
-                .collect(),
-            metadata: message.metadata,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// One typed message part before it has been copied into durable storage.
 ///
@@ -519,11 +472,13 @@ pub struct Message {
     #[serde(skip)]
     pub id: Option<MessageId>,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub parent_message_id: Option<MessageId>,
     pub role: Role,
     pub content: String,
     #[serde(skip)]
     pub parts: Vec<MessagePart>,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub metadata: Option<MessageMetadata>,
 }

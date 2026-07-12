@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_WINDIE_API_URL || "http://127.0.0.1:8787";
+const API_BASE = process.env.REACT_APP_WINDIE_API_URL || "http://127.0.0.1:8787";
 const API_TOKEN_STORAGE_KEY = "windie_api_token";
 export const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
@@ -11,7 +11,7 @@ function apiToken() {
   }
 
   return (
-    import.meta.env.VITE_WINDIE_API_TOKEN ||
+    process.env.REACT_APP_WINDIE_API_TOKEN ||
     window.localStorage.getItem(API_TOKEN_STORAGE_KEY) ||
     ""
   );
@@ -127,57 +127,24 @@ function parseSseBlock(block) {
   };
 }
 
-export async function startConversationRun(conversationId, model, reasoning) {
-  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/runs`, {
-    method: "POST",
-    body: JSON.stringify({ model: model || null, reasoning: reasoning || null }),
-  });
-}
-
-export async function startApproveRun(conversationId, toolCallId) {
-  return apiRequest(
-    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/approve-run`,
-    { method: "POST" }
-  );
-}
-
-export async function startDenyRun(conversationId, toolCallId) {
-  return apiRequest(
-    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/deny-run`,
-    { method: "POST" }
-  );
-}
-
-export async function activeConversationRun(conversationId) {
-  const body = await apiRequest(
-    `/api/conversations/${encodeURIComponent(conversationId)}/active-run`
-  );
-  return body?.run || null;
-}
-
-export async function cancelRun(runId) {
-  return apiRequest(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
-    method: "POST",
-  });
-}
-
-export async function streamRunEvents(runId, after, onEvent, options = {}) {
+async function streamRuntime(path, body, fallbackError, onEvent, options = {}) {
   const token = apiToken();
-  const response = await fetch(
-    `${API_BASE}/api/runs/${encodeURIComponent(runId)}/events?after=${encodeURIComponent(after || 0)}`,
-    {
-      headers: {
-        ...(token ? { "X-Windie-Api-Token": token } : {}),
-      },
-      signal: options.signal,
-    }
-  );
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "X-Windie-Api-Token": token } : {}),
+    },
+    body: JSON.stringify(body || {}),
+    signal: options.signal,
+  });
 
   if (!response.ok) {
     const text = await response.text();
     const body = parseApiBody(text);
-    throw new Error(body?.error || `Windie run stream failed: ${response.status}`);
+    throw new Error(body?.error || `${fallbackError}: ${response.status}`);
   }
+
   if (!response.body) return;
 
   const reader = response.body.getReader();
@@ -195,7 +162,7 @@ export async function streamRunEvents(runId, after, onEvent, options = {}) {
       if (!parsed) continue;
       await onEvent(parsed);
       if (parsed.data?.type === "query_error") {
-        throw new Error(parsed.data.error || "Windie run failed");
+        throw new Error(parsed.data.error || fallbackError);
       }
     }
 
@@ -203,7 +170,58 @@ export async function streamRunEvents(runId, after, onEvent, options = {}) {
   }
 
   const final = parseSseBlock(buffer.trim());
-  if (final) await onEvent(final);
+  if (final) {
+    await onEvent(final);
+    if (final.data?.type === "query_error") {
+      throw new Error(final.data.error || fallbackError);
+    }
+  }
+}
+
+export async function streamConversationQuery(
+  conversationId,
+  model,
+  reasoning,
+  onEvent,
+  options = {}
+) {
+  return streamRuntime(
+    `/api/conversations/${encodeURIComponent(conversationId)}/query-stream`,
+    { model: model || null, reasoning: reasoning || null },
+    "Windie query stream failed",
+    onEvent,
+    options
+  );
+}
+
+export async function streamApproveTool(
+  conversationId,
+  toolCallId,
+  onEvent,
+  options = {}
+) {
+  return streamRuntime(
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/approve`,
+    {},
+    "Windie approval stream failed",
+    onEvent,
+    options
+  );
+}
+
+export async function streamDenyTool(
+  conversationId,
+  toolCallId,
+  onEvent,
+  options = {}
+) {
+  return streamRuntime(
+    `/api/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(toolCallId)}/deny`,
+    {},
+    "Windie denial stream failed",
+    onEvent,
+    options
+  );
 }
 
 export async function setConversationModel(conversationId, model) {
@@ -223,7 +241,7 @@ export async function setConversationReasoning(conversationId, effort) {
 export function conversationSummaryFromApi(summary) {
   return {
     id: summary.id,
-    name: `conversation ${summary.id.slice(0, 8)}`,
+    name: summary.title || `conversation ${summary.id.slice(0, 8)}`,
     model: summary.model || DEFAULT_MODEL,
     systemPrompt: "",
     toolApprovalMode: "manual",

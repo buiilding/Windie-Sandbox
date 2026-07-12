@@ -15,12 +15,6 @@ function tokenMeterTitle(source) {
   if (source === "prequery_synthetic_input") {
     return "Approximate current token count using synthetic input";
   }
-  if (source === "postquery_total") {
-    return "Current input token count from last provider-reported total";
-  }
-  if (source === "unavailable") {
-    return "Current input token count unavailable for this model";
-  }
   return "Token count over selected model context";
 }
 

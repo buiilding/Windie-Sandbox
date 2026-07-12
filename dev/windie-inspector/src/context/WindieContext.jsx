@@ -9,9 +9,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import {
-  activeConversationRun,
   apiRequest,
-  cancelRun,
   countConversationInputTokens,
   conversationFromInspection,
   conversationSummaryFromApi,
@@ -19,10 +17,9 @@ import {
   listModels,
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
-  startApproveRun,
-  startConversationRun,
-  startDenyRun,
-  streamRunEvents,
+  streamApproveTool,
+  streamConversationQuery,
+  streamDenyTool,
   toolCatalogFromApi,
 } from "@/lib/windieApi";
 
@@ -121,36 +118,13 @@ function contextSignatureParts(conversation, modelId) {
   };
 }
 
-function latestReplayInputFromAssistantUsage(conversation, modelId) {
-  const activeNodes = pathNodesForConversation(conversation);
-  const latestNode = activeNodes[activeNodes.length - 1] || null;
-  const usage = latestNode?.message?.metadata?.usage || null;
-  const totalTokens = usage?.totalTokens ?? null;
-
-  if (latestNode?.message?.role !== "assistant" || totalTokens == null) {
-    return null;
-  }
-
-  return {
-    currentInputTokens: totalTokens,
-    inputTokens: totalTokens,
-    totalTokens,
-    model: modelId || conversation?.model || null,
-    raw: usage.raw || null,
-    source: "postquery_total",
-  };
-}
-
-function inputTokenCountValue(count) {
-  return count?.currentInputTokens ?? count?.inputTokens ?? count?.totalTokens ?? null;
-}
-
 export function WindieProvider({ children }) {
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvId] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [theme, setTheme] = useState("dark");
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
+  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
@@ -163,8 +137,6 @@ export function WindieProvider({ children }) {
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
   const activeStreamAbortRef = useRef(null);
-  const activeRunIdRef = useRef(null);
-  const activeRunSequenceRef = useRef(0);
   // Ephemeral live assistant preview from SSE delta events. Display-only: the
   // persisted message that arrives via `assistant_message_saved` is the source
   // of truth and replaces this.
@@ -291,31 +263,6 @@ export function WindieProvider({ children }) {
         const signature = contextSignatureParts(loaded, loadedModelId).fullSignature;
         const countKey = tokenCountKey(loaded?.id, loadedModelId);
         const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const postQueryBaseline = latestReplayInputFromAssistantUsage(loaded, loadedModelId);
-
-        if (postQueryBaseline) {
-          setInputTokenCounts((prev) => {
-            const existing = prev[countKey] || {};
-            const existingValue = inputTokenCountValue(existing);
-            const existingIsExact =
-              existing.signature === signature &&
-              (existing.source === "prequery_input" ||
-                existing.source === "prequery_synthetic_input") &&
-              existingValue != null;
-
-            if (existingIsExact) return prev;
-
-            return {
-              ...prev,
-              [countKey]: {
-                ...existing,
-                ...postQueryBaseline,
-                signature,
-                measuredAt: Date.now(),
-              },
-            };
-          });
-        }
 
         setInputTokenCounts((prev) => ({
           ...prev,
@@ -329,25 +276,12 @@ export function WindieProvider({ children }) {
           .then((count) => {
             setInputTokenCounts((prev) => {
               if (prev[countKey]?.latestRequestId !== requestId) return prev;
-              const existing = prev[countKey] || {};
-              const countedValue = count.inputTokens ?? count.totalTokens ?? null;
-              const existingValue = inputTokenCountValue(existing);
 
               return {
                 ...prev,
                 [countKey]: {
-                  ...(countedValue == null ? existing : count),
-                  currentInputTokens: countedValue ?? existingValue,
-                  inputTokens:
-                    countedValue == null ? existing.inputTokens ?? null : count.inputTokens ?? null,
-                  totalTokens:
-                    countedValue == null ? existing.totalTokens ?? null : count.totalTokens ?? null,
-                  model: count.model || existing.model || loadedModelId,
-                  raw: countedValue == null ? existing.raw || null : count.raw || null,
-                  source:
-                    countedValue == null && existingValue != null
-                      ? existing.source || "postquery_total"
-                      : count.source || "prequery_input",
+                  ...count,
+                  source: count.source || "prequery_input",
                   signature,
                   latestRequestId: requestId,
                   measuredAt: Date.now(),
@@ -359,19 +293,15 @@ export function WindieProvider({ children }) {
             setApiError(error.message);
             setInputTokenCounts((prev) => {
               if (prev[countKey]?.latestRequestId !== requestId) return prev;
-              const existing = prev[countKey] || {};
-              const existingValue = inputTokenCountValue(existing);
 
               return {
                 ...prev,
                 [countKey]: {
-                  ...existing,
-                  currentInputTokens: existingValue,
-                  inputTokens: existing.inputTokens ?? null,
-                  totalTokens: existing.totalTokens ?? null,
+                  inputTokens: null,
+                  totalTokens: null,
                   model: loadedModelId,
-                  raw: existing.raw || null,
-                  source: existingValue == null ? "unavailable" : existing.source || "unavailable",
+                  raw: null,
+                  source: "prequery_input",
                   signature,
                   latestRequestId: requestId,
                   measuredAt: Date.now(),
@@ -459,7 +389,7 @@ export function WindieProvider({ children }) {
     const inputCount = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
 
     return {
-      used: inputTokenCountValue(inputCount),
+      used: inputCount?.inputTokens ?? null,
       max: maxTokens,
       model: activeModelId,
       measuredModel: inputCount?.model || null,
@@ -536,6 +466,10 @@ export function WindieProvider({ children }) {
     await loadConversation(body.conversation_id);
     return body.conversation_id;
   }, [loadConversation, runMutation]);
+
+  const renameConversation = useCallback(() => {
+    toast.message("rename is not a Windie primitive yet");
+  }, []);
 
   const deleteConversation = useCallback(
     async (convId) => {
@@ -650,6 +584,15 @@ export function WindieProvider({ children }) {
     [runMutation]
   );
 
+  const setActivePath = useCallback(
+    (convId, path) => {
+      const leafId = path[path.length - 1];
+      if (!leafId) return Promise.resolve();
+      return setActivePathToLeaf(convId, leafId);
+    },
+    [setActivePathToLeaf]
+  );
+
   const truncateAfter = useCallback(
     (convId, nodeId) =>
       runMutation(() =>
@@ -704,12 +647,6 @@ export function WindieProvider({ children }) {
     async (convId, stream) => {
       try {
         await stream(async ({ data }) => {
-          if (typeof data?.sequence === "number") {
-            activeRunSequenceRef.current = Math.max(
-              activeRunSequenceRef.current,
-              data.sequence
-            );
-          }
           if (data?.type === "assistant_delta") {
             // Ephemeral live model text. Accumulate into the pending bubble;
             // the persisted message replaces it once saved.
@@ -784,30 +721,19 @@ export function WindieProvider({ children }) {
     [loadConversation]
   );
 
-  const followRuntimeRun = useCallback(
-    async (convId, run, options = {}) => {
+  const runAbortableRuntimeStream = useCallback(
+    async (convId, stream) => {
       activeStreamAbortRef.current?.abort();
       const controller = new AbortController();
       activeStreamAbortRef.current = controller;
-      activeRunIdRef.current = run.id;
-      activeRunSequenceRef.current = options.after || 0;
 
       try {
         await consumeRuntimeStream(convId, (onEvent) =>
-          streamRunEvents(
-            run.id,
-            options.after || 0,
-            onEvent,
-            { signal: controller.signal }
-          )
+          stream(onEvent, controller.signal)
         );
       } finally {
         if (activeStreamAbortRef.current === controller) {
           activeStreamAbortRef.current = null;
-        }
-        if (activeRunIdRef.current === run.id) {
-          activeRunIdRef.current = null;
-          activeRunSequenceRef.current = 0;
         }
       }
     },
@@ -815,51 +741,15 @@ export function WindieProvider({ children }) {
   );
 
   const runStreamingQuery = useCallback(
-    async (convId) => {
-      const run = await startConversationRun(convId, null, null);
-      return followRuntimeRun(convId, run);
-    },
-    [followRuntimeRun]
+    async (convId) =>
+      runAbortableRuntimeStream(convId, (onEvent, signal) =>
+        streamConversationQuery(convId, null, null, onEvent, { signal })
+      ),
+    [runAbortableRuntimeStream]
   );
 
-  useEffect(() => {
-    if (!activeConvId) return undefined;
-    let cancelled = false;
-
-    activeConversationRun(activeConvId)
-      .then(async (run) => {
-        if (cancelled || !run || activeRunIdRef.current === run.id) return;
-        setStreaming(true);
-        setPendingAssistant(null);
-        try {
-          await followRuntimeRun(activeConvId, run);
-          if (!cancelled) setApiError(null);
-        } catch (error) {
-          if (!cancelled && !isAbortError(error)) {
-            setApiError(error.message);
-            toast.error(error.message);
-          }
-        } finally {
-          if (!cancelled) setStreaming(false);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) setApiError(error.message);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeConvId, followRuntimeRun]);
-
-  const stopStreaming = useCallback(async () => {
-    const runId = activeRunIdRef.current;
-    if (runId) {
-      await cancelRun(runId).catch((error) => setApiError(error.message));
-    }
+  const stopStreaming = useCallback(() => {
     activeStreamAbortRef.current?.abort();
-    activeRunIdRef.current = null;
-    activeRunSequenceRef.current = 0;
     setPendingAssistant(null);
     setStreaming(false);
   }, []);
@@ -913,28 +803,56 @@ export function WindieProvider({ children }) {
     [runStreamingQuery, streaming]
   );
 
-  const approveToolCall = useCallback(
-    (convId, toolCallId) =>
+  const startGateway = useCallback(
+    () =>
       runMutation(
         async () => {
-          const run = await startApproveRun(convId, toolCallId);
-          return followRuntimeRun(convId, run);
+          const result = await apiRequest("/api/gateway/start", { method: "POST" });
+          await refreshGateway();
+          await refreshModels().catch(() => {});
+          return result;
         },
         { reload: false }
       ),
-    [followRuntimeRun, runMutation]
+    [refreshGateway, refreshModels, runMutation]
+  );
+
+  const stopGateway = useCallback(
+    () =>
+      runMutation(
+        async () => {
+          const result = await apiRequest("/api/gateway/stop", { method: "POST" });
+          await refreshGateway();
+          await refreshModels().catch(() => {});
+          return result;
+        },
+        { reload: false }
+      ),
+    [refreshGateway, refreshModels, runMutation]
+  );
+
+  const approveToolCall = useCallback(
+    (convId, toolCallId) =>
+      runMutation(
+        () =>
+          runAbortableRuntimeStream(convId, (onEvent, signal) =>
+            streamApproveTool(convId, toolCallId, onEvent, { signal })
+          ),
+        { reload: false }
+      ),
+    [runAbortableRuntimeStream, runMutation]
   );
 
   const denyToolCall = useCallback(
     (convId, toolCallId) =>
       runMutation(
-        async () => {
-          const run = await startDenyRun(convId, toolCallId);
-          return followRuntimeRun(convId, run);
-        },
+        () =>
+          runAbortableRuntimeStream(convId, (onEvent, signal) =>
+            streamDenyTool(convId, toolCallId, onEvent, { signal })
+          ),
         { reload: false }
       ),
-    [followRuntimeRun, runMutation]
+    [runAbortableRuntimeStream, runMutation]
   );
 
   const value = {
@@ -945,27 +863,32 @@ export function WindieProvider({ children }) {
     activePathNodes,
     theme,
     treeOverlayOpen,
+    contextPreviewOpen,
     streaming,
     pendingAssistant,
     searchQuery,
     models,
     modelsLoading,
     modelsError,
+    modelParametersById,
     activeModelParameters,
     activeReasoning,
     tokenMeter,
     toolSchemas: activeConv?.toolSchemas || [],
     availableToolSchemas,
     apiError,
+    gatewayRunning,
     approvals,
     setActiveConvId,
     setSelectedNodeId,
     setTheme,
     setTreeOverlayOpen,
+    setContextPreviewOpen,
     setSearchQuery,
     refreshModels,
     loadModelParameters,
     createConversation,
+    renameConversation,
     deleteConversation,
     setSystemPrompt,
     setConversationModel,
@@ -975,6 +898,7 @@ export function WindieProvider({ children }) {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
+    setActivePath,
     setActivePathToLeaf,
     truncateAfter,
     removeMessage,
@@ -983,8 +907,13 @@ export function WindieProvider({ children }) {
     sendMessage,
     continueConversation,
     stopStreaming,
+    startGateway,
+    stopGateway,
+    refreshGateway,
     approveToolCall,
     denyToolCall,
+    refreshConversations,
+    loadConversation,
   };
 
   return <WindieCtx.Provider value={value}>{children}</WindieCtx.Provider>;

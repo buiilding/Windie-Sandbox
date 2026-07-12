@@ -2,8 +2,8 @@
 //!
 //! This module owns the typed contracts shared by tool catalog, attachment,
 //! policy, runtime approval, and provider execution. A tool provider can be an
-//! approved MCP server or a schema-only developer definition. Runtime code
-//! should pass through these types instead of branching on one concrete server.
+//! approved MCP server or a future plugin. Runtime code should pass through
+//! these types instead of branching on one concrete executor.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,9 +15,8 @@ use crate::conversation::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Stable identifier for one tool provider.
 ///
-/// Examples are `cua-driver`, `desktop-commander`, or the reserved `manual`
-/// identity for schema-only definitions. The ID names the provider boundary,
-/// not the model-facing function name.
+/// Examples are `cua-driver`, `desktop-commander`, or a future plugin package ID. The ID
+/// names the execution provider, not the model-facing function name.
 pub struct ToolProviderId(String);
 
 impl ToolProviderId {
@@ -69,7 +68,7 @@ impl std::fmt::Display for ProviderToolName {
 /// Kind of execution provider behind an attached tool.
 pub enum ToolProviderKind {
     Mcp,
-    SchemaOnly,
+    Plugin,
 }
 
 impl ToolProviderKind {
@@ -77,7 +76,7 @@ impl ToolProviderKind {
     pub fn from_storage(value: &str) -> Option<Self> {
         match value {
             "mcp" => Some(Self::Mcp),
-            "schema_only" => Some(Self::SchemaOnly),
+            "plugin" => Some(Self::Plugin),
             _ => None,
         }
     }
@@ -86,7 +85,7 @@ impl ToolProviderKind {
     pub fn as_storage(self) -> &'static str {
         match self {
             Self::Mcp => "mcp",
-            Self::SchemaOnly => "schema_only",
+            Self::Plugin => "plugin",
         }
     }
 }
@@ -163,6 +162,7 @@ impl ToolProviderRef {
 /// Permission lane used by policy before a provider execution.
 pub enum ToolPermission {
     ExternalProcess,
+    PluginCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -242,7 +242,7 @@ impl AttachedTool {
             provider: ToolProviderRef::new(
                 ToolProviderId::new("manual"),
                 ProviderToolName::new(schema.name.as_str()),
-                ToolProviderKind::SchemaOnly,
+                ToolProviderKind::Plugin,
             ),
             permissions: Vec::new(),
             annotations: ToolAnnotations::default(),

@@ -1,13 +1,8 @@
 //! Startup command parsing for the Windie CLI.
 //!
-//! The facade maps raw argv text into typed commands such as `new`, `ls`,
-//! `insert`, `update`, `query`, `gateway`, and `bench`. The `execute` child is
-//! the CLI adapter that opens the database and delegates to shared operations;
-//! business rules stay outside this module.
-
-mod execute;
-
-pub use execute::execute;
+//! This module owns command-line arguments only. It maps raw argv text into
+//! typed commands such as `new`, `ls`, `insert`, `update`, `query`, `gateway`,
+//! and `bench`. It should not open the database, call Bifrost, or print output.
 
 use std::env;
 use std::path::PathBuf;
@@ -117,8 +112,6 @@ pub enum Command {
         conversation_id: ConversationId,
         tool_call_id: ToolCallId,
     },
-    /// Inspect installation paths and external integration prerequisites.
-    Doctor,
     Show(ConversationId),
     Status,
     SetSystemPrompt {
@@ -169,167 +162,136 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
     let _program = args.next();
     let args = args.collect::<Vec<_>>();
 
-    let Some((command, rest)) = args.split_first() else {
-        return Command::Noop;
-    };
-    match command.as_str() {
-        "bench" => parse_bench_command(rest),
-        "insert" => parse_insert_command(rest),
-        "update" => parse_update_command(rest),
-        "rm" => parse_remove_command(rest),
-        "set" => parse_set_command(rest),
-        "query" => parse_query_command(rest),
-        "inspect" => parse_inspect_command(rest),
-        "attach" => parse_attach_command(rest),
-        "detach" => parse_detach_command(rest),
-        "approve" => parse_tool_decision(rest, true),
-        "deny" => parse_tool_decision(rest, false),
-        _ => parse_simple_command(command, rest),
+    if args.first().is_some_and(|arg| arg == "bench") {
+        return parse_bench_command(&args[1..]);
     }
-}
 
-fn parse_simple_command(command: &str, args: &[String]) -> Command {
-    match (command, args) {
-        ("--help" | "-h", []) => Command::Help,
-        ("--version" | "-V", []) => Command::Version,
-        ("api", []) => Command::Api,
-        ("doctor", []) => Command::Doctor,
-        ("models", []) => Command::Models,
-        ("new", []) => Command::New,
-        ("status", []) => Command::Status,
-        ("tools", []) => Command::Tools { provider_id: None },
-        ("tools", [provider_id]) => Command::Tools {
-            provider_id: Some(ToolProviderId::new(provider_id)),
+    match args.as_slice() {
+        [] => Command::Noop,
+        [arg] if arg == "--help" || arg == "-h" => Command::Help,
+        [arg] if arg == "--version" || arg == "-V" => Command::Version,
+        [arg] if arg == "api" => Command::Api,
+        [arg] if arg == "tools" => Command::Tools { provider_id: None },
+        [arg] if arg == "models" => Command::Models,
+        [command, provider_id] if command == "tools" => Command::Tools {
+            provider_id: Some(ToolProviderId::new(provider_id.as_str())),
         },
-        ("approvals", [conversation_id]) => Command::Approvals {
-            conversation_id: ConversationId::new(conversation_id),
+        [command, conversation_id] if command == "approvals" => Command::Approvals {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
         },
-        ("gateway", [action]) if action == "start" => Command::GatewayStart,
-        ("gateway", [action]) if action == "stop" => Command::GatewayStop,
-        ("ls", []) => Command::List { json: false },
-        ("ls", [flag]) if flag == "--json" => Command::List { json: true },
-        ("show", [conversation_id]) => Command::Show(ConversationId::new(conversation_id)),
-        ("tree", [conversation_id]) => Command::Tree(ConversationId::new(conversation_id)),
-        ("activate", [conversation_id, message_id]) => Command::Activate {
-            conversation_id: ConversationId::new(conversation_id),
-            message_id: MessageId::new(message_id),
+        [command, conversation_id, tool_call_id] if command == "approve" => Command::ApproveTool {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
         },
-        ("truncate", [conversation_id, message_id]) => Command::Truncate {
-            conversation_id: ConversationId::new(conversation_id),
-            message_id: MessageId::new(message_id),
-        },
-        ("fork", [conversation_id, message_id]) => Command::Fork {
-            conversation_id: ConversationId::new(conversation_id),
-            message_id: MessageId::new(message_id),
-        },
-        _ => Command::Invalid,
-    }
-}
-
-fn parse_tool_decision(args: &[String], approve: bool) -> Command {
-    let [conversation_id, tool_call_id] = args else {
-        return Command::Invalid;
-    };
-    if approve {
-        Command::ApproveTool {
-            conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
-        }
-    } else {
-        Command::DenyTool {
-            conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
-        }
-    }
-}
-
-fn parse_attach_command(args: &[String]) -> Command {
-    match args {
-        [conversation_id, subject, provider_id, tool_name] if subject == "tool" => {
+        [command, conversation_id, subject, provider_id, tool_name]
+            if command == "attach" && subject == "tool" =>
+        {
             Command::AttachTool {
-                conversation_id: ConversationId::new(conversation_id),
-                provider_id: ToolProviderId::new(provider_id),
-                tool_name: ProviderToolName::new(tool_name),
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                provider_id: ToolProviderId::new(provider_id.as_str()),
+                tool_name: ProviderToolName::new(tool_name.as_str()),
             }
         }
-        _ => Command::Invalid,
-    }
-}
-
-fn parse_detach_command(args: &[String]) -> Command {
-    match args {
-        [conversation_id, subject, schema_name] if subject == "tool" => Command::DetachTool {
-            conversation_id: ConversationId::new(conversation_id),
-            schema_name: ToolSchemaName::new(schema_name),
+        [command, conversation_id, subject, schema_name]
+            if command == "detach" && subject == "tool" =>
+        {
+            Command::DetachTool {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                schema_name: ToolSchemaName::new(schema_name.as_str()),
+            }
+        }
+        [command, conversation_id, tool_call_id] if command == "deny" => Command::DenyTool {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
         },
-        _ => Command::Invalid,
-    }
-}
-
-fn parse_inspect_command(args: &[String]) -> Command {
-    match args {
-        [conversation_id, json_flag] if json_flag == "--json" => Command::Inspect {
-            conversation_id: ConversationId::new(conversation_id),
-            model: None,
+        [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
+        [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
+        [arg] if arg == "new" => Command::New,
+        [arg] if arg == "ls" => Command::List { json: false },
+        [command, json_flag] if command == "ls" && json_flag == "--json" => {
+            Command::List { json: true }
+        }
+        [command, conversation_id, message_id] if command == "activate" => Command::Activate {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            message_id: MessageId::new(message_id.as_str()),
         },
-        [conversation_id, json_flag, model_flag, model]
-            if json_flag == "--json" && model_flag == "--model" =>
+        [command, conversation_id] if command == "show" => {
+            Command::Show(ConversationId::new(conversation_id.as_str()))
+        }
+        [command, conversation_id] if command == "tree" => {
+            Command::Tree(ConversationId::new(conversation_id.as_str()))
+        }
+        [command, conversation_id, json_flag] if command == "inspect" && json_flag == "--json" => {
+            Command::Inspect {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: None,
+            }
+        }
+        [command, conversation_id, json_flag, model_flag, model]
+            if command == "inspect" && json_flag == "--json" && model_flag == "--model" =>
         {
             Command::Inspect {
-                conversation_id: ConversationId::new(conversation_id),
-                model: Some(ModelName::new(model)),
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: Some(ModelName::new(model.as_str())),
             }
         }
-        _ => Command::Invalid,
-    }
-}
-
-fn parse_query_command(args: &[String]) -> Command {
-    match args {
-        [conversation_id] => Command::Query {
-            conversation_id: ConversationId::new(conversation_id),
-            model: None,
+        [command, rest @ ..] if command == "insert" => parse_insert_command(rest),
+        [command, rest @ ..] if command == "update" => parse_update_command(rest),
+        [command, conversation_id] if command == "rm" => {
+            Command::RemoveConversation(ConversationId::new(conversation_id.as_str()))
+        }
+        [command, conversation_id, subject, message_id]
+            if command == "rm" && subject == "message" =>
+        {
+            Command::RemoveMessage {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                message_id: MessageId::new(message_id.as_str()),
+            }
+        }
+        [command, conversation_id, subject] if command == "rm" && subject == "systemprompt" => {
+            Command::RemoveSystemPrompt(ConversationId::new(conversation_id.as_str()))
+        }
+        [command, conversation_id, subject, name] if command == "rm" && subject == "toolschema" => {
+            Command::RemoveToolSchema {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                name: ToolSchemaName::new(name.as_str()),
+            }
+        }
+        [command, conversation_id, message_id] if command == "truncate" => Command::Truncate {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            message_id: MessageId::new(message_id.as_str()),
         },
-        [conversation_id, model_flag, model] if model_flag == "--model" => Command::Query {
-            conversation_id: ConversationId::new(conversation_id),
-            model: Some(ModelName::new(model)),
+        [command, conversation_id, message_id] if command == "fork" => Command::Fork {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            message_id: MessageId::new(message_id.as_str()),
         },
-        _ => Command::Invalid,
-    }
-}
-
-fn parse_set_command(args: &[String]) -> Command {
-    match args {
-        [conversation_id, subject, text_flag, text]
-            if subject == "systemprompt" && text_flag == "--text" =>
+        [command, conversation_id, subject, text_flag, text]
+            if command == "set" && subject == "systemprompt" && text_flag == "--text" =>
         {
             Command::SetSystemPrompt {
-                conversation_id: ConversationId::new(conversation_id),
+                conversation_id: ConversationId::new(conversation_id.as_str()),
                 text: text.to_string(),
             }
         }
-        [conversation_id, subject, model] if subject == "model" => Command::SetModel {
-            conversation_id: ConversationId::new(conversation_id),
-            model: ModelName::new(model),
-        },
-        _ => Command::Invalid,
-    }
-}
-
-fn parse_remove_command(args: &[String]) -> Command {
-    match args {
-        [conversation_id] => Command::RemoveConversation(ConversationId::new(conversation_id)),
-        [conversation_id, subject, message_id] if subject == "message" => Command::RemoveMessage {
-            conversation_id: ConversationId::new(conversation_id),
-            message_id: MessageId::new(message_id),
-        },
-        [conversation_id, subject] if subject == "systemprompt" => {
-            Command::RemoveSystemPrompt(ConversationId::new(conversation_id))
+        [command, conversation_id, subject, model] if command == "set" && subject == "model" => {
+            Command::SetModel {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: ModelName::new(model.as_str()),
+            }
         }
-        [conversation_id, subject, name] if subject == "toolschema" => Command::RemoveToolSchema {
-            conversation_id: ConversationId::new(conversation_id),
-            name: ToolSchemaName::new(name),
+        [command, conversation_id] if command == "query" => Command::Query {
+            conversation_id: ConversationId::new(conversation_id.as_str()),
+            model: None,
         },
+        [command, conversation_id, model_flag, model]
+            if command == "query" && model_flag == "--model" =>
+        {
+            Command::Query {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                model: Some(ModelName::new(model.as_str())),
+            }
+        }
+        [arg] if arg == "status" => Command::Status,
         _ => Command::Invalid,
     }
 }
@@ -580,4 +542,1035 @@ fn parse_role(role: &str) -> Option<Role> {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_noop_command_by_default() {
+        let command = command_from_args(["windie".to_string()]);
+
+        assert!(matches!(command, Command::Noop));
+    }
+
+    #[test]
+    fn reads_long_help_command() {
+        let command = command_from_args(["windie".to_string(), "--help".to_string()]);
+
+        assert!(matches!(command, Command::Help));
+    }
+
+    #[test]
+    fn reads_short_help_command() {
+        let command = command_from_args(["windie".to_string(), "-h".to_string()]);
+
+        assert!(matches!(command, Command::Help));
+    }
+
+    #[test]
+    fn reads_long_version_command() {
+        let command = command_from_args(["windie".to_string(), "--version".to_string()]);
+
+        assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn reads_short_version_command() {
+        let command = command_from_args(["windie".to_string(), "-V".to_string()]);
+
+        assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn reads_api_command() {
+        let command = command_from_args(["windie".to_string(), "api".to_string()]);
+
+        assert!(matches!(command, Command::Api));
+    }
+
+    #[test]
+    fn reads_tools_command() {
+        let command = command_from_args(["windie".to_string(), "tools".to_string()]);
+
+        assert!(matches!(command, Command::Tools { provider_id: None }));
+    }
+
+    #[test]
+    fn reads_models_command() {
+        let command = command_from_args(["windie".to_string(), "models".to_string()]);
+
+        assert!(matches!(command, Command::Models));
+    }
+
+    #[test]
+    fn reads_provider_tools_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "tools".to_string(),
+            "windie".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Tools {
+                provider_id: Some(provider_id)
+            } if provider_id.as_str() == "windie"
+        ));
+    }
+
+    #[test]
+    fn reads_attach_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "attach".to_string(),
+            "conversation-id".to_string(),
+            "tool".to_string(),
+            "windie".to_string(),
+            "run_shell".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::AttachTool {
+                conversation_id,
+                provider_id,
+                tool_name,
+            } if conversation_id.as_str() == "conversation-id"
+                && provider_id.as_str() == "windie"
+                && tool_name.as_str() == "run_shell"
+        ));
+    }
+
+    #[test]
+    fn reads_detach_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "detach".to_string(),
+            "conversation-id".to_string(),
+            "tool".to_string(),
+            "run_shell".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::DetachTool {
+                conversation_id,
+                schema_name,
+            } if conversation_id.as_str() == "conversation-id"
+                && schema_name.as_str() == "run_shell"
+        ));
+    }
+
+    #[test]
+    fn reads_approvals_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "approvals".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Approvals { conversation_id } if conversation_id.as_str() == "conversation-id"
+        ));
+    }
+
+    #[test]
+    fn reads_approve_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "approve".to_string(),
+            "conversation-id".to_string(),
+            "call-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::ApproveTool {
+                conversation_id,
+                tool_call_id,
+            } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+        ));
+    }
+
+    #[test]
+    fn reads_deny_tool_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "deny".to_string(),
+            "conversation-id".to_string(),
+            "call-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::DenyTool {
+                conversation_id,
+                tool_call_id,
+            } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+        ));
+    }
+
+    #[test]
+    fn rejects_combined_top_level_options() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "--version".to_string(),
+            "--help".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_new_command() {
+        let command = command_from_args(["windie".to_string(), "new".to_string()]);
+
+        assert!(matches!(command, Command::New));
+    }
+
+    #[test]
+    fn reads_gateway_start_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "gateway".to_string(),
+            "start".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::GatewayStart));
+    }
+
+    #[test]
+    fn reads_gateway_stop_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "gateway".to_string(),
+            "stop".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::GatewayStop));
+    }
+
+    #[test]
+    fn rejects_unknown_gateway_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "gateway".to_string(),
+            "restart".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_ls_command() {
+        let command = command_from_args(["windie".to_string(), "ls".to_string()]);
+
+        assert!(matches!(command, Command::List { json: false }));
+    }
+
+    #[test]
+    fn reads_ls_json_command() {
+        let command =
+            command_from_args(["windie".to_string(), "ls".to_string(), "--json".to_string()]);
+
+        assert!(matches!(command, Command::List { json: true }));
+    }
+
+    #[test]
+    fn rejects_list_command() {
+        let command = command_from_args(["windie".to_string(), "list".to_string()]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_show_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "show".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Show(id) if id.as_str() == "conversation-id"));
+    }
+
+    #[test]
+    fn reads_tree_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "tree".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Tree(id) if id.as_str() == "conversation-id"));
+    }
+
+    #[test]
+    fn reads_activate_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "activate".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Activate {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn rejects_show_without_id() {
+        let command = command_from_args(["windie".to_string(), "show".to_string()]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_insert_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "hello".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::InsertMessage {
+                conversation_id,
+                role: Role::User,
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![InsertPart::Text("hello".to_string())]
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_image() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "what is this?".to_string(),
+            "--image".to_string(),
+            "image.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::InsertMessage {
+                conversation_id,
+                role: Role::User,
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![
+                    InsertPart::Text("what is this?".to_string()),
+                    InsertPart::Image(PathBuf::from("image.png")),
+                ]
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_multiple_images() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "compare these".to_string(),
+            "--image".to_string(),
+            "first.png".to_string(),
+            "--image".to_string(),
+            "second.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::InsertMessage {
+                conversation_id,
+                role: Role::User,
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![
+                    InsertPart::Text("compare these".to_string()),
+                    InsertPart::Image(PathBuf::from("first.png")),
+                    InsertPart::Image(PathBuf::from("second.png")),
+                ]
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_interleaved_text_and_images() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "first".to_string(),
+            "--image".to_string(),
+            "first.png".to_string(),
+            "--text".to_string(),
+            "second".to_string(),
+            "--image".to_string(),
+            "second.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::InsertMessage {
+                conversation_id,
+                role: Role::User,
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![
+                    InsertPart::Text("first".to_string()),
+                    InsertPart::Image(PathBuf::from("first.png")),
+                    InsertPart::Text("second".to_string()),
+                    InsertPart::Image(PathBuf::from("second.png")),
+                ]
+        ));
+    }
+
+    #[test]
+    fn reads_insert_command_with_only_image() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--image".to_string(),
+            "image.png".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::InsertMessage {
+                conversation_id,
+                role: Role::User,
+                parts,
+            } if conversation_id.as_str() == "conversation-id"
+                && parts == vec![InsertPart::Image(PathBuf::from("image.png"))]
+        ));
+    }
+
+    #[test]
+    fn rejects_insert_with_unknown_role() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "--role".to_string(),
+            "owner".to_string(),
+            "--text".to_string(),
+            "hello".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_append_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "append".to_string(),
+            "conversation-id".to_string(),
+            "--role".to_string(),
+            "user".to_string(),
+            "--text".to_string(),
+            "hello".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_update_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "update".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "message-id".to_string(),
+            "--text".to_string(),
+            "new text".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::UpdateMessage {
+                conversation_id,
+                message_id,
+                text,
+            } if conversation_id.as_str() == "conversation-id"
+                && message_id.as_str() == "message-id"
+                && text == "new text"
+        ));
+    }
+
+    #[test]
+    fn reads_insert_tool_schema_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            "run_shell".to_string(),
+            "--description".to_string(),
+            "Run a shell command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::InsertToolSchema {
+                conversation_id,
+                tool_schema,
+            } if conversation_id.as_str() == "conversation-id"
+                && tool_schema.name.as_str() == "run_shell"
+                && tool_schema.description == "Run a shell command"
+                && tool_schema.parameters == serde_json::json!({"type":"object"})
+        ));
+    }
+
+    #[test]
+    fn reads_update_tool_schema_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "update".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "run_shell".to_string(),
+            "--name".to_string(),
+            "shell".to_string(),
+            "--description".to_string(),
+            "Run command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::UpdateToolSchema {
+                conversation_id,
+                current_name,
+                tool_schema,
+            } if conversation_id.as_str() == "conversation-id"
+                && current_name.as_str() == "run_shell"
+                && tool_schema.name.as_str() == "shell"
+                && tool_schema.description == "Run command"
+                && tool_schema.parameters == serde_json::json!({"type":"object"})
+        ));
+    }
+
+    #[test]
+    fn rejects_tool_schema_with_empty_name() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            String::new(),
+            "--description".to_string(),
+            "Run a shell command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_tool_schema_with_invalid_name_characters() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            "run shell".to_string(),
+            "--description".to_string(),
+            "Run a shell command".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_tool_schema_with_empty_description() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "insert".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "--name".to_string(),
+            "run_shell".to_string(),
+            "--description".to_string(),
+            "   ".to_string(),
+            "--parameters".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_remove_conversation_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(
+            matches!(command, Command::RemoveConversation(id) if id.as_str() == "conversation-id")
+        );
+    }
+
+    #[test]
+    fn reads_remove_message_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+            "message".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::RemoveMessage {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn reads_remove_systemprompt_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+            "systemprompt".to_string(),
+        ]);
+
+        assert!(
+            matches!(command, Command::RemoveSystemPrompt(id) if id.as_str() == "conversation-id")
+        );
+    }
+
+    #[test]
+    fn reads_remove_tool_schema_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "rm".to_string(),
+            "conversation-id".to_string(),
+            "toolschema".to_string(),
+            "run_shell".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::RemoveToolSchema {
+                conversation_id,
+                name,
+            } if conversation_id.as_str() == "conversation-id" && name.as_str() == "run_shell"
+        ));
+    }
+
+    #[test]
+    fn reads_truncate_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "truncate".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Truncate {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn reads_fork_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "fork".to_string(),
+            "conversation-id".to_string(),
+            "message-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Fork {
+                conversation_id,
+                message_id,
+            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
+        ));
+    }
+
+    #[test]
+    fn reads_query_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "query".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Query {
+                conversation_id,
+                model: None,
+            } if conversation_id.as_str() == "conversation-id"
+        ));
+    }
+
+    #[test]
+    fn reads_inspect_json_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "inspect".to_string(),
+            "conversation-id".to_string(),
+            "--json".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Inspect {
+                conversation_id,
+                model: None,
+            } if conversation_id.as_str() == "conversation-id"
+        ));
+    }
+
+    #[test]
+    fn reads_inspect_json_with_model_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "inspect".to_string(),
+            "conversation-id".to_string(),
+            "--json".to_string(),
+            "--model".to_string(),
+            "anthropic/claude-3-5-haiku".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Inspect {
+                conversation_id,
+                model: Some(model),
+            } if conversation_id.as_str() == "conversation-id"
+                && model.as_str() == "anthropic/claude-3-5-haiku"
+        ));
+    }
+
+    #[test]
+    fn rejects_inspect_without_json() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "inspect".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_set_systemprompt_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "set".to_string(),
+            "conversation-id".to_string(),
+            "systemprompt".to_string(),
+            "--text".to_string(),
+            "You are concise.".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::SetSystemPrompt {
+                conversation_id,
+                text,
+            } if conversation_id.as_str() == "conversation-id" && text == "You are concise."
+        ));
+    }
+
+    #[test]
+    fn rejects_set_systemprompt_without_text() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "set".to_string(),
+            "conversation-id".to_string(),
+            "systemprompt".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_set_model_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "set".to_string(),
+            "conversation-id".to_string(),
+            "model".to_string(),
+            "anthropic/claude-3-5-haiku".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::SetModel {
+                conversation_id,
+                model,
+            } if conversation_id.as_str() == "conversation-id"
+                && model.as_str() == "anthropic/claude-3-5-haiku"
+        ));
+    }
+
+    #[test]
+    fn reads_query_with_model_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "query".to_string(),
+            "conversation-id".to_string(),
+            "--model".to_string(),
+            "openai/gpt-4o-mini".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Query {
+                conversation_id,
+                model: Some(model),
+            } if conversation_id.as_str() == "conversation-id" && model.as_str() == "openai/gpt-4o-mini"
+        ));
+    }
+
+    #[test]
+    fn reads_query_with_provider_qualified_model() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "query".to_string(),
+            "conversation-id".to_string(),
+            "--model".to_string(),
+            "anthropic/claude-3-5-haiku".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Query {
+                conversation_id,
+                model: Some(model),
+            } if conversation_id.as_str() == "conversation-id"
+                && model.as_str() == "anthropic/claude-3-5-haiku"
+        ));
+    }
+
+    #[test]
+    fn reads_status_command() {
+        let command = command_from_args(["windie".to_string(), "status".to_string()]);
+
+        assert!(matches!(command, Command::Status));
+    }
+
+    #[test]
+    fn rejects_bare_bench_command() {
+        let command = command_from_args(["windie".to_string(), "bench".to_string()]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_live_bench_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "live".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Live,
+                conversation_id: None,
+                options,
+            } if options.runs == 1 && !options.json
+        ));
+    }
+
+    #[test]
+    fn reads_runtime_bench_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "runtime".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Runtime,
+                conversation_id: None,
+                options,
+            } if options.runs == 1 && !options.json
+        ));
+    }
+
+    #[test]
+    fn rejects_list_bench_command() {
+        let command =
+            command_from_args(["windie".to_string(), "bench".to_string(), "ls".to_string()]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_list_bench_with_runs_and_json() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "ls".to_string(),
+            "--runs".to_string(),
+            "10".to_string(),
+            "--json".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_conversation_bench_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "conversation-id".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Conversation,
+                conversation_id: Some(id),
+                options,
+            } if id.as_str() == "conversation-id" && options.runs == 1 && !options.json
+        ));
+    }
+
+    #[test]
+    fn reads_conversation_bench_with_runs_and_json() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "conversation-id".to_string(),
+            "--runs".to_string(),
+            "100".to_string(),
+            "--json".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::Bench {
+                mode: BenchmarkMode::Conversation,
+                conversation_id: Some(id),
+                options,
+            } if id.as_str() == "conversation-id" && options.runs == 100 && options.json
+        ));
+    }
+
+    #[test]
+    fn rejects_bench_options_without_conversation_id() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "--json".to_string(),
+            "--runs".to_string(),
+            "10".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_bench_compare_command() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "compare".to_string(),
+            "baseline.json".to_string(),
+            "current.json".to_string(),
+        ]);
+
+        assert!(matches!(
+            command,
+            Command::BenchCompare {
+                baseline_path,
+                current_path,
+            } if baseline_path == std::path::Path::new("baseline.json")
+                && current_path == std::path::Path::new("current.json")
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_benchmark_runs() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "--runs".to_string(),
+            "0".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn rejects_bench_with_extra_arg() {
+        let command = command_from_args([
+            "windie".to_string(),
+            "bench".to_string(),
+            "conversation-id".to_string(),
+            "extra".to_string(),
+        ]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+
+    #[test]
+    fn reads_unknown_command_as_invalid() {
+        let command = command_from_args(["windie".to_string(), "whatever".to_string()]);
+
+        assert!(matches!(command, Command::Invalid));
+    }
+}

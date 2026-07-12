@@ -91,9 +91,8 @@ whole product.
 For each provider Windie wants Bifrost to use, Bifrost needs provider config
 once. The provider row names the provider, such as `anthropic`. The key row
 points to the environment variable, such as `env.ANTHROPIC_API_KEY`. Use the
-same pattern for Gemini, Groq, OpenRouter, and other providers. Actual secrets
-stay in Windie's canonical `~/.config/windie/providers.env`, shared by approved
-MCP providers and Bifrost.
+same pattern for Gemini, Groq, OpenRouter, and other providers. The actual
+secret value should stay in Windie's explicit `~/.windie/.env` provider-key file.
 
 ## Current Scope
 
@@ -128,8 +127,6 @@ Allowed in the current scope:
   annotations.
 - Unified tool provider layer for code-approved MCP providers and future
   plugins.
-- Backend-owned runtime runs with persisted ordered events, explicit
-  cancellation, and reconnectable UI subscriptions.
 - Code-approved MCP provider tools through the same attached-tool and approval
   boundary.
 - Conversation-level manual or full-access approval mode for attached executable
@@ -144,11 +141,8 @@ Allowed in the current scope:
 - OpenAI-compatible Responses image request serialization.
 - Bifrost gateway health check.
 - Explicit Bifrost gateway start and stop commands.
-- Version-pinned public Bifrost gateway startup through npm or Docker.
-- Explicit `WINDIE_BIFROST_BIN` override for official local development builds.
-- Canonical provider-key environment shared by Windie and Bifrost.
-- Versioned installed binaries and a bundled stable operator UI that remain
-  separate from editable source and preview UI builds.
+- Public Bifrost gateway startup through `npx @maximhq/bifrost` or Docker.
+- Explicit `~/.windie/.env` provider-key environment for Bifrost gateway startup.
 - Clean module boundaries.
 
 Not in scope yet:
@@ -163,7 +157,7 @@ Not in scope yet:
 - Production/general computer use outside code-approved developer MCP providers.
 - Plugin systems.
 - Production web dashboard.
-- General config files beyond the canonical provider-key environment.
+- General config files beyond the explicit Bifrost `~/.windie/.env` provider-key file.
 - Global model selection.
 - Slash commands.
 - Automatic history compaction.
@@ -187,49 +181,36 @@ The code should stay split by concrete responsibilities:
 
 ```text
 src/main.rs          wires components together
-src/api.rs           localhost API composition, shared state, and errors
-src/api/             API routes by auth, gateway, conversation, tool, and run ownership
+src/api.rs           localhost developer API server
 src/cli.rs           startup CLI arguments
-src/cli/execute.rs   CLI command execution adapter
-src/cli/tests.rs     startup CLI argument tests
 src/operation.rs     shared CLI/API operation orchestration
-src/operation/       conversation, model, tool, and execution operations
-src/operation/tests.rs shared operation orchestration tests
 src/output.rs        terminal and JSON output only
-src/output/tests.rs  terminal output tests
+src/output_tests.rs  terminal output tests
 src/policy.rs        tool execution policy and approval boundary
-src/policy/tests.rs  tool execution policy tests
+src/policy_tests.rs  tool execution policy tests
 src/conversation.rs  message types, model-facing tool schema types, and assistant metadata types
 src/context.rs       model-facing context construction
 src/error.rs         typed user-facing Windie error categories
 src/gateway.rs       Bifrost gateway availability and lifecycle
 src/image_input.rs   local image file loading
-src/llm.rs           typed LLM contracts and Bifrost client facade
-src/llm/             Bifrost HTTP client, model metadata, Responses wire format, and SSE ownership
+src/llm.rs           Bifrost/OpenAI-compatible HTTP client
 src/mcp.rs           MCP stdio JSON-RPC client and session pool
-src/perf.rs          benchmark facade and public options
-src/perf/            benchmark metrics/reporting, scenarios, and tests
-src/perf/scenarios/  conversation, runtime, fixture, and live benchmark ownership
-src/paths.rs         installed and development filesystem locations
-src/run.rs           backend run lifecycle and reconnectable event journal
-src/doctor.rs        installation and integration diagnostics
+src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
-src/runtime/tests.rs runtime flow tests
+src/runtime_tests.rs runtime flow tests
 src/tool.rs          tool provider, attachment, approval, and execution result types
 src/tool_provider.rs tool provider registry and dispatch
-src/tool_provider/tests.rs tool provider registry and dispatch tests
-src/store.rs         SQLite transaction and tree-integrity facade
-src/store/           persistence and tests by schema, run, conversation, message, tool, image, and compaction ownership
+src/store.rs         SQLite persistence
+src/store_tests.rs   SQLite persistence tests
 ```
 
 Keep boundaries strict:
 
-- Only `llm.rs` and `llm/` should know about provider HTTP request details.
+- Only `llm.rs` should know about provider HTTP request details.
 - Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
-- Only `api.rs` and `api/` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
-- Only `cli.rs` and `cli/` should know about startup CLI argument handling and
-  CLI-specific execution adaptation.
-- Only `operation.rs` and `operation/` should own shared CLI/API orchestration over store/runtime
+- Only `api.rs` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
+- Only `cli.rs` should know about startup CLI argument handling.
+- Only `operation.rs` should own shared CLI/API orchestration over store/runtime
   primitives. It should not parse argv, map HTTP, format terminal output,
   execute shell commands, or know provider HTTP details.
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
@@ -242,15 +223,11 @@ Keep boundaries strict:
 - Only `context.rs` should decide what history the model sees.
 - Only `error.rs` should own typed Windie error categories used across client
   protocol boundaries.
-- Only `perf.rs` and `perf/` should own benchmark timing logic.
-- Only `paths.rs` should decide Windie data, config, and bundled UI locations.
-- Only `run.rs` should own backend run lifecycle, event sequencing, replay,
-  interruption, and explicit cancellation.
-- Only `doctor.rs` should inspect installation and external launcher readiness.
+- Only `perf.rs` should own benchmark timing logic.
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `tool_provider.rs` should own provider catalog and execution dispatch
   across code-approved MCP providers and future plugins.
-- Only `store.rs` and `store/` should own persisted message history, attached tools, and
+- Only `store.rs` should own persisted message history, attached tools, and
   know about SQLite tables and queries.
 - Only `tool.rs` should own tool provider, attachment, approval, and execution
   result data shared across runtime, output, policy, store, and executors.
@@ -282,29 +259,3 @@ versions clearly instead of carrying partial legacy migrations.
 - Do not reintroduce slash commands unless explicitly requested.
 - Do not add agent/tool behavior until explicitly requested.
 - Keep dependencies small and justified.
-
-## Commit Workflow
-
-Use normal Git commands. Before committing a meaningful code change, run the
-project correctness check:
-
-```bash
-scripts/check.sh
-git commit
-git push
-```
-
-Keep commit messages explicit about what changed, why, and which behavior or
-ownership boundary is affected. Documentation-only and similarly narrow changes
-do not require performance measurements.
-
-Benchmarks are opt-in and belong to performance-sensitive work:
-
-```bash
-scripts/bench.sh runtime
-scripts/bench.sh conversation <conversation_id>
-```
-
-Do not put machine-local benchmark output into commit messages. Preserve a
-reviewed report as a local baseline with `scripts/bench.sh update-baseline` when
-that comparison is useful.
