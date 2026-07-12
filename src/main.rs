@@ -18,15 +18,15 @@ mod output;
 mod perf;
 mod policy;
 mod runtime;
+mod setup;
 mod store;
 mod tool;
 mod tool_provider;
 
 use anyhow::Result;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 
-use crate::cli::{Command, InsertPart};
+use crate::cli::{Command, EnvCommand, InsertPart};
 use crate::conversation::{
     ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
@@ -73,10 +73,10 @@ async fn main() -> Result<()> {
             conversation_id,
             options,
         } => benchmark(mode, conversation_id, options).await,
-        Command::BenchCompare {
-            baseline_path,
-            current_path,
-        } => compare_benchmarks(baseline_path, current_path),
+        Command::CompareBaseline { options } => compare_baseline(options).await,
+        Command::UpdateBaseline { options } => update_baseline(options).await,
+        Command::Env(command) => env_command(command),
+        Command::Install { target } => install_target(&target),
         Command::GatewayStart => start_gateway().await,
         Command::GatewayStop => stop_gateway().await,
         Command::InsertMessage {
@@ -195,6 +195,7 @@ async fn benchmark(
             gateway_url(),
             base_url(),
             model_name(),
+            &options.categories,
         )
         .await?;
 
@@ -209,7 +210,7 @@ async fn benchmark(
         gateway_url(),
         base_url(),
         model_name(),
-        options.runs,
+        &options,
     )
     .await?;
 
@@ -222,14 +223,77 @@ async fn benchmark(
     Ok(())
 }
 
-/// Reads two JSON benchmark artifacts and prints their median differences.
-fn compare_benchmarks(baseline_path: PathBuf, current_path: PathBuf) -> Result<()> {
-    let output = TerminalOutput;
+/// Runs the current local benchmark suite and compares it with the default baseline.
+async fn compare_baseline(options: BenchmarkOptions) -> Result<()> {
+    let baseline_path = perf::default_baseline_path()?;
     let baseline = perf::read_report(&baseline_path)?;
-    let current = perf::read_report(&current_path)?;
+    let current = perf::run_report(
+        BenchmarkMode::Local,
+        None,
+        gateway_url(),
+        base_url(),
+        model_name(),
+        &options,
+    )
+    .await?;
+    let output = TerminalOutput;
     let comparison = perf::compare_reports(&baseline, &current);
 
     output.performance_comparison(&comparison);
+
+    Ok(())
+}
+
+/// Replaces the default persisted benchmark baseline with the current local run.
+async fn update_baseline(options: BenchmarkOptions) -> Result<()> {
+    let baseline_path = perf::default_baseline_path()?;
+    let report = perf::run_report(
+        BenchmarkMode::Local,
+        None,
+        gateway_url(),
+        base_url(),
+        model_name(),
+        &options,
+    )
+    .await?;
+    perf::write_report(&baseline_path, &report)?;
+    let output = TerminalOutput;
+    output.updated_baseline(&baseline_path);
+
+    Ok(())
+}
+
+/// Runs one user-local environment command.
+fn env_command(command: EnvCommand) -> Result<()> {
+    let output = TerminalOutput;
+
+    match command {
+        EnvCommand::Set(assignments) => {
+            let path = setup::set_env_values(&assignments)?;
+            output.env_updated(&path, assignments.len());
+        }
+        EnvCommand::List => {
+            let keys = setup::list_env_keys()?;
+            output.env_keys(&keys);
+        }
+        EnvCommand::Unset(keys) => {
+            let path = setup::unset_env_values(&keys)?;
+            output.env_updated(&path, keys.len());
+        }
+        EnvCommand::Path => {
+            let path = setup::env_file_path()?;
+            output.env_path(&path);
+        }
+    }
+
+    Ok(())
+}
+
+/// Installs or verifies one approved Windie dependency.
+fn install_target(target: &str) -> Result<()> {
+    let report = setup::install_target(target)?;
+    let output = TerminalOutput;
+    output.install_report(&report);
 
     Ok(())
 }

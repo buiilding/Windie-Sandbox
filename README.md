@@ -69,6 +69,30 @@ Developer-facing references:
 
 ## Local Development
 
+Install Windie and prepare its user-local runtime layout:
+
+```bash
+curl -fsSL https://github.com/buiilding/Windie-Sandbox/releases/latest/download/install.sh | sh
+```
+
+This installs the `windie` binary, creates `~/.windie`, creates
+`~/.windie/.env` when missing, prepares Bifrost and benchmark directories, and
+verifies `npx` for the public Bifrost runtime.
+
+Set provider keys explicitly:
+
+```bash
+windie env OPENAI_API_KEY=<key>
+windie env OPENROUTER_API_KEY=<key>
+```
+
+Install or verify approved MCP dependencies:
+
+```bash
+windie install cua-driver
+windie install blender-mcp
+```
+
 Build and check the Rust runtime:
 
 ```bash

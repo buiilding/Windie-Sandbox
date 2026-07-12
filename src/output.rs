@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -17,6 +18,7 @@ use crate::conversation::{
 use crate::llm::{ModelInfo, ModelName};
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
+use crate::setup::InstallReport;
 use crate::store::ConversationInfo;
 use crate::tool::{ToolApprovalRequest, ToolDefinition, ToolExecutionResult};
 
@@ -299,6 +301,38 @@ impl TerminalOutput {
     pub fn performance_comparison(&self, comparison: &PerformanceComparison) {
         for line in performance_comparison_lines(comparison) {
             println!("{line}");
+        }
+    }
+
+    /// Prints the path written by `windie update baseline`.
+    pub fn updated_baseline(&self, path: &Path) {
+        println!("updated baseline {}", path.display());
+    }
+
+    /// Prints one install or verification result.
+    pub fn install_report(&self, report: &InstallReport) {
+        println!("installed {}", report.target);
+        println!("{}", report.message);
+    }
+
+    /// Prints the provider-key environment file path.
+    pub fn env_path(&self, path: &Path) {
+        println!("{}", path.display());
+    }
+
+    /// Confirms that Windie's provider-key environment file changed.
+    pub fn env_updated(&self, path: &Path, count: usize) {
+        println!("updated {count} env value(s) in {}", path.display());
+    }
+
+    /// Prints provider-key names without exposing secret values.
+    pub fn env_keys(&self, keys: &[String]) {
+        if keys.is_empty() {
+            println!("no env values");
+            return;
+        }
+        for key in keys {
+            println!("{key}");
         }
     }
 
@@ -587,6 +621,11 @@ fn help_lines() -> Vec<String> {
         "Usage:",
         "  windie",
         "  windie api",
+        "  windie install <target>",
+        "  windie env KEY=value",
+        "  windie env list",
+        "  windie env unset <KEY>",
+        "  windie env path",
         "  windie tools",
         "  windie models",
         "  windie new",
@@ -620,21 +659,24 @@ fn help_lines() -> Vec<String> {
         "  windie status",
         "  windie gateway start",
         "  windie gateway stop",
-        "  windie bench <conversation_id>",
-        "  windie bench <conversation_id> --runs 100 --json",
-        "  windie bench runtime",
-        "  windie bench compare <baseline.json> <current.json>",
-        "  windie bench live",
+        "  windie bench",
+        "  windie bench --persistence --conversation --runtime --tools --mutations --mcp",
+        "  windie bench --runs 100 --json",
+        "  windie compare baseline",
+        "  windie update baseline",
         "",
         "Notes:",
         "  windie exits successfully without runtime action.",
         "  windie api starts the localhost developer API server.",
+        "  windie install verifies or installs approved public runtime dependencies.",
+        "  windie env edits only ~/.windie/.env and never prints secret values.",
         "  windie tools lists provider tools available to attach to conversations.",
         "  windie models lists models from the currently running Bifrost gateway.",
-        "  windie bench <conversation_id> measures active path, tree, tool schema load, and context build.",
-        "  windie bench runtime measures provider-free runtime and write-path primitives.",
-        "  windie bench <conversation_id> --json writes a persistent benchmark artifact to stdout.",
-        "  windie bench compare compares two JSON benchmark artifacts.",
+        "  windie bench measures provider-free local runtime primitives.",
+        "  windie bench category flags filter the measured local benchmark report.",
+        "  windie bench --json writes a persistent benchmark artifact to stdout.",
+        "  windie compare baseline compares the current benchmark run with ~/.windie/benchmarks/baseline.json.",
+        "  windie update baseline replaces ~/.windie/benchmarks/baseline.json with the current run.",
         "  windie inspect <conversation_id> --json prints full read-only runtime state.",
         "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
         "  windie gateway stop stops the local Bifrost gateway.",
@@ -649,7 +691,6 @@ fn help_lines() -> Vec<String> {
         "  windie set <conversation_id> systemprompt sets or replaces the conversation system prompt.",
         "  windie set <conversation_id> model persists the conversation model.",
         "  windie insert <conversation_id> toolschema adds a raw model-facing tool definition.",
-        "  windie bench live sends a real provider request and may cost money.",
         "",
         "Options:",
         "  -h, --help       Show help",

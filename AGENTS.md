@@ -137,12 +137,15 @@ Allowed in the current scope:
 - Future-ready compaction storage.
 - Basic local performance baselines, repeated benchmark runs, and JSON
   benchmark comparison.
+- User-local benchmark baseline update and comparison under `~/.windie`.
 - OpenAI-compatible `/responses` requests.
 - OpenAI-compatible Responses image request serialization.
 - Bifrost gateway health check.
 - Explicit Bifrost gateway start and stop commands.
 - Public Bifrost gateway startup through `npx @maximhq/bifrost` or Docker.
 - Explicit `~/.windie/.env` provider-key environment for Bifrost gateway startup.
+- Explicit `windie env` editing for Windie's `~/.windie/.env` provider-key file.
+- Explicit `windie install` for code-approved public runtime dependencies.
 - Clean module boundaries.
 
 Not in scope yet:
@@ -198,6 +201,7 @@ src/mcp.rs           MCP stdio JSON-RPC client and session pool
 src/perf.rs          performance baseline measurement
 src/runtime.rs       one-shot runtime query coordination
 src/runtime_tests.rs runtime flow tests
+src/setup.rs         user-local setup, env-file editing, and approved installs
 src/tool.rs          tool provider, attachment, approval, and execution result types
 src/tool_provider.rs tool provider registry and dispatch
 src/store.rs         SQLite persistence
@@ -225,6 +229,8 @@ Keep boundaries strict:
   protocol boundaries.
 - Only `perf.rs` should own benchmark timing logic.
 - Only `runtime.rs` should coordinate query-like runtime flows.
+- Only `setup.rs` should own user-local directory setup, `~/.windie/.env`
+  editing, and approved dependency install/check commands.
 - Only `tool_provider.rs` should own provider catalog and execution dispatch
   across code-approved MCP providers and future plugins.
 - Only `store.rs` should own persisted message history, attached tools, and

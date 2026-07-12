@@ -272,8 +272,8 @@ const APPROVED_MCP_PROVIDERS: &[McpProviderDefinition] = &[
         schema_prefix: "desktop_commander",
         display_name: "Desktop Commander",
         command: McpCommand {
-            program: "desktop-commander",
-            args: &[],
+            program: "npx",
+            args: &["-y", "@wonderwhy-er/desktop-commander@latest"],
             env: &[McpEnv {
                 key: "HOME",
                 value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),

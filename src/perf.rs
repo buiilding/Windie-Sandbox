@@ -2,8 +2,7 @@
 //!
 //! This module owns lightweight timing for the current local CLI/query path,
 //! repeated benchmark reports, JSON benchmark artifacts, and report comparison.
-//! Conversation benchmarks avoid provider calls. Live benchmarks are explicit
-//! because they send a real provider request.
+//! Benchmarks are provider-free and run against local fixture data.
 
 use std::env;
 use std::fs;
@@ -17,11 +16,11 @@ use uuid::Uuid;
 
 use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageMetadata, Role, ToolCall, ToolCallId,
-    UnsavedImagePart, UnsavedMessagePart,
+    ConversationId, MessageId, MessageMetadata, Role, ToolCall, ToolCallId, UnsavedImagePart,
+    UnsavedMessagePart,
 };
-use crate::gateway::{BifrostGateway, GatewayUrl};
-use crate::llm::{BaseUrl, BifrostClient, LlmStreamEvent, ModelName};
+use crate::gateway::GatewayUrl;
+use crate::llm::{BaseUrl, ModelName};
 use crate::mcp::{self, McpCommand};
 use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
 use crate::store::Store;
@@ -30,7 +29,6 @@ use crate::tool::{
     ToolProviderKind, ToolProviderRef,
 };
 
-const BENCH_PROMPT: &str = "Reply with exactly: ok";
 const SCALE_PATH_MESSAGES: usize = 100;
 const LARGE_SCALE_PATH_MESSAGES: usize = 1_000;
 const TOOL_CHAIN_RESULTS: usize = 10;
@@ -59,32 +57,57 @@ const REPORT_FORMAT_VERSION: u32 = 3;
 #[serde(rename_all = "lowercase")]
 /// Benchmark mode selected by the CLI.
 pub enum BenchmarkMode {
+    Local,
     Conversation,
-    Runtime,
-    Live,
 }
 
 impl BenchmarkMode {
     /// Returns the mode label printed in benchmark output.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Local => "local",
             Self::Conversation => "conversation",
-            Self::Runtime => "runtime",
-            Self::Live => "live",
         }
     }
 
     /// Marks benchmark modes that may send a paid provider request.
     pub fn may_call_provider(self) -> bool {
-        matches!(self, Self::Live)
+        false
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Local benchmark category selected by `windie bench` flags.
+pub enum BenchmarkCategory {
+    Persistence,
+    Conversation,
+    Runtime,
+    Tools,
+    Mutations,
+    Mcp,
+}
+
+impl BenchmarkCategory {
+    /// Returns every local benchmark category in stable output order.
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::Persistence,
+            Self::Conversation,
+            Self::Runtime,
+            Self::Tools,
+            Self::Mutations,
+            Self::Mcp,
+        ]
     }
 }
 
 /// Optional controls for benchmark execution and output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BenchmarkOptions {
     pub runs: usize,
     pub json: bool,
+    pub categories: Vec<BenchmarkCategory>,
 }
 
 impl Default for BenchmarkOptions {
@@ -94,6 +117,7 @@ impl Default for BenchmarkOptions {
         Self {
             runs: 1,
             json: false,
+            categories: BenchmarkCategory::all(),
         }
     }
 }
@@ -166,6 +190,8 @@ pub struct PerformanceBaseline {
 pub struct PerformanceReport {
     pub format_version: u32,
     pub mode: BenchmarkMode,
+    #[serde(default)]
+    pub categories: Vec<BenchmarkCategory>,
     pub model: String,
     pub conversation_id: Option<String>,
     pub runs: usize,
@@ -417,9 +443,10 @@ struct RuntimeContextBenchmark {
 pub async fn run(
     mode: BenchmarkMode,
     conversation_id: Option<ConversationId>,
-    gateway_url: GatewayUrl,
-    base_url: BaseUrl,
+    _gateway_url: GatewayUrl,
+    _base_url: BaseUrl,
     model: ModelName,
+    categories: &[BenchmarkCategory],
 ) -> Result<PerformanceBaseline> {
     let mut baseline = PerformanceBaseline {
         mode,
@@ -570,7 +597,7 @@ pub async fn run(
             baseline.loaded_messages = Some(loaded_messages);
             baseline.tree_messages = Some(tree_messages);
         }
-        BenchmarkMode::Runtime => {
+        BenchmarkMode::Local => {
             let runtime = run_runtime_benchmark()?;
             baseline.prepare_query_turn = Some(runtime.prepare_query_turn);
             baseline.pending_tool_approval_scan = Some(runtime.pending_tool_approval_scan);
@@ -611,21 +638,63 @@ pub async fn run(
             baseline.deleted_messages = Some(runtime.deleted_messages);
             baseline.promoted_children = Some(runtime.promoted_children);
             baseline.truncated_messages = Some(runtime.truncated_messages);
-        }
-        BenchmarkMode::Live => {
-            let gateway = BifrostGateway::new(gateway_url);
-            let gateway_started = Instant::now();
-            gateway.require_running().await?;
-            baseline.gateway_ready = Some(gateway_started.elapsed());
-            let (first_token, full_response, response_bytes) =
-                run_live_request(&base_url, &baseline.model).await?;
-            baseline.first_token = first_token;
-            baseline.full_response = Some(full_response);
-            baseline.response_bytes = Some(response_bytes);
+            apply_benchmark_categories(&mut baseline, categories);
         }
     }
 
     Ok(baseline)
+}
+
+/// Clears metrics outside the selected local benchmark categories.
+fn apply_benchmark_categories(
+    baseline: &mut PerformanceBaseline,
+    categories: &[BenchmarkCategory],
+) {
+    if !categories.contains(&BenchmarkCategory::Runtime) {
+        baseline.prepare_query_turn = None;
+        baseline.prepare_query_no_tools = None;
+        baseline.prepare_query_completed_tool_chain = None;
+        baseline.prepare_query_requires_approval = None;
+        baseline.prepare_query_policy_denied = None;
+    }
+    if !categories.contains(&BenchmarkCategory::Tools) {
+        baseline.pending_tool_approval_scan = None;
+        baseline.pending_tool_approval_scan_long_path = None;
+        baseline.pending_tool_approval_scan_deep_chain = None;
+        baseline.tool_result_insert = None;
+        baseline.deny_tool_result_persist = None;
+        baseline.provider_tool_attach_load = None;
+        baseline.requested_tool_calls = None;
+        baseline.resolved_tool_results = None;
+    }
+    if !categories.contains(&BenchmarkCategory::Mutations) {
+        baseline.splice_remove = None;
+        baseline.splice_remove_branch_point = None;
+        baseline.splice_remove_root_many_children = None;
+        baseline.splice_remove_tool_group = None;
+        baseline.truncate = None;
+        baseline.truncate_large_subtree = None;
+        baseline.deleted_messages = None;
+        baseline.promoted_children = None;
+        baseline.truncated_messages = None;
+    }
+    if !categories.contains(&BenchmarkCategory::Persistence) {
+        baseline.active_path_load_100 = None;
+        baseline.active_path_load_1000 = None;
+        baseline.loaded_messages = None;
+        baseline.tree_messages = None;
+    }
+    if !categories.contains(&BenchmarkCategory::Conversation) {
+        baseline.context_build_after_tool_chain = None;
+        baseline.context_build_plain_100 = None;
+        baseline.context_build_plain_1000 = None;
+        baseline.context_build_with_system_prompt = None;
+        baseline.context_build_with_compaction = None;
+        baseline.context_build_with_image_parts = None;
+    }
+    if !categories.contains(&BenchmarkCategory::Mcp) {
+        baseline.fake_mcp_list_call = None;
+    }
 }
 
 /// Runs the selected benchmark repeatedly and returns a persistent report.
@@ -635,8 +704,9 @@ pub async fn run_report(
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model: ModelName,
-    runs: usize,
+    options: &BenchmarkOptions,
 ) -> Result<PerformanceReport> {
+    let runs = options.runs;
     let mut samples = Vec::with_capacity(runs);
 
     for _ in 0..runs {
@@ -646,6 +716,7 @@ pub async fn run_report(
             gateway_url.clone(),
             base_url.clone(),
             model.clone(),
+            &options.categories,
         )
         .await?;
         samples.push(PerformanceSample::from_baseline(&baseline));
@@ -654,6 +725,7 @@ pub async fn run_report(
     Ok(PerformanceReport {
         format_version: REPORT_FORMAT_VERSION,
         mode,
+        categories: options.categories.clone(),
         model: model.as_str().to_string(),
         conversation_id: conversation_id.map(|id| id.as_str().to_string()),
         runs,
@@ -670,6 +742,31 @@ pub fn read_report(path: &Path) -> Result<PerformanceReport> {
         .with_context(|| format!("failed to parse benchmark report {}", path.display()))?;
 
     Ok(report)
+}
+
+/// Writes a JSON benchmark report to disk.
+pub fn write_report(path: &Path, report: &PerformanceReport) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let text =
+        serde_json::to_string_pretty(report).context("failed to serialize benchmark report")?;
+
+    fs::write(path, format!("{text}\n"))
+        .with_context(|| format!("failed to write benchmark report {}", path.display()))
+}
+
+/// Returns Windie's default persisted benchmark baseline path.
+pub fn default_baseline_path() -> Result<PathBuf> {
+    let Some(home) = env::var_os("HOME") else {
+        return Err(anyhow::anyhow!("HOME is not set"));
+    };
+
+    Ok(PathBuf::from(home)
+        .join(".windie")
+        .join("benchmarks")
+        .join("baseline.json"))
 }
 
 /// Compares median duration metrics from two reports.
@@ -1456,42 +1553,6 @@ fn tiny_png_bytes() -> &'static [u8] {
     ]
 }
 
-/// Sends the tiny live request and measures first-token and full-response
-/// latency.
-async fn run_live_request(
-    base_url: &BaseUrl,
-    model: &ModelName,
-) -> Result<(Option<Duration>, Duration, usize)> {
-    let llm = BifrostClient::new(base_url.clone(), model.clone());
-    let messages = vec![Message {
-        id: None,
-        parent_message_id: None,
-        role: Role::User,
-        content: BENCH_PROMPT.to_string(),
-        parts: Vec::new(),
-        metadata: None,
-    }];
-
-    let request_started = Instant::now();
-    let mut first_token = None;
-    let response = llm
-        .stream(&messages, &[], None, None, |event| {
-            let LlmStreamEvent::AssistantDelta(delta) = event else {
-                return Ok(());
-            };
-
-            if first_token.is_none() && !delta.is_empty() {
-                first_token = Some(request_started.elapsed());
-            }
-
-            Ok(())
-        })
-        .await?;
-    let full_response = request_started.elapsed();
-
-    Ok((first_token, full_response, response.content.len()))
-}
-
 impl PerformanceSample {
     /// Converts the in-memory timing result into JSON-safe primitive values.
     fn from_baseline(baseline: &PerformanceBaseline) -> Self {
@@ -2037,9 +2098,10 @@ mod tests {
     fn compares_report_medians() {
         let baseline = PerformanceReport {
             format_version: REPORT_FORMAT_VERSION,
-            mode: BenchmarkMode::Conversation,
+            mode: BenchmarkMode::Local,
+            categories: BenchmarkCategory::all(),
             model: "model".to_string(),
-            conversation_id: Some("conversation-id".to_string()),
+            conversation_id: None,
             runs: 2,
             samples: vec![],
             summary: PerformanceSummary {
@@ -2077,9 +2139,10 @@ mod tests {
     fn reads_json_report_and_compares_it() {
         let baseline = PerformanceReport {
             format_version: REPORT_FORMAT_VERSION,
-            mode: BenchmarkMode::Conversation,
+            mode: BenchmarkMode::Local,
+            categories: BenchmarkCategory::all(),
             model: "model".to_string(),
-            conversation_id: Some("conversation-id".to_string()),
+            conversation_id: None,
             runs: 1,
             samples: vec![PerformanceSample {
                 store_open_us: Some(10),

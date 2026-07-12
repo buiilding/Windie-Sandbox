@@ -7,8 +7,8 @@ use crate::conversation::{
 };
 use crate::llm::ReasoningRequest;
 use crate::perf::{
-    BenchmarkMode, DurationMetric, PerformanceComparison, PerformanceComparisonRow,
-    PerformanceReport, PerformanceSummary,
+    BenchmarkCategory, BenchmarkMode, DurationMetric, PerformanceComparison,
+    PerformanceComparisonRow, PerformanceReport, PerformanceSummary,
 };
 use crate::store::Compaction;
 use crate::tool::{
@@ -74,10 +74,18 @@ fn formats_help_lines() {
     );
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
-    assert!(lines.contains(&"  windie bench <conversation_id>".to_string()));
-    assert!(lines.contains(&"  windie bench <conversation_id> --runs 100 --json".to_string()));
-    assert!(lines.contains(&"  windie bench compare <baseline.json> <current.json>".to_string()));
-    assert!(lines.contains(&"  windie bench live".to_string()));
+    assert!(lines.contains(&"  windie install <target>".to_string()));
+    assert!(lines.contains(&"  windie env KEY=value".to_string()));
+    assert!(lines.contains(&"  windie bench".to_string()));
+    assert!(
+        lines.contains(
+            &"  windie bench --persistence --conversation --runtime --tools --mutations --mcp"
+                .to_string()
+        )
+    );
+    assert!(lines.contains(&"  windie compare baseline".to_string()));
+    assert!(lines.contains(&"  windie update baseline".to_string()));
+    assert!(!lines.contains(&"  windie bench live".to_string()));
     assert!(lines.contains(&"Options:".to_string()));
 }
 
@@ -507,9 +515,10 @@ fn formats_duration_as_seconds() {
 fn formats_performance_report_lines() {
     let report = PerformanceReport {
         format_version: 3,
-        mode: BenchmarkMode::Conversation,
+        mode: BenchmarkMode::Local,
+        categories: BenchmarkCategory::all(),
         model: "openai/gpt-4o-mini".to_string(),
-        conversation_id: Some("conversation-id".to_string()),
+        conversation_id: None,
         runs: 3,
         samples: vec![],
         summary: PerformanceSummary {
@@ -526,7 +535,7 @@ fn formats_performance_report_lines() {
     let lines = performance_report_lines(&report);
 
     assert_eq!(lines[0], "performance report");
-    assert!(lines.contains(&"mode: conversation".to_string()));
+    assert!(lines.contains(&"mode: local".to_string()));
     assert!(lines.contains(&"runs: 3".to_string()));
     assert!(lines.contains(&"store open:".to_string()));
     assert!(lines.contains(&"  median: 200us".to_string()));
@@ -535,8 +544,8 @@ fn formats_performance_report_lines() {
 #[test]
 fn formats_performance_comparison_lines() {
     let comparison = PerformanceComparison {
-        baseline_mode: BenchmarkMode::Conversation,
-        current_mode: BenchmarkMode::Conversation,
+        baseline_mode: BenchmarkMode::Local,
+        current_mode: BenchmarkMode::Local,
         baseline_runs: 100,
         current_runs: 100,
         rows: vec![PerformanceComparisonRow {
@@ -550,13 +559,12 @@ fn formats_performance_comparison_lines() {
     let lines = performance_comparison_lines(&comparison);
 
     assert_eq!(lines[0], "performance comparison");
-    assert!(lines.contains(&"baseline: conversation (100 runs)".to_string()));
-    assert!(lines.contains(&"current: conversation (100 runs)".to_string()));
+    assert!(lines.contains(&"baseline: local (100 runs)".to_string()));
+    assert!(lines.contains(&"current: local (100 runs)".to_string()));
     assert!(lines.contains(&"context build: 100us -> 80us (-20.0%)".to_string()));
 }
 
 #[test]
-fn live_benchmark_mode_reports_provider_call() {
-    assert!(crate::perf::BenchmarkMode::Live.may_call_provider());
-    assert!(!crate::perf::BenchmarkMode::Conversation.may_call_provider());
+fn local_benchmark_mode_never_reports_provider_call() {
+    assert!(!crate::perf::BenchmarkMode::Local.may_call_provider());
 }

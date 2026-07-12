@@ -136,6 +136,37 @@ approval is waiting. `deny` stores a rejected tool result and follows the same
 continuation rule. Stream events use the same names as `query-stream`:
 `tool_result_saved`, `assistant_message_saved`, `query_done`, and `query_error`.
 
+## Environment And Installation
+
+```text
+windie install <target>
+```
+
+Install or verify one approved public runtime dependency. Supported targets:
+
+```text
+bifrost
+cua-driver
+desktop-commander
+blender-mcp
+brightdata
+```
+
+`bifrost`, `desktop-commander`, and `brightdata` use public `npx` packages.
+`blender-mcp` uses public `uvx blender-mcp`. `cua-driver` uses the public
+trycua installer when `cua-driver` is not already on `PATH`.
+
+```text
+windie env OPENAI_API_KEY=<key>
+windie env OPENROUTER_API_KEY=<key>
+windie env list
+windie env unset OPENAI_API_KEY
+windie env path
+```
+
+Edit Windie's provider-key environment file at `~/.windie/.env`. `list` prints
+key names only and never prints secret values.
+
 ## Tools
 
 ```text
@@ -153,20 +184,24 @@ Windie currently includes code-approved MCP providers:
 
 ```text
 cua-driver          MCP provider launched with `cua-driver mcp`
-desktop-commander   MCP provider launched with `desktop-commander`
+desktop-commander   MCP provider launched with `npx -y @wonderwhy-er/desktop-commander@latest`
 blender-mcp         MCP provider launched with `uvx blender-mcp`
 brightdata          MCP provider launched with `npx -y @brightdata/mcp`
 ```
 
-Windie does not install provider binaries. The provider command must already be
-available on `PATH`. If it is missing, provider listing or execution returns
-the raw process-start error.
+Install or verify approved public provider dependencies with:
 
-Bright Data also requires a user environment token. Set it before starting the
-Windie API or running a CLI command that lists or executes Bright Data tools:
+```text
+windie install cua-driver
+windie install desktop-commander
+windie install blender-mcp
+windie install brightdata
+```
 
-```bash
-Set BRIGHTDATA_API_TOKEN in the shell that starts Windie.
+Bright Data also requires a user environment token:
+
+```text
+windie env BRIGHTDATA_API_TOKEN=<key>
 ```
 
 ```text
@@ -583,59 +618,49 @@ If the gateway is not running, the command reports that instead of failing.
 ## Benchmarks
 
 ```text
-windie bench <conversation_id>
+windie bench
 ```
 
-Run local/free performance baseline for one conversation tree. Measures active
-path load, full tree load, tool schema load, and model-facing context build.
-Does not start Bifrost and does not send a provider request.
+Run the full local/free benchmark suite. It uses temporary fixture databases,
+does not start Bifrost, does not call real MCP providers, and does not send a
+provider request.
 
 ```text
-windie bench <conversation_id> --runs 100
+windie bench --persistence
+windie bench --conversation
+windie bench --runtime
+windie bench --tools
+windie bench --mutations
+windie bench --mcp
 ```
 
-Run the same local/free conversation benchmark repeatedly and print
-min/median/p95/max summaries. Use this when checking whether a local code change
-actually made the runtime path faster or slower.
+Category flags filter the benchmark report. They can be combined.
 
 ```text
-windie bench runtime
+windie bench --runs 100
 ```
 
-Run provider-free runtime and write-path benchmarks against temporary fixture
-databases. Measures small and scaled query preparation, policy-denied query
-preparation, pending tool approval scanning, tool result insertion, explicit
-denial persistence, splice remove variants, truncate variants, active-path
-scale, context scale, system prompt context, compaction context with a remaining
-active-path suffix, image-part context, provider tool attach/load, a fake MCP
-stdio list/call round trip, and completed tool-result chains. Does not touch
-user conversations, start Bifrost, run shell commands, call real MCP providers,
-or send a provider request.
+Run repeated local measurements and print min/median/p95/max summaries.
 
 ```text
-windie bench <conversation_id> --runs 100 --json
+windie bench --runs 100 --json
 ```
 
 Run the repeated benchmark and write a persistent JSON benchmark artifact to
-stdout. Redirect this output to a file when saving a baseline:
+stdout.
 
 ```text
-windie bench <conversation_id> --runs 100 --json > benches/baseline.json
+windie update baseline
 ```
+
+Run the current local benchmark suite and write
+`~/.windie/benchmarks/baseline.json`.
 
 ```text
-windie bench compare <baseline.json> <current.json>
+windie compare baseline
 ```
 
-Compare two JSON benchmark artifacts and print median percentage changes.
+Run the current local benchmark suite, compare it with
+`~/.windie/benchmarks/baseline.json`, and print median percentage changes.
 Negative percentages mean the current run is faster. Positive percentages mean
 the current run is slower.
-
-```text
-windie bench live
-```
-
-Run a tiny live provider benchmark. Requires the local Bifrost gateway and sends
-a real provider request, so it may cost money.
-
-Use this only when you intentionally want to measure the provider path.
