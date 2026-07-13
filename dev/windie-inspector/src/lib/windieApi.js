@@ -268,6 +268,16 @@ export function toolCatalogFromApi(body) {
   return (body.tools || []).map(toolSchemaFromApi);
 }
 
+export function toolProviderStatusesFromApi(body) {
+  return (body.providers || []).map((provider) => ({
+    providerId: provider.provider_id,
+    displayName: provider.display_name || provider.provider_id,
+    available: Boolean(provider.available),
+    toolCount: provider.tool_count ?? 0,
+    error: provider.error || null,
+  }));
+}
+
 export function conversationFromInspection(report, fallback) {
   const nodes = {};
 

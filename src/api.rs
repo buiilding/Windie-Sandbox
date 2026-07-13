@@ -41,7 +41,7 @@ use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
 };
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
 
 const API_TOKEN_HEADER: &str = "x-windie-api-token";
 /// Maximum JSON request body accepted by the localhost API.
@@ -59,10 +59,11 @@ pub async fn serve(
     model: &str,
 ) -> Result<()> {
     let output = TerminalOutput;
-    match operation::start_gateway(GatewayUrl::new(gateway_url)).await? {
+    let gateway_start = operation::start_gateway(GatewayUrl::new(gateway_url)).await?;
+    match gateway_start {
         crate::gateway::GatewayStart::AlreadyRunning => output.gateway_already_running(),
         crate::gateway::GatewayStart::Started => output.gateway_started(),
-    }
+    };
 
     let api_token = match std::env::var("WINDIE_API_TOKEN") {
         Ok(token) => token,
@@ -89,9 +90,54 @@ pub async fn serve(
         .with_context(|| format!("failed to bind API server at {address}"))?;
 
     output.api_started(&address, &state.api_token);
-    axum::serve(listener, router(state))
+    let server_result = axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown_signal())
         .await
-        .context("api server failed")
+        .context("api server failed");
+
+    if gateway_start == crate::gateway::GatewayStart::Started {
+        match operation::stop_gateway(GatewayUrl::new(gateway_url)).await {
+            Ok(crate::gateway::GatewayStop::NotRunning) => output.gateway_not_running(),
+            Ok(crate::gateway::GatewayStop::Stopped) => output.gateway_stopped(),
+            Err(error) => eprintln!("failed to stop Bifrost gateway: {error}"),
+        }
+    }
+
+    server_result
+}
+
+/// Waits for the process-level shutdown signal used by the API server.
+///
+/// The gateway cleanup happens after Axum drains the listener, so Ctrl-C or a
+/// normal terminate signal stops both the API and the Bifrost process the API
+/// started.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            eprintln!("failed to install Ctrl-C handler: {error}");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                eprintln!("failed to install terminate signal handler: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 /// Builds the route table for the local API surface.
@@ -351,12 +397,41 @@ async fn health() -> ApiResult<HealthResponse> {
 /// API response for provider tools available to attach.
 struct ToolCatalogResponse {
     tools: Vec<ToolDefinition>,
+    providers: Vec<ToolProviderStatusResponse>,
+}
+
+#[derive(Debug, Serialize)]
+/// Availability status for one approved tool provider.
+struct ToolProviderStatusResponse {
+    provider_id: String,
+    display_name: String,
+    available: bool,
+    tool_count: usize,
+    error: Option<String>,
+}
+
+impl ToolProviderStatusResponse {
+    fn from_status(status: ToolProviderStatus) -> Self {
+        Self {
+            provider_id: status.provider_id.as_str().to_string(),
+            display_name: status.display_name,
+            available: status.available,
+            tool_count: status.tool_count,
+            error: status.error,
+        }
+    }
 }
 
 /// Lists provider tools clients may attach to conversations.
 async fn list_tools(State(state): State<ApiState>) -> ApiResult<ToolCatalogResponse> {
     Ok(Json(ToolCatalogResponse {
         tools: operation::available_tools_with_registry(&state.tool_registry)?,
+        providers: state
+            .tool_registry
+            .list_provider_statuses()
+            .into_iter()
+            .map(ToolProviderStatusResponse::from_status)
+            .collect(),
     }))
 }
 
@@ -372,6 +447,13 @@ async fn list_provider_tools(
             &state.tool_registry,
             &provider_id,
         )?,
+        providers: state
+            .tool_registry
+            .list_provider_statuses()
+            .into_iter()
+            .filter(|status| status.provider_id == provider_id)
+            .map(ToolProviderStatusResponse::from_status)
+            .collect(),
     }))
 }
 

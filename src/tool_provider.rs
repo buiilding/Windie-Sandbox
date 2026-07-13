@@ -38,6 +38,20 @@ pub struct ToolProviderRegistry {
     catalog_cache: Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>>,
 }
 
+#[derive(Debug, Clone)]
+/// Catalog status for one approved MCP provider.
+///
+/// The aggregate tool list must not hide provider startup failures. Clients use
+/// this record to show which approved providers are ready and which need local
+/// setup such as a missing command or provider key.
+pub struct ToolProviderStatus {
+    pub provider_id: ToolProviderId,
+    pub display_name: String,
+    pub available: bool,
+    pub tool_count: usize,
+    pub error: Option<String>,
+}
+
 impl ToolProviderRegistry {
     /// Builds the default registry for the local Windie process.
     pub fn new() -> Self {
@@ -72,6 +86,30 @@ impl ToolProviderRegistry {
         }
 
         Ok(tools)
+    }
+
+    /// Lists every approved provider with either a loaded tool count or a
+    /// concrete availability error.
+    pub fn list_provider_statuses(&self) -> Vec<ToolProviderStatus> {
+        self.mcp_providers
+            .iter()
+            .map(|provider| match self.list_provider_tools(provider.id()) {
+                Ok(tools) => ToolProviderStatus {
+                    provider_id: provider.provider_id.clone(),
+                    display_name: provider.display_name.to_string(),
+                    available: true,
+                    tool_count: tools.len(),
+                    error: None,
+                },
+                Err(error) => ToolProviderStatus {
+                    provider_id: provider.provider_id.clone(),
+                    display_name: provider.display_name.to_string(),
+                    available: false,
+                    tool_count: 0,
+                    error: Some(error.to_string()),
+                },
+            })
+            .collect()
     }
 
     /// Lists available tools for one provider ID.

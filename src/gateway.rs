@@ -495,6 +495,7 @@ fn process_command(process_id: u32) -> Result<String> {
 /// Identifies whether a process command line belongs to Bifrost.
 fn is_bifrost_command(command: &str) -> bool {
     command.contains(PUBLIC_BIFROST_NPX_PACKAGE)
+        || command.contains("bifrost-http")
         || command.contains(PUBLIC_BIFROST_DOCKER_IMAGE)
         || command.contains(PUBLIC_BIFROST_DOCKER_NAME)
 }
@@ -718,6 +719,9 @@ mod tests {
     fn recognizes_bifrost_process_command() {
         assert!(is_bifrost_command(
             "npx -y @maximhq/bifrost -app-dir /Users/peterbui/.windie/bifrost/data"
+        ));
+        assert!(is_bifrost_command(
+            "/Users/peterbui/Library/Caches/bifrost/v2.0.0-prerelease1/bin/bifrost-http-0 -app-dir /Users/peterbui/.local/share/windie/bifrost/data -port 8080"
         ));
         assert!(is_bifrost_command(
             "docker run --name windie-bifrost -p 8080:8080 maximhq/bifrost:latest"

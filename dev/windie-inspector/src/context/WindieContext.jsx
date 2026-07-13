@@ -25,6 +25,7 @@ import {
   stopRun as stopRunApi,
   streamRunEvents,
   toolCatalogFromApi,
+  toolProviderStatusesFromApi,
 } from "@/lib/windieApi";
 
 const WindieCtx = createContext(null);
@@ -154,6 +155,7 @@ export function WindieProvider({ children }) {
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [approvals, setApprovals] = useState([]);
   const [availableToolSchemas, setAvailableToolSchemas] = useState([]);
+  const [toolProviderStatuses, setToolProviderStatuses] = useState([]);
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(null);
@@ -256,7 +258,9 @@ export function WindieProvider({ children }) {
   const refreshAvailableTools = useCallback(async () => {
     const body = await apiRequest("/api/tools");
     const tools = toolCatalogFromApi(body);
+    const providers = toolProviderStatusesFromApi(body);
     setAvailableToolSchemas(tools);
+    setToolProviderStatuses(providers);
     return tools;
   }, []);
 
@@ -970,6 +974,7 @@ export function WindieProvider({ children }) {
     tokenMeter,
     toolSchemas: activeConv?.toolSchemas || [],
     availableToolSchemas,
+    toolProviderStatuses,
     apiError,
     gatewayRunning,
     approvals,

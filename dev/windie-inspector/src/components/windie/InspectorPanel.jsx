@@ -77,6 +77,7 @@ export default function InspectorPanel() {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
+    toolProviderStatuses,
   } = useWindie();
   const [editingSys, setEditingSys] = useState(false);
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
@@ -130,6 +131,10 @@ export default function InspectorPanel() {
   const groupedToolSchemas = useMemo(
     () => groupToolSchemasByProvider(availableToolSchemas),
     [availableToolSchemas]
+  );
+  const unavailableToolProviders = useMemo(
+    () => (toolProviderStatuses || []).filter((provider) => !provider.available),
+    [toolProviderStatuses]
   );
 
   useEffect(() => {
@@ -450,7 +455,7 @@ export default function InspectorPanel() {
           resetKey={activeConv.id}
         >
           <div className="space-y-2">
-            {availableToolSchemas.length > 0 ? (
+            {availableToolSchemas.length > 0 || unavailableToolProviders.length > 0 ? (
               <div className="space-y-2">
                 {groupedToolSchemas.map((group) => {
                   const unattachedTools = group.tools.filter(
@@ -622,6 +627,24 @@ export default function InspectorPanel() {
                     </div>
                   );
                 })}
+                {unavailableToolProviders.map((provider) => (
+                  <div
+                    key={provider.providerId}
+                    className="border border-border bg-surface/20 px-2 py-2"
+                  >
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                      {provider.displayName || providerLabel(provider.providerId)}
+                    </div>
+                    <div className="mt-1 font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]">
+                      unavailable
+                    </div>
+                    {provider.error && (
+                      <div className="mt-1 text-[10px] text-muted-foreground leading-snug break-words">
+                        {provider.error}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             ) : (
               <div className="font-mono text-[11px] text-muted-foreground">
@@ -638,7 +661,9 @@ export default function InspectorPanel() {
 function providerLabel(providerId) {
   if (providerId === "windie") return "Windie";
   if (providerId === "cua-driver") return "CUA Driver";
+  if (providerId === "desktop-commander") return "Desktop Commander";
   if (providerId === "blender-mcp") return "Blender MCP";
+  if (providerId === "brightdata") return "Bright Data";
   return providerId || "Unknown Provider";
 }
 
