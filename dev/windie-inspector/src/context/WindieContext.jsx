@@ -97,11 +97,41 @@ function pathNodesForConversation(conversation) {
   return conversation.activePath.map((id) => conversation.nodes[id]).filter(Boolean);
 }
 
+function pathNodesToNode(conversation, nodeId) {
+  if (!conversation || !nodeId || !conversation.nodes[nodeId]) {
+    return pathNodesForConversation(conversation);
+  }
+
+  const reversed = [];
+  const seen = new Set();
+  let current = conversation.nodes[nodeId];
+
+  while (current && !seen.has(current.id)) {
+    reversed.push(current);
+    seen.add(current.id);
+    current = current.parentId ? conversation.nodes[current.parentId] : null;
+  }
+
+  return reversed.reverse();
+}
+
+function latestAssistantTotalTokens(pathNodes) {
+  for (let index = pathNodes.length - 1; index >= 0; index -= 1) {
+    const node = pathNodes[index];
+    if (node.message.role !== "assistant") continue;
+
+    const totalTokens = node.message.metadata?.usage?.totalTokens;
+    if (totalTokens != null) return totalTokens;
+  }
+
+  return null;
+}
+
 function stableJson(value) {
   return JSON.stringify(value);
 }
 
-function contextSignatureParts(conversation, modelId) {
+function contextSignatureParts(conversation, modelId, pathNodesOverride = null) {
   if (!conversation) {
     return {
       pathSignature: "",
@@ -110,7 +140,7 @@ function contextSignatureParts(conversation, modelId) {
     };
   }
 
-  const pathNodes = pathNodesForConversation(conversation);
+  const pathNodes = pathNodesOverride || pathNodesForConversation(conversation);
   const path = pathNodes.map((node) => ({
     id: node.id,
     role: node.message.role,
@@ -167,11 +197,13 @@ export function WindieProvider({ children }) {
   const [pendingAssistantByRunId, setPendingAssistantByRunId] = useState({});
   const subscriptionAbortRef = useRef(null);
   const subscribedRunIdRef = useRef(null);
+  const visibleRunIdRef = useRef(null);
 
   useEffect(
     () => () => {
       subscriptionAbortRef.current?.abort();
       subscribedRunIdRef.current = null;
+      visibleRunIdRef.current = null;
     },
     []
   );
@@ -394,8 +426,8 @@ export function WindieProvider({ children }) {
   );
 
   const activePathNodes = useMemo(() => {
-    return pathNodesForConversation(activeConv);
-  }, [activeConv]);
+    return pathNodesToNode(activeConv, selectedNodeId);
+  }, [activeConv, selectedNodeId]);
 
   const activeModelId = useMemo(
     () => activeConv?.model || null,
@@ -403,8 +435,8 @@ export function WindieProvider({ children }) {
   );
 
   const activeContextSignatures = useMemo(
-    () => contextSignatureParts(activeConv, activeModelId),
-    [activeConv, activeModelId]
+    () => contextSignatureParts(activeConv, activeModelId, activePathNodes),
+    [activeConv, activeModelId, activePathNodes]
   );
 
   const activeCatalogModel = useMemo(
@@ -416,16 +448,27 @@ export function WindieProvider({ children }) {
     const maxTokens =
       activeCatalogModel?.contextLength ?? activeCatalogModel?.maxInputTokens ?? null;
     const inputCount = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
+    const currentInputCount =
+      inputCount?.signature === activeContextSignatures.fullSignature ? inputCount : null;
+    const postQueryTotalTokens = latestAssistantTotalTokens(activePathNodes);
+    const used = currentInputCount?.inputTokens ?? postQueryTotalTokens;
 
     return {
-      used: inputCount?.inputTokens ?? null,
+      used,
       max: maxTokens,
       model: activeModelId,
-      measuredModel: inputCount?.model || null,
-      source: inputCount?.source || null,
+      measuredModel: currentInputCount?.model || null,
+      source:
+        currentInputCount?.inputTokens != null
+          ? currentInputCount?.source || null
+          : used != null
+            ? "postquery_total"
+            : null,
     };
   }, [
     activeConv?.id,
+    activePathNodes,
+    activeContextSignatures.fullSignature,
     activeCatalogModel,
     activeModelId,
     inputTokenCounts,
@@ -757,7 +800,13 @@ export function WindieProvider({ children }) {
       }
 
       if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
-        await loadConversation(run.conversationId);
+        await loadConversation(run.conversationId, {
+          countTokens: false,
+          selectLast: false,
+        });
+        if (visibleRunIdRef.current === run.id && data.message_id) {
+          setSelectedNodeId(data.message_id);
+        }
         setPendingAssistantByRunId((prev) => ({ ...prev, [run.id]: null }));
         return;
       }
@@ -784,6 +833,7 @@ export function WindieProvider({ children }) {
       const normalized = rememberRun(run);
       if (!normalized) return;
 
+      visibleRunIdRef.current = normalized.id;
       setVisibleRunId(normalized.id);
       if (subscribedRunIdRef.current === normalized.id) return;
 

@@ -20,6 +20,8 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::setup;
+
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -103,11 +105,12 @@ pub enum McpEnvValue {
     WindieDataDir(&'static str),
     /// Use a fixed value owned by Windie's approved provider definition.
     Literal(&'static str),
-    /// Copy a value from Windie's process environment into the provider child.
+    /// Copy a value from Windie's user-local env into the provider child.
     ///
     /// This keeps provider secret names explicit. For example, Windie can read
-    /// `BRIGHTDATA_API_TOKEN` from the user environment and pass it to a child
-    /// process as that provider's expected `API_TOKEN`.
+    /// `BRIGHTDATA_API_TOKEN` from `~/.windie/.env` and pass it to a child
+    /// process as that provider's expected `API_TOKEN`. The process environment
+    /// remains a fallback for explicit shell overrides and tests.
     UserEnv(&'static str),
 }
 
@@ -644,9 +647,9 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
             .to_string_lossy()
             .into_owned()),
         McpEnvValue::Literal(value) => Ok(value.to_string()),
-        McpEnvValue::UserEnv(name) => {
-            env::var(name).with_context(|| format!("missing required environment variable: {name}"))
-        }
+        McpEnvValue::UserEnv(name) => setup::env_value(name)?
+            .or_else(|| env::var(name).ok())
+            .with_context(|| format!("missing required environment variable: {name}")),
     }
 }
 

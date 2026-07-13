@@ -8,15 +8,7 @@ function formatTokenCount(value) {
   return String(value);
 }
 
-function tokenMeterTitle(source) {
-  if (source === "prequery_input") {
-    return "Current input token count over selected model context";
-  }
-  if (source === "prequery_synthetic_input") {
-    return "Approximate current token count using synthetic input";
-  }
-  return "Token count over selected model context";
-}
+const TOKEN_METER_TITLE = "Token count over selected model context";
 
 export default function TopBar() {
   const {
@@ -57,7 +49,7 @@ export default function TopBar() {
 
       <div
         className="flex items-center gap-1.5 text-muted-foreground"
-        title={tokenMeterTitle(tokenMeter?.source)}
+        title={TOKEN_METER_TITLE}
       >
         <span className="uppercase tracking-widest">tokens</span>
         <span className="text-foreground">

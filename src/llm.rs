@@ -603,56 +603,73 @@ pub async fn list_models(base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
 
 /// Loads Bifrost's model-parameter metadata for one model.
 ///
-/// The endpoint is Bifrost-specific management metadata, not an OpenAI
-/// compatibility route. Bifrost expects the provider-local model name, so
-/// `openai/gpt-5.5` becomes `gpt-5.5` before the request is sent.
+/// Bifrost's management datasheet can store model rows under different names:
+/// a full Windie model ID, a provider-local ID, or sometimes only the final
+/// model segment. Windie tries every slash suffix from most-specific to
+/// least-specific and uses the first successful metadata row.
 pub async fn model_parameters(base_url: BaseUrl, model: &ModelName) -> Result<ModelParameterInfo> {
-    let endpoint = model_parameters_endpoint(&base_url, model)?;
-    let response = Client::new()
-        .get(endpoint)
-        .send()
-        .await
-        .context("failed to send model parameter request")?;
+    let http = Client::new();
+    let mut last_error = None;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "model parameter request failed with {status}: {body}"
-        ));
+    for candidate in model_parameter_candidates(model.as_str()) {
+        let endpoint = model_parameters_endpoint(&base_url, candidate)?;
+        let response = http
+            .get(endpoint)
+            .send()
+            .await
+            .context("failed to send model parameter request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            last_error = Some(anyhow!(
+                "model parameter request failed with {status}: {body}"
+            ));
+            continue;
+        }
+
+        let raw = response
+            .json::<serde_json::Value>()
+            .await
+            .context("failed to parse model parameter response")?;
+        let mut parameters = serde_json::from_value::<ModelParameterInfo>(raw.clone())
+            .context("failed to decode model parameter response")?;
+        parameters.raw = raw;
+
+        return Ok(parameters);
     }
 
-    let raw = response
-        .json::<serde_json::Value>()
-        .await
-        .context("failed to parse model parameter response")?;
-    let mut parameters = serde_json::from_value::<ModelParameterInfo>(raw.clone())
-        .context("failed to decode model parameter response")?;
-    parameters.raw = raw;
-
-    Ok(parameters)
+    Err(last_error.unwrap_or_else(|| anyhow!("model parameter request had no candidates")))
 }
 
 /// Builds the Bifrost management endpoint for model parameters.
-fn model_parameters_endpoint(base_url: &BaseUrl, model: &ModelName) -> Result<Url> {
+fn model_parameters_endpoint(base_url: &BaseUrl, model: &str) -> Result<Url> {
     let api_root = base_url
         .as_str()
         .strip_suffix("/v1")
         .unwrap_or_else(|| base_url.as_str());
     let mut url = Url::parse(&format!("{api_root}/api/models/parameters"))
         .context("failed to build model parameter endpoint")?;
-    url.query_pairs_mut()
-        .append_pair("model", provider_local_model_name(model.as_str()));
+    url.query_pairs_mut().append_pair("model", model);
 
     Ok(url)
 }
 
-/// Returns the provider-local model name expected by Bifrost management APIs.
-fn provider_local_model_name(model: &str) -> &str {
-    model
-        .rsplit_once('/')
-        .map(|(_, local_model)| local_model)
-        .unwrap_or(model)
+/// Returns model-parameter lookup candidates from most-specific to
+/// least-specific.
+fn model_parameter_candidates(model: &str) -> Vec<&str> {
+    let mut candidates = vec![model];
+    candidates.extend(
+        model
+            .char_indices()
+            .filter(|(_, character)| *character == '/')
+            .filter_map(|(index, _)| {
+                let suffix = &model[index + 1..];
+                (!suffix.is_empty()).then_some(suffix)
+            }),
+    );
+    candidates.dedup();
+    candidates
 }
 
 /// Builds provider-specific prompt-cache fields for Bifrost's Responses route.
@@ -705,12 +722,20 @@ fn provider_name(model: &str) -> Option<&str> {
 /// GUI grounding and computer-use accuracy.
 fn image_input_detail_for_model(model: &str) -> ImageInputDetail {
     if provider_name(model) == Some("openai")
-        && openai_model_supports_original_image_detail(provider_local_model_name(model))
+        && openai_model_supports_original_image_detail(provider_local_image_model_name(model))
     {
         return ImageInputDetail::Original;
     }
 
     ImageInputDetail::High
+}
+
+/// Returns the final local model segment for provider-specific image handling.
+fn provider_local_image_model_name(model: &str) -> &str {
+    model
+        .rsplit_once('/')
+        .map(|(_, local_model)| local_model)
+        .unwrap_or(model)
 }
 
 /// Returns whether one OpenAI-local model name supports `detail: original`.
@@ -1384,13 +1409,24 @@ mod tests {
     #[test]
     fn builds_model_parameters_endpoint_from_base_url() {
         let base_url = BaseUrl::new("http://localhost:8080/v1/");
-        let model = ModelName::new("openai/gpt-5.5");
 
         assert_eq!(
-            model_parameters_endpoint(&base_url, &model)
+            model_parameters_endpoint(&base_url, "openai/gpt-5.5")
                 .unwrap()
                 .as_str(),
-            "http://localhost:8080/api/models/parameters?model=gpt-5.5"
+            "http://localhost:8080/api/models/parameters?model=openai%2Fgpt-5.5"
+        );
+    }
+
+    #[test]
+    fn builds_model_parameter_candidates_for_nested_model_ids() {
+        assert_eq!(
+            model_parameter_candidates("openrouter/openai/gpt-4o-mini"),
+            vec![
+                "openrouter/openai/gpt-4o-mini",
+                "openai/gpt-4o-mini",
+                "gpt-4o-mini"
+            ]
         );
     }
 

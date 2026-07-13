@@ -103,6 +103,19 @@ pub fn list_env_keys() -> Result<Vec<String>> {
     Ok(keys)
 }
 
+/// Reads one provider-key value from Windie's `~/.windie/.env` file.
+pub fn env_value(key: &str) -> Result<Option<String>> {
+    let path = env_file_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let text =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+
+    Ok(text.lines().find_map(|line| env_line_value(line, key)))
+}
+
 /// Sets one or more provider-key environment values in `~/.windie/.env`.
 pub fn set_env_values(assignments: &[(String, String)]) -> Result<PathBuf> {
     if assignments.is_empty() {
@@ -286,6 +299,35 @@ fn env_line_key(line: &str) -> Option<&str> {
     if key.is_empty() { None } else { Some(key) }
 }
 
+/// Returns the value assigned to a target key by one `.env` line.
+fn env_line_value(line: &str, target_key: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let line = line.strip_prefix("export ").unwrap_or(line).trim();
+    let (key, value) = line.split_once('=')?;
+    if key.trim() != target_key {
+        return None;
+    }
+
+    Some(unquote_env_value(value.trim()).to_string())
+}
+
+/// Removes matching quote characters around a full `.env` value.
+fn unquote_env_value(value: &str) -> &str {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+        {
+            return &value[1..value.len() - 1];
+        }
+    }
+
+    value
+}
+
 /// Inserts or replaces one key assignment in an in-memory env file.
 fn set_env_line(lines: &mut Vec<String>, key: &str, value: &str) {
     let replacement = format!("{key}={value}");
@@ -338,6 +380,26 @@ mod tests {
             Some("OPENROUTER_API_KEY")
         );
         assert_eq!(env_line_key("# OPENAI_API_KEY=value"), None);
+    }
+
+    #[test]
+    fn env_line_value_reads_plain_export_and_quoted_assignments() {
+        assert_eq!(
+            env_line_value("OPENAI_API_KEY=value", "OPENAI_API_KEY"),
+            Some("value".to_string())
+        );
+        assert_eq!(
+            env_line_value("export OPENROUTER_API_KEY='quoted'", "OPENROUTER_API_KEY"),
+            Some("quoted".to_string())
+        );
+        assert_eq!(
+            env_line_value("BRIGHTDATA_API_TOKEN=\"bright\"", "BRIGHTDATA_API_TOKEN"),
+            Some("bright".to_string())
+        );
+        assert_eq!(
+            env_line_value("# OPENAI_API_KEY=value", "OPENAI_API_KEY"),
+            None
+        );
     }
 
     #[test]
