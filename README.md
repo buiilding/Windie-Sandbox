@@ -106,23 +106,18 @@ Start the localhost developer API:
 target/release/windie api
 ```
 
-The API listens on `http://127.0.0.1:8787` and prints a per-process API token.
-Local developer clients must send that token in the `X-Windie-Api-Token`
-header.
+The API listens on `http://127.0.0.1:8787`, starts Bifrost when needed, and
+uses a user-local API token from `~/.windie/api-token` unless
+`WINDIE_API_TOKEN` is set.
 
-Run the developer inspector:
+Open the developer inspector:
 
 ```bash
-cd dev/windie-inspector
-npm install --legacy-peer-deps
-npm run start
+target/release/windie inspector
 ```
 
-Then open it with the API token:
-
-```text
-http://localhost:3000?windie_token=<printed token>
-```
+The inspector command starts the local React inspector when needed and opens the
+browser with the API token already attached.
 
 ## Provider Path
 
@@ -135,7 +130,8 @@ http://localhost:8080/v1
 Windie uses an OpenAI-compatible request path. Bifrost handles provider
 unification for OpenAI, Anthropic, Ollama, vLLM, and other providers.
 
-Start or stop Bifrost explicitly through Windie:
+The API starts Bifrost on launch. You can still start or stop Bifrost
+explicitly through Windie:
 
 ```bash
 windie gateway start

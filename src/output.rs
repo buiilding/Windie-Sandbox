@@ -77,6 +77,17 @@ impl TerminalOutput {
     pub fn api_started(&self, address: &SocketAddr, api_token: &str) {
         println!("windie api listening on http://{address}");
         println!("windie api token: {api_token}");
+        println!("windie inspector: {}", inspector_url(api_token));
+    }
+
+    /// Prints the browser inspector URL opened by `windie inspector`.
+    pub fn inspector_opened(&self, url: &str, started_server: bool) {
+        if started_server {
+            println!("windie inspector server: started");
+        } else {
+            println!("windie inspector server: already running");
+        }
+        println!("windie inspector: {url}");
     }
 
     /// Prints all fields measured by a performance baseline.
@@ -621,6 +632,7 @@ fn help_lines() -> Vec<String> {
         "Usage:",
         "  windie",
         "  windie api",
+        "  windie inspector",
         "  windie install <target>",
         "  windie env KEY=value",
         "  windie env list",
@@ -667,7 +679,8 @@ fn help_lines() -> Vec<String> {
         "",
         "Notes:",
         "  windie exits successfully without runtime action.",
-        "  windie api starts the localhost developer API server.",
+        "  windie api starts the localhost developer API server and prints the inspector URL.",
+        "  windie inspector opens the browser inspector with the current API token.",
         "  windie install verifies or installs approved public runtime dependencies.",
         "  windie env edits only ~/.windie/.env and never prints secret values.",
         "  windie tools lists provider tools available to attach to conversations.",
@@ -1188,6 +1201,29 @@ fn format_duration(duration: std::time::Duration) -> String {
     } else {
         format!("{}us", duration.as_micros())
     }
+}
+
+/// Builds the local inspector URL with one query-encoded token.
+fn inspector_url(api_token: &str) -> String {
+    format!(
+        "http://localhost:3000?windie_token={}",
+        encode_query_value(api_token)
+    )
+}
+
+/// Percent-encodes one URL query value without adding another dependency.
+fn encode_query_value(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+
+    encoded
 }
 
 /// Formats stored microsecond metrics through the same human-readable duration

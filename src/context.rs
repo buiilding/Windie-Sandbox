@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::conversation::{ConversationId, Message, Role};
+use crate::conversation::{ConversationId, Message, MessageId, Role};
 use crate::store::Compaction;
 use crate::store::Store;
 
@@ -36,6 +36,30 @@ impl ContextBuilder {
         let parts = Self::load_parts(store, conversation_id)?;
 
         Ok(Self::flatten(parts))
+    }
+
+    /// Loads the model-facing context for an explicit message head.
+    ///
+    /// Runtime runs use this path so execution is tied to the head captured at
+    /// admission time instead of the conversation's mutable UI-selected active
+    /// message.
+    pub fn build_to_head(
+        store: &Store,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<Vec<Message>> {
+        let active_path = match head_message_id {
+            Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
+            None => Vec::new(),
+        };
+        let system_prompt = store.system_prompt(conversation_id)?;
+        let compaction = store.latest_compaction(conversation_id)?;
+
+        Ok(Self::flatten(ContextParts {
+            active_path,
+            system_prompt,
+            compaction,
+        }))
     }
 
     /// Loads the storage-backed pieces needed to build model-facing context.

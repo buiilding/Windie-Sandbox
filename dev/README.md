@@ -13,9 +13,7 @@ state transitions, tool execution, or permission policy.
 Run it from this repo with:
 
 ```bash
-cd dev/windie-inspector
-npm install --legacy-peer-deps
-npm run start
+target/release/windie inspector
 ```
 
 Start the API from the repository root:
@@ -24,8 +22,5 @@ Start the API from the repository root:
 target/release/windie api
 ```
 
-Open the inspector with the printed API token:
-
-```text
-http://localhost:3000?windie_token=<printed token>
-```
+The inspector command starts the React dev server when needed and opens the
+browser with the API token already attached.

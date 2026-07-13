@@ -27,11 +27,12 @@ use crate::llm::{
 };
 use crate::output::RuntimeOutput;
 use crate::runtime::{
-    PendingToolExecution, RuntimeEventSink, RuntimeModelRequest, approve_tool_call,
-    deny_pending_tool_call, deny_tool_call, execute_pending_tool_call, load_pending_tool_call,
-    pending_tool_approvals, pending_tool_approvals_with_registry, prepare_pending_tool_execution,
-    query_conversation_resolving_automatic_tools,
-    query_conversation_resolving_automatic_tools_with_events, store_pending_tool_result,
+    PendingToolExecution, RuntimeEventSink, RuntimeInput, RuntimeModelRequest, RuntimeOutcome,
+    approve_tool_call, deny_pending_tool_call, deny_tool_call, execute_pending_tool_call,
+    load_pending_tool_call_at_head, pending_approvals, pending_tool_approvals,
+    pending_tool_approvals_with_registry, prepare_pending_tool_execution,
+    query_conversation_resolving_automatic_tools, run_until_blocked as runtime_run_until_blocked,
+    store_run_pending_tool_result,
 };
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
@@ -895,85 +896,47 @@ where
     .await
 }
 
-/// Runs the shared query sequence with a caller-owned provider registry.
+/// Provider/runtime inputs needed to execute a run.
 ///
-/// Long-lived clients such as the API server use this path so auto-approved MCP
-/// calls reuse the same registry/session behavior as explicit approvals.
-pub async fn query_conversation_with_registry<O>(
-    output: &O,
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    runtime: QueryStreamRuntime<'_>,
-) -> Result<Message>
-where
-    O: RuntimeOutput,
-{
-    require_gateway_running(runtime.gateway_url).await?;
-    let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
-    let reasoning = resolve_reasoning_request(store, conversation_id, runtime.reasoning)?;
-    let reasoning = reasoning_request_for_model(&model, reasoning);
-    let prompt_cache =
-        prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
-    let llm = BifrostClient::new(runtime.base_url, model);
-
-    query_conversation_resolving_automatic_tools(
-        output,
-        &llm,
-        store,
-        conversation_id,
-        runtime.registry,
-        reasoning.as_ref(),
-        prompt_cache.as_ref(),
-    )
-    .await
-}
-
-/// Provider/runtime inputs needed to execute a streamed query.
-///
-/// The streaming operation has one extra event sink compared with the blocking
-/// query path, so this struct keeps the API call site explicit without growing
-/// a long parameter list.
-pub struct QueryStreamRuntime<'a> {
+/// Long-lived API execution and blocking CLI calls both pass through this
+/// struct so gateway, Bifrost endpoint, model override, reasoning, and tool
+/// executor access stay explicit.
+pub struct RunRuntime<'a> {
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model_override: Option<ModelName>,
     reasoning: Option<ReasoningRequest>,
-    registry: &'a ToolProviderRegistry,
+    tools: &'a ToolProviderRegistry,
 }
 
-impl<'a> QueryStreamRuntime<'a> {
-    /// Groups the gateway, Bifrost endpoint, optional model override, and
-    /// provider registry.
+impl<'a> RunRuntime<'a> {
+    /// Groups provider/runtime dependencies for one run.
     pub fn new(
         gateway_url: GatewayUrl,
         base_url: BaseUrl,
         model_override: Option<ModelName>,
         reasoning: Option<ReasoningRequest>,
-        registry: &'a ToolProviderRegistry,
+        tools: &'a ToolProviderRegistry,
     ) -> Self {
         Self {
             gateway_url,
             base_url,
             model_override,
             reasoning,
-            registry,
+            tools,
         }
     }
 }
 
-/// Runs one streamed runtime query turn while emitting durable runtime events.
-///
-/// The API streaming route uses this path to notify clients after assistant
-/// messages and tool results have been persisted. Existing blocking callers use
-/// `query_conversation_with_registry`, which keeps the same runtime flow with a
-/// no-op event sink.
-pub async fn query_runtime_turn<O, E>(
+/// Runs one backend-owned execution until it completes or waits for approval.
+pub async fn run_until_blocked<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
-    runtime: QueryStreamRuntime<'_>,
-) -> Result<Message>
+    head_message_id: Option<&MessageId>,
+    runtime: RunRuntime<'_>,
+) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
     E: RuntimeEventSink,
@@ -986,14 +949,17 @@ where
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
 
-    query_conversation_resolving_automatic_tools_with_events(
+    runtime_run_until_blocked(
         output,
         &llm,
         store,
-        conversation_id,
-        runtime.registry,
+        RuntimeInput {
+            conversation_id,
+            head_message_id,
+            tools: runtime.tools,
+            model_request: RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
+        },
         events,
-        RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
     )
     .await
 }
@@ -1055,81 +1021,99 @@ pub fn deny_tool(
     deny_tool_call(store, conversation_id, tool_call_id)
 }
 
-/// Executes one approved tool call, emits its persisted result, and continues
-/// the runtime when no later approval is waiting.
-///
-/// This is the client-facing approval behavior: approval resolves one pending
-/// call and lets Windie advance if the active path is ready. Multi-tool turns
-/// stop after the stored result when the next requested call still needs manual
-/// approval.
-pub async fn approve_tool_turn<O, E>(
+/// Executes one approved run-scoped tool call and continues that run.
+pub async fn approve_run_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
     tool_call_id: &ToolCallId,
-    runtime: QueryStreamRuntime<'_>,
-) -> Result<Option<Message>>
+    runtime: RunRuntime<'_>,
+) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
-    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let pending =
+        load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
     let execution =
-        prepare_pending_tool_execution(store, conversation_id, &pending, runtime.registry)?;
+        prepare_pending_tool_execution(store, conversation_id, &pending, runtime.tools)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            execute_pending_tool_call(&pending, &attached_tool, runtime.registry).await?
+            execute_pending_tool_call(&pending, &attached_tool, runtime.tools).await?
         }
     };
-    let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
     events.tool_result_saved(&message_id);
 
-    continue_after_tool_result(output, events, store, conversation_id, runtime).await
+    continue_run_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
+        .await
 }
 
-/// Stores one denied tool result, emits it, and continues the runtime when
-/// there are no later approvals waiting.
-pub async fn deny_tool_turn<O, E>(
+/// Stores one denied run-scoped tool result and continues that run.
+pub async fn deny_run_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
     tool_call_id: &ToolCallId,
-    runtime: QueryStreamRuntime<'_>,
-) -> Result<Option<Message>>
+    runtime: RunRuntime<'_>,
+) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
-    let pending = load_pending_tool_call(store, conversation_id, tool_call_id)?;
+    let pending =
+        load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
     let result = deny_pending_tool_call(&pending);
-    let message_id = store_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
     events.tool_result_saved(&message_id);
 
-    continue_after_tool_result(output, events, store, conversation_id, runtime).await
+    continue_run_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
+        .await
 }
 
-/// Continues after a stored tool result only when no manual approval remains.
-async fn continue_after_tool_result<O, E>(
+/// Continues a run after a stored tool result only when no manual approval remains.
+async fn continue_run_after_tool_result<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
-    runtime: QueryStreamRuntime<'_>,
-) -> Result<Option<Message>>
+    head_message_id: &MessageId,
+    runtime: RunRuntime<'_>,
+) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
-    if !pending_tool_approvals_with_registry(store, conversation_id, runtime.registry)?.is_empty() {
-        return Ok(None);
+    if !pending_approvals(
+        store,
+        RuntimeInput {
+            conversation_id,
+            head_message_id: Some(head_message_id),
+            tools: runtime.tools,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+    )?
+    .is_empty()
+    {
+        return Ok(RuntimeOutcome::WaitingForApproval {
+            head_message_id: head_message_id.clone(),
+        });
     }
 
-    query_runtime_turn(output, events, store, conversation_id, runtime)
-        .await
-        .map(Some)
+    run_until_blocked(
+        output,
+        events,
+        store,
+        conversation_id,
+        Some(head_message_id),
+        runtime,
+    )
+    .await
 }
 
 /// Loaded version of one insert part.

@@ -21,6 +21,8 @@ use crate::tool::{ProviderToolName, ToolProviderId};
 pub enum Command {
     /// Start the localhost developer API server.
     Api,
+    /// Open the local developer inspector with the current API token.
+    Inspector,
     /// Select one message as the active runtime node for a conversation.
     Activate {
         conversation_id: ConversationId,
@@ -189,6 +191,7 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
         [arg] if arg == "api" => Command::Api,
+        [arg] if arg == "inspector" => Command::Inspector,
         [command, target] if command == "install" => Command::Install {
             target: target.to_string(),
         },
@@ -655,6 +658,13 @@ mod tests {
         let command = command_from_args(["windie".to_string(), "api".to_string()]);
 
         assert!(matches!(command, Command::Api));
+    }
+
+    #[test]
+    fn reads_inspector_command() {
+        let command = command_from_args(["windie".to_string(), "inspector".to_string()]);
+
+        assert!(matches!(command, Command::Inspector));
     }
 
     #[test]

@@ -13,13 +13,17 @@ import {
   countConversationInputTokens,
   conversationFromInspection,
   conversationSummaryFromApi,
+  approveRunTool as approveRunToolApi,
+  createRun as createRunApi,
+  denyRunTool as denyRunToolApi,
   fetchModelParameters,
+  getRun,
+  listRuns,
   listModels,
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
-  streamApproveTool,
-  streamConversationQuery,
-  streamDenyTool,
+  stopRun as stopRunApi,
+  streamRunEvents,
   toolCatalogFromApi,
 } from "@/lib/windieApi";
 
@@ -65,6 +69,26 @@ function tokenCountKey(conversationId, modelId) {
 
 function isAbortError(error) {
   return error?.name === "AbortError";
+}
+
+function runFromApi(run) {
+  if (!run) return null;
+  return {
+    id: run.id,
+    conversationId: run.conversation_id,
+    startHeadMessageId: run.start_head_message_id || null,
+    currentHeadMessageId: run.current_head_message_id || null,
+    status: run.status,
+    model: run.model,
+    reasoning: run.reasoning || null,
+    error: run.error || null,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+  };
+}
+
+function isLiveRun(run) {
+  return run?.status === "running" || run?.status === "waiting_for_approval";
 }
 
 function pathNodesForConversation(conversation) {
@@ -125,7 +149,6 @@ export function WindieProvider({ children }) {
   const [theme, setTheme] = useState("dark");
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
-  const [streaming, setStreaming] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
   const [gatewayRunning, setGatewayRunning] = useState(false);
@@ -136,15 +159,17 @@ export function WindieProvider({ children }) {
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
-  const activeStreamAbortRef = useRef(null);
-  // Ephemeral live assistant preview from SSE delta events. Display-only: the
-  // persisted message that arrives via `assistant_message_saved` is the source
-  // of truth and replaces this.
-  const [pendingAssistant, setPendingAssistant] = useState(null);
+  const [runsById, setRunsById] = useState({});
+  const [visibleRunId, setVisibleRunId] = useState(null);
+  const [runEventsByRunId, setRunEventsByRunId] = useState({});
+  const [pendingAssistantByRunId, setPendingAssistantByRunId] = useState({});
+  const subscriptionAbortRef = useRef(null);
+  const subscribedRunIdRef = useRef(null);
 
   useEffect(
     () => () => {
-      activeStreamAbortRef.current?.abort();
+      subscriptionAbortRef.current?.abort();
+      subscribedRunIdRef.current = null;
     },
     []
   );
@@ -643,164 +668,219 @@ export function WindieProvider({ children }) {
     [loadConversation, runMutation]
   );
 
-  const consumeRuntimeStream = useCallback(
-    async (convId, stream) => {
-      try {
-        await stream(async ({ data }) => {
-          if (data?.type === "assistant_delta") {
-            // Ephemeral live model text. Accumulate into the pending bubble;
-            // the persisted message replaces it once saved.
-            setPendingAssistant((prev) =>
-              prev && prev.convId === convId
-                ? { ...prev, text: prev.text + (data.text || "") }
-                : { convId, text: data.text || "", reasoning: "", toolCalls: {} }
-            );
-            return;
-          }
-          if (data?.type === "reasoning_delta") {
-            setPendingAssistant((prev) =>
-              prev && prev.convId === convId
-                ? { ...prev, reasoning: (prev.reasoning || "") + (data.text || "") }
-                : {
-                    convId,
-                    text: "",
-                    reasoning: data.text || "",
-                    toolCalls: {},
-                  }
-            );
-            return;
-          }
-          if (data?.type === "tool_call_delta") {
-            setPendingAssistant((prev) => {
-              const base =
-                prev && prev.convId === convId
-                  ? prev
-                  : { convId, text: "", reasoning: "", toolCalls: {} };
-              const index = String(data.index ?? 0);
-              const existing = base.toolCalls?.[index] || {
-                id: null,
-                name: null,
-                argumentsText: "",
-              };
+  const rememberRun = useCallback((run) => {
+    const normalized = runFromApi(run);
+    if (!normalized) return null;
+    setRunsById((prev) => ({ ...prev, [normalized.id]: normalized }));
+    return normalized;
+  }, []);
 
-              return {
-                ...base,
-                toolCalls: {
-                  ...(base.toolCalls || {}),
-                  [index]: {
-                    id: data.id || existing.id,
-                    name: data.name || existing.name,
-                    argumentsText:
-                      existing.argumentsText + (data.arguments_delta || ""),
-                  },
-                },
-              };
-            });
-            return;
-          }
-          if (
-            data?.type === "assistant_message_saved" ||
-            data?.type === "tool_result_saved"
-          ) {
-            await loadConversation(convId);
-            // The durable message now renders from the store; drop the
-            // ephemeral preview so it is not shown twice.
-            setPendingAssistant(null);
-          }
-          if (data?.type === "query_done") {
-            await loadConversation(convId, { countTokens: false });
-            setPendingAssistant(null);
-          }
+  const handleRunEvent = useCallback(
+    async (run, data) => {
+      if (!data?.type) return;
+
+      setRunEventsByRunId((prev) => ({
+        ...prev,
+        [run.id]: [...(prev[run.id] || []), data],
+      }));
+
+      if (data.type === "assistant_delta") {
+        setPendingAssistantByRunId((prev) => {
+          const current = prev[run.id] || {
+            convId: run.conversationId,
+            text: "",
+            reasoning: "",
+            toolCalls: {},
+          };
+          return {
+            ...prev,
+            [run.id]: { ...current, text: current.text + (data.text || "") },
+          };
         });
-      } catch (error) {
-        setPendingAssistant(null);
-        await loadConversation(convId, { countTokens: false }).catch(() => {});
-        throw error;
+        return;
       }
-    },
-    [loadConversation]
-  );
 
-  const runAbortableRuntimeStream = useCallback(
-    async (convId, stream) => {
-      activeStreamAbortRef.current?.abort();
-      const controller = new AbortController();
-      activeStreamAbortRef.current = controller;
+      if (data.type === "reasoning_delta") {
+        setPendingAssistantByRunId((prev) => {
+          const current = prev[run.id] || {
+            convId: run.conversationId,
+            text: "",
+            reasoning: "",
+            toolCalls: {},
+          };
+          return {
+            ...prev,
+            [run.id]: {
+              ...current,
+              reasoning: (current.reasoning || "") + (data.text || ""),
+            },
+          };
+        });
+        return;
+      }
 
-      try {
-        await consumeRuntimeStream(convId, (onEvent) =>
-          stream(onEvent, controller.signal)
-        );
-      } finally {
-        if (activeStreamAbortRef.current === controller) {
-          activeStreamAbortRef.current = null;
+      if (data.type === "tool_call_delta") {
+        setPendingAssistantByRunId((prev) => {
+          const current = prev[run.id] || {
+            convId: run.conversationId,
+            text: "",
+            reasoning: "",
+            toolCalls: {},
+          };
+          const index = String(data.index ?? 0);
+          const existing = current.toolCalls?.[index] || {
+            id: null,
+            name: null,
+            argumentsText: "",
+          };
+          return {
+            ...prev,
+            [run.id]: {
+              ...current,
+              toolCalls: {
+                ...(current.toolCalls || {}),
+                [index]: {
+                  id: data.id || existing.id,
+                  name: data.name || existing.name,
+                  argumentsText:
+                    existing.argumentsText + (data.arguments_delta || ""),
+                },
+              },
+            },
+          };
+        });
+        return;
+      }
+
+      if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
+        await loadConversation(run.conversationId);
+        setPendingAssistantByRunId((prev) => ({ ...prev, [run.id]: null }));
+        return;
+      }
+
+      if (
+        data.type === "completed" ||
+        data.type === "failed" ||
+        data.type === "cancelled" ||
+        data.type === "waiting_for_approval"
+      ) {
+        const latest = await getRun(run.id).catch(() => null);
+        if (latest) rememberRun(latest);
+        await loadConversation(run.conversationId, { countTokens: false }).catch(() => {});
+        if (data.type !== "waiting_for_approval") {
+          setPendingAssistantByRunId((prev) => ({ ...prev, [run.id]: null }));
         }
       }
     },
-    [consumeRuntimeStream]
+    [loadConversation, rememberRun]
   );
 
-  const runStreamingQuery = useCallback(
-    async (convId) =>
-      runAbortableRuntimeStream(convId, (onEvent, signal) =>
-        streamConversationQuery(convId, null, null, onEvent, { signal })
-      ),
-    [runAbortableRuntimeStream]
+  const subscribeToRun = useCallback(
+    (run) => {
+      const normalized = rememberRun(run);
+      if (!normalized) return;
+
+      setVisibleRunId(normalized.id);
+      if (subscribedRunIdRef.current === normalized.id) return;
+
+      subscriptionAbortRef.current?.abort();
+      const controller = new AbortController();
+      subscriptionAbortRef.current = controller;
+      subscribedRunIdRef.current = normalized.id;
+
+      streamRunEvents(
+        normalized.id,
+        null,
+        ({ data }) => handleRunEvent(normalized, data),
+        { signal: controller.signal }
+      ).catch((error) => {
+        if (!isAbortError(error)) {
+          setApiError(error.message);
+          toast.error(error.message);
+        }
+      }).finally(() => {
+        if (subscriptionAbortRef.current === controller) {
+          subscriptionAbortRef.current = null;
+          subscribedRunIdRef.current = null;
+        }
+      });
+    },
+    [handleRunEvent, rememberRun]
   );
 
-  const stopStreaming = useCallback(() => {
-    activeStreamAbortRef.current?.abort();
-    setPendingAssistant(null);
-    setStreaming(false);
-  }, []);
+  const refreshRuns = useCallback(async () => {
+    const runs = (await listRuns()).map(runFromApi).filter(Boolean);
+    setRunsById(Object.fromEntries(runs.map((run) => [run.id, run])));
+    const visibleLiveRun =
+      runs.find((run) => run.conversationId === activeConvId && isLiveRun(run)) ||
+      runs.find(isLiveRun) ||
+      null;
+    if (visibleLiveRun) {
+      subscribeToRun(visibleLiveRun);
+    }
+    return runs;
+  }, [activeConvId, subscribeToRun]);
+
+  useEffect(() => {
+    refreshRuns().catch((error) => setApiError(error.message));
+  }, [refreshRuns]);
+
+  const stopStreaming = useCallback(async () => {
+    if (!visibleRunId) return;
+    try {
+      const run = await stopRunApi(visibleRunId);
+      rememberRun(run);
+      setPendingAssistantByRunId((prev) => ({ ...prev, [visibleRunId]: null }));
+    } catch (error) {
+      setApiError(error.message);
+      toast.error(error.message);
+    }
+  }, [rememberRun, visibleRunId]);
 
   const sendMessage = useCallback(
     async (convId, text, options = {}) => {
       const attachments = options.attachments || [];
-      if ((!text.trim() && attachments.length === 0) || streaming) return;
-      setStreaming(true);
+      if (!text.trim() && attachments.length === 0) return;
       try {
         const parts = await messagePartsForSend(text, attachments);
-        await apiRequest(`/api/conversations/${convId}/messages`, {
+        const inserted = await apiRequest(`/api/conversations/${convId}/messages`, {
           method: "POST",
           body: JSON.stringify({ role: "user", parts }),
         });
         await loadConversation(convId);
-        await runStreamingQuery(convId);
+        setSelectedNodeId(inserted.message_id);
+        const run = await createRunApi(convId, {
+          headMessageId: inserted.message_id,
+          model: activeConv?.model || null,
+          reasoning: activeReasoning,
+        });
+        subscribeToRun(run);
         setApiError(null);
       } catch (error) {
-        if (isAbortError(error)) {
-          setApiError(null);
-          return;
-        }
         setApiError(error.message);
         toast.error(error.message);
-      } finally {
-        setStreaming(false);
       }
     },
-    [loadConversation, runStreamingQuery, streaming]
+    [activeConv?.model, activeReasoning, loadConversation, subscribeToRun]
   );
 
   const continueConversation = useCallback(
     async (convId) => {
-      if (!convId || streaming) return;
-      setStreaming(true);
+      if (!convId) return;
       try {
-        await runStreamingQuery(convId);
+        const run = await createRunApi(convId, {
+          headMessageId: selectedNodeId,
+          model: activeConv?.model || null,
+          reasoning: activeReasoning,
+        });
+        subscribeToRun(run);
         setApiError(null);
       } catch (error) {
-        if (isAbortError(error)) {
-          setApiError(null);
-          return;
-        }
         setApiError(error.message);
         toast.error(error.message);
-      } finally {
-        setStreaming(false);
       }
     },
-    [runStreamingQuery, streaming]
+    [activeConv?.model, activeReasoning, selectedNodeId, subscribeToRun]
   );
 
   const startGateway = useCallback(
@@ -832,28 +912,38 @@ export function WindieProvider({ children }) {
   );
 
   const approveToolCall = useCallback(
-    (convId, toolCallId) =>
-      runMutation(
-        () =>
-          runAbortableRuntimeStream(convId, (onEvent, signal) =>
-            streamApproveTool(convId, toolCallId, onEvent, { signal })
-          ),
-        { reload: false }
-      ),
-    [runAbortableRuntimeStream, runMutation]
+    async (_convId, toolCallId) => {
+      if (!visibleRunId) return;
+      try {
+        const run = await approveRunToolApi(visibleRunId, toolCallId);
+        subscribeToRun(run);
+      } catch (error) {
+        setApiError(error.message);
+        toast.error(error.message);
+      }
+    },
+    [subscribeToRun, visibleRunId]
   );
 
   const denyToolCall = useCallback(
-    (convId, toolCallId) =>
-      runMutation(
-        () =>
-          runAbortableRuntimeStream(convId, (onEvent, signal) =>
-            streamDenyTool(convId, toolCallId, onEvent, { signal })
-          ),
-        { reload: false }
-      ),
-    [runAbortableRuntimeStream, runMutation]
+    async (_convId, toolCallId) => {
+      if (!visibleRunId) return;
+      try {
+        const run = await denyRunToolApi(visibleRunId, toolCallId);
+        subscribeToRun(run);
+      } catch (error) {
+        setApiError(error.message);
+        toast.error(error.message);
+      }
+    },
+    [subscribeToRun, visibleRunId]
   );
+
+  const visibleRun = visibleRunId ? runsById[visibleRunId] || null : null;
+  const streaming = isLiveRun(visibleRun);
+  const pendingAssistant = visibleRunId
+    ? pendingAssistantByRunId[visibleRunId] || null
+    : null;
 
   const value = {
     conversations,
@@ -866,6 +956,10 @@ export function WindieProvider({ children }) {
     contextPreviewOpen,
     streaming,
     pendingAssistant,
+    runsById,
+    visibleRun,
+    visibleRunId,
+    runEventsByRunId,
     searchQuery,
     models,
     modelsLoading,
@@ -912,6 +1006,7 @@ export function WindieProvider({ children }) {
     refreshGateway,
     approveToolCall,
     denyToolCall,
+    refreshRuns,
     refreshConversations,
     loadConversation,
   };

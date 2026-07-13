@@ -21,6 +21,8 @@ use crate::conversation::{
     MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName, UnsavedMessagePart,
 };
 use crate::error;
+use crate::llm::ReasoningRequest;
+use crate::run::{Run, RunEvent, RunEventRecord, RunId, RunStatus};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef,
@@ -43,7 +45,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 9;
+const DATABASE_SCHEMA_VERSION: i32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -222,6 +224,39 @@ impl Store {
                     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
                     FOREIGN KEY (image_asset_id) REFERENCES image_assets(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS runtime_runs (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    start_head_message_id TEXT,
+                    current_head_message_id TEXT,
+                    status TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    reasoning TEXT,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+                    FOREIGN KEY (start_head_message_id) REFERENCES messages(id),
+                    FOREIGN KEY (current_head_message_id) REFERENCES messages(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS runtime_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (run_id) REFERENCES runtime_runs(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_runtime_runs_conversation
+                ON runtime_runs(conversation_id);
+
+                CREATE INDEX IF NOT EXISTS idx_runtime_events_run_id_id
+                ON runtime_events(run_id, id);
 
                 CREATE TABLE IF NOT EXISTS compactions (
                     id TEXT PRIMARY KEY,
@@ -906,6 +941,286 @@ impl Store {
         self.load_path_to_message(conversation_id, &message_id)
     }
 
+    /// Creates one runtime run from an explicit conversation head.
+    pub fn create_run(
+        &mut self,
+        run_id: &RunId,
+        conversation_id: &ConversationId,
+        start_head_message_id: Option<&MessageId>,
+        model: &str,
+        reasoning: Option<&ReasoningRequest>,
+    ) -> Result<Run> {
+        self.ensure_conversation_exists(conversation_id)?;
+        if let Some(message_id) = start_head_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
+
+        let now = now_millis()?;
+        let reasoning_json = reasoning
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to encode run reasoning")?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start runtime run transaction")?;
+
+        transaction
+            .execute(
+                "
+                INSERT INTO runtime_runs (
+                    id,
+                    conversation_id,
+                    start_head_message_id,
+                    current_head_message_id,
+                    status,
+                    model,
+                    reasoning,
+                    error,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8)
+                ",
+                params![
+                    run_id.as_str(),
+                    conversation_id.as_str(),
+                    start_head_message_id.map(MessageId::as_str),
+                    start_head_message_id.map(MessageId::as_str),
+                    RunStatus::Running.as_storage(),
+                    model,
+                    reasoning_json.as_deref(),
+                    now
+                ],
+            )
+            .context("failed to create runtime run")?;
+        transaction
+            .commit()
+            .context("failed to commit runtime run create")?;
+
+        self.load_run(run_id)
+    }
+
+    /// Loads one runtime run by ID.
+    pub fn load_run(&self, run_id: &RunId) -> Result<Run> {
+        self.connection
+            .query_row(
+                "
+                SELECT
+                    id,
+                    conversation_id,
+                    start_head_message_id,
+                    current_head_message_id,
+                    status,
+                    model,
+                    reasoning,
+                    error,
+                    created_at,
+                    updated_at
+                FROM runtime_runs
+                WHERE id = ?1
+                ",
+                params![run_id.as_str()],
+                run_from_row,
+            )
+            .optional()
+            .context("failed to load runtime run")?
+            .ok_or_else(|| error::not_found(format!("runtime run does not exist: {run_id}")))
+    }
+
+    /// Lists all known runtime runs, newest first.
+    pub fn list_runs(&self) -> Result<Vec<Run>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT
+                    id,
+                    conversation_id,
+                    start_head_message_id,
+                    current_head_message_id,
+                    status,
+                    model,
+                    reasoning,
+                    error,
+                    created_at,
+                    updated_at
+                FROM runtime_runs
+                ORDER BY created_at DESC, id DESC
+                ",
+            )
+            .context("failed to prepare runtime run list")?;
+
+        statement
+            .query_map([], run_from_row)
+            .context("failed to list runtime runs")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to decode runtime runs")
+    }
+
+    /// Lists runs belonging to one conversation.
+    pub fn list_conversation_runs(&self, conversation_id: &ConversationId) -> Result<Vec<Run>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT
+                    id,
+                    conversation_id,
+                    start_head_message_id,
+                    current_head_message_id,
+                    status,
+                    model,
+                    reasoning,
+                    error,
+                    created_at,
+                    updated_at
+                FROM runtime_runs
+                WHERE conversation_id = ?1
+                ORDER BY created_at DESC, id DESC
+                ",
+            )
+            .context("failed to prepare conversation runtime run list")?;
+
+        statement
+            .query_map(params![conversation_id.as_str()], run_from_row)
+            .context("failed to list conversation runtime runs")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to decode conversation runtime runs")
+    }
+
+    /// Updates one run's current message head.
+    pub fn update_run_head(
+        &mut self,
+        run_id: &RunId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<()> {
+        let run = self.load_run(run_id)?;
+        if let Some(message_id) = head_message_id {
+            self.ensure_message_belongs_to_conversation(&run.conversation_id, message_id)?;
+        }
+
+        let now = now_millis()?;
+        self.connection
+            .execute(
+                "
+                UPDATE runtime_runs
+                SET current_head_message_id = ?1,
+                    updated_at = ?2
+                WHERE id = ?3
+                ",
+                params![head_message_id.map(MessageId::as_str), now, run_id.as_str()],
+            )
+            .context("failed to update runtime run head")?;
+
+        Ok(())
+    }
+
+    /// Updates one run's lifecycle status.
+    pub fn update_run_status(
+        &mut self,
+        run_id: &RunId,
+        status: RunStatus,
+        error: Option<&str>,
+    ) -> Result<()> {
+        self.ensure_run_exists(run_id)?;
+
+        let now = now_millis()?;
+        self.connection
+            .execute(
+                "
+                UPDATE runtime_runs
+                SET status = ?1,
+                    error = ?2,
+                    updated_at = ?3
+                WHERE id = ?4
+                ",
+                params![status.as_storage(), error, now, run_id.as_str()],
+            )
+            .context("failed to update runtime run status")?;
+
+        Ok(())
+    }
+
+    /// Appends a replayable event to one run's log.
+    pub fn append_run_event(&mut self, run_id: &RunId, event: RunEvent) -> Result<RunEventRecord> {
+        self.ensure_run_exists(run_id)?;
+
+        let now = now_millis()?;
+        let event_type = event.event_name();
+        let payload = serde_json::to_string(&event).context("failed to encode runtime event")?;
+        self.connection
+            .execute(
+                "
+                INSERT INTO runtime_events (
+                    run_id,
+                    event_type,
+                    payload,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4)
+                ",
+                params![run_id.as_str(), event_type, payload, now],
+            )
+            .context("failed to append runtime event")?;
+        let id = self.connection.last_insert_rowid();
+
+        Ok(RunEventRecord {
+            id,
+            run_id: run_id.clone(),
+            event,
+            created_at: now,
+        })
+    }
+
+    /// Loads persisted run events after a cursor.
+    pub fn load_run_events_after(
+        &self,
+        run_id: &RunId,
+        after_event_id: Option<i64>,
+    ) -> Result<Vec<RunEventRecord>> {
+        self.ensure_run_exists(run_id)?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT id, run_id, payload, created_at
+                FROM runtime_events
+                WHERE run_id = ?1
+                  AND id > ?2
+                ORDER BY id ASC
+                ",
+            )
+            .context("failed to prepare runtime event replay")?;
+
+        statement
+            .query_map(
+                params![run_id.as_str(), after_event_id.unwrap_or(0)],
+                |row| {
+                    let event: RunEvent =
+                        serde_json::from_str(&row.get::<_, String>(2)?).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    Ok(RunEventRecord {
+                        id: row.get(0)?,
+                        run_id: RunId::new(row.get::<_, String>(1)?),
+                        event,
+                        created_at: row.get(3)?,
+                    })
+                },
+            )
+            .context("failed to replay runtime events")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to decode runtime events")
+    }
+
     /// Loads the root-to-message path for one message inside a conversation.
     pub fn load_path_to_message(
         &self,
@@ -1192,7 +1507,40 @@ impl Store {
             ));
         }
 
-        self.insert_message_unchecked(conversation_id, parent_message_id, role, content, metadata)
+        self.insert_message_unchecked(
+            conversation_id,
+            parent_message_id,
+            role,
+            content,
+            metadata,
+            true,
+        )
+    }
+
+    /// Inserts one runtime-produced message without changing the UI-selected
+    /// active message.
+    pub fn insert_run_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        role: Role,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        if role == Role::Tool {
+            return Err(error::invalid_request(
+                "role: tool messages must be created through insert_run_tool_result_message",
+            ));
+        }
+
+        self.insert_message_unchecked(
+            conversation_id,
+            parent_message_id,
+            role,
+            content,
+            metadata,
+            false,
+        )
     }
 
     /// Inserts one tool result message after validating the assistant tool-call
@@ -1225,6 +1573,35 @@ impl Store {
             Role::Tool,
             content,
             Some(&metadata),
+            true,
+        )
+    }
+
+    /// Inserts one runtime-produced tool result without changing UI selection.
+    pub fn insert_run_tool_result_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+    ) -> Result<MessageId> {
+        self.ensure_tool_result_parent_matches_call(
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+        )?;
+        let metadata = MessageMetadata {
+            tool_call_id: Some(tool_call_id.clone()),
+            ..Default::default()
+        };
+
+        self.insert_message_unchecked(
+            conversation_id,
+            Some(parent_message_id),
+            Role::Tool,
+            content,
+            Some(&metadata),
+            false,
         )
     }
 
@@ -1258,6 +1635,38 @@ impl Store {
             content,
             parts,
             Some(&metadata),
+            true,
+        )
+    }
+
+    /// Inserts a runtime-produced multipart tool result without changing UI
+    /// selection.
+    pub fn insert_run_tool_result_message_with_parts(
+        &mut self,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        self.ensure_tool_result_parent_matches_call(
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+        )?;
+        let metadata = MessageMetadata {
+            tool_call_id: Some(tool_call_id.clone()),
+            ..Default::default()
+        };
+
+        self.insert_message_with_parts_unchecked(
+            conversation_id,
+            Some(parent_message_id),
+            Role::Tool,
+            content,
+            parts,
+            Some(&metadata),
+            false,
         )
     }
 
@@ -1273,6 +1682,7 @@ impl Store {
         role: Role,
         content: &str,
         metadata: Option<&MessageMetadata>,
+        activate: bool,
     ) -> Result<MessageId> {
         let id = MessageId::new(Uuid::new_v4().to_string());
         let now = now_millis()?;
@@ -1315,8 +1725,10 @@ impl Store {
             )
             .context("failed to save message")?;
 
-        set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
-            .context("failed to set active message")?;
+        if activate {
+            set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
+                .context("failed to set active message")?;
+        }
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -1353,6 +1765,7 @@ impl Store {
             content,
             parts,
             metadata,
+            true,
         )
     }
 
@@ -1365,6 +1778,7 @@ impl Store {
         content: &str,
         parts: &[UnsavedMessagePart],
         metadata: Option<&MessageMetadata>,
+        activate: bool,
     ) -> Result<MessageId> {
         if parts.is_empty() {
             return Err(error::invalid_request(
@@ -1415,8 +1829,10 @@ impl Store {
 
         insert_unsaved_message_parts_in_transaction(&transaction, &id, parts, now)
             .context("failed to save multipart message parts")?;
-        set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
-            .context("failed to set active message")?;
+        if activate {
+            set_active_message_in_transaction(&transaction, conversation_id, Some(&id))
+                .context("failed to set active message")?;
+        }
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -2254,6 +2670,28 @@ impl Store {
         Ok(())
     }
 
+    /// Returns an error instead of silently ignoring missing runs.
+    fn ensure_run_exists(&self, run_id: &RunId) -> Result<()> {
+        let exists = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM runtime_runs WHERE id = ?1",
+                params![run_id.as_str()],
+                |_| Ok(()),
+            )
+            .optional()
+            .context("failed to check runtime run existence")?
+            .is_some();
+
+        if !exists {
+            return Err(error::not_found(format!(
+                "runtime run does not exist: {run_id}"
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Returns an error when a tool schema name is not present on the
     /// conversation being mutated.
     fn ensure_tool_schema_exists(
@@ -2352,6 +2790,41 @@ fn read_message_tree_row(row: &Row<'_>) -> rusqlite::Result<MessageTreeRow> {
         parent_message_id: row.get::<_, Option<String>>(1)?.map(MessageId::new),
         role: row.get(2)?,
         metadata: decode_message_metadata(metadata_json)?,
+    })
+}
+
+/// Converts one SQLite runtime run row into the typed run model.
+fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Run> {
+    let status_text = row.get::<_, String>(4)?;
+    let status = RunStatus::from_storage(&status_text).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown runtime run status: {status_text}"),
+            )),
+        )
+    })?;
+    let reasoning_json = row.get::<_, Option<String>>(6)?;
+    let reasoning = reasoning_json
+        .map(|json| serde_json::from_str::<ReasoningRequest>(&json))
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+        })?;
+
+    Ok(Run {
+        id: RunId::new(row.get::<_, String>(0)?),
+        conversation_id: ConversationId::new(row.get::<_, String>(1)?),
+        start_head_message_id: row.get::<_, Option<String>>(2)?.map(MessageId::new),
+        current_head_message_id: row.get::<_, Option<String>>(3)?.map(MessageId::new),
+        status,
+        model: row.get(5)?,
+        reasoning,
+        error: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 

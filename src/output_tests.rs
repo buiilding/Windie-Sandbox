@@ -30,6 +30,7 @@ fn formats_help_lines() {
     assert_eq!(lines[0], "windie");
     assert!(lines.contains(&"Usage:".to_string()));
     assert!(lines.contains(&"  windie".to_string()));
+    assert!(lines.contains(&"  windie inspector".to_string()));
     assert!(lines.contains(&"  windie tools".to_string()));
     assert!(lines.contains(&"  windie models".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));

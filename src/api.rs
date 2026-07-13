@@ -5,6 +5,7 @@
 //! `windie-inspector`; persistence, context construction, gateway checks, and
 //! model requests still flow through the same modules used by the CLI.
 
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -24,21 +25,18 @@ use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
-use uuid::Uuid;
 
 use crate::conversation::{
-    ConversationId, ImageAssetId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCall,
-    ToolCallId, ToolSchema, ToolSchemaName,
+    ConversationId, ImageAssetId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
 };
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
-use crate::output::{RuntimeOutput, TerminalOutput};
-use crate::runtime::RuntimeEventSink;
+use crate::output::TerminalOutput;
+use crate::run::{Run, RunEventRecord, RunId, RunManager, RunStatus, RunSubscription};
+use crate::setup;
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
@@ -66,15 +64,25 @@ pub async fn serve(
         crate::gateway::GatewayStart::Started => output.gateway_started(),
     }
 
-    let api_token =
-        std::env::var("WINDIE_API_TOKEN").unwrap_or_else(|_| Uuid::new_v4().to_string());
+    let api_token = match std::env::var("WINDIE_API_TOKEN") {
+        Ok(token) => token,
+        Err(_) => setup::ensure_api_token()?,
+    };
+    let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let run_manager = Arc::new(RunManager::new(
+        None,
+        gateway_url.to_string(),
+        base_url.to_string(),
+        tool_registry.clone(),
+    ));
     let state = ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
         model: model.to_string(),
         api_token,
         store_path: None,
-        tool_registry: Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions()),
+        tool_registry,
+        run_manager,
     };
     let listener = TcpListener::bind(address)
         .await
@@ -181,21 +189,24 @@ fn router(state: ApiState) -> Router {
             get(list_approvals),
         )
         .route(
-            "/api/conversations/{conversation_id}/approvals/{tool_call_id}/approve",
-            post(approve_tool),
+            "/api/conversations/{conversation_id}/runs",
+            post(create_run),
+        )
+        .route("/api/runs", get(list_runs))
+        .route("/api/runs/{run_id}", get(get_run))
+        .route("/api/runs/{run_id}/events", get(run_events))
+        .route("/api/runs/{run_id}/stop", post(stop_run))
+        .route(
+            "/api/runs/{run_id}/approvals/{tool_call_id}/approve",
+            post(approve_run_tool),
         )
         .route(
-            "/api/conversations/{conversation_id}/approvals/{tool_call_id}/deny",
-            post(deny_tool),
+            "/api/runs/{run_id}/approvals/{tool_call_id}/deny",
+            post(deny_run_tool),
         )
         .route(
             "/api/conversations/{conversation_id}/input-tokens",
             post(count_input_tokens),
-        )
-        .route("/api/conversations/{conversation_id}/query", post(query))
-        .route(
-            "/api/conversations/{conversation_id}/query-stream",
-            post(query_stream),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -215,6 +226,7 @@ struct ApiState {
     api_token: String,
     store_path: Option<PathBuf>,
     tool_registry: Arc<ToolProviderRegistry>,
+    run_manager: Arc<RunManager>,
 }
 
 /// Opens the production store, or a test-scoped store when route tests inject
@@ -866,6 +878,11 @@ async fn set_tool_approval_mode(
     let mut store = open_store(&state)?;
 
     operation::set_tool_approval_mode(&mut store, &conversation_id, request.mode)?;
+    drop(store);
+    state
+        .run_manager
+        .resume_waiting_for_conversation(&conversation_id)?;
+    let store = open_store(&state)?;
 
     Ok(Json(ToolApprovalModeResponse {
         tool_approval_mode: store.tool_approval_mode(&conversation_id)?,
@@ -1119,32 +1136,224 @@ async fn list_approvals(
     Ok(Json(ApprovalListResponse { approvals }))
 }
 
-/// Executes one approved pending tool call and streams runtime continuation.
-async fn approve_tool(
+/// Executes one approved pending tool call and resumes its run.
+async fn approve_run_tool(
     State(state): State<ApiState>,
-    Path((conversation_id, tool_call_id)): Path<(String, String)>,
-) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
-    runtime_stream(
-        state,
-        RuntimeStreamAction::ApproveTool {
-            conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
-        },
-    )
+    Path((run_id, tool_call_id)): Path<(String, String)>,
+) -> ApiResult<RunResponse> {
+    let run_id = RunId::new(run_id);
+    state
+        .run_manager
+        .approve_tool(&run_id, ToolCallId::new(tool_call_id))?;
+    let store = open_store(&state)?;
+    let run = store.load_run(&run_id)?;
+
+    Ok(Json(RunResponse::from_run(run)))
 }
 
-/// Stores a rejected result for one pending tool call and streams runtime continuation.
-async fn deny_tool(
+/// Stores a rejected result for one pending tool call and resumes its run.
+async fn deny_run_tool(
     State(state): State<ApiState>,
-    Path((conversation_id, tool_call_id)): Path<(String, String)>,
-) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
-    runtime_stream(
-        state,
-        RuntimeStreamAction::DenyTool {
-            conversation_id: ConversationId::new(conversation_id),
-            tool_call_id: ToolCallId::new(tool_call_id),
+    Path((run_id, tool_call_id)): Path<(String, String)>,
+) -> ApiResult<RunResponse> {
+    let run_id = RunId::new(run_id);
+    state
+        .run_manager
+        .deny_tool(&run_id, ToolCallId::new(tool_call_id))?;
+    let store = open_store(&state)?;
+    let run = store.load_run(&run_id)?;
+
+    Ok(Json(RunResponse::from_run(run)))
+}
+
+#[derive(Debug, Deserialize)]
+/// Request body for starting a backend-owned run.
+struct CreateRunRequest {
+    head_message_id: Option<String>,
+    model: Option<String>,
+    reasoning: Option<ReasoningRequest>,
+}
+
+impl CreateRunRequest {
+    fn reasoning(&self) -> Option<ReasoningRequest> {
+        self.reasoning
+            .clone()
+            .filter(|reasoning| !reasoning.is_empty())
+    }
+}
+
+#[derive(Debug, Serialize)]
+/// Serializable run response.
+struct RunResponse {
+    id: String,
+    conversation_id: String,
+    start_head_message_id: Option<String>,
+    current_head_message_id: Option<String>,
+    status: RunStatus,
+    model: String,
+    reasoning: Option<ReasoningRequest>,
+    error: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+impl RunResponse {
+    fn from_run(run: Run) -> Self {
+        Self {
+            id: run.id.as_str().to_string(),
+            conversation_id: run.conversation_id.as_str().to_string(),
+            start_head_message_id: run.start_head_message_id.map(|id| id.as_str().to_string()),
+            current_head_message_id: run
+                .current_head_message_id
+                .map(|id| id.as_str().to_string()),
+            status: run.status,
+            model: run.model,
+            reasoning: run.reasoning,
+            error: run.error,
+            created_at: run.created_at,
+            updated_at: run.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+/// List of runtime runs visible to clients.
+struct RunListResponse {
+    runs: Vec<RunResponse>,
+}
+
+/// Starts a backend-owned run from an explicit conversation head.
+async fn create_run(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+    Json(request): Json<CreateRunRequest>,
+) -> ApiResult<RunResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let head_message_id = request.head_message_id.clone().map(MessageId::new);
+    let reasoning = request.reasoning();
+    let model = match request.model {
+        Some(model) => model,
+        None => {
+            let store = open_store(&state)?;
+            store.conversation_model(&conversation_id)?
+        }
+    };
+    let run = state
+        .run_manager
+        .start(conversation_id, head_message_id, model, reasoning)?;
+
+    Ok(Json(RunResponse::from_run(run)))
+}
+
+/// Lists persisted runs.
+async fn list_runs(State(state): State<ApiState>) -> ApiResult<RunListResponse> {
+    let store = open_store(&state)?;
+    let runs = store
+        .list_runs()?
+        .into_iter()
+        .map(RunResponse::from_run)
+        .collect();
+
+    Ok(Json(RunListResponse { runs }))
+}
+
+/// Loads one persisted run.
+async fn get_run(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> ApiResult<RunResponse> {
+    let store = open_store(&state)?;
+    let run = store.load_run(&RunId::new(run_id))?;
+
+    Ok(Json(RunResponse::from_run(run)))
+}
+
+/// Stops one live run explicitly.
+async fn stop_run(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> ApiResult<RunResponse> {
+    let run_id = RunId::new(run_id);
+    state.run_manager.stop(&run_id)?;
+    let store = open_store(&state)?;
+    let run = store.load_run(&run_id)?;
+
+    Ok(Json(RunResponse::from_run(run)))
+}
+
+#[derive(Debug, Deserialize)]
+/// Cursor query for replaying run events.
+struct RunEventsQuery {
+    after: Option<i64>,
+}
+
+struct RunSseState {
+    replay: VecDeque<RunEventRecord>,
+    subscription: Option<RunSubscription>,
+}
+
+/// Streams persisted and live events for one run.
+async fn run_events(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+    Query(query): Query<RunEventsQuery>,
+) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>>, ApiError>
+{
+    let run_id = RunId::new(run_id);
+    let store = open_store(&state)?;
+    let replay = store.load_run_events_after(&run_id, query.after)?;
+    let subscription = state.run_manager.subscribe(&run_id);
+    let stream = stream::unfold(
+        RunSseState {
+            replay: replay.into(),
+            subscription,
         },
-    )
+        |mut state| async move {
+            let record = if let Some(record) = state.replay.pop_front() {
+                record
+            } else if let Some(subscription) = state.subscription.as_mut() {
+                match subscription.recv().await {
+                    Ok(record) => record,
+                    Err(_) => return None,
+                }
+            } else {
+                return None;
+            };
+            let event_name = record.event.event_name();
+            let data = run_event_data(&record);
+            let sse = Event::default()
+                .id(record.id.to_string())
+                .event(event_name)
+                .data(data);
+
+            Some((Ok::<Event, Infallible>(sse), state))
+        },
+    );
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn run_event_data(record: &RunEventRecord) -> String {
+    let mut value = serde_json::to_value(&record.event).unwrap_or_else(|error| {
+        serde_json::json!({
+            "type": "failed",
+            "error": format!("failed to serialize runtime event: {error}"),
+            "causes": [format!("failed to serialize runtime event: {error}")],
+        })
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("event_id".to_string(), serde_json::json!(record.id));
+        object.insert(
+            "run_id".to_string(),
+            serde_json::json!(record.run_id.as_str()),
+        );
+        object.insert(
+            "created_at".to_string(),
+            serde_json::json!(record.created_at),
+        );
+    }
+
+    value.to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1215,428 +1424,6 @@ async fn count_input_tokens(
     Ok(Json(InputTokensResponse::from_count(count, source)))
 }
 
-#[derive(Debug, Deserialize)]
-/// Request body for a one-shot runtime query.
-struct QueryRequest {
-    model: Option<String>,
-    reasoning: Option<ReasoningRequest>,
-}
-
-impl QueryRequest {
-    /// Returns the optional model override as a typed value.
-    fn model_override(&self) -> Option<ModelName> {
-        self.model.clone().map(ModelName::new)
-    }
-
-    /// Returns a non-empty reasoning request when the client selected one.
-    fn reasoning(&self) -> Option<ReasoningRequest> {
-        self.reasoning
-            .clone()
-            .filter(|reasoning| !reasoning.is_empty())
-    }
-}
-
-/// Runs one model query against the current active path.
-async fn query(
-    axum::extract::State(state): axum::extract::State<ApiState>,
-    Path(conversation_id): Path<String>,
-    Json(request): Json<QueryRequest>,
-) -> ApiResult<MessageResponse> {
-    let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
-    let runtime = query_stream_runtime(&state, request.model_override(), request.reasoning());
-    let message = operation::query_conversation_with_registry(
-        &ApiOutput,
-        &mut store,
-        &conversation_id,
-        runtime,
-    )
-    .await?;
-
-    Ok(Json(MessageResponse::from_message(message)))
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-/// One runtime event streamed by `query-stream`.
-///
-/// Most variants describe durable persisted state. Delta events are the
-/// exception: they carry ephemeral live model data for display only. Deltas
-/// are never persisted and clients must treat the following
-/// `AssistantMessageSaved` message as the source of truth.
-enum QueryStreamEvent {
-    AssistantDelta {
-        text: String,
-    },
-    ReasoningDelta {
-        text: String,
-    },
-    ToolCallDelta {
-        index: u16,
-        id: Option<String>,
-        name: Option<String>,
-        arguments_delta: Option<String>,
-    },
-    AssistantMessageSaved {
-        message_id: String,
-    },
-    ToolResultSaved {
-        message_id: String,
-    },
-    QueryDone {
-        message_id: Option<String>,
-    },
-    QueryError {
-        error: String,
-        causes: Vec<String>,
-    },
-}
-
-impl QueryStreamEvent {
-    /// Returns the SSE event name matching the JSON `type`.
-    fn event_name(&self) -> &'static str {
-        match self {
-            Self::AssistantDelta { .. } => "assistant_delta",
-            Self::ReasoningDelta { .. } => "reasoning_delta",
-            Self::ToolCallDelta { .. } => "tool_call_delta",
-            Self::AssistantMessageSaved { .. } => "assistant_message_saved",
-            Self::ToolResultSaved { .. } => "tool_result_saved",
-            Self::QueryDone { .. } => "query_done",
-            Self::QueryError { .. } => "query_error",
-        }
-    }
-}
-
-/// Runtime event sink that forwards persisted-message events to an SSE channel.
-struct QueryStreamEventSink {
-    sender: mpsc::UnboundedSender<QueryStreamEvent>,
-}
-
-impl RuntimeEventSink for QueryStreamEventSink {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
-        let _ = self.sender.send(QueryStreamEvent::AssistantMessageSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-    }
-
-    fn tool_result_saved(&self, message_id: &MessageId) {
-        let _ = self.sender.send(QueryStreamEvent::ToolResultSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-    }
-}
-
-/// Runtime action that can be driven through the shared event stream.
-enum RuntimeStreamAction {
-    Query {
-        conversation_id: ConversationId,
-        model_override: Option<ModelName>,
-        reasoning: Option<ReasoningRequest>,
-    },
-    ApproveTool {
-        conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
-    },
-    DenyTool {
-        conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
-    },
-}
-
-/// Runs one runtime action and streams runtime events to the client.
-///
-/// The stream carries durable persisted-message events plus ephemeral display
-/// deltas for live assistant text, reasoning summaries, and tool calls.
-fn runtime_stream(
-    state: ApiState,
-    action: RuntimeStreamAction,
-) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
-    let (sender, receiver) = mpsc::unbounded_channel::<QueryStreamEvent>();
-
-    let runtime_task = tokio::spawn(async move {
-        let result = async {
-            let mut store = open_store(&state)?;
-            let events = QueryStreamEventSink {
-                sender: sender.clone(),
-            };
-            let output = QueryStreamOutput {
-                sender: sender.clone(),
-            };
-            let message = match action {
-                RuntimeStreamAction::Query {
-                    conversation_id,
-                    model_override,
-                    reasoning,
-                } => {
-                    let runtime = query_stream_runtime(&state, model_override, reasoning);
-                    operation::query_runtime_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        runtime,
-                    )
-                    .await
-                    .map(Some)?
-                }
-                RuntimeStreamAction::ApproveTool {
-                    conversation_id,
-                    tool_call_id,
-                } => {
-                    let runtime = query_stream_runtime(&state, None, None);
-                    operation::approve_tool_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        &tool_call_id,
-                        runtime,
-                    )
-                    .await?
-                }
-                RuntimeStreamAction::DenyTool {
-                    conversation_id,
-                    tool_call_id,
-                } => {
-                    let runtime = query_stream_runtime(&state, None, None);
-                    operation::deny_tool_turn(
-                        &output,
-                        &events,
-                        &mut store,
-                        &conversation_id,
-                        &tool_call_id,
-                        runtime,
-                    )
-                    .await?
-                }
-            };
-
-            Ok::<Option<Message>, anyhow::Error>(message)
-        }
-        .await;
-
-        match result {
-            Ok(message) => {
-                let _ = sender.send(QueryStreamEvent::QueryDone {
-                    message_id: message
-                        .and_then(|message| message.id)
-                        .map(|id| id.as_str().to_string()),
-                });
-            }
-            Err(error) => {
-                log_api_error(&error);
-                let _ = sender.send(QueryStreamEvent::QueryError {
-                    error: raw_error_message(&error),
-                    causes: error_causes(&error),
-                });
-            }
-        }
-    });
-
-    runtime_event_sse(receiver, runtime_task)
-}
-
-/// Builds shared runtime settings for an API-streamed runtime action.
-fn query_stream_runtime<'a>(
-    state: &'a ApiState,
-    model_override: Option<ModelName>,
-    reasoning: Option<ReasoningRequest>,
-) -> operation::QueryStreamRuntime<'a> {
-    operation::QueryStreamRuntime::new(
-        GatewayUrl::new(state.gateway_url.clone()),
-        BaseUrl::new(state.base_url.clone()),
-        model_override,
-        reasoning,
-        state.tool_registry.as_ref(),
-    )
-}
-
-/// Runs a query and streams durable runtime events as server-sent events.
-async fn query_stream(
-    axum::extract::State(state): axum::extract::State<ApiState>,
-    Path(conversation_id): Path<String>,
-    Json(request): Json<QueryRequest>,
-) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
-    runtime_stream(
-        state,
-        RuntimeStreamAction::Query {
-            conversation_id: ConversationId::new(conversation_id),
-            model_override: request.model_override(),
-            reasoning: request.reasoning(),
-        },
-    )
-}
-
-/// Converts runtime events into server-sent event frames.
-fn runtime_event_sse(
-    receiver: mpsc::UnboundedReceiver<QueryStreamEvent>,
-    runtime_task: JoinHandle<()>,
-) -> Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>> {
-    let stream = stream::unfold(
-        RuntimeSseState {
-            receiver,
-            runtime_task,
-        },
-        |mut state| async move {
-            let event = state.receiver.recv().await?;
-            let event_name = event.event_name();
-            let data = serde_json::to_string(&event).unwrap_or_else(|error| {
-                serde_json::json!({
-                    "type": "query_error",
-                    "error": format!("failed to serialize query stream event: {error}"),
-                    "causes": [format!("failed to serialize query stream event: {error}")],
-                })
-                .to_string()
-            });
-            let sse = Event::default().event(event_name).data(data);
-
-            Some((Ok::<Event, Infallible>(sse), state))
-        },
-    );
-
-    Sse::new(stream).keep_alive(KeepAlive::default())
-}
-
-/// State owned by one SSE response stream.
-///
-/// The runtime task is intentionally tied to the HTTP stream lifetime. If the
-/// client disconnects or aborts `fetch`, Axum drops this stream state and the
-/// in-flight runtime query is aborted instead of continuing unseen.
-struct RuntimeSseState {
-    receiver: mpsc::UnboundedReceiver<QueryStreamEvent>,
-    runtime_task: JoinHandle<()>,
-}
-
-impl Drop for RuntimeSseState {
-    fn drop(&mut self) {
-        self.runtime_task.abort();
-    }
-}
-
-/// Runtime output sink used by non-streaming API query execution.
-///
-/// The plain `query` endpoint returns one final JSON message, so live model
-/// deltas have nowhere to go and are intentionally dropped here.
-struct ApiOutput;
-
-impl RuntimeOutput for ApiOutput {
-    fn start_assistant_message(&self) {}
-
-    fn assistant_delta(&self, _text: &str) -> Result<()> {
-        Ok(())
-    }
-
-    fn end_assistant_message(&self) {}
-
-    fn assistant_tool_calls(&self, _tool_calls: &[ToolCall]) {}
-}
-
-/// Runtime output sink that forwards live model deltas to the SSE channel.
-///
-/// Used by the streaming endpoints so clients can render assistant text,
-/// reasoning summaries, and tool-call arguments as they arrive. Deltas are
-/// ephemeral display data; the persisted message emitted through
-/// `QueryStreamEventSink` remains the source of truth. Send failures are
-/// ignored because a disconnected SSE client must not fail the query.
-struct QueryStreamOutput {
-    sender: mpsc::UnboundedSender<QueryStreamEvent>,
-}
-
-impl RuntimeOutput for QueryStreamOutput {
-    fn start_assistant_message(&self) {}
-
-    fn assistant_delta(&self, text: &str) -> Result<()> {
-        let _ = self.sender.send(QueryStreamEvent::AssistantDelta {
-            text: text.to_string(),
-        });
-        Ok(())
-    }
-
-    fn reasoning_delta(&self, text: &str) -> Result<()> {
-        let _ = self.sender.send(QueryStreamEvent::ReasoningDelta {
-            text: text.to_string(),
-        });
-        Ok(())
-    }
-
-    fn tool_call_delta(
-        &self,
-        index: u16,
-        id: Option<&str>,
-        name: Option<&str>,
-        arguments_delta: Option<&str>,
-    ) -> Result<()> {
-        let _ = self.sender.send(QueryStreamEvent::ToolCallDelta {
-            index,
-            id: id.map(str::to_string),
-            name: name.map(str::to_string),
-            arguments_delta: arguments_delta.map(str::to_string),
-        });
-        Ok(())
-    }
-
-    fn end_assistant_message(&self) {}
-
-    fn assistant_tool_calls(&self, _tool_calls: &[ToolCall]) {}
-}
-
-#[derive(Debug, Serialize)]
-/// Serializable message response for query results.
-struct MessageResponse {
-    id: Option<String>,
-    parent_message_id: Option<String>,
-    role: Role,
-    content: String,
-    parts: Vec<MessagePartResponse>,
-    metadata: Option<MessageMetadata>,
-}
-
-impl MessageResponse {
-    /// Converts an internal message into a JSON response without raw image bytes.
-    fn from_message(message: Message) -> Self {
-        Self {
-            id: message.id.map(|id| id.as_str().to_string()),
-            parent_message_id: message.parent_message_id.map(|id| id.as_str().to_string()),
-            role: message.role,
-            content: message.content,
-            parts: message
-                .parts
-                .into_iter()
-                .map(MessagePartResponse::from_part)
-                .collect(),
-            metadata: message.metadata,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-/// Serializable message part that hides image bytes.
-enum MessagePartResponse {
-    Text {
-        text: String,
-    },
-    Image {
-        asset_id: String,
-        mime_type: String,
-        byte_count: usize,
-    },
-}
-
-impl MessagePartResponse {
-    /// Converts one stored part into an API-safe payload.
-    fn from_part(part: MessagePart) -> Self {
-        match part {
-            MessagePart::Text(text) => Self::Text { text },
-            MessagePart::Image(image) => Self::Image {
-                asset_id: image.asset_id.as_str().to_string(),
-                mime_type: image.mime_type,
-                byte_count: image.bytes.len(),
-            },
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1648,14 +1435,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
 
+    use crate::conversation::{MessageMetadata, MessagePart, ToolCall};
     use crate::mcp::McpCommand;
+    use crate::run::{RunId, RunStatus};
     use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn assistant_delta_event_uses_matching_sse_name_and_json_type() {
-        let event = QueryStreamEvent::AssistantDelta {
+        let event = crate::run::RunEvent::AssistantDelta {
             text: "hello".to_string(),
         };
         let body = serde_json::to_value(&event).unwrap();
@@ -1667,7 +1456,7 @@ mod tests {
 
     #[test]
     fn reasoning_delta_event_uses_matching_sse_name_and_json_type() {
-        let event = QueryStreamEvent::ReasoningDelta {
+        let event = crate::run::RunEvent::ReasoningDelta {
             text: "thinking".to_string(),
         };
         let body = serde_json::to_value(&event).unwrap();
@@ -1679,7 +1468,7 @@ mod tests {
 
     #[test]
     fn tool_call_delta_event_uses_matching_sse_name_and_json_type() {
-        let event = QueryStreamEvent::ToolCallDelta {
+        let event = crate::run::RunEvent::ToolCallDelta {
             index: 0,
             id: Some("call_123".to_string()),
             name: Some("run_shell".to_string()),
@@ -2326,107 +2115,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_later_multi_tool_call_streams_raw_order_error() {
+    async fn approve_later_multi_tool_call_records_raw_order_error() {
         let db_path = temp_database_path();
         let app = test_app(db_path.clone());
         let conversation_id = insert_multi_tool_call_assistant(&db_path);
+        let head_message_id = Store::open_at(&db_path)
+            .unwrap()
+            .active_message_id(&conversation_id)
+            .unwrap()
+            .unwrap();
+        let run_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
 
         let response = app
             .oneshot(authed_request(
                 Method::POST,
-                &format!("/api/conversations/{conversation_id}/approvals/call_2/approve"),
+                &format!("/api/runs/{run_id}/approvals/call_2/approve"),
                 None,
             ))
             .await
             .unwrap();
         let status = response.status();
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        let _body = response_json_body(response).await;
+        let run = wait_for_run_status(&db_path, &run_id, RunStatus::Failed).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert!(content_type.starts_with("text/event-stream"));
-        assert!(body.contains("event: query_error"));
-        assert!(body.contains("tool call must be resolved after previous tool call: call_1"));
-        let _ = fs::remove_file(db_path);
-    }
-
-    #[tokio::test]
-    async fn deny_first_multi_tool_call_streams_result_without_querying() {
-        let db_path = temp_database_path();
-        let registry = Arc::new(registry_with_cached_test_tool());
-        let app = test_app_with_tool_registry(db_path.clone(), registry.clone());
-        let conversation_id = insert_attached_multi_tool_call_assistant(&db_path);
-
-        let response = app
-            .oneshot(authed_request(
-                Method::POST,
-                &format!("/api/conversations/{conversation_id}/approvals/call_1/deny"),
-                None,
-            ))
-            .await
-            .unwrap();
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
-        let store = Store::open_at(&db_path).unwrap();
-        let approvals =
-            operation::list_tool_approvals_with_registry(&store, &conversation_id, &registry)
-                .unwrap();
-
-        assert_eq!(status, StatusCode::OK);
-        assert!(content_type.starts_with("text/event-stream"));
-        assert!(body.contains("event: tool_result_saved"));
-        assert!(body.contains("event: query_done"));
-        assert!(!body.contains("event: query_error"));
-        assert_eq!(approvals.len(), 1);
-        assert_eq!(approvals[0].tool_call.id.as_str(), "call_2");
-        let _ = fs::remove_file(db_path);
-    }
-
-    #[tokio::test]
-    async fn query_with_unresolved_tool_call_returns_gateway_error_before_runtime_query() {
-        let db_path = temp_database_path();
-        let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
-        let conversation_id = insert_multi_tool_call_assistant(&db_path);
-
-        let response = app
-            .oneshot(authed_request(
-                Method::POST,
-                &format!("/api/conversations/{conversation_id}/query"),
-                Some(json!({"model":"openai/test"})),
-            ))
-            .await
-            .unwrap();
-        let status = response.status();
-        let body = response_json_body(response).await;
-
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(
-            body["error"],
-            "Bifrost is not running. Start it with: windie gateway start"
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(
+            run.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("tool call must be resolved after previous tool call: call_1")
         );
         let _ = fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn query_stream_returns_gateway_errors_as_sse_events() {
+    async fn deny_first_multi_tool_call_records_result_without_querying() {
+        let db_path = temp_database_path();
+        let registry = Arc::new(registry_with_cached_test_tool());
+        let app = test_app_with_tool_registry(db_path.clone(), registry.clone());
+        let conversation_id = insert_attached_multi_tool_call_assistant(&db_path);
+        let head_message_id = Store::open_at(&db_path)
+            .unwrap()
+            .active_message_id(&conversation_id)
+            .unwrap()
+            .unwrap();
+        let run_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
+
+        let response = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/runs/{run_id}/approvals/call_1/deny"),
+                None,
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let _body = response_json_body(response).await;
+        let events = wait_for_run_event_count(&db_path, &run_id, 2).await;
+        let run = Store::open_at(&db_path).unwrap().load_run(&run_id).unwrap();
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(run.status, RunStatus::WaitingForApproval);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event, crate::run::RunEvent::ToolResultSaved { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event, crate::run::RunEvent::WaitingForApproval))
+        );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn create_run_records_gateway_error() {
         let db_path = temp_database_path();
         let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
         let mut store = Store::open_at(&db_path).unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
-        store
+        let head_message_id = store
             .insert_message(&conversation_id, None, Role::User, "hello", None)
             .unwrap();
         drop(store);
@@ -2434,8 +2204,54 @@ mod tests {
         let response = app
             .oneshot(authed_request(
                 Method::POST,
-                &format!("/api/conversations/{conversation_id}/query-stream"),
-                Some(json!({"model":"openai/test"})),
+                &format!("/api/conversations/{conversation_id}/runs"),
+                Some(json!({"head_message_id": head_message_id.as_str(), "model":"openai/test"})),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json_body(response).await;
+        let run_id = RunId::new(body["id"].as_str().unwrap());
+        let run = wait_for_run_status(&db_path, &run_id, RunStatus::Failed).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(
+            run.error.as_deref(),
+            Some("Bifrost is not running. Start it with: windie gateway start")
+        );
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn run_events_replay_gateway_errors_as_sse_events() {
+        let db_path = temp_database_path();
+        let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
+        let mut store = Store::open_at(&db_path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        let head_message_id = store
+            .insert_message(&conversation_id, None, Role::User, "hello", None)
+            .unwrap();
+        drop(store);
+
+        let response = app
+            .clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/runs"),
+                Some(json!({"head_message_id": head_message_id.as_str(), "model":"openai/test"})),
+            ))
+            .await
+            .unwrap();
+        let body = response_json_body(response).await;
+        let run_id = RunId::new(body["id"].as_str().unwrap());
+        let _run = wait_for_run_status(&db_path, &run_id, RunStatus::Failed).await;
+
+        let response = app
+            .oneshot(authed_request(
+                Method::GET,
+                &format!("/api/runs/{run_id}/events"),
+                None,
             ))
             .await
             .unwrap();
@@ -2451,7 +2267,7 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert!(content_type.starts_with("text/event-stream"));
-        assert!(body.contains("event: query_error"));
+        assert!(body.contains("event: failed"));
         assert!(body.contains("Bifrost is not running. Start it with: windie gateway start"));
         let _ = fs::remove_file(db_path);
     }
@@ -2481,13 +2297,21 @@ mod tests {
     }
 
     fn test_app_with_gateway(store_path: PathBuf, gateway_url: &str) -> Router {
+        let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+        let run_manager = Arc::new(RunManager::new(
+            Some(store_path.clone()),
+            gateway_url.to_string(),
+            "http://localhost:8080/v1".to_string(),
+            tool_registry.clone(),
+        ));
         router(ApiState {
             gateway_url: gateway_url.to_string(),
             base_url: "http://localhost:8080/v1".to_string(),
             model: "openai/test".to_string(),
             api_token: "test-token".to_string(),
             store_path: Some(store_path),
-            tool_registry: Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions()),
+            tool_registry,
+            run_manager,
         })
     }
 
@@ -2495,6 +2319,12 @@ mod tests {
         store_path: PathBuf,
         tool_registry: Arc<ToolProviderRegistry>,
     ) -> Router {
+        let run_manager = Arc::new(RunManager::new(
+            Some(store_path.clone()),
+            "http://localhost:8080".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            tool_registry.clone(),
+        ));
         router(ApiState {
             gateway_url: "http://localhost:8080".to_string(),
             base_url: "http://localhost:8080/v1".to_string(),
@@ -2502,6 +2332,7 @@ mod tests {
             api_token: "test-token".to_string(),
             store_path: Some(store_path),
             tool_registry,
+            run_manager,
         })
     }
 
@@ -2534,6 +2365,65 @@ mod tests {
     async fn response_json_body(response: Response) -> Value {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn wait_for_run_status(
+        db_path: &PathBuf,
+        run_id: &RunId,
+        status: RunStatus,
+    ) -> crate::run::Run {
+        for _ in 0..50 {
+            let store = Store::open_at(db_path).unwrap();
+            let run = store.load_run(run_id).unwrap();
+            if run.status == status {
+                return run;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        Store::open_at(db_path).unwrap().load_run(run_id).unwrap()
+    }
+
+    fn create_waiting_run(
+        db_path: &PathBuf,
+        conversation_id: &ConversationId,
+        head_message_id: &MessageId,
+    ) -> RunId {
+        let mut store = Store::open_at(db_path).unwrap();
+        let run_id = RunId::fresh();
+        store
+            .create_run(
+                &run_id,
+                conversation_id,
+                Some(head_message_id),
+                "openai/test",
+                None,
+            )
+            .unwrap();
+        store
+            .update_run_status(&run_id, RunStatus::WaitingForApproval, None)
+            .unwrap();
+        run_id
+    }
+
+    async fn wait_for_run_event_count(
+        db_path: &PathBuf,
+        run_id: &RunId,
+        count: usize,
+    ) -> Vec<RunEventRecord> {
+        for _ in 0..50 {
+            let store = Store::open_at(db_path).unwrap();
+            let events = store.load_run_events_after(run_id, None).unwrap();
+            if events.len() >= count {
+                return events;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        Store::open_at(db_path)
+            .unwrap()
+            .load_run_events_after(run_id, None)
+            .unwrap()
     }
 
     fn registry_with_cached_test_tool() -> ToolProviderRegistry {

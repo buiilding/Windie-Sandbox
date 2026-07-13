@@ -11,12 +11,14 @@ mod conversation;
 mod error;
 mod gateway;
 mod image_input;
+mod inspector;
 mod llm;
 mod mcp;
 mod operation;
 mod output;
 mod perf;
 mod policy;
+mod run;
 mod runtime;
 mod setup;
 mod store;
@@ -50,6 +52,7 @@ const INVALID_USAGE_EXIT_CODE: i32 = 2;
 async fn main() -> Result<()> {
     match cli::read() {
         Command::Api => api().await,
+        Command::Inspector => open_inspector(),
         Command::Noop => Ok(()),
         Command::Activate {
             conversation_id,
@@ -153,6 +156,20 @@ async fn main() -> Result<()> {
 /// Starts Windie's local developer API server.
 async fn api() -> Result<()> {
     api::serve(api_address(), GATEWAY_URL, BASE_URL, MODEL).await
+}
+
+/// Opens the local browser inspector with the API token already attached.
+fn open_inspector() -> Result<()> {
+    let output = TerminalOutput;
+    let api_token = match std::env::var("WINDIE_API_TOKEN") {
+        Ok(token) => token,
+        Err(_) => setup::ensure_api_token()?,
+    };
+    let launch = inspector::open(&api_token)?;
+
+    output.inspector_opened(&launch.url, launch.started_server);
+
+    Ok(())
 }
 
 /// Prints the generated CLI help text.

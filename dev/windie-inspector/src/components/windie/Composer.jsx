@@ -140,7 +140,7 @@ export default function Composer() {
   };
 
   const submit = async () => {
-    if (!hasSendContent || streaming) return;
+    if (!hasSendContent) return;
     const sentText = text;
     const sentAttachments = attachments;
     setText("");
@@ -149,7 +149,7 @@ export default function Composer() {
   };
 
   const continueQuery = () => {
-    if (!activeConv || streaming) return;
+    if (!activeConv) return;
     continueConversation(activeConv.id);
   };
 
@@ -337,7 +337,7 @@ export default function Composer() {
                   data-testid="composer-reasoning"
                   type="button"
                   onClick={() => setReasoningMenuOpen(!reasoningMenuOpen)}
-                  disabled={!activeConv || streaming}
+                  disabled={!activeConv}
                   className="h-7 max-w-[260px] px-2 flex items-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[11px] uppercase tracking-widest disabled:text-muted-foreground disabled:hover:bg-transparent disabled:cursor-not-allowed"
                 >
                   <span className="text-muted-foreground">reasoning</span>
@@ -392,39 +392,30 @@ export default function Composer() {
           <button
             data-testid="composer-continue"
             onClick={continueQuery}
-            disabled={streaming || !activeConv}
+            disabled={!activeConv}
             className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
-              streaming || !activeConv
+              !activeConv
                 ? "border-border text-muted-foreground cursor-not-allowed"
                 : "border-border text-foreground hover:bg-surface-hover"
             }`}
           >
-            {streaming ? (
-              <>
-                <Square className="size-3 fill-current" />
-                busy
-              </>
-            ) : (
-              <>
-                <Play className="size-3.5" strokeWidth={1.75} />
-                continue
-              </>
-            )}
+            <Play className="size-3.5" strokeWidth={1.75} />
+            continue
           </button>
 
           <button
             data-testid="composer-send"
-            onClick={streaming ? stopStreaming : submit}
+            onClick={streaming && !hasSendContent ? stopStreaming : submit}
             disabled={!streaming && !hasSendContent}
             className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
-              streaming
+              streaming && !hasSendContent
                 ? "border-[hsl(var(--accent))] text-[hsl(var(--accent))] hover:bg-surface-hover"
                 : hasSendContent
                   ? "border-foreground bg-foreground text-background hover:opacity-90"
                   : "border-border text-muted-foreground cursor-not-allowed"
             }`}
           >
-            {streaming ? (
+            {streaming && !hasSendContent ? (
               <>
                 <Square className="size-3 fill-current" />
                 stop

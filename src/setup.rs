@@ -7,14 +7,18 @@
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
+use uuid::Uuid;
 
 const ENV_FILE_NAME: &str = ".env";
+const API_TOKEN_FILE_NAME: &str = "api-token";
 const BIFROST_DIR: &str = "bifrost";
 const BENCHMARK_DIR: &str = "benchmarks";
+const INSPECTOR_LOG_FILE_NAME: &str = "windie-inspector.log";
 const CUA_DRIVER_INSTALL_URL: &str =
     "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh";
 
@@ -30,8 +34,10 @@ pub struct InstallReport {
 pub struct WindieLayout {
     pub root: PathBuf,
     pub env_file: PathBuf,
+    pub api_token_file: PathBuf,
     pub bifrost_dir: PathBuf,
     pub benchmarks_dir: PathBuf,
+    pub inspector_log_file: PathBuf,
 }
 
 /// Creates Windie's required user-local directories and empty env file.
@@ -55,6 +61,30 @@ pub fn ensure_windie_layout() -> Result<WindieLayout> {
 /// Returns the only supported Windie provider-key environment file path.
 pub fn env_file_path() -> Result<PathBuf> {
     Ok(windie_layout()?.env_file)
+}
+
+/// Returns the stable localhost API token shared by `windie api` and UI clients.
+pub fn ensure_api_token() -> Result<String> {
+    let layout = ensure_windie_layout()?;
+    if layout.api_token_file.exists() {
+        let token = fs::read_to_string(&layout.api_token_file)
+            .with_context(|| format!("failed to read {}", layout.api_token_file.display()))?
+            .trim()
+            .to_string();
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    let token = Uuid::new_v4().to_string();
+    write_secret_file(&layout.api_token_file, &format!("{token}\n"))?;
+
+    Ok(token)
+}
+
+/// Returns the log file used by the detached local inspector dev server.
+pub fn inspector_log_file_path() -> Result<PathBuf> {
+    Ok(ensure_windie_layout()?.inspector_log_file)
 }
 
 /// Lists keys currently present in Windie's provider-key environment file.
@@ -172,8 +202,10 @@ fn windie_layout() -> Result<WindieLayout> {
 
     Ok(WindieLayout {
         env_file: root.join(ENV_FILE_NAME),
+        api_token_file: root.join(API_TOKEN_FILE_NAME),
         bifrost_dir: root.join(BIFROST_DIR),
         benchmarks_dir: root.join(BENCHMARK_DIR),
+        inspector_log_file: root.join(INSPECTOR_LOG_FILE_NAME),
         root,
     })
 }
@@ -275,6 +307,23 @@ fn write_env_lines(path: &Path, lines: &[String]) -> Result<()> {
         format!("{}\n", lines.join("\n"))
     };
     fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// Writes a user-local secret file without inheriting permissive default modes.
+fn write_secret_file(path: &Path, text: &str) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 #[cfg(test)]
