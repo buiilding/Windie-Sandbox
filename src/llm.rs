@@ -1078,10 +1078,17 @@ impl AssistantStreamState {
                     append_optional_text(&mut self.metadata.refusal, &refusal);
                 }
             }
-            "response.reasoning_summary_text.delta" => {
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                 if let Some(reasoning) = event.delta {
                     append_optional_text(&mut self.metadata.reasoning, &reasoning);
                     handle_delta(LlmStreamEvent::ReasoningDelta(&reasoning))?;
+                }
+            }
+            "response.reasoning_summary_text.done" | "response.reasoning_text.done" => {
+                if self.metadata.reasoning.is_none()
+                    && let Some(reasoning) = event.text
+                {
+                    self.metadata.reasoning = Some(reasoning);
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -2029,6 +2036,56 @@ mod tests {
         assert_eq!(response.metadata.refusal.as_deref(), Some("no"));
         assert_eq!(response.metadata.reasoning.as_deref(), Some("think"));
         assert_eq!(reasoning_deltas, vec!["think"]);
+    }
+
+    #[test]
+    fn parses_reasoning_text_stream_metadata() {
+        let mut state = AssistantStreamState::default();
+        let mut reasoning_deltas = Vec::new();
+        let mut handle_delta = |event: LlmStreamEvent<'_>| -> Result<()> {
+            if let LlmStreamEvent::ReasoningDelta(text) = event {
+                reasoning_deltas.push(text.to_string());
+            }
+            Ok(())
+        };
+
+        process_stream_line(
+            r#"data: {"type":"response.reasoning_text.delta","delta":"think"}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+        process_stream_line(
+            r#"data: {"type":"response.reasoning_text.delta","delta":" more"}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+
+        let response = state.finalize().unwrap();
+
+        assert_eq!(response.metadata.reasoning.as_deref(), Some("think more"));
+        assert_eq!(reasoning_deltas, vec!["think", " more"]);
+    }
+
+    #[test]
+    fn parses_reasoning_text_done_without_deltas() {
+        let mut state = AssistantStreamState::default();
+        let mut handle_delta = |_event: LlmStreamEvent<'_>| -> Result<()> { Ok(()) };
+
+        process_stream_line(
+            r#"data: {"type":"response.reasoning_text.done","text":"final reasoning"}"#,
+            &mut state,
+            &mut handle_delta,
+        )
+        .unwrap();
+
+        let response = state.finalize().unwrap();
+
+        assert_eq!(
+            response.metadata.reasoning.as_deref(),
+            Some("final reasoning")
+        );
     }
 
     #[test]
