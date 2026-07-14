@@ -18,7 +18,8 @@ use uuid::Uuid;
 
 use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
-    MessagePart, Role, ToolCallId, ToolSchema, ToolSchemaName, UnsavedMessagePart,
+    MessagePart, Role, SystemPrompt, SystemPromptId, ToolCallId, ToolSchema, ToolSchemaName,
+    UnsavedMessagePart,
 };
 use crate::error;
 use crate::llm::ReasoningRequest;
@@ -497,7 +498,7 @@ impl Store {
             .connection
             .prepare(
                 "
-                SELECT anchor_message_id, content, action
+                SELECT id, anchor_message_id, content, action, created_at
                 FROM system_prompts
                 WHERE conversation_id = ?1
                 ORDER BY created_at, rowid
@@ -506,25 +507,20 @@ impl Store {
             .context("failed to prepare system prompt load")?;
         let rows = statement
             .query_map(params![conversation_id.as_str()], |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
+                read_system_prompt_row(row, conversation_id)
             })
             .context("failed to load system prompts")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read system prompts")?;
         let mut prompt = None;
 
-        for (anchor_message_id, content, action) in rows {
-            if !anchor_applies(anchor_message_id.as_deref(), &path_set) {
+        for row in rows {
+            if !anchor_applies(row.message_id().map(MessageId::as_str), &path_set) {
                 continue;
             }
-            match action.as_str() {
-                "set" => prompt = content,
-                "remove" => prompt = None,
-                _ => return Err(anyhow!("unknown system prompt action: {action}")),
+            match row {
+                SystemPrompt::Set { text, .. } => prompt = Some(text),
+                SystemPrompt::Removed { .. } => prompt = None,
             }
         }
 
@@ -535,16 +531,16 @@ impl Store {
     ///
     /// Forking uses raw changes, not only the effective prompt, so the forked
     /// path preserves the same edit history and future branch-local overrides.
-    fn system_prompt_changes_for_path(
+    fn system_prompts_for_path(
         &self,
         conversation_id: &ConversationId,
         path_ids: &HashSet<String>,
-    ) -> Result<Vec<StoredSystemPromptChange>> {
+    ) -> Result<Vec<SystemPrompt>> {
         let mut statement = self
             .connection
             .prepare(
                 "
-                SELECT anchor_message_id, content, action, created_at
+                SELECT id, anchor_message_id, content, action, created_at
                 FROM system_prompts
                 WHERE conversation_id = ?1
                 ORDER BY created_at, rowid
@@ -554,18 +550,13 @@ impl Store {
 
         Ok(statement
             .query_map(params![conversation_id.as_str()], |row| {
-                Ok(StoredSystemPromptChange {
-                    anchor_message_id: row.get(0)?,
-                    content: row.get(1)?,
-                    action: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
+                read_system_prompt_row(row, conversation_id)
             })
             .context("failed to load system prompt changes")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read system prompt changes")?
             .into_iter()
-            .filter(|change| anchor_applies(change.anchor_message_id.as_deref(), path_ids))
+            .filter(|prompt| anchor_applies(prompt.message_id().map(MessageId::as_str), path_ids))
             .collect())
     }
 
@@ -738,20 +729,33 @@ impl Store {
         }
 
         let now = now_millis()?;
-        let action = if content.is_empty() { "remove" } else { "set" };
-        let content = (!content.is_empty()).then_some(content);
+        let system_prompt_id = SystemPromptId::new(Uuid::new_v4().to_string());
+        let system_prompt = if content.is_empty() {
+            SystemPrompt::removed(
+                system_prompt_id,
+                conversation_id.clone(),
+                anchor_message_id.cloned(),
+                now,
+            )
+        } else {
+            SystemPrompt::set(
+                system_prompt_id,
+                conversation_id.clone(),
+                anchor_message_id.cloned(),
+                content.to_string(),
+                now,
+            )
+        };
         let transaction = self
             .connection
             .transaction()
             .context("failed to start system prompt transaction")?;
 
-        insert_system_prompt_change_in_transaction(
+        insert_system_prompt_in_transaction(
             &transaction,
             conversation_id,
             anchor_message_id,
-            content,
-            action,
-            now,
+            &system_prompt,
         )
         .context("failed to save system prompt")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
@@ -2449,8 +2453,8 @@ impl Store {
             .filter_map(|message| message.id.as_ref())
             .map(|message_id| message_id.as_str().to_string())
             .collect::<HashSet<_>>();
-        let source_system_prompt_changes =
-            self.system_prompt_changes_for_path(conversation_id, &source_path_ids)?;
+        let source_system_prompts =
+            self.system_prompts_for_path(conversation_id, &source_path_ids)?;
         let source_tool_schema_changes =
             self.tool_schema_changes_for_path(conversation_id, &source_path_ids)?;
         let source_model = self.conversation_model(conversation_id)?;
@@ -2537,18 +2541,32 @@ impl Store {
             message_id_map.insert(source_message_id.as_str().to_string(), forked_message_id);
         }
 
-        for change in source_system_prompt_changes {
-            let forked_anchor_message_id = change
-                .anchor_message_id
-                .as_ref()
-                .and_then(|message_id| message_id_map.get(message_id));
-            insert_system_prompt_change_in_transaction(
+        for prompt in source_system_prompts {
+            let forked_anchor_message_id = prompt
+                .message_id()
+                .and_then(|message_id| message_id_map.get(message_id.as_str()));
+            let forked_prompt = match prompt {
+                SystemPrompt::Set {
+                    text, created_at, ..
+                } => SystemPrompt::set(
+                    SystemPromptId::new(Uuid::new_v4().to_string()),
+                    forked_conversation_id.clone(),
+                    forked_anchor_message_id.cloned(),
+                    text,
+                    created_at,
+                ),
+                SystemPrompt::Removed { created_at, .. } => SystemPrompt::removed(
+                    SystemPromptId::new(Uuid::new_v4().to_string()),
+                    forked_conversation_id.clone(),
+                    forked_anchor_message_id.cloned(),
+                    created_at,
+                ),
+            };
+            insert_system_prompt_in_transaction(
                 &transaction,
                 &forked_conversation_id,
                 forked_anchor_message_id,
-                change.content.as_deref(),
-                change.action.as_str(),
-                change.created_at,
+                &forked_prompt,
             )
             .context("failed to copy forked system prompt")?;
         }
@@ -3197,20 +3215,50 @@ fn assistant_tool_calls(message: &MessageTreeRow) -> Vec<ToolCallId> {
         .unwrap_or_default()
 }
 
+/// Converts one SQLite system prompt history row into the typed prompt record.
+fn read_system_prompt_row(
+    row: &Row<'_>,
+    conversation_id: &ConversationId,
+) -> rusqlite::Result<SystemPrompt> {
+    let id = SystemPromptId::new(row.get::<_, String>(0)?);
+    let anchor_message_id = row.get::<_, Option<String>>(1)?.map(MessageId::new);
+    let content = row.get::<_, Option<String>>(2)?;
+    let storage_action = row.get::<_, String>(3)?;
+    let created_at = row.get::<_, i64>(4)?;
+
+    match storage_action.as_str() {
+        "set" => {
+            let text = content.ok_or_else(|| {
+                rusqlite::Error::InvalidColumnType(2, "content".to_string(), Type::Null)
+            })?;
+            Ok(SystemPrompt::set(
+                id,
+                conversation_id.clone(),
+                anchor_message_id,
+                text,
+                created_at,
+            ))
+        }
+        "remove" => Ok(SystemPrompt::removed(
+            id,
+            conversation_id.clone(),
+            anchor_message_id,
+            created_at,
+        )),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            3,
+            Type::Text,
+            format!("unknown system prompt action: {storage_action}").into(),
+        )),
+    }
+}
+
 /// One stored tool schema change before effective path resolution.
 struct AttachedToolChange {
     anchor_message_id: Option<String>,
     name: String,
     action: String,
     attached_tool: Option<AttachedTool>,
-}
-
-/// Raw system-prompt history row used when copying one path into a fork.
-struct StoredSystemPromptChange {
-    anchor_message_id: Option<String>,
-    content: Option<String>,
-    action: String,
-    created_at: i64,
 }
 
 /// Raw tool-schema history row used when copying one path into a fork.
@@ -3386,17 +3434,13 @@ fn validate_attached_tool(attached_tool: &AttachedTool) -> Result<()> {
     Ok(())
 }
 
-/// Appends one system-prompt path change inside an existing transaction.
-fn insert_system_prompt_change_in_transaction(
+/// Appends one system prompt record inside an existing transaction.
+fn insert_system_prompt_in_transaction(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
     anchor_message_id: Option<&MessageId>,
-    content: Option<&str>,
-    action: &str,
-    created_at: i64,
+    system_prompt: &SystemPrompt,
 ) -> Result<()> {
-    let id = Uuid::new_v4().to_string();
-
     transaction.execute(
         "
         INSERT INTO system_prompts (
@@ -3410,16 +3454,24 @@ fn insert_system_prompt_change_in_transaction(
         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ",
         params![
-            id,
+            system_prompt.id().as_str(),
             conversation_id.as_str(),
             anchor_message_id.map(MessageId::as_str),
-            content,
-            action,
-            created_at
+            system_prompt.text(),
+            system_prompt_storage_action(system_prompt),
+            system_prompt.created_at()
         ],
     )?;
 
     Ok(())
+}
+
+/// Returns the SQLite action label for one system prompt record.
+fn system_prompt_storage_action(system_prompt: &SystemPrompt) -> &'static str {
+    match system_prompt {
+        SystemPrompt::Set { .. } => "set",
+        SystemPrompt::Removed { .. } => "remove",
+    }
 }
 
 /// Inserts one already-validated attached tool inside an existing transaction.
