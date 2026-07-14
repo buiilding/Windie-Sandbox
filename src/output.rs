@@ -18,7 +18,7 @@ use crate::conversation::{
 use crate::llm::{ModelInfo, ModelName};
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
-use crate::run::{Run, RunEvent, RunEventRecord, RunId};
+use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
 use crate::setup::InstallReport;
 use crate::store::ConversationInfo;
 use crate::tool::ToolDefinition;
@@ -144,7 +144,7 @@ impl TerminalOutput {
         if let Some(duration) = baseline.context_flatten {
             println!("context flatten: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.prepare_run_head_turn {
+        if let Some(duration) = baseline.prepare_head_turn {
             println!("prepare run head turn: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.pending_tool_approval_scan {
@@ -531,51 +531,54 @@ impl TerminalOutput {
         println!();
     }
 
-    /// Prints the created run ID as machine-readable command output.
-    pub fn created_run(&self, run_id: &RunId) {
-        println!("{run_id}");
+    /// Prints the created session ID as machine-readable command output.
+    pub fn created_session(&self, session_id: &SessionId) {
+        println!("{session_id}");
     }
 
-    /// Prints one run's persisted lifecycle state.
-    pub fn run_status(&self, run: &Run) {
-        println!("run {}", run.id);
-        println!("conversation: {}", run.conversation_id);
+    /// Prints one session's persisted lifecycle state.
+    pub fn session_status(&self, session: &Session) {
+        println!("session {}", session.id);
+        println!("conversation: {}", session.conversation_id);
         println!(
             "start head: {}",
-            run.start_head_message_id
+            session
+                .start_head_message_id
                 .as_ref()
                 .map(MessageId::as_str)
                 .unwrap_or("(empty)")
         );
         println!(
             "current head: {}",
-            run.current_head_message_id
+            session
+                .current_head_message_id
                 .as_ref()
                 .map(MessageId::as_str)
                 .unwrap_or("(empty)")
         );
-        println!("status: {}", run.status);
-        println!("model: {}", run.model);
-        if let Some(error) = run.error.as_ref() {
+        println!("status: {}", session.status);
+        println!("model: {}", session.model);
+        if let Some(error) = session.error.as_ref() {
             println!("error: {error}");
         }
     }
 
-    /// Prints a compact list of runtime runs.
-    pub fn runs(&self, runs: &[Run]) {
-        if runs.is_empty() {
-            println!("no runs");
+    /// Prints a compact list of runtime sessions.
+    pub fn sessions(&self, sessions: &[Session]) {
+        if sessions.is_empty() {
+            println!("no sessions");
             return;
         }
 
-        println!("runs");
-        for run in runs {
+        println!("sessions");
+        for session in sessions {
             println!(
                 "{}  {}  {}  {}",
-                run.id,
-                run.status,
-                run.conversation_id,
-                run.current_head_message_id
+                session.id,
+                session.status,
+                session.conversation_id,
+                session
+                    .current_head_message_id
                     .as_ref()
                     .map(MessageId::as_str)
                     .unwrap_or("(empty)")
@@ -583,8 +586,8 @@ impl TerminalOutput {
         }
     }
 
-    /// Prints pending run-owned approvals in a compact inspectable format.
-    pub fn run_approvals(&self, approvals: &[crate::operation::RunToolApprovalRequest]) {
+    /// Prints pending session-owned approvals in a compact inspectable format.
+    pub fn session_approvals(&self, approvals: &[crate::operation::SessionToolApprovalRequest]) {
         if approvals.is_empty() {
             println!("no pending approvals");
             return;
@@ -595,7 +598,7 @@ impl TerminalOutput {
             let tool_call = &approval.approval.tool_call;
             println!(
                 "{}  {}  {}  {}  {}",
-                approval.run_id,
+                approval.session_id,
                 tool_call.id,
                 tool_call.name(),
                 approval.approval.reason,
@@ -604,12 +607,12 @@ impl TerminalOutput {
         }
     }
 
-    /// Prints one persisted run event.
-    pub fn run_event(&self, event: &RunEventRecord) {
+    /// Prints one persisted session event.
+    pub fn session_event(&self, event: &SessionEventRecord) {
         match &event.event {
-            RunEvent::AssistantDelta { text } => print!("{text}"),
-            RunEvent::ReasoningDelta { text } => print!("{text}"),
-            RunEvent::ToolCallDelta {
+            SessionEvent::AssistantDelta { text } => print!("{text}"),
+            SessionEvent::ReasoningDelta { text } => print!("{text}"),
+            SessionEvent::ToolCallDelta {
                 index,
                 id,
                 name,
@@ -620,18 +623,18 @@ impl TerminalOutput {
                 name.as_deref().unwrap_or("(no name)"),
                 arguments_delta.as_deref().unwrap_or("")
             ),
-            RunEvent::AssistantMessageSaved { message_id } => {
+            SessionEvent::AssistantMessageSaved { message_id } => {
                 println!("assistant message saved {message_id}");
             }
-            RunEvent::ToolResultSaved { message_id } => {
+            SessionEvent::ToolResultSaved { message_id } => {
                 println!("tool result saved {message_id}");
             }
-            RunEvent::WaitingForApproval => println!("waiting for approval"),
-            RunEvent::Completed { message_id } => {
+            SessionEvent::WaitingForApproval => println!("waiting for approval"),
+            SessionEvent::Completed { message_id } => {
                 println!("completed {}", message_id.as_deref().unwrap_or("(empty)"))
             }
-            RunEvent::Failed { error, .. } => println!("failed {error}"),
-            RunEvent::Cancelled => println!("cancelled"),
+            SessionEvent::Failed { error, .. } => println!("failed {error}"),
+            SessionEvent::Cancelled => println!("cancelled"),
         }
     }
 }
@@ -744,12 +747,12 @@ fn help_lines() -> Vec<String> {
         "  windie run start <conversation_id> --model <provider/model>",
         "  windie run list",
         "  windie run list <conversation_id>",
-        "  windie run status <run_id>",
-        "  windie run events <run_id>",
-        "  windie run approvals <run_id>",
-        "  windie run approve <run_id> <tool_call_id>",
-        "  windie run deny <run_id> <tool_call_id>",
-        "  windie run stop <run_id>",
+        "  windie run status <session_id>",
+        "  windie session events <session_id>",
+        "  windie run approvals <session_id>",
+        "  windie run approve <session_id> <tool_call_id>",
+        "  windie run deny <session_id> <tool_call_id>",
+        "  windie run stop <session_id>",
         "  windie status",
         "  windie gateway start",
         "  windie gateway stop",
@@ -771,15 +774,15 @@ fn help_lines() -> Vec<String> {
         "  windie bench category flags filter the measured local benchmark report.",
         "  windie bench --json writes a persistent benchmark artifact to stdout.",
         "  windie compare baseline compares the current benchmark run with ~/.windie/benchmarks/baseline.json.",
-        "  windie update baseline replaces ~/.windie/benchmarks/baseline.json with the current run.",
+        "  windie update baseline replaces ~/.windie/benchmarks/baseline.json with the current session.",
         "  windie inspect <conversation_id> --json prints full read-only runtime state.",
         "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie models requires the local Bifrost gateway to be running.",
         "  windie run start requires the local Bifrost gateway to be running.",
-        "  windie run start uses the conversation model unless --model is passed for the run.",
-        "  windie run approvals lists pending run-owned tool calls that require user approval.",
-        "  windie run approve executes one pending run-owned tool call and continues the run.",
+        "  windie run start uses the conversation model unless --model is passed for the session.",
+        "  windie run approvals lists pending session-owned tool calls that require user approval.",
+        "  windie run approve executes one pending session-owned tool call and continues the session.",
         "  windie run deny stores a rejected tool result and continues the run.",
         "  windie attach <conversation_id> tool attaches one provider tool to a conversation.",
         "  windie detach <conversation_id> tool detaches one provider tool schema from a conversation.",
@@ -909,7 +912,7 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
     push_metric_lines(
         &mut lines,
         "prepare run head turn",
-        report.summary.prepare_run_head_turn.as_ref(),
+        report.summary.prepare_head_turn.as_ref(),
     );
     push_metric_lines(
         &mut lines,

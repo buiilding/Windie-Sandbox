@@ -12,7 +12,7 @@ use crate::conversation::{
 };
 use crate::llm::ModelName;
 use crate::perf::{BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
-use crate::run::RunId;
+use crate::session::SessionId;
 use crate::tool::{ProviderToolName, ToolProviderId};
 
 /// Parsed startup action for one `windie` process.
@@ -92,33 +92,33 @@ pub enum Command {
     Models,
     New,
     Noop,
-    RunStart {
+    SessionStart {
         conversation_id: ConversationId,
         head_message_id: Option<MessageId>,
         model: Option<ModelName>,
     },
-    RunList {
+    SessionList {
         conversation_id: Option<ConversationId>,
     },
-    RunStatus {
-        run_id: RunId,
+    SessionStatus {
+        session_id: SessionId,
     },
-    RunEvents {
-        run_id: RunId,
+    SessionEvents {
+        session_id: SessionId,
     },
-    RunApprovals {
-        run_id: RunId,
+    SessionApprovals {
+        session_id: SessionId,
     },
-    RunApprove {
-        run_id: RunId,
+    SessionApprove {
+        session_id: SessionId,
         tool_call_id: ToolCallId,
     },
-    RunDeny {
-        run_id: RunId,
+    SessionDeny {
+        session_id: SessionId,
         tool_call_id: ToolCallId,
     },
-    RunStop {
-        run_id: RunId,
+    SessionStop {
+        session_id: SessionId,
     },
     RemoveConversation(ConversationId),
     RemoveMessage {
@@ -321,40 +321,40 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
 fn parse_run_command(args: &[String]) -> Command {
     match args {
         [action, conversation_id, rest @ ..] if action == "start" => {
-            parse_run_start_command(conversation_id, rest)
+            parse_session_start_command(conversation_id, rest)
         }
-        [action] if action == "list" => Command::RunList {
+        [action] if action == "list" => Command::SessionList {
             conversation_id: None,
         },
-        [action, conversation_id] if action == "list" => Command::RunList {
+        [action, conversation_id] if action == "list" => Command::SessionList {
             conversation_id: Some(ConversationId::new(conversation_id.as_str())),
         },
-        [action, run_id] if action == "status" => Command::RunStatus {
-            run_id: RunId::new(run_id.as_str()),
+        [action, session_id] if action == "status" => Command::SessionStatus {
+            session_id: SessionId::new(session_id.as_str()),
         },
-        [action, run_id] if action == "events" => Command::RunEvents {
-            run_id: RunId::new(run_id.as_str()),
+        [action, session_id] if action == "events" => Command::SessionEvents {
+            session_id: SessionId::new(session_id.as_str()),
         },
-        [action, run_id] if action == "approvals" => Command::RunApprovals {
-            run_id: RunId::new(run_id.as_str()),
+        [action, session_id] if action == "approvals" => Command::SessionApprovals {
+            session_id: SessionId::new(session_id.as_str()),
         },
-        [action, run_id, tool_call_id] if action == "approve" => Command::RunApprove {
-            run_id: RunId::new(run_id.as_str()),
+        [action, session_id, tool_call_id] if action == "approve" => Command::SessionApprove {
+            session_id: SessionId::new(session_id.as_str()),
             tool_call_id: ToolCallId::new(tool_call_id.as_str()),
         },
-        [action, run_id, tool_call_id] if action == "deny" => Command::RunDeny {
-            run_id: RunId::new(run_id.as_str()),
+        [action, session_id, tool_call_id] if action == "deny" => Command::SessionDeny {
+            session_id: SessionId::new(session_id.as_str()),
             tool_call_id: ToolCallId::new(tool_call_id.as_str()),
         },
-        [action, run_id] if action == "stop" => Command::RunStop {
-            run_id: RunId::new(run_id.as_str()),
+        [action, session_id] if action == "stop" => Command::SessionStop {
+            session_id: SessionId::new(session_id.as_str()),
         },
         _ => Command::Invalid,
     }
 }
 
 /// Parses `windie run start <conversation_id> [--head <message_id>] [--model <provider/model>]`.
-fn parse_run_start_command(conversation_id: &str, args: &[String]) -> Command {
+fn parse_session_start_command(conversation_id: &str, args: &[String]) -> Command {
     let mut head_message_id = None;
     let mut model = None;
     let mut index = 0;
@@ -385,7 +385,7 @@ fn parse_run_start_command(conversation_id: &str, args: &[String]) -> Command {
         }
     }
 
-    Command::RunStart {
+    Command::SessionStart {
         conversation_id: ConversationId::new(conversation_id),
         head_message_id,
         model,
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_run_approvals_command() {
+    fn reads_session_approvals_command() {
         let command = command_from_args([
             "windie".to_string(),
             "run".to_string(),
@@ -816,12 +816,12 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::RunApprovals { run_id } if run_id.as_str() == "run-id"
+            Command::SessionApprovals { session_id } if session_id.as_str() == "run-id"
         ));
     }
 
     #[test]
-    fn reads_run_approve_command() {
+    fn reads_session_approve_command() {
         let command = command_from_args([
             "windie".to_string(),
             "run".to_string(),
@@ -832,15 +832,15 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::RunApprove {
-                run_id,
+            Command::SessionApprove {
+                session_id,
                 tool_call_id,
-            } if run_id.as_str() == "run-id" && tool_call_id.as_str() == "call-id"
+            } if session_id.as_str() == "run-id" && tool_call_id.as_str() == "call-id"
         ));
     }
 
     #[test]
-    fn reads_run_deny_command() {
+    fn reads_session_deny_command() {
         let command = command_from_args([
             "windie".to_string(),
             "run".to_string(),
@@ -851,10 +851,10 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::RunDeny {
-                run_id,
+            Command::SessionDeny {
+                session_id,
                 tool_call_id,
-            } if run_id.as_str() == "run-id" && tool_call_id.as_str() == "call-id"
+            } if session_id.as_str() == "run-id" && tool_call_id.as_str() == "call-id"
         ));
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_run_start_command() {
+    fn reads_session_start_command() {
         let command = command_from_args([
             "windie".to_string(),
             "run".to_string(),
@@ -1400,7 +1400,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::RunStart {
+            Command::SessionStart {
                 conversation_id,
                 head_message_id: None,
                 model: None,
@@ -1511,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_run_start_with_model_command() {
+    fn reads_session_start_with_model_command() {
         let command = command_from_args([
             "windie".to_string(),
             "run".to_string(),
@@ -1523,7 +1523,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::RunStart {
+            Command::SessionStart {
                 conversation_id,
                 head_message_id: None,
                 model: Some(model),
@@ -1532,7 +1532,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_run_start_with_head_and_provider_qualified_model() {
+    fn reads_session_start_with_head_and_provider_qualified_model() {
         let command = command_from_args([
             "windie".to_string(),
             "run".to_string(),
@@ -1546,7 +1546,7 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::RunStart {
+            Command::SessionStart {
                 conversation_id,
                 head_message_id: Some(message_id),
                 model: Some(model),

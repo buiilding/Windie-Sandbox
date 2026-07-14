@@ -13,17 +13,17 @@ import {
   countConversationInputTokens,
   conversationFromInspection,
   conversationSummaryFromApi,
-  approveRunTool as approveRunToolApi,
-  createRun as createRunApi,
-  denyRunTool as denyRunToolApi,
+  approveSessionTool as approveSessionToolApi,
+  createSession as createSessionApi,
+  denySessionTool as denySessionToolApi,
   fetchModelParameters,
-  getRun,
-  listRuns,
+  getSession,
+  listSessions,
   listModels,
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
-  stopRun as stopRunApi,
-  streamRunEvents,
+  stopSession as stopSessionApi,
+  streamSessionEvents,
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
 } from "@/lib/windieApi";
@@ -72,24 +72,24 @@ function isAbortError(error) {
   return error?.name === "AbortError";
 }
 
-function runFromApi(run) {
-  if (!run) return null;
+function sessionFromApi(session) {
+  if (!session) return null;
   return {
-    id: run.id,
-    conversationId: run.conversation_id,
-    startHeadMessageId: run.start_head_message_id || null,
-    currentHeadMessageId: run.current_head_message_id || null,
-    status: run.status,
-    model: run.model,
-    reasoning: run.reasoning || null,
-    error: run.error || null,
-    createdAt: run.created_at,
-    updatedAt: run.updated_at,
+    id: session.id,
+    conversationId: session.conversation_id,
+    startHeadMessageId: session.start_head_message_id || null,
+    currentHeadMessageId: session.current_head_message_id || null,
+    status: session.status,
+    model: session.model,
+    reasoning: session.reasoning || null,
+    error: session.error || null,
+    createdAt: session.created_at,
+    updatedAt: session.updated_at,
   };
 }
 
-function isLiveRun(run) {
-  return run?.status === "running" || run?.status === "waiting_for_approval";
+function isLiveSession(session) {
+  return session?.status === "running" || session?.status === "waiting_for_approval";
 }
 
 function pathNodesForConversation(conversation) {
@@ -191,19 +191,19 @@ export function WindieProvider({ children }) {
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
-  const [runsById, setRunsById] = useState({});
-  const [visibleRunId, setVisibleRunId] = useState(null);
-  const [runEventsByRunId, setRunEventsByRunId] = useState({});
-  const [pendingAssistantByRunId, setPendingAssistantByRunId] = useState({});
+  const [sessionsById, setSessionsById] = useState({});
+  const [visibleSessionId, setVisibleSessionId] = useState(null);
+  const [sessionEventsBySessionId, setSessionEventsBySessionId] = useState({});
+  const [pendingAssistantBySessionId, setPendingAssistantBySessionId] = useState({});
   const subscriptionAbortRef = useRef(null);
-  const subscribedRunIdRef = useRef(null);
-  const visibleRunIdRef = useRef(null);
+  const subscribedSessionIdRef = useRef(null);
+  const visibleSessionIdRef = useRef(null);
 
   useEffect(
     () => () => {
       subscriptionAbortRef.current?.abort();
-      subscribedRunIdRef.current = null;
-      visibleRunIdRef.current = null;
+      subscribedSessionIdRef.current = null;
+      visibleSessionIdRef.current = null;
     },
     []
   );
@@ -301,7 +301,7 @@ export function WindieProvider({ children }) {
       if (!convId) return null;
       const [report, approvalBody] = await Promise.all([
         apiRequest(`/api/conversations/${convId}`),
-        apiRequest(`/api/conversations/${convId}/run-approvals`),
+        apiRequest(`/api/conversations/${convId}/session-approvals`),
       ]);
       const loaded = conversationFromInspection(report, null);
 
@@ -719,49 +719,49 @@ export function WindieProvider({ children }) {
     [loadConversation, runMutation]
   );
 
-  const rememberRun = useCallback((run) => {
-    const normalized = runFromApi(run);
+  const rememberSession = useCallback((session) => {
+    const normalized = sessionFromApi(session);
     if (!normalized) return null;
-    setRunsById((prev) => ({ ...prev, [normalized.id]: normalized }));
+    setSessionsById((prev) => ({ ...prev, [normalized.id]: normalized }));
     return normalized;
   }, []);
 
-  const handleRunEvent = useCallback(
-    async (run, data) => {
+  const handleSessionEvent = useCallback(
+    async (session, data) => {
       if (!data?.type) return;
 
-      setRunEventsByRunId((prev) => ({
+      setSessionEventsBySessionId((prev) => ({
         ...prev,
-        [run.id]: [...(prev[run.id] || []), data],
+        [session.id]: [...(prev[session.id] || []), data],
       }));
 
       if (data.type === "assistant_delta") {
-        setPendingAssistantByRunId((prev) => {
-          const current = prev[run.id] || {
-            convId: run.conversationId,
+        setPendingAssistantBySessionId((prev) => {
+          const current = prev[session.id] || {
+            convId: session.conversationId,
             text: "",
             reasoning: "",
             toolCalls: {},
           };
           return {
             ...prev,
-            [run.id]: { ...current, text: current.text + (data.text || "") },
+            [session.id]: { ...current, text: current.text + (data.text || "") },
           };
         });
         return;
       }
 
       if (data.type === "reasoning_delta") {
-        setPendingAssistantByRunId((prev) => {
-          const current = prev[run.id] || {
-            convId: run.conversationId,
+        setPendingAssistantBySessionId((prev) => {
+          const current = prev[session.id] || {
+            convId: session.conversationId,
             text: "",
             reasoning: "",
             toolCalls: {},
           };
           return {
             ...prev,
-            [run.id]: {
+            [session.id]: {
               ...current,
               reasoning: (current.reasoning || "") + (data.text || ""),
             },
@@ -771,9 +771,9 @@ export function WindieProvider({ children }) {
       }
 
       if (data.type === "tool_call_delta") {
-        setPendingAssistantByRunId((prev) => {
-          const current = prev[run.id] || {
-            convId: run.conversationId,
+        setPendingAssistantBySessionId((prev) => {
+          const current = prev[session.id] || {
+            convId: session.conversationId,
             text: "",
             reasoning: "",
             toolCalls: {},
@@ -786,7 +786,7 @@ export function WindieProvider({ children }) {
           };
           return {
             ...prev,
-            [run.id]: {
+            [session.id]: {
               ...current,
               toolCalls: {
                 ...(current.toolCalls || {}),
@@ -804,14 +804,14 @@ export function WindieProvider({ children }) {
       }
 
       if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
-        await loadConversation(run.conversationId, {
+        await loadConversation(session.conversationId, {
           countTokens: false,
           selectLast: false,
         });
-        if (visibleRunIdRef.current === run.id && data.message_id) {
+        if (visibleSessionIdRef.current === session.id && data.message_id) {
           setSelectedNodeId(data.message_id);
         }
-        setPendingAssistantByRunId((prev) => ({ ...prev, [run.id]: null }));
+        setPendingAssistantBySessionId((prev) => ({ ...prev, [session.id]: null }));
         return;
       }
 
@@ -821,35 +821,35 @@ export function WindieProvider({ children }) {
         data.type === "cancelled" ||
         data.type === "waiting_for_approval"
       ) {
-        const latest = await getRun(run.id).catch(() => null);
-        if (latest) rememberRun(latest);
-        await loadConversation(run.conversationId, { countTokens: false }).catch(() => {});
+        const latest = await getSession(session.id).catch(() => null);
+        if (latest) rememberSession(latest);
+        await loadConversation(session.conversationId, { countTokens: false }).catch(() => {});
         if (data.type !== "waiting_for_approval") {
-          setPendingAssistantByRunId((prev) => ({ ...prev, [run.id]: null }));
+          setPendingAssistantBySessionId((prev) => ({ ...prev, [session.id]: null }));
         }
       }
     },
-    [loadConversation, rememberRun]
+    [loadConversation, rememberSession]
   );
 
-  const subscribeToRun = useCallback(
-    (run) => {
-      const normalized = rememberRun(run);
+  const subscribeToSession = useCallback(
+    (session) => {
+      const normalized = rememberSession(session);
       if (!normalized) return;
 
-      visibleRunIdRef.current = normalized.id;
-      setVisibleRunId(normalized.id);
-      if (subscribedRunIdRef.current === normalized.id) return;
+      visibleSessionIdRef.current = normalized.id;
+      setVisibleSessionId(normalized.id);
+      if (subscribedSessionIdRef.current === normalized.id) return;
 
       subscriptionAbortRef.current?.abort();
       const controller = new AbortController();
       subscriptionAbortRef.current = controller;
-      subscribedRunIdRef.current = normalized.id;
+      subscribedSessionIdRef.current = normalized.id;
 
-      streamRunEvents(
+      streamSessionEvents(
         normalized.id,
         null,
-        ({ data }) => handleRunEvent(normalized, data),
+        ({ data }) => handleSessionEvent(normalized, data),
         { signal: controller.signal }
       ).catch((error) => {
         if (!isAbortError(error)) {
@@ -859,41 +859,41 @@ export function WindieProvider({ children }) {
       }).finally(() => {
         if (subscriptionAbortRef.current === controller) {
           subscriptionAbortRef.current = null;
-          subscribedRunIdRef.current = null;
+          subscribedSessionIdRef.current = null;
         }
       });
     },
-    [handleRunEvent, rememberRun]
+    [handleSessionEvent, rememberSession]
   );
 
-  const refreshRuns = useCallback(async () => {
-    const runs = (await listRuns()).map(runFromApi).filter(Boolean);
-    setRunsById(Object.fromEntries(runs.map((run) => [run.id, run])));
-    const visibleLiveRun =
-      runs.find((run) => run.conversationId === activeConvId && isLiveRun(run)) ||
-      runs.find(isLiveRun) ||
+  const refreshSessions = useCallback(async () => {
+    const sessions = (await listSessions()).map(sessionFromApi).filter(Boolean);
+    setSessionsById(Object.fromEntries(sessions.map((session) => [session.id, session])));
+    const visibleLiveSession =
+      sessions.find((session) => session.conversationId === activeConvId && isLiveSession(session)) ||
+      sessions.find(isLiveSession) ||
       null;
-    if (visibleLiveRun) {
-      subscribeToRun(visibleLiveRun);
+    if (visibleLiveSession) {
+      subscribeToSession(visibleLiveSession);
     }
-    return runs;
-  }, [activeConvId, subscribeToRun]);
+    return sessions;
+  }, [activeConvId, subscribeToSession]);
 
   useEffect(() => {
-    refreshRuns().catch((error) => setApiError(error.message));
-  }, [refreshRuns]);
+    refreshSessions().catch((error) => setApiError(error.message));
+  }, [refreshSessions]);
 
   const stopStreaming = useCallback(async () => {
-    if (!visibleRunId) return;
+    if (!visibleSessionId) return;
     try {
-      const run = await stopRunApi(visibleRunId);
-      rememberRun(run);
-      setPendingAssistantByRunId((prev) => ({ ...prev, [visibleRunId]: null }));
+      const session = await stopSessionApi(visibleSessionId);
+      rememberSession(session);
+      setPendingAssistantBySessionId((prev) => ({ ...prev, [visibleSessionId]: null }));
     } catch (error) {
       setApiError(error.message);
       toast.error(error.message);
     }
-  }, [rememberRun, visibleRunId]);
+  }, [rememberSession, visibleSessionId]);
 
   const sendMessage = useCallback(
     async (convId, text, options = {}) => {
@@ -907,38 +907,38 @@ export function WindieProvider({ children }) {
         });
         await loadConversation(convId);
         setSelectedNodeId(inserted.message_id);
-        const run = await createRunApi(convId, {
+        const session = await createSessionApi(convId, {
           headMessageId: inserted.message_id,
           model: activeConv?.model || null,
           reasoning: activeReasoning,
         });
-        subscribeToRun(run);
+        subscribeToSession(session);
         setApiError(null);
       } catch (error) {
         setApiError(error.message);
         toast.error(error.message);
       }
     },
-    [activeConv?.model, activeReasoning, loadConversation, subscribeToRun]
+    [activeConv?.model, activeReasoning, loadConversation, subscribeToSession]
   );
 
   const continueConversation = useCallback(
     async (convId) => {
       if (!convId) return;
       try {
-        const run = await createRunApi(convId, {
+        const session = await createSessionApi(convId, {
           headMessageId: selectedNodeId,
           model: activeConv?.model || null,
           reasoning: activeReasoning,
         });
-        subscribeToRun(run);
+        subscribeToSession(session);
         setApiError(null);
       } catch (error) {
         setApiError(error.message);
         toast.error(error.message);
       }
     },
-    [activeConv?.model, activeReasoning, selectedNodeId, subscribeToRun]
+    [activeConv?.model, activeReasoning, selectedNodeId, subscribeToSession]
   );
 
   const startGateway = useCallback(
@@ -970,37 +970,37 @@ export function WindieProvider({ children }) {
   );
 
   const approveToolCall = useCallback(
-    async (runId, toolCallId) => {
-      if (!runId) return;
+    async (sessionId, toolCallId) => {
+      if (!sessionId) return;
       try {
-        const run = await approveRunToolApi(runId, toolCallId);
-        subscribeToRun(run);
+        const session = await approveSessionToolApi(sessionId, toolCallId);
+        subscribeToSession(session);
       } catch (error) {
         setApiError(error.message);
         toast.error(error.message);
       }
     },
-    [subscribeToRun]
+    [subscribeToSession]
   );
 
   const denyToolCall = useCallback(
-    async (runId, toolCallId) => {
-      if (!runId) return;
+    async (sessionId, toolCallId) => {
+      if (!sessionId) return;
       try {
-        const run = await denyRunToolApi(runId, toolCallId);
-        subscribeToRun(run);
+        const session = await denySessionToolApi(sessionId, toolCallId);
+        subscribeToSession(session);
       } catch (error) {
         setApiError(error.message);
         toast.error(error.message);
       }
     },
-    [subscribeToRun]
+    [subscribeToSession]
   );
 
-  const visibleRun = visibleRunId ? runsById[visibleRunId] || null : null;
-  const streaming = isLiveRun(visibleRun);
-  const pendingAssistant = visibleRunId
-    ? pendingAssistantByRunId[visibleRunId] || null
+  const visibleSession = visibleSessionId ? sessionsById[visibleSessionId] || null : null;
+  const streaming = isLiveSession(visibleSession);
+  const pendingAssistant = visibleSessionId
+    ? pendingAssistantBySessionId[visibleSessionId] || null
     : null;
 
   const value = {
@@ -1015,10 +1015,10 @@ export function WindieProvider({ children }) {
     contextPreviewOpen,
     streaming,
     pendingAssistant,
-    runsById,
-    visibleRun,
-    visibleRunId,
-    runEventsByRunId,
+    sessionsById,
+    visibleSession,
+    visibleSessionId,
+    sessionEventsBySessionId,
     searchQuery,
     models,
     modelsLoading,
@@ -1066,7 +1066,7 @@ export function WindieProvider({ children }) {
     refreshGateway,
     approveToolCall,
     denyToolCall,
-    refreshRuns,
+    refreshSessions,
     refreshConversations,
     loadConversation,
   };

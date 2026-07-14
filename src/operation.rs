@@ -25,19 +25,20 @@ use crate::llm::{
     self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName, ModelParameter,
     ModelParameterOption, PromptCacheRequest, ReasoningRequest,
 };
-use crate::output::RuntimeOutput;
-use crate::run::{Run, RunId, RunStatus};
+use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::runtime::{
     PendingToolExecution, RuntimeEventSink, RuntimeInput, RuntimeModelRequest, RuntimeOutcome,
-    deny_pending_tool_call, execute_pending_tool_call, load_pending_tool_call_at_head,
-    pending_approvals_at_head, prepare_pending_tool_execution,
-    run_head_until_blocked as runtime_run_head_until_blocked, store_run_pending_tool_result,
+    advance_until_blocked as runtime_advance_until_blocked, deny_pending_tool_call,
+    execute_pending_tool_call, load_pending_tool_call_at_head, pending_approvals_at_head,
+    prepare_pending_tool_execution, store_pending_tool_result_at_head,
 };
+use crate::session::{Session, SessionEvent, SessionId, SessionStatus};
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
 };
 use crate::tool_provider::ToolProviderRegistry;
+use crate::wakeup::{ContinueWakeup, Wakeup};
 
 /// One ordered message part accepted by client-facing insert operations.
 ///
@@ -60,13 +61,28 @@ pub struct ConversationTree {
 }
 
 #[derive(Debug, Clone, Serialize)]
-/// One run-owned pending approval surfaced to clients.
-pub struct RunToolApprovalRequest {
-    pub run_id: RunId,
+/// One session-owned pending approval surfaced to clients.
+pub struct SessionToolApprovalRequest {
+    pub session_id: SessionId,
     pub conversation_id: ConversationId,
-    pub run_status: RunStatus,
+    pub session_status: SessionStatus,
     pub head_message_id: Option<MessageId>,
     pub approval: ToolApprovalRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Action a session manager should take for a session-targeted wakeup.
+pub enum SessionResumeAction {
+    ApproveTool(ToolCallId),
+    DenyTool(ToolCallId),
+    Stop,
+}
+
+#[derive(Debug, Clone)]
+/// Session and action resolved from a wakeup that targets an existing session.
+pub struct SessionResume {
+    pub session: Session,
+    pub action: SessionResumeAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +149,7 @@ pub enum ReasoningParameterSource {
 }
 
 #[derive(Debug, Serialize)]
-/// Machine-readable snapshot of one conversation's current runtime state.
+/// Machine-readable snapshot of one conversation's current sessiontime state.
 ///
 /// CLI JSON and API inspection both serialize this same operation-level shape.
 /// It deliberately summarizes image bytes instead of exposing raw image data.
@@ -849,8 +865,8 @@ pub fn fork_conversation(
     store.fork_conversation_at_message(conversation_id, message_id)
 }
 
-/// Lists pending tool calls at a run-owned message head.
-pub fn list_run_tool_approvals_with_registry(
+/// Lists pending tool calls at a session-owned message head.
+pub fn list_session_tool_approvals_with_registry(
     store: &Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
@@ -867,44 +883,46 @@ pub fn list_run_tool_approvals_with_registry(
     )
 }
 
-/// Lists pending approval requests for one run.
-pub fn list_run_approvals_with_registry(
+/// Lists pending approval requests for one session.
+pub fn list_session_approvals_with_registry(
     store: &Store,
-    run: &Run,
+    session: &Session,
     registry: &ToolProviderRegistry,
-) -> Result<Vec<RunToolApprovalRequest>> {
-    let approvals = list_run_tool_approvals_with_registry(
+) -> Result<Vec<SessionToolApprovalRequest>> {
+    let approvals = list_session_tool_approvals_with_registry(
         store,
-        &run.conversation_id,
-        run.current_head_message_id.as_ref(),
+        &session.conversation_id,
+        session.current_head_message_id.as_ref(),
         registry,
     )?;
 
     Ok(approvals
         .into_iter()
-        .map(|approval| RunToolApprovalRequest {
-            run_id: run.id.clone(),
-            conversation_id: run.conversation_id.clone(),
-            run_status: run.status,
-            head_message_id: run.current_head_message_id.clone(),
+        .map(|approval| SessionToolApprovalRequest {
+            session_id: session.id.clone(),
+            conversation_id: session.conversation_id.clone(),
+            session_status: session.status,
+            head_message_id: session.current_head_message_id.clone(),
             approval,
         })
         .collect())
 }
 
-/// Lists pending run-owned approval requests for a conversation.
-pub fn list_conversation_run_approvals_with_registry(
+/// Lists pending session-owned approval requests for a conversation.
+pub fn list_conversation_session_approvals_with_registry(
     store: &Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
-) -> Result<Vec<RunToolApprovalRequest>> {
+) -> Result<Vec<SessionToolApprovalRequest>> {
     let mut approvals = Vec::new();
 
-    for run in store.list_conversation_runs(conversation_id)? {
-        if run.status != RunStatus::WaitingForApproval {
+    for session in store.list_conversation_sessions(conversation_id)? {
+        if session.status != SessionStatus::WaitingForApproval {
             continue;
         }
-        approvals.extend(list_run_approvals_with_registry(store, &run, registry)?);
+        approvals.extend(list_session_approvals_with_registry(
+            store, &session, registry,
+        )?);
     }
 
     Ok(approvals)
@@ -915,7 +933,7 @@ pub fn list_conversation_run_approvals_with_registry(
 /// Long-lived API execution and blocking CLI calls both pass through this
 /// struct so gateway, Bifrost endpoint, model override, reasoning, and tool
 /// executor access stay explicit.
-pub struct RunRuntime<'a> {
+pub struct RuntimeDependencies<'a> {
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
     model_override: Option<ModelName>,
@@ -923,8 +941,8 @@ pub struct RunRuntime<'a> {
     tools: &'a ToolProviderRegistry,
 }
 
-impl<'a> RunRuntime<'a> {
-    /// Groups provider/runtime dependencies for one run.
+impl<'a> RuntimeDependencies<'a> {
+    /// Groups provider/runtime dependencies for one session.
     pub fn new(
         gateway_url: GatewayUrl,
         base_url: BaseUrl,
@@ -942,14 +960,342 @@ impl<'a> RunRuntime<'a> {
     }
 }
 
-/// Runs one backend-owned execution until it completes or waits for approval.
-pub async fn run_until_blocked<O, E>(
+/// Creates a durable session from a wakeup and captures the head/model used.
+pub fn start_session_from_wakeup(store: &mut Store, wakeup: ContinueWakeup) -> Result<Session> {
+    let head_message_id = match wakeup.head_message_id {
+        Some(message_id) => Some(message_id),
+        None => store.active_message_id(&wakeup.conversation_id)?,
+    };
+    let model = match wakeup.model {
+        Some(model) => model,
+        None => conversation_model(store, &wakeup.conversation_id)?,
+    };
+    let session_id = SessionId::fresh();
+
+    store.create_session(
+        &session_id,
+        &wakeup.conversation_id,
+        head_message_id.as_ref(),
+        model.as_str(),
+        wakeup.reasoning.as_ref(),
+    )
+}
+
+/// Resolves a session-targeted wakeup into the persisted session and action.
+///
+/// Conversation wakeups create new sessions through `start_session_from_wakeup`.
+/// This helper is only for wakeups that target an already durable session.
+pub fn resume_session_from_wakeup(store: &Store, wakeup: Wakeup) -> Result<Option<SessionResume>> {
+    let (session_id, action) = match wakeup {
+        Wakeup::ApproveTool(decision) => (
+            decision.session_id,
+            SessionResumeAction::ApproveTool(decision.tool_call_id),
+        ),
+        Wakeup::DenyTool(decision) => (
+            decision.session_id,
+            SessionResumeAction::DenyTool(decision.tool_call_id),
+        ),
+        Wakeup::Stop(stop) => (stop.session_id, SessionResumeAction::Stop),
+        Wakeup::Query(_) | Wakeup::Continue(_) => {
+            anyhow::bail!("conversation wakeups create sessions instead of resuming them")
+        }
+    };
+    let session = store.load_session(&session_id)?;
+
+    if action != SessionResumeAction::Stop && session.status != SessionStatus::WaitingForApproval {
+        return Ok(None);
+    }
+
+    Ok(Some(SessionResume { session, action }))
+}
+
+/// Persists the terminal status/head and final event for a session outcome.
+pub fn finish_session(
+    store: &mut Store,
+    session_id: &SessionId,
+    outcome: RuntimeOutcome,
+) -> Result<crate::session::SessionEventRecord> {
+    match outcome {
+        RuntimeOutcome::Completed { head_message_id } => {
+            store.update_session_head(session_id, head_message_id.as_ref())?;
+            store.update_session_status(session_id, SessionStatus::Completed, None)?;
+            store.append_session_event(
+                session_id,
+                SessionEvent::Completed {
+                    message_id: head_message_id.map(|id| id.as_str().to_string()),
+                },
+            )
+        }
+        RuntimeOutcome::WaitingForApproval { head_message_id } => {
+            store.update_session_head(session_id, Some(&head_message_id))?;
+            store.update_session_status(session_id, SessionStatus::WaitingForApproval, None)?;
+            store.append_session_event(session_id, SessionEvent::WaitingForApproval)
+        }
+    }
+}
+
+/// Persists a failed session status and replayable failure event.
+pub fn record_session_failure(
+    store: &mut Store,
+    session_id: &SessionId,
+    error: &anyhow::Error,
+) -> Result<crate::session::SessionEventRecord> {
+    let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+    let message = error
+        .chain()
+        .last()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| error.to_string());
+
+    store.update_session_status(session_id, SessionStatus::Failed, Some(&message))?;
+    store.append_session_event(
+        session_id,
+        SessionEvent::Failed {
+            error: message,
+            causes,
+        },
+    )
+}
+
+/// Starts and advances a CLI-owned session from a conversation wakeup.
+pub async fn start_cli_session(
+    conversation_id: ConversationId,
+    head_message_id: Option<MessageId>,
+    model: Option<ModelName>,
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+) -> Result<()> {
+    let mut store = Store::open()?;
+    let session = start_session_from_wakeup(
+        &mut store,
+        ContinueWakeup {
+            conversation_id,
+            head_message_id,
+            model,
+            reasoning: None,
+        },
+    )?;
+    let output = TerminalOutput;
+
+    output.created_session(&session.id);
+    continue_cli_session(&mut store, &session.id, gateway_url, base_url).await
+}
+
+/// Executes one approved CLI session-owned tool call and continues the session.
+pub async fn approve_cli_session_tool(
+    session_id: SessionId,
+    tool_call_id: ToolCallId,
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+) -> Result<()> {
+    let mut store = Store::open()?;
+    let session = store.load_session(&session_id)?;
+    let registry = ToolProviderRegistry::new();
+    let runtime = RuntimeDependencies::new(
+        gateway_url,
+        base_url,
+        Some(ModelName::new(session.model)),
+        session.reasoning,
+        &registry,
+    );
+    let cli_output = CliSessionOutput::new(session_id.clone());
+    let events = CliSessionEvents::new(session_id.clone());
+    let outcome = approve_session_tool(
+        &cli_output,
+        &events,
+        &mut store,
+        &session.conversation_id,
+        session.current_head_message_id.as_ref(),
+        &tool_call_id,
+        runtime,
+    )
+    .await?;
+
+    finish_session(&mut store, &session_id, outcome)?;
+    Ok(())
+}
+
+/// Stores one denied CLI session-owned tool result and continues the session.
+pub async fn deny_cli_session_tool(
+    session_id: SessionId,
+    tool_call_id: ToolCallId,
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+) -> Result<()> {
+    let mut store = Store::open()?;
+    let session = store.load_session(&session_id)?;
+    let registry = ToolProviderRegistry::new();
+    let runtime = RuntimeDependencies::new(
+        gateway_url,
+        base_url,
+        Some(ModelName::new(session.model)),
+        session.reasoning,
+        &registry,
+    );
+    let cli_output = CliSessionOutput::new(session_id.clone());
+    let events = CliSessionEvents::new(session_id.clone());
+    let outcome = deny_session_tool(
+        &cli_output,
+        &events,
+        &mut store,
+        &session.conversation_id,
+        session.current_head_message_id.as_ref(),
+        &tool_call_id,
+        runtime,
+    )
+    .await?;
+
+    finish_session(&mut store, &session_id, outcome)?;
+    Ok(())
+}
+
+/// Cancels one persisted CLI session and returns the updated state.
+pub fn cancel_session(session_id: &SessionId) -> Result<Session> {
+    let mut store = Store::open()?;
+
+    store.update_session_status(session_id, SessionStatus::Cancelled, None)?;
+    store.load_session(session_id)
+}
+
+/// Continues a CLI-owned session until it completes or reaches approval.
+async fn continue_cli_session(
+    store: &mut Store,
+    session_id: &SessionId,
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+) -> Result<()> {
+    let session = store.load_session(session_id)?;
+    store.update_session_status(session_id, SessionStatus::Running, None)?;
+    let registry = ToolProviderRegistry::new();
+    let runtime = RuntimeDependencies::new(
+        gateway_url,
+        base_url,
+        Some(ModelName::new(session.model)),
+        session.reasoning,
+        &registry,
+    );
+    let cli_output = CliSessionOutput::new(session_id.clone());
+    let events = CliSessionEvents::new(session_id.clone());
+    let outcome = advance_session_until_blocked(
+        &cli_output,
+        &events,
+        store,
+        &session.conversation_id,
+        session.current_head_message_id.as_ref(),
+        runtime,
+    )
+    .await?;
+
+    finish_session(store, session_id, outcome)?;
+    Ok(())
+}
+
+/// CLI runtime output that prints to the terminal and appends replayable events.
+struct CliSessionOutput {
+    session_id: SessionId,
+    terminal: TerminalOutput,
+}
+
+impl CliSessionOutput {
+    fn new(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            terminal: TerminalOutput,
+        }
+    }
+
+    fn record(&self, event: SessionEvent) -> Result<()> {
+        let mut store = Store::open()?;
+        store.append_session_event(&self.session_id, event)?;
+
+        Ok(())
+    }
+}
+
+impl RuntimeOutput for CliSessionOutput {
+    fn start_assistant_message(&self) {
+        self.terminal.start_assistant_message();
+    }
+
+    fn assistant_delta(&self, text: &str) -> Result<()> {
+        self.record(SessionEvent::AssistantDelta {
+            text: text.to_string(),
+        })?;
+        self.terminal.assistant_delta(text)
+    }
+
+    fn reasoning_delta(&self, text: &str) -> Result<()> {
+        self.record(SessionEvent::ReasoningDelta {
+            text: text.to_string(),
+        })
+    }
+
+    fn tool_call_delta(
+        &self,
+        index: u16,
+        id: Option<&str>,
+        name: Option<&str>,
+        arguments_delta: Option<&str>,
+    ) -> Result<()> {
+        self.record(SessionEvent::ToolCallDelta {
+            index,
+            id: id.map(str::to_string),
+            name: name.map(str::to_string),
+            arguments_delta: arguments_delta.map(str::to_string),
+        })
+    }
+
+    fn end_assistant_message(&self) {
+        self.terminal.end_assistant_message();
+    }
+
+    fn assistant_tool_calls(&self, tool_calls: &[crate::conversation::ToolCall]) {
+        self.terminal.assistant_tool_calls(tool_calls);
+    }
+}
+
+/// CLI runtime sink for durable message events.
+struct CliSessionEvents {
+    session_id: SessionId,
+}
+
+impl CliSessionEvents {
+    fn new(session_id: SessionId) -> Self {
+        Self { session_id }
+    }
+
+    fn record(&self, event: SessionEvent) {
+        match Store::open()
+            .and_then(|mut store| store.append_session_event(&self.session_id, event))
+        {
+            Ok(_) => {}
+            Err(error) => eprintln!("failed to append runtime event: {error}"),
+        }
+    }
+}
+
+impl RuntimeEventSink for CliSessionEvents {
+    fn assistant_message_saved(&self, message_id: &MessageId) {
+        self.record(SessionEvent::AssistantMessageSaved {
+            message_id: message_id.as_str().to_string(),
+        });
+    }
+
+    fn tool_result_saved(&self, message_id: &MessageId) {
+        self.record(SessionEvent::ToolResultSaved {
+            message_id: message_id.as_str().to_string(),
+        });
+    }
+}
+
+/// Advances one backend-owned execution until it completes or waits for approval.
+pub async fn advance_session_until_blocked<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
-    runtime: RunRuntime<'_>,
+    runtime: RuntimeDependencies<'_>,
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
@@ -963,7 +1309,7 @@ where
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
 
-    runtime_run_head_until_blocked(
+    runtime_advance_until_blocked(
         output,
         &llm,
         store,
@@ -1017,15 +1363,15 @@ fn reasoning_request_for_model(
     Some(reasoning)
 }
 
-/// Executes one approved run-scoped tool call and continues that run.
-pub async fn approve_run_tool<O, E>(
+/// Executes one approved session-scoped tool call and continues that session.
+pub async fn approve_session_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     tool_call_id: &ToolCallId,
-    runtime: RunRuntime<'_>,
+    runtime: RuntimeDependencies<'_>,
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
@@ -1041,22 +1387,22 @@ where
             execute_pending_tool_call(&pending, &attached_tool, runtime.tools).await?
         }
     };
-    let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
     events.tool_result_saved(&message_id);
 
-    continue_run_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
+    continue_session_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
         .await
 }
 
-/// Stores one denied run-scoped tool result and continues that run.
-pub async fn deny_run_tool<O, E>(
+/// Stores one denied session-scoped tool result and continues that session.
+pub async fn deny_session_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     tool_call_id: &ToolCallId,
-    runtime: RunRuntime<'_>,
+    runtime: RuntimeDependencies<'_>,
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
@@ -1065,21 +1411,21 @@ where
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
     let result = deny_pending_tool_call(&pending);
-    let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
     events.tool_result_saved(&message_id);
 
-    continue_run_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
+    continue_session_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
         .await
 }
 
 /// Continues a run after a stored tool result only when no manual approval remains.
-async fn continue_run_after_tool_result<O, E>(
+async fn continue_session_after_tool_result<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: &MessageId,
-    runtime: RunRuntime<'_>,
+    runtime: RuntimeDependencies<'_>,
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
@@ -1101,7 +1447,7 @@ where
         });
     }
 
-    run_until_blocked(
+    advance_session_until_blocked(
         output,
         events,
         store,
@@ -1533,6 +1879,115 @@ mod tests {
             store.active_message_id(&conversation_id).unwrap().as_ref(),
             Some(&second_id)
         );
+    }
+
+    #[test]
+    fn start_session_from_wakeup_captures_active_head() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+        let user_id = insert_message(
+            &mut store,
+            &conversation_id,
+            Role::User,
+            &[MessageInputPart::Text("hello".to_string())],
+        )
+        .unwrap();
+
+        let session = start_session_from_wakeup(
+            &mut store,
+            crate::wakeup::ContinueWakeup {
+                conversation_id: conversation_id.clone(),
+                head_message_id: None,
+                model: None,
+                reasoning: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(session.conversation_id, conversation_id);
+        assert_eq!(session.start_head_message_id.as_ref(), Some(&user_id));
+        assert_eq!(session.current_head_message_id.as_ref(), Some(&user_id));
+        assert_eq!(session.model, "openai/test");
+        assert_eq!(session.status, SessionStatus::Running);
+    }
+
+    #[test]
+    fn resume_session_from_wakeup_resolves_waiting_approval() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+        let head_message_id = insert_message(
+            &mut store,
+            &conversation_id,
+            Role::Assistant,
+            &[MessageInputPart::Text("tool call pending".to_string())],
+        )
+        .unwrap();
+        let session_id = SessionId::fresh();
+        store
+            .create_session(
+                &session_id,
+                &conversation_id,
+                Some(&head_message_id),
+                "openai/test",
+                None,
+            )
+            .unwrap();
+        store
+            .update_session_status(&session_id, SessionStatus::WaitingForApproval, None)
+            .unwrap();
+
+        let resume = resume_session_from_wakeup(
+            &store,
+            crate::wakeup::Wakeup::ApproveTool(crate::wakeup::ToolDecisionWakeup {
+                session_id: session_id.clone(),
+                tool_call_id: ToolCallId::new("call_1"),
+            }),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resume.session.id, session_id);
+        assert_eq!(
+            resume.action,
+            SessionResumeAction::ApproveTool(ToolCallId::new("call_1"))
+        );
+    }
+
+    #[test]
+    fn resume_session_from_wakeup_ignores_non_waiting_approval() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+        let head_message_id = insert_message(
+            &mut store,
+            &conversation_id,
+            Role::Assistant,
+            &[MessageInputPart::Text("complete".to_string())],
+        )
+        .unwrap();
+        let session_id = SessionId::fresh();
+        store
+            .create_session(
+                &session_id,
+                &conversation_id,
+                Some(&head_message_id),
+                "openai/test",
+                None,
+            )
+            .unwrap();
+        store
+            .update_session_status(&session_id, SessionStatus::Completed, None)
+            .unwrap();
+
+        let resume = resume_session_from_wakeup(
+            &store,
+            crate::wakeup::Wakeup::DenyTool(crate::wakeup::ToolDecisionWakeup {
+                session_id,
+                tool_call_id: ToolCallId::new("call_1"),
+            }),
+        )
+        .unwrap();
+
+        assert!(resume.is_none());
     }
 
     fn temp_image_path(extension: &str) -> PathBuf {

@@ -24,8 +24,8 @@ use crate::llm::{BaseUrl, ModelName};
 use crate::mcp::{self, McpCommand};
 use crate::runtime::{
     NoopRuntimeEventSink, RuntimeInput, RuntimeModelRequest, deny_pending_tool_call,
-    load_pending_tool_call_at_head, pending_approvals_at_head, prepare_run_head_turn,
-    store_run_pending_tool_result,
+    load_pending_tool_call_at_head, pending_approvals_at_head, prepare_head_turn,
+    store_pending_tool_result_at_head,
 };
 use crate::store::Store;
 use crate::tool::{
@@ -148,7 +148,7 @@ pub struct PerformanceBaseline {
     pub context_system_prompt_load: Option<Duration>,
     pub context_compaction_load: Option<Duration>,
     pub context_flatten: Option<Duration>,
-    pub prepare_run_head_turn: Option<Duration>,
+    pub prepare_head_turn: Option<Duration>,
     pub pending_tool_approval_scan: Option<Duration>,
     pub tool_result_insert: Option<Duration>,
     pub deny_tool_result_persist: Option<Duration>,
@@ -223,7 +223,7 @@ pub struct PerformanceSample {
     pub context_compaction_load_us: Option<u64>,
     pub context_flatten_us: Option<u64>,
     #[serde(default)]
-    pub prepare_run_head_turn_us: Option<u64>,
+    pub prepare_head_turn_us: Option<u64>,
     #[serde(default)]
     pub pending_tool_approval_scan_us: Option<u64>,
     #[serde(default)]
@@ -311,7 +311,7 @@ pub struct PerformanceSummary {
     pub context_compaction_load: Option<DurationMetric>,
     pub context_flatten: Option<DurationMetric>,
     #[serde(default)]
-    pub prepare_run_head_turn: Option<DurationMetric>,
+    pub prepare_head_turn: Option<DurationMetric>,
     #[serde(default)]
     pub pending_tool_approval_scan: Option<DurationMetric>,
     #[serde(default)]
@@ -397,7 +397,7 @@ pub struct PerformanceComparisonRow {
 
 /// Provider-free timings for runtime and write-path primitives.
 struct RuntimeBenchmarkTimings {
-    prepare_run_head_turn: Duration,
+    prepare_head_turn: Duration,
     pending_tool_approval_scan: Duration,
     tool_result_insert: Duration,
     deny_tool_result_persist: Duration,
@@ -471,7 +471,7 @@ pub async fn run(
         context_system_prompt_load: None,
         context_compaction_load: None,
         context_flatten: None,
-        prepare_run_head_turn: None,
+        prepare_head_turn: None,
         pending_tool_approval_scan: None,
         tool_result_insert: None,
         deny_tool_result_persist: None,
@@ -604,7 +604,7 @@ pub async fn run(
         }
         BenchmarkMode::Local => {
             let runtime = run_runtime_benchmark()?;
-            baseline.prepare_run_head_turn = Some(runtime.prepare_run_head_turn);
+            baseline.prepare_head_turn = Some(runtime.prepare_head_turn);
             baseline.pending_tool_approval_scan = Some(runtime.pending_tool_approval_scan);
             baseline.tool_result_insert = Some(runtime.tool_result_insert);
             baseline.deny_tool_result_persist = Some(runtime.deny_tool_result_persist);
@@ -656,7 +656,7 @@ fn apply_benchmark_categories(
     categories: &[BenchmarkCategory],
 ) {
     if !categories.contains(&BenchmarkCategory::Runtime) {
-        baseline.prepare_run_head_turn = None;
+        baseline.prepare_head_turn = None;
         baseline.prepare_run_head_no_tools = None;
         baseline.prepare_run_head_completed_tool_chain = None;
         baseline.prepare_run_head_requires_approval = None;
@@ -794,7 +794,7 @@ pub fn compare_reports(
 /// directory. Setup is outside the timing window, so the measured durations are
 /// primitive costs rather than fixture construction.
 fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
-    let prepare_run_head_turn = benchmark_prepare_run_head_turn()?;
+    let prepare_head_turn = benchmark_prepare_head_turn()?;
     let pending_tool_approval_scan = benchmark_pending_tool_approval_scan()?;
     let tool_result_insert = benchmark_tool_result_insert()?;
     let deny_tool_result_persist = benchmark_deny_tool_result_persist()?;
@@ -824,7 +824,7 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let fake_mcp_list_call = benchmark_fake_mcp_list_call()?;
 
     Ok(RuntimeBenchmarkTimings {
-        prepare_run_head_turn,
+        prepare_head_turn,
         pending_tool_approval_scan,
         tool_result_insert,
         deny_tool_result_persist,
@@ -865,7 +865,7 @@ fn prepare_active_head_turn(store: &mut Store, conversation_id: &ConversationId)
     let events = NoopRuntimeEventSink;
     let mut head_message_id = store.active_message_id(conversation_id)?;
 
-    prepare_run_head_turn(
+    prepare_head_turn(
         store,
         conversation_id,
         &mut head_message_id,
@@ -905,13 +905,13 @@ fn deny_active_head_tool_call(
         tool_call_id,
     )?;
     let result = deny_pending_tool_call(&pending);
-    store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+    store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
 
     Ok(())
 }
 
 /// Measures query preparation on a minimal ready active path.
-fn benchmark_prepare_run_head_turn() -> Result<Duration> {
+fn benchmark_prepare_head_turn() -> Result<Duration> {
     with_runtime_store("prepare-run-head-turn", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         insert_user_message(store, &conversation_id, None, "ready")?;
@@ -1626,7 +1626,7 @@ impl PerformanceSample {
             context_system_prompt_load_us: baseline.context_system_prompt_load.map(duration_micros),
             context_compaction_load_us: baseline.context_compaction_load.map(duration_micros),
             context_flatten_us: baseline.context_flatten.map(duration_micros),
-            prepare_run_head_turn_us: baseline.prepare_run_head_turn.map(duration_micros),
+            prepare_head_turn_us: baseline.prepare_head_turn.map(duration_micros),
             pending_tool_approval_scan_us: baseline.pending_tool_approval_scan.map(duration_micros),
             tool_result_insert_us: baseline.tool_result_insert.map(duration_micros),
             deny_tool_result_persist_us: baseline.deny_tool_result_persist.map(duration_micros),
@@ -1747,10 +1747,10 @@ impl PerformanceSummary {
                     .iter()
                     .filter_map(|sample| sample.context_flatten_us),
             ),
-            prepare_run_head_turn: duration_metric(
+            prepare_head_turn: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.prepare_run_head_turn_us),
+                    .filter_map(|sample| sample.prepare_head_turn_us),
             ),
             pending_tool_approval_scan: duration_metric(
                 samples
@@ -1975,8 +1975,8 @@ fn comparison_rows(
         ),
         (
             "prepare run head turn",
-            &baseline.prepare_run_head_turn,
-            &current.prepare_run_head_turn,
+            &baseline.prepare_head_turn,
+            &current.prepare_head_turn,
         ),
         (
             "pending tool approval scan",

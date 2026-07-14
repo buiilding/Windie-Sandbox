@@ -40,7 +40,7 @@ impl ContextBuilder {
 
     /// Loads the model-facing context for an explicit message head.
     ///
-    /// Runtime runs use this path so execution is tied to the head captured at
+    /// Runtime sessions use this path so execution is tied to the head captured at
     /// admission time instead of the conversation's mutable UI-selected active
     /// message.
     pub fn build_to_head(

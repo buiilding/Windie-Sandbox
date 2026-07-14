@@ -329,7 +329,7 @@ fn prepare_active_head_turn(store: &mut Store, conversation_id: &ConversationId)
     let events = NoopRuntimeEventSink;
     let mut head_message_id = active_head(store, conversation_id);
 
-    prepare_run_head_turn(
+    prepare_head_turn(
         store,
         conversation_id,
         &mut head_message_id,
@@ -435,7 +435,7 @@ where
 {
     let head_message_id = active_head(store, conversation_id);
 
-    let message = run_turn(
+    let message = advance_turn(
         output,
         llm,
         store,
@@ -503,7 +503,7 @@ where
     E: RuntimeEventSink,
 {
     let head_message_id = active_head(store, conversation_id);
-    let outcome = run_head_until_blocked(
+    let outcome = advance_until_blocked(
         output,
         llm,
         store,
@@ -566,7 +566,7 @@ async fn approve_active_head_tool_call_with_registry(
             execute_pending_tool_call(&pending, &attached_tool, registry).await?
         }
     };
-    let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
     store.set_active_message(conversation_id, &message_id)?;
 
     Ok(result)
@@ -585,7 +585,7 @@ fn deny_active_head_tool_call(
         tool_call_id,
     )?;
     let result = deny_pending_tool_call(&pending);
-    let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
     store.set_active_message(conversation_id, &message_id)?;
 
     Ok(result)
@@ -631,6 +631,77 @@ async fn run_head_saves_assistant_message() {
             .unwrap()
             .as_deref(),
         messages[1].id.as_deref()
+    );
+}
+
+#[tokio::test]
+async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "branch here", None)
+        .unwrap();
+    let registry = ToolProviderRegistry::new();
+    let events = NoopRuntimeEventSink;
+
+    let first_outcome = advance_until_blocked(
+        &NoopOutput,
+        &ReplyLlm::new("first branch"),
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&user_id),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+    let second_outcome = advance_until_blocked(
+        &NoopOutput,
+        &ReplyLlm::new("second branch"),
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&user_id),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+
+    let first_id = match first_outcome {
+        RuntimeOutcome::Completed {
+            head_message_id: Some(message_id),
+        } => message_id,
+        _ => panic!("first explicit-head execution did not complete"),
+    };
+    let second_id = match second_outcome {
+        RuntimeOutcome::Completed {
+            head_message_id: Some(message_id),
+        } => message_id,
+        _ => panic!("second explicit-head execution did not complete"),
+    };
+    let first_path = path_to_head(&store, &conversation_id, &first_id);
+    let second_path = path_to_head(&store, &conversation_id, &second_id);
+
+    assert_ne!(first_id, second_id);
+    assert_eq!(first_path.len(), 2);
+    assert_eq!(second_path.len(), 2);
+    assert_eq!(first_path[0].id.as_ref(), Some(&user_id));
+    assert_eq!(second_path[0].id.as_ref(), Some(&user_id));
+    assert_eq!(first_path[1].content, "first branch");
+    assert_eq!(second_path[1].content, "second branch");
+    assert_eq!(
+        first_path[1].parent_message_id.as_deref(),
+        Some(user_id.as_str())
+    );
+    assert_eq!(
+        second_path[1].parent_message_id.as_deref(),
+        Some(user_id.as_str())
     );
 }
 
@@ -700,7 +771,7 @@ async fn run_head_passes_tool_schemas_to_llm() {
 }
 
 #[tokio::test]
-async fn run_approve_run_composes_provider_tool_flow() {
+async fn session_approve_run_composes_provider_tool_flow() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
@@ -798,7 +869,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
 }
 
 #[tokio::test]
-async fn auto_approval_emits_persisted_runtime_events() {
+async fn auto_approval_emits_persisted_session_events() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);

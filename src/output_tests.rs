@@ -70,10 +70,10 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie truncate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie fork <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie run start <conversation_id>".to_string()));
-    assert!(lines.contains(&"  windie run status <run_id>".to_string()));
-    assert!(lines.contains(&"  windie run approvals <run_id>".to_string()));
-    assert!(lines.contains(&"  windie run approve <run_id> <tool_call_id>".to_string()));
-    assert!(lines.contains(&"  windie run deny <run_id> <tool_call_id>".to_string()));
+    assert!(lines.contains(&"  windie run status <session_id>".to_string()));
+    assert!(lines.contains(&"  windie run approvals <session_id>".to_string()));
+    assert!(lines.contains(&"  windie run approve <session_id> <tool_call_id>".to_string()));
+    assert!(lines.contains(&"  windie run deny <session_id> <tool_call_id>".to_string()));
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
     assert!(lines.contains(&"  windie install <target>".to_string()));

@@ -22,7 +22,7 @@ use crate::conversation::{
 };
 use crate::error;
 use crate::llm::ReasoningRequest;
-use crate::run::{Run, RunEvent, RunEventRecord, RunId, RunStatus};
+use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId, SessionStatus};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef,
@@ -45,7 +45,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 10;
+const DATABASE_SCHEMA_VERSION: i32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -225,7 +225,7 @@ impl Store {
                     FOREIGN KEY (image_asset_id) REFERENCES image_assets(id)
                 );
 
-                CREATE TABLE IF NOT EXISTS runtime_runs (
+                CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
                     start_head_message_id TEXT,
@@ -242,21 +242,21 @@ impl Store {
                     FOREIGN KEY (current_head_message_id) REFERENCES messages(id)
                 );
 
-                CREATE TABLE IF NOT EXISTS runtime_events (
+                CREATE TABLE IF NOT EXISTS session_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
                     event_type TEXT NOT NULL,
                     payload TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
 
-                    FOREIGN KEY (run_id) REFERENCES runtime_runs(id)
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_runtime_runs_conversation
-                ON runtime_runs(conversation_id);
+                CREATE INDEX IF NOT EXISTS idx_sessions_conversation
+                ON sessions(conversation_id);
 
-                CREATE INDEX IF NOT EXISTS idx_runtime_events_run_id_id
-                ON runtime_events(run_id, id);
+                CREATE INDEX IF NOT EXISTS idx_session_events_run_id_id
+                ON session_events(session_id, id);
 
                 CREATE TABLE IF NOT EXISTS compactions (
                     id TEXT PRIMARY KEY,
@@ -941,15 +941,15 @@ impl Store {
         self.load_path_to_message(conversation_id, &message_id)
     }
 
-    /// Creates one runtime run from an explicit conversation head.
-    pub fn create_run(
+    /// Creates one sessiontime session from an explicit conversation head.
+    pub fn create_session(
         &mut self,
-        run_id: &RunId,
+        session_id: &SessionId,
         conversation_id: &ConversationId,
         start_head_message_id: Option<&MessageId>,
         model: &str,
         reasoning: Option<&ReasoningRequest>,
-    ) -> Result<Run> {
+    ) -> Result<Session> {
         self.ensure_conversation_exists(conversation_id)?;
         if let Some(message_id) = start_head_message_id {
             self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
@@ -963,12 +963,12 @@ impl Store {
         let transaction = self
             .connection
             .transaction()
-            .context("failed to start runtime run transaction")?;
+            .context("failed to start runtime session transaction")?;
 
         transaction
             .execute(
                 "
-                INSERT INTO runtime_runs (
+                INSERT INTO sessions (
                     id,
                     conversation_id,
                     start_head_message_id,
@@ -983,26 +983,26 @@ impl Store {
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8)
                 ",
                 params![
-                    run_id.as_str(),
+                    session_id.as_str(),
                     conversation_id.as_str(),
                     start_head_message_id.map(MessageId::as_str),
                     start_head_message_id.map(MessageId::as_str),
-                    RunStatus::Running.as_storage(),
+                    SessionStatus::Running.as_storage(),
                     model,
                     reasoning_json.as_deref(),
                     now
                 ],
             )
-            .context("failed to create runtime run")?;
+            .context("failed to create runtime session")?;
         transaction
             .commit()
-            .context("failed to commit runtime run create")?;
+            .context("failed to commit runtime session create")?;
 
-        self.load_run(run_id)
+        self.load_session(session_id)
     }
 
-    /// Loads one runtime run by ID.
-    pub fn load_run(&self, run_id: &RunId) -> Result<Run> {
+    /// Loads one sessiontime session by ID.
+    pub fn load_session(&self, session_id: &SessionId) -> Result<Session> {
         self.connection
             .query_row(
                 "
@@ -1017,19 +1017,21 @@ impl Store {
                     error,
                     created_at,
                     updated_at
-                FROM runtime_runs
+                FROM sessions
                 WHERE id = ?1
                 ",
-                params![run_id.as_str()],
-                run_from_row,
+                params![session_id.as_str()],
+                session_from_row,
             )
             .optional()
-            .context("failed to load runtime run")?
-            .ok_or_else(|| error::not_found(format!("runtime run does not exist: {run_id}")))
+            .context("failed to load runtime session")?
+            .ok_or_else(|| {
+                error::not_found(format!("runtime session does not exist: {session_id}"))
+            })
     }
 
-    /// Lists all known runtime runs, newest first.
-    pub fn list_runs(&self) -> Result<Vec<Run>> {
+    /// Lists all known runtime sessions, newest first.
+    pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut statement = self
             .connection
             .prepare(
@@ -1045,21 +1047,24 @@ impl Store {
                     error,
                     created_at,
                     updated_at
-                FROM runtime_runs
+                FROM sessions
                 ORDER BY created_at DESC, id DESC
                 ",
             )
-            .context("failed to prepare runtime run list")?;
+            .context("failed to prepare runtime session list")?;
 
         statement
-            .query_map([], run_from_row)
-            .context("failed to list runtime runs")?
+            .query_map([], session_from_row)
+            .context("failed to list runtime sessions")?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .context("failed to decode runtime runs")
+            .context("failed to decode runtime sessions")
     }
 
-    /// Lists runs belonging to one conversation.
-    pub fn list_conversation_runs(&self, conversation_id: &ConversationId) -> Result<Vec<Run>> {
+    /// Lists sessions belonging to one conversation.
+    pub fn list_conversation_sessions(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<Session>> {
         self.ensure_conversation_exists(conversation_id)?;
 
         let mut statement = self
@@ -1077,76 +1082,84 @@ impl Store {
                     error,
                     created_at,
                     updated_at
-                FROM runtime_runs
+                FROM sessions
                 WHERE conversation_id = ?1
                 ORDER BY created_at DESC, id DESC
                 ",
             )
-            .context("failed to prepare conversation runtime run list")?;
+            .context("failed to prepare conversation runtime session list")?;
 
         statement
-            .query_map(params![conversation_id.as_str()], run_from_row)
-            .context("failed to list conversation runtime runs")?
+            .query_map(params![conversation_id.as_str()], session_from_row)
+            .context("failed to list conversation runtime sessions")?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .context("failed to decode conversation runtime runs")
+            .context("failed to decode conversation runtime sessions")
     }
 
-    /// Updates one run's current message head.
-    pub fn update_run_head(
+    /// Updates one session's current message head.
+    pub fn update_session_head(
         &mut self,
-        run_id: &RunId,
+        session_id: &SessionId,
         head_message_id: Option<&MessageId>,
     ) -> Result<()> {
-        let run = self.load_run(run_id)?;
+        let session = self.load_session(session_id)?;
         if let Some(message_id) = head_message_id {
-            self.ensure_message_belongs_to_conversation(&run.conversation_id, message_id)?;
+            self.ensure_message_belongs_to_conversation(&session.conversation_id, message_id)?;
         }
 
         let now = now_millis()?;
         self.connection
             .execute(
                 "
-                UPDATE runtime_runs
+                UPDATE sessions
                 SET current_head_message_id = ?1,
                     updated_at = ?2
                 WHERE id = ?3
                 ",
-                params![head_message_id.map(MessageId::as_str), now, run_id.as_str()],
+                params![
+                    head_message_id.map(MessageId::as_str),
+                    now,
+                    session_id.as_str()
+                ],
             )
-            .context("failed to update runtime run head")?;
+            .context("failed to update runtime session head")?;
 
         Ok(())
     }
 
-    /// Updates one run's lifecycle status.
-    pub fn update_run_status(
+    /// Updates one session's lifecycle status.
+    pub fn update_session_status(
         &mut self,
-        run_id: &RunId,
-        status: RunStatus,
+        session_id: &SessionId,
+        status: SessionStatus,
         error: Option<&str>,
     ) -> Result<()> {
-        self.ensure_run_exists(run_id)?;
+        self.ensure_session_exists(session_id)?;
 
         let now = now_millis()?;
         self.connection
             .execute(
                 "
-                UPDATE runtime_runs
+                UPDATE sessions
                 SET status = ?1,
                     error = ?2,
                     updated_at = ?3
                 WHERE id = ?4
                 ",
-                params![status.as_storage(), error, now, run_id.as_str()],
+                params![status.as_storage(), error, now, session_id.as_str()],
             )
-            .context("failed to update runtime run status")?;
+            .context("failed to update runtime session status")?;
 
         Ok(())
     }
 
-    /// Appends a replayable event to one run's log.
-    pub fn append_run_event(&mut self, run_id: &RunId, event: RunEvent) -> Result<RunEventRecord> {
-        self.ensure_run_exists(run_id)?;
+    /// Appends a replayable event to one session's log.
+    pub fn append_session_event(
+        &mut self,
+        session_id: &SessionId,
+        event: SessionEvent,
+    ) -> Result<SessionEventRecord> {
+        self.ensure_session_exists(session_id)?;
 
         let now = now_millis()?;
         let event_type = event.event_name();
@@ -1154,42 +1167,42 @@ impl Store {
         self.connection
             .execute(
                 "
-                INSERT INTO runtime_events (
-                    run_id,
+                INSERT INTO session_events (
+                    session_id,
                     event_type,
                     payload,
                     created_at
                 )
                 VALUES (?1, ?2, ?3, ?4)
                 ",
-                params![run_id.as_str(), event_type, payload, now],
+                params![session_id.as_str(), event_type, payload, now],
             )
             .context("failed to append runtime event")?;
         let id = self.connection.last_insert_rowid();
 
-        Ok(RunEventRecord {
+        Ok(SessionEventRecord {
             id,
-            run_id: run_id.clone(),
+            session_id: session_id.clone(),
             event,
             created_at: now,
         })
     }
 
-    /// Loads persisted run events after a cursor.
-    pub fn load_run_events_after(
+    /// Loads persisted session events after a cursor.
+    pub fn load_session_events_after(
         &self,
-        run_id: &RunId,
+        session_id: &SessionId,
         after_event_id: Option<i64>,
-    ) -> Result<Vec<RunEventRecord>> {
-        self.ensure_run_exists(run_id)?;
+    ) -> Result<Vec<SessionEventRecord>> {
+        self.ensure_session_exists(session_id)?;
 
         let mut statement = self
             .connection
             .prepare(
                 "
-                SELECT id, run_id, payload, created_at
-                FROM runtime_events
-                WHERE run_id = ?1
+                SELECT id, session_id, payload, created_at
+                FROM session_events
+                WHERE session_id = ?1
                   AND id > ?2
                 ORDER BY id ASC
                 ",
@@ -1198,19 +1211,19 @@ impl Store {
 
         statement
             .query_map(
-                params![run_id.as_str(), after_event_id.unwrap_or(0)],
+                params![session_id.as_str(), after_event_id.unwrap_or(0)],
                 |row| {
-                    let event: RunEvent =
-                        serde_json::from_str(&row.get::<_, String>(2)?).map_err(|error| {
+                    let event: SessionEvent = serde_json::from_str(&row.get::<_, String>(2)?)
+                        .map_err(|error| {
                             rusqlite::Error::FromSqlConversionFailure(
                                 2,
                                 Type::Text,
                                 Box::new(error),
                             )
                         })?;
-                    Ok(RunEventRecord {
+                    Ok(SessionEventRecord {
                         id: row.get(0)?,
-                        run_id: RunId::new(row.get::<_, String>(1)?),
+                        session_id: SessionId::new(row.get::<_, String>(1)?),
                         event,
                         created_at: row.get(3)?,
                     })
@@ -1517,7 +1530,7 @@ impl Store {
         )
     }
 
-    /// Inserts one runtime-produced message without changing the UI-selected
+    /// Inserts one sessiontime-produced message without changing the UI-selected
     /// active message.
     pub fn insert_run_message(
         &mut self,
@@ -1577,7 +1590,7 @@ impl Store {
         )
     }
 
-    /// Inserts one runtime-produced tool result without changing UI selection.
+    /// Inserts one sessiontime-produced tool result without changing UI selection.
     pub fn insert_run_tool_result_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -1891,13 +1904,13 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message delete")?;
-        detach_runtime_runs_from_deleted_messages(
+        detach_sessions_from_deleted_messages(
             &transaction,
             conversation_id,
             &splice_delete.deleted_message_ids,
             now,
         )
-        .context("failed to detach runtime runs after message delete")?;
+        .context("failed to detach runtime sessions after message delete")?;
         set_active_message_in_transaction(
             &transaction,
             conversation_id,
@@ -2043,13 +2056,8 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after conversation truncate")?;
-        detach_runtime_runs_from_deleted_messages(
-            &transaction,
-            conversation_id,
-            &descendant_ids,
-            now,
-        )
-        .context("failed to detach runtime runs after conversation truncate")?;
+        detach_sessions_from_deleted_messages(&transaction, conversation_id, &descendant_ids, now)
+            .context("failed to detach runtime sessions after conversation truncate")?;
         set_active_message_in_transaction(
             &transaction,
             conversation_id,
@@ -2650,22 +2658,22 @@ impl Store {
         Ok(())
     }
 
-    /// Returns an error instead of silently ignoring missing runs.
-    fn ensure_run_exists(&self, run_id: &RunId) -> Result<()> {
+    /// Returns an error instead of silently ignoring missing sessions.
+    fn ensure_session_exists(&self, session_id: &SessionId) -> Result<()> {
         let exists = self
             .connection
             .query_row(
-                "SELECT 1 FROM runtime_runs WHERE id = ?1",
-                params![run_id.as_str()],
+                "SELECT 1 FROM sessions WHERE id = ?1",
+                params![session_id.as_str()],
                 |_| Ok(()),
             )
             .optional()
-            .context("failed to check runtime run existence")?
+            .context("failed to check runtime session existence")?
             .is_some();
 
         if !exists {
             return Err(error::not_found(format!(
-                "runtime run does not exist: {run_id}"
+                "runtime session does not exist: {session_id}"
             )));
         }
 
@@ -2773,16 +2781,16 @@ fn read_message_tree_row(row: &Row<'_>) -> rusqlite::Result<MessageTreeRow> {
     })
 }
 
-/// Converts one SQLite runtime run row into the typed run model.
-fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Run> {
+/// Converts one SQLite runtime session row into the typed run model.
+fn session_from_row(row: &Row<'_>) -> rusqlite::Result<Session> {
     let status_text = row.get::<_, String>(4)?;
-    let status = RunStatus::from_storage(&status_text).ok_or_else(|| {
+    let status = SessionStatus::from_storage(&status_text).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
             4,
             Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("unknown runtime run status: {status_text}"),
+                format!("unknown runtime session status: {status_text}"),
             )),
         )
     })?;
@@ -2794,8 +2802,8 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Run> {
             rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
         })?;
 
-    Ok(Run {
-        id: RunId::new(row.get::<_, String>(0)?),
+    Ok(Session {
+        id: SessionId::new(row.get::<_, String>(0)?),
         conversation_id: ConversationId::new(row.get::<_, String>(1)?),
         start_head_message_id: row.get::<_, Option<String>>(2)?.map(MessageId::new),
         current_head_message_id: row.get::<_, Option<String>>(3)?.map(MessageId::new),
@@ -3257,11 +3265,11 @@ fn delete_compactions_for_conversation(
 
 /// Clears run message references that would otherwise point at deleted rows.
 ///
-/// Deleting a conversation branch is a storage operation, but runs own
+/// Deleting a conversation branch is a storage operation, but sessions own
 /// execution heads. If the deleted set contains a run's current head, that run
 /// can no longer be resumed safely, so it is cancelled and its current head is
 /// cleared before message deletion enforces foreign keys.
-fn detach_runtime_runs_from_deleted_messages(
+fn detach_sessions_from_deleted_messages(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
     deleted_message_ids: &HashSet<String>,
@@ -3279,7 +3287,7 @@ fn detach_runtime_runs_from_deleted_messages(
 
     let start_sql = format!(
         "
-        UPDATE runtime_runs
+        UPDATE sessions
         SET start_head_message_id = NULL,
             updated_at = ?
         WHERE conversation_id = ?
@@ -3292,11 +3300,11 @@ fn detach_runtime_runs_from_deleted_messages(
     start_params.extend(deleted_ids.iter().cloned().map(Value::Text));
     transaction
         .execute(&start_sql, params_from_iter(start_params))
-        .context("failed to clear deleted runtime run start heads")?;
+        .context("failed to clear deleted runtime session start heads")?;
 
     let current_sql = format!(
         "
-        UPDATE runtime_runs
+        UPDATE sessions
         SET current_head_message_id = NULL,
             status = CASE
                 WHEN status IN ('running', 'waiting_for_approval') THEN ?
@@ -3308,13 +3316,15 @@ fn detach_runtime_runs_from_deleted_messages(
         "
     );
     let mut current_params = Vec::with_capacity(deleted_ids.len() + 3);
-    current_params.push(Value::Text(RunStatus::Cancelled.as_storage().to_string()));
+    current_params.push(Value::Text(
+        SessionStatus::Cancelled.as_storage().to_string(),
+    ));
     current_params.push(Value::Integer(updated_at));
     current_params.push(Value::Text(conversation_id.as_str().to_string()));
     current_params.extend(deleted_ids.into_iter().map(Value::Text));
     transaction
         .execute(&current_sql, params_from_iter(current_params))
-        .context("failed to clear deleted runtime run current heads")?;
+        .context("failed to clear deleted runtime session current heads")?;
 
     Ok(())
 }

@@ -408,7 +408,7 @@ export default function InspectorPanel() {
                       {approval.tool_name}
                     </span>
                     <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                      run {approval.run_id?.slice(0, 8)}
+                      session {approval.session_id?.slice(0, 8)}
                     </span>
                   </div>
                   <div className="px-2 py-1.5 space-y-1">
@@ -432,7 +432,7 @@ export default function InspectorPanel() {
                       <button
                         data-testid={`approval-approve-${approval.tool_call_id}`}
                         onClick={() => {
-                          approveToolCall(approval.run_id, approval.tool_call_id);
+                          approveToolCall(approval.session_id, approval.tool_call_id);
                           toast.message("tool approved");
                         }}
                         className="h-7 border border-foreground bg-foreground text-background font-mono text-[10px] uppercase tracking-widest hover:opacity-90"
@@ -442,7 +442,7 @@ export default function InspectorPanel() {
                       <button
                         data-testid={`approval-deny-${approval.tool_call_id}`}
                         onClick={() => {
-                          denyToolCall(approval.run_id, approval.tool_call_id);
+                          denyToolCall(approval.session_id, approval.tool_call_id);
                           toast.message("tool denied");
                         }}
                         className="h-7 border border-border text-[hsl(var(--destructive))] font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"

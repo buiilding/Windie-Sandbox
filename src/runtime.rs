@@ -1,7 +1,7 @@
 //! Runtime flow coordination.
 //!
 //! Coordinates runtime flows across output, store, context, and LLM components.
-//! Run-owned execution advances from explicit message heads so clients do not
+//! Session-owned execution advances from explicit message heads so clients do not
 //! query from the mutable conversation active path.
 
 use std::collections::HashSet;
@@ -72,14 +72,14 @@ pub(crate) struct RuntimeInput<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Result of advancing a runtime run.
+/// Result of advancing a runtime session.
 pub(crate) enum RuntimeOutcome {
     Completed { head_message_id: Option<MessageId> },
     WaitingForApproval { head_message_id: MessageId },
 }
 
-/// Runs one assistant inference turn from an explicit message head.
-pub(crate) async fn run_turn<O, L, E>(
+/// Sessions one assistant inference turn from an explicit message head.
+pub(crate) async fn advance_turn<O, L, E>(
     output: &O,
     llm: &L,
     store: &mut Store,
@@ -92,7 +92,7 @@ where
     E: RuntimeEventSink,
 {
     let mut head_message_id = input.head_message_id.cloned();
-    prepare_run_head_turn(
+    prepare_head_turn(
         store,
         input.conversation_id,
         &mut head_message_id,
@@ -158,8 +158,8 @@ where
     })
 }
 
-/// Runs from an explicit head until completion or a manual approval boundary.
-pub(crate) async fn run_head_until_blocked<O, L, E>(
+/// Sessions from an explicit head until completion or a manual approval boundary.
+pub(crate) async fn advance_until_blocked<O, L, E>(
     output: &O,
     llm: &L,
     store: &mut Store,
@@ -199,7 +199,7 @@ where
                     tools: input.tools,
                     model_request: input.model_request,
                 };
-                let message = run_turn(output, llm, store, turn_input, events).await?;
+                let message = advance_turn(output, llm, store, turn_input, events).await?;
                 head_message_id = message.id.clone();
                 let has_tool_calls = message
                     .metadata
@@ -247,7 +247,7 @@ pub(crate) fn pending_approvals_at_head(
 }
 
 /// Prepares an explicit runtime head for a model request.
-pub(crate) fn prepare_run_head_turn(
+pub(crate) fn prepare_head_turn(
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
@@ -334,7 +334,8 @@ fn store_policy_denied_tool_results_at_head(
             pending.tool_call.name(),
             reason,
         );
-        let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+        let message_id =
+            store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
         *head_message_id = Some(message_id.clone());
         events.tool_result_saved(&message_id);
     }
@@ -387,7 +388,7 @@ async fn resolve_next_automatic_tool_call_at_head(
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
 
-    let message_id = store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
     *head_message_id = Some(message_id.clone());
     events.tool_result_saved(&message_id);
 
@@ -620,8 +621,8 @@ fn attached_tool_can_execute(
     attached_tool.is_some_and(|attached_tool| registry.can_execute(attached_tool))
 }
 
-/// Saves one run-owned tool execution result without changing UI selection.
-pub(crate) fn store_run_pending_tool_result(
+/// Saves one session-owned tool execution result without changing UI selection.
+pub(crate) fn store_pending_tool_result_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
     pending: &PendingToolCall,

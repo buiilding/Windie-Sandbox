@@ -5,7 +5,7 @@ use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, ToolSchema, ToolSchemaName, UnsavedImagePart,
     UnsavedMessagePart,
 };
-use crate::run::{RunId, RunStatus};
+use crate::session::{SessionId, SessionStatus};
 use crate::tool::ToolApprovalMode;
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
@@ -1331,10 +1331,10 @@ fn remove_message_clears_deleted_runtime_run_head() {
             None,
         )
         .unwrap();
-    let run_id = RunId::new("run-delete-head");
+    let session_id = SessionId::new("run-delete-head");
     store
-        .create_run(
-            &run_id,
+        .create_session(
+            &session_id,
             &conversation_id,
             Some(&second_id),
             "openai/test",
@@ -1344,15 +1344,15 @@ fn remove_message_clears_deleted_runtime_run_head() {
 
     store.remove_message(&conversation_id, &second_id).unwrap();
 
-    let run = store.load_run(&run_id).unwrap();
+    let run = store.load_session(&session_id).unwrap();
 
     assert_eq!(run.start_head_message_id, None);
     assert_eq!(run.current_head_message_id, None);
-    assert_eq!(run.status, RunStatus::Cancelled);
+    assert_eq!(run.status, SessionStatus::Cancelled);
 }
 
 #[test]
-fn remove_message_clears_deleted_run_start_but_keeps_surviving_current_head() {
+fn remove_message_clears_deleted_session_start_but_keeps_surviving_current_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
@@ -1376,26 +1376,28 @@ fn remove_message_clears_deleted_run_start_but_keeps_surviving_current_head() {
             None,
         )
         .unwrap();
-    let run_id = RunId::new("run-delete-start");
+    let session_id = SessionId::new("run-delete-start");
     store
-        .create_run(
-            &run_id,
+        .create_session(
+            &session_id,
             &conversation_id,
             Some(&second_id),
             "openai/test",
             None,
         )
         .unwrap();
-    store.update_run_head(&run_id, Some(&third_id)).unwrap();
+    store
+        .update_session_head(&session_id, Some(&third_id))
+        .unwrap();
 
     store.remove_message(&conversation_id, &second_id).unwrap();
 
-    let run = store.load_run(&run_id).unwrap();
+    let run = store.load_session(&session_id).unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
 
     assert_eq!(run.start_head_message_id, None);
     assert_eq!(run.current_head_message_id.as_ref(), Some(&third_id));
-    assert_eq!(run.status, RunStatus::Running);
+    assert_eq!(run.status, SessionStatus::Running);
     assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
 }
 
@@ -2224,10 +2226,10 @@ fn truncate_clears_deleted_runtime_run_head() {
             None,
         )
         .unwrap();
-    let run_id = RunId::new("run-truncate-head");
+    let session_id = SessionId::new("run-truncate-head");
     store
-        .create_run(
-            &run_id,
+        .create_session(
+            &session_id,
             &conversation_id,
             Some(&third_id),
             "openai/test",
@@ -2239,11 +2241,11 @@ fn truncate_clears_deleted_runtime_run_head() {
         .truncate_after_message(&conversation_id, &first_id)
         .unwrap();
 
-    let run = store.load_run(&run_id).unwrap();
+    let run = store.load_session(&session_id).unwrap();
 
     assert_eq!(run.start_head_message_id, None);
     assert_eq!(run.current_head_message_id, None);
-    assert_eq!(run.status, RunStatus::Cancelled);
+    assert_eq!(run.status, SessionStatus::Cancelled);
 }
 
 #[test]

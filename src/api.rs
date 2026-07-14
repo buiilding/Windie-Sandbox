@@ -35,11 +35,13 @@ use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::TerminalOutput;
-use crate::run::{Run, RunEventRecord, RunId, RunManager, RunStatus, RunSubscription};
+use crate::session::{Session, SessionEventRecord, SessionId, SessionStatus};
+use crate::session_manager::{SessionManager, SessionSubscription};
 use crate::setup;
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId};
 use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
+use crate::wakeup::ContinueWakeup;
 
 const API_TOKEN_HEADER: &str = "x-windie-api-token";
 /// Maximum JSON request body accepted by the localhost API.
@@ -49,7 +51,7 @@ const API_TOKEN_HEADER: &str = "x-windie-api-token";
 /// bounded for a local developer harness.
 const API_JSON_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
-/// Runs the local developer API server until the process is stopped.
+/// Sessions the local developer API server until the process is stopped.
 pub async fn serve(
     address: SocketAddr,
     gateway_url: &str,
@@ -68,7 +70,7 @@ pub async fn serve(
         Err(_) => setup::ensure_api_token()?,
     };
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
-    let run_manager = Arc::new(RunManager::new(
+    let session_manager = Arc::new(SessionManager::new(
         None,
         gateway_url.to_string(),
         base_url.to_string(),
@@ -81,7 +83,7 @@ pub async fn serve(
         api_token,
         store_path: None,
         tool_registry,
-        run_manager,
+        session_manager,
     };
     let listener = TcpListener::bind(address)
         .await
@@ -230,24 +232,55 @@ fn router(state: ApiState) -> Router {
         )
         .route(
             "/api/conversations/{conversation_id}/run-approvals",
-            get(list_conversation_run_approvals),
+            get(list_conversation_session_approvals),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/sessions",
+            post(create_session),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/wakeups/continue",
+            post(create_session),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/wakeups/query",
+            post(create_session),
+        )
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/{session_id}", get(get_run))
+        .route(
+            "/api/sessions/{session_id}/approvals",
+            get(list_session_approvals),
+        )
+        .route("/api/sessions/{session_id}/events", get(session_events))
+        .route("/api/sessions/{session_id}/stop", post(stop_run))
+        .route(
+            "/api/sessions/{session_id}/approvals/{tool_call_id}/approve",
+            post(approve_session_tool),
+        )
+        .route(
+            "/api/sessions/{session_id}/approvals/{tool_call_id}/deny",
+            post(deny_session_tool),
         )
         .route(
             "/api/conversations/{conversation_id}/runs",
-            post(create_run),
+            post(create_session),
         )
-        .route("/api/runs", get(list_runs))
-        .route("/api/runs/{run_id}", get(get_run))
-        .route("/api/runs/{run_id}/approvals", get(list_run_approvals))
-        .route("/api/runs/{run_id}/events", get(run_events))
-        .route("/api/runs/{run_id}/stop", post(stop_run))
+        .route("/api/runs", get(list_sessions))
+        .route("/api/runs/{session_id}", get(get_run))
         .route(
-            "/api/runs/{run_id}/approvals/{tool_call_id}/approve",
-            post(approve_run_tool),
+            "/api/runs/{session_id}/approvals",
+            get(list_session_approvals),
+        )
+        .route("/api/runs/{session_id}/events", get(session_events))
+        .route("/api/runs/{session_id}/stop", post(stop_run))
+        .route(
+            "/api/runs/{session_id}/approvals/{tool_call_id}/approve",
+            post(approve_session_tool),
         )
         .route(
-            "/api/runs/{run_id}/approvals/{tool_call_id}/deny",
-            post(deny_run_tool),
+            "/api/runs/{session_id}/approvals/{tool_call_id}/deny",
+            post(deny_session_tool),
         )
         .route(
             "/api/conversations/{conversation_id}/input-tokens",
@@ -271,7 +304,7 @@ struct ApiState {
     api_token: String,
     store_path: Option<PathBuf>,
     tool_registry: Arc<ToolProviderRegistry>,
-    run_manager: Arc<RunManager>,
+    session_manager: Arc<SessionManager>,
 }
 
 /// Opens the production store, or a test-scoped store when route tests inject
@@ -961,7 +994,7 @@ async fn set_tool_approval_mode(
     operation::set_tool_approval_mode(&mut store, &conversation_id, request.mode)?;
     drop(store);
     state
-        .run_manager
+        .session_manager
         .resume_waiting_for_conversation(&conversation_id)?;
     let store = open_store(&state)?;
 
@@ -1171,18 +1204,18 @@ async fn fork_conversation(
 }
 
 #[derive(Debug, Serialize)]
-/// Response body for pending run-owned tool approvals.
+/// Response body for pending session-owned tool approvals.
 struct ApprovalListResponse {
     approvals: Vec<ApprovalResponse>,
 }
 
 #[derive(Debug, Serialize)]
-/// One pending run-owned approval returned to UI clients.
+/// One pending session-owned approval returned to UI clients.
 struct ApprovalResponse {
     scope: &'static str,
-    run_id: String,
+    session_id: String,
     conversation_id: String,
-    run_status: RunStatus,
+    session_status: SessionStatus,
     head_message_id: Option<String>,
     assistant_message_id: String,
     tool_call_id: String,
@@ -1191,14 +1224,14 @@ struct ApprovalResponse {
     reason: String,
 }
 
-impl From<operation::RunToolApprovalRequest> for ApprovalResponse {
-    fn from(request: operation::RunToolApprovalRequest) -> Self {
+impl From<operation::SessionToolApprovalRequest> for ApprovalResponse {
+    fn from(request: operation::SessionToolApprovalRequest) -> Self {
         let approval = request.approval;
         Self {
-            scope: "run",
-            run_id: request.run_id.as_str().to_string(),
+            scope: "session",
+            session_id: request.session_id.as_str().to_string(),
             conversation_id: request.conversation_id.as_str().to_string(),
-            run_status: request.run_status,
+            session_status: request.session_status,
             head_message_id: request.head_message_id.map(|id| id.as_str().to_string()),
             assistant_message_id: approval.assistant_message_id.as_str().to_string(),
             tool_call_id: approval.tool_call.id.as_str().to_string(),
@@ -1209,14 +1242,14 @@ impl From<operation::RunToolApprovalRequest> for ApprovalResponse {
     }
 }
 
-/// Lists pending run-owned tool calls waiting for approval in a conversation.
-async fn list_conversation_run_approvals(
+/// Lists pending session-owned tool calls waiting for approval in a conversation.
+async fn list_conversation_session_approvals(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
 ) -> ApiResult<ApprovalListResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let store = open_store(&state)?;
-    let approvals = operation::list_conversation_run_approvals_with_registry(
+    let approvals = operation::list_conversation_session_approvals_with_registry(
         &store,
         &conversation_id,
         &state.tool_registry,
@@ -1228,16 +1261,16 @@ async fn list_conversation_run_approvals(
     Ok(Json(ApprovalListResponse { approvals }))
 }
 
-/// Lists pending tool calls waiting for approval in one run.
-async fn list_run_approvals(
+/// Lists pending tool calls waiting for approval in one session.
+async fn list_session_approvals(
     State(state): State<ApiState>,
-    Path(run_id): Path<String>,
+    Path(session_id): Path<String>,
 ) -> ApiResult<ApprovalListResponse> {
-    let run_id = RunId::new(run_id);
+    let session_id = SessionId::new(session_id);
     let store = open_store(&state)?;
-    let run = store.load_run(&run_id)?;
+    let session = store.load_session(&session_id)?;
     let approvals =
-        operation::list_run_approvals_with_registry(&store, &run, &state.tool_registry)?
+        operation::list_session_approvals_with_registry(&store, &session, &state.tool_registry)?
             .into_iter()
             .map(ApprovalResponse::from)
             .collect();
@@ -1245,45 +1278,45 @@ async fn list_run_approvals(
     Ok(Json(ApprovalListResponse { approvals }))
 }
 
-/// Executes one approved pending tool call and resumes its run.
-async fn approve_run_tool(
+/// Executes one approved pending tool call and resumes its session.
+async fn approve_session_tool(
     State(state): State<ApiState>,
-    Path((run_id, tool_call_id)): Path<(String, String)>,
-) -> ApiResult<RunResponse> {
-    let run_id = RunId::new(run_id);
+    Path((session_id, tool_call_id)): Path<(String, String)>,
+) -> ApiResult<SessionResponse> {
+    let session_id = SessionId::new(session_id);
     state
-        .run_manager
-        .approve_tool(&run_id, ToolCallId::new(tool_call_id))?;
+        .session_manager
+        .approve_tool(&session_id, ToolCallId::new(tool_call_id))?;
     let store = open_store(&state)?;
-    let run = store.load_run(&run_id)?;
+    let session = store.load_session(&session_id)?;
 
-    Ok(Json(RunResponse::from_run(run)))
+    Ok(Json(SessionResponse::from_session(session)))
 }
 
-/// Stores a rejected result for one pending tool call and resumes its run.
-async fn deny_run_tool(
+/// Stores a rejected result for one pending tool call and resumes its session.
+async fn deny_session_tool(
     State(state): State<ApiState>,
-    Path((run_id, tool_call_id)): Path<(String, String)>,
-) -> ApiResult<RunResponse> {
-    let run_id = RunId::new(run_id);
+    Path((session_id, tool_call_id)): Path<(String, String)>,
+) -> ApiResult<SessionResponse> {
+    let session_id = SessionId::new(session_id);
     state
-        .run_manager
-        .deny_tool(&run_id, ToolCallId::new(tool_call_id))?;
+        .session_manager
+        .deny_tool(&session_id, ToolCallId::new(tool_call_id))?;
     let store = open_store(&state)?;
-    let run = store.load_run(&run_id)?;
+    let session = store.load_session(&session_id)?;
 
-    Ok(Json(RunResponse::from_run(run)))
+    Ok(Json(SessionResponse::from_session(session)))
 }
 
 #[derive(Debug, Deserialize)]
-/// Request body for starting a backend-owned run.
-struct CreateRunRequest {
+/// Request body for starting a backend-owned session.
+struct CreateSessionRequest {
     head_message_id: Option<String>,
     model: Option<String>,
     reasoning: Option<ReasoningRequest>,
 }
 
-impl CreateRunRequest {
+impl CreateSessionRequest {
     fn reasoning(&self) -> Option<ReasoningRequest> {
         self.reasoning
             .clone()
@@ -1293,12 +1326,12 @@ impl CreateRunRequest {
 
 #[derive(Debug, Serialize)]
 /// Serializable run response.
-struct RunResponse {
+struct SessionResponse {
     id: String,
     conversation_id: String,
     start_head_message_id: Option<String>,
     current_head_message_id: Option<String>,
-    status: RunStatus,
+    status: SessionStatus,
     model: String,
     reasoning: Option<ReasoningRequest>,
     error: Option<String>,
@@ -1306,114 +1339,114 @@ struct RunResponse {
     updated_at: i64,
 }
 
-impl RunResponse {
-    fn from_run(run: Run) -> Self {
+impl SessionResponse {
+    fn from_session(session: Session) -> Self {
         Self {
-            id: run.id.as_str().to_string(),
-            conversation_id: run.conversation_id.as_str().to_string(),
-            start_head_message_id: run.start_head_message_id.map(|id| id.as_str().to_string()),
-            current_head_message_id: run
+            id: session.id.as_str().to_string(),
+            conversation_id: session.conversation_id.as_str().to_string(),
+            start_head_message_id: session
+                .start_head_message_id
+                .map(|id| id.as_str().to_string()),
+            current_head_message_id: session
                 .current_head_message_id
                 .map(|id| id.as_str().to_string()),
-            status: run.status,
-            model: run.model,
-            reasoning: run.reasoning,
-            error: run.error,
-            created_at: run.created_at,
-            updated_at: run.updated_at,
+            status: session.status,
+            model: session.model,
+            reasoning: session.reasoning,
+            error: session.error,
+            created_at: session.created_at,
+            updated_at: session.updated_at,
         }
     }
 }
 
 #[derive(Debug, Serialize)]
-/// List of runtime runs visible to clients.
-struct RunListResponse {
-    runs: Vec<RunResponse>,
+/// List of runtime sessions visible to clients.
+struct SessionListResponse {
+    sessions: Vec<SessionResponse>,
 }
 
-/// Starts a backend-owned run from an explicit conversation head.
-async fn create_run(
+/// Starts a backend-owned session from an explicit conversation head.
+async fn create_session(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
-    Json(request): Json<CreateRunRequest>,
-) -> ApiResult<RunResponse> {
+    Json(request): Json<CreateSessionRequest>,
+) -> ApiResult<SessionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let head_message_id = request.head_message_id.clone().map(MessageId::new);
     let reasoning = request.reasoning();
-    let model = match request.model {
-        Some(model) => model,
-        None => {
-            let store = open_store(&state)?;
-            store.conversation_model(&conversation_id)?
-        }
-    };
-    let run = state
-        .run_manager
-        .start(conversation_id, head_message_id, model, reasoning)?;
+    let session = state
+        .session_manager
+        .start_continue_wakeup(ContinueWakeup {
+            conversation_id,
+            head_message_id,
+            model: request.model.map(ModelName::new),
+            reasoning,
+        })?;
 
-    Ok(Json(RunResponse::from_run(run)))
+    Ok(Json(SessionResponse::from_session(session)))
 }
 
-/// Lists persisted runs.
-async fn list_runs(State(state): State<ApiState>) -> ApiResult<RunListResponse> {
+/// Lists persisted sessions.
+async fn list_sessions(State(state): State<ApiState>) -> ApiResult<SessionListResponse> {
     let store = open_store(&state)?;
-    let runs = store
-        .list_runs()?
+    let sessions = store
+        .list_sessions()?
         .into_iter()
-        .map(RunResponse::from_run)
+        .map(SessionResponse::from_session)
         .collect();
 
-    Ok(Json(RunListResponse { runs }))
+    Ok(Json(SessionListResponse { sessions }))
 }
 
-/// Loads one persisted run.
+/// Loads one persisted session.
 async fn get_run(
     State(state): State<ApiState>,
-    Path(run_id): Path<String>,
-) -> ApiResult<RunResponse> {
+    Path(session_id): Path<String>,
+) -> ApiResult<SessionResponse> {
     let store = open_store(&state)?;
-    let run = store.load_run(&RunId::new(run_id))?;
+    let session = store.load_session(&SessionId::new(session_id))?;
 
-    Ok(Json(RunResponse::from_run(run)))
+    Ok(Json(SessionResponse::from_session(session)))
 }
 
-/// Stops one live run explicitly.
+/// Stops one live session explicitly.
 async fn stop_run(
     State(state): State<ApiState>,
-    Path(run_id): Path<String>,
-) -> ApiResult<RunResponse> {
-    let run_id = RunId::new(run_id);
-    state.run_manager.stop(&run_id)?;
+    Path(session_id): Path<String>,
+) -> ApiResult<SessionResponse> {
+    let session_id = SessionId::new(session_id);
+    state.session_manager.stop(&session_id)?;
     let store = open_store(&state)?;
-    let run = store.load_run(&run_id)?;
+    let session = store.load_session(&session_id)?;
 
-    Ok(Json(RunResponse::from_run(run)))
+    Ok(Json(SessionResponse::from_session(session)))
 }
 
 #[derive(Debug, Deserialize)]
-/// Cursor query for replaying run events.
-struct RunEventsQuery {
+/// Cursor query for replaying session events.
+struct SessionEventsQuery {
     after: Option<i64>,
 }
 
-struct RunSseState {
-    replay: VecDeque<RunEventRecord>,
-    subscription: Option<RunSubscription>,
+struct SessionSseState {
+    replay: VecDeque<SessionEventRecord>,
+    subscription: Option<SessionSubscription>,
 }
 
-/// Streams persisted and live events for one run.
-async fn run_events(
+/// Streams persisted and live events for one session.
+async fn session_events(
     State(state): State<ApiState>,
-    Path(run_id): Path<String>,
-    Query(query): Query<RunEventsQuery>,
+    Path(session_id): Path<String>,
+    Query(query): Query<SessionEventsQuery>,
 ) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>>, ApiError>
 {
-    let run_id = RunId::new(run_id);
+    let session_id = SessionId::new(session_id);
     let store = open_store(&state)?;
-    let replay = store.load_run_events_after(&run_id, query.after)?;
-    let subscription = state.run_manager.subscribe(&run_id);
+    let replay = store.load_session_events_after(&session_id, query.after)?;
+    let subscription = state.session_manager.subscribe(&session_id);
     let stream = stream::unfold(
-        RunSseState {
+        SessionSseState {
             replay: replay.into(),
             subscription,
         },
@@ -1429,7 +1462,7 @@ async fn run_events(
                 return None;
             };
             let event_name = record.event.event_name();
-            let data = run_event_data(&record);
+            let data = session_event_data(&record);
             let sse = Event::default()
                 .id(record.id.to_string())
                 .event(event_name)
@@ -1442,7 +1475,7 @@ async fn run_events(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn run_event_data(record: &RunEventRecord) -> String {
+fn session_event_data(record: &SessionEventRecord) -> String {
     let mut value = serde_json::to_value(&record.event).unwrap_or_else(|error| {
         serde_json::json!({
             "type": "failed",
@@ -1453,8 +1486,8 @@ fn run_event_data(record: &RunEventRecord) -> String {
     if let Some(object) = value.as_object_mut() {
         object.insert("event_id".to_string(), serde_json::json!(record.id));
         object.insert(
-            "run_id".to_string(),
-            serde_json::json!(record.run_id.as_str()),
+            "session_id".to_string(),
+            serde_json::json!(record.session_id.as_str()),
         );
         object.insert(
             "created_at".to_string(),
@@ -1541,19 +1574,20 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
 
     use crate::conversation::{MessageMetadata, MessagePart, ToolCall};
     use crate::mcp::McpCommand;
-    use crate::run::{RunId, RunStatus};
+    use crate::session::{SessionId, SessionStatus};
     use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn assistant_delta_event_uses_matching_sse_name_and_json_type() {
-        let event = crate::run::RunEvent::AssistantDelta {
+        let event = crate::session::SessionEvent::AssistantDelta {
             text: "hello".to_string(),
         };
         let body = serde_json::to_value(&event).unwrap();
@@ -1565,7 +1599,7 @@ mod tests {
 
     #[test]
     fn reasoning_delta_event_uses_matching_sse_name_and_json_type() {
-        let event = crate::run::RunEvent::ReasoningDelta {
+        let event = crate::session::SessionEvent::ReasoningDelta {
             text: "thinking".to_string(),
         };
         let body = serde_json::to_value(&event).unwrap();
@@ -1577,7 +1611,7 @@ mod tests {
 
     #[test]
     fn tool_call_delta_event_uses_matching_sse_name_and_json_type() {
-        let event = crate::run::RunEvent::ToolCallDelta {
+        let event = crate::session::SessionEvent::ToolCallDelta {
             index: 0,
             id: Some("call_123".to_string()),
             name: Some("run_shell".to_string()),
@@ -2233,24 +2267,25 @@ mod tests {
             .active_message_id(&conversation_id)
             .unwrap()
             .unwrap();
-        let run_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
+        let session_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
 
         let response = app
             .oneshot(authed_request(
                 Method::POST,
-                &format!("/api/runs/{run_id}/approvals/call_2/approve"),
+                &format!("/api/sessions/{session_id}/approvals/call_2/approve"),
                 None,
             ))
             .await
             .unwrap();
         let status = response.status();
         let _body = response_json_body(response).await;
-        let run = wait_for_run_status(&db_path, &run_id, RunStatus::Failed).await;
+        let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(session.status, SessionStatus::Failed);
         assert!(
-            run.error
+            session
+                .error
                 .as_deref()
                 .unwrap_or("")
                 .contains("tool call must be resolved after previous tool call: call_1")
@@ -2269,38 +2304,39 @@ mod tests {
             .active_message_id(&conversation_id)
             .unwrap()
             .unwrap();
-        let run_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
+        let session_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
 
         let response = app
             .oneshot(authed_request(
                 Method::POST,
-                &format!("/api/runs/{run_id}/approvals/call_1/deny"),
+                &format!("/api/sessions/{session_id}/approvals/call_1/deny"),
                 None,
             ))
             .await
             .unwrap();
         let status = response.status();
         let _body = response_json_body(response).await;
-        let events = wait_for_run_event_count(&db_path, &run_id, 2).await;
-        let run = Store::open_at(&db_path).unwrap().load_run(&run_id).unwrap();
+        let events = wait_for_run_event_count(&db_path, &session_id, 2).await;
+        let session = Store::open_at(&db_path)
+            .unwrap()
+            .load_session(&session_id)
+            .unwrap();
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(run.status, RunStatus::WaitingForApproval);
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event.event, crate::run::RunEvent::ToolResultSaved { .. }))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event.event, crate::run::RunEvent::WaitingForApproval))
-        );
+        assert_eq!(session.status, SessionStatus::WaitingForApproval);
+        assert!(events.iter().any(|event| matches!(
+            event.event,
+            crate::session::SessionEvent::ToolResultSaved { .. }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event.event,
+            crate::session::SessionEvent::WaitingForApproval
+        )));
         let _ = fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn create_run_records_gateway_error() {
+    async fn create_session_records_gateway_error() {
         let db_path = temp_database_path();
         let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
         let mut store = Store::open_at(&db_path).unwrap();
@@ -2313,27 +2349,64 @@ mod tests {
         let response = app
             .oneshot(authed_request(
                 Method::POST,
-                &format!("/api/conversations/{conversation_id}/runs"),
+                &format!("/api/conversations/{conversation_id}/sessions"),
                 Some(json!({"head_message_id": head_message_id.as_str(), "model":"openai/test"})),
             ))
             .await
             .unwrap();
         let status = response.status();
         let body = response_json_body(response).await;
-        let run_id = RunId::new(body["id"].as_str().unwrap());
-        let run = wait_for_run_status(&db_path, &run_id, RunStatus::Failed).await;
+        let session_id = SessionId::new(body["id"].as_str().unwrap());
+        let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(session.status, SessionStatus::Failed);
         assert_eq!(
-            run.error.as_deref(),
+            session.error.as_deref(),
             Some("Bifrost is not running. Start it with: windie gateway start")
         );
         let _ = fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn run_events_replay_gateway_errors_as_sse_events() {
+    async fn query_wakeup_starts_session_from_active_head() {
+        let db_path = temp_database_path();
+        let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
+        let mut store = Store::open_at(&db_path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        let head_message_id = store
+            .insert_message(&conversation_id, None, Role::User, "hello", None)
+            .unwrap();
+        drop(store);
+
+        let response = app
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/wakeups/query"),
+                Some(json!({"model":"openai/test"})),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json_body(response).await;
+        let session_id = SessionId::new(body["id"].as_str().unwrap());
+        let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            session.start_head_message_id.as_ref(),
+            Some(&head_message_id)
+        );
+        assert_eq!(
+            session.current_head_message_id.as_ref(),
+            Some(&head_message_id)
+        );
+        assert_eq!(session.status, SessionStatus::Failed);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn session_events_replay_gateway_errors_as_sse_events() {
         let db_path = temp_database_path();
         let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
         let mut store = Store::open_at(&db_path).unwrap();
@@ -2347,19 +2420,19 @@ mod tests {
             .clone()
             .oneshot(authed_request(
                 Method::POST,
-                &format!("/api/conversations/{conversation_id}/runs"),
+                &format!("/api/conversations/{conversation_id}/sessions"),
                 Some(json!({"head_message_id": head_message_id.as_str(), "model":"openai/test"})),
             ))
             .await
             .unwrap();
         let body = response_json_body(response).await;
-        let run_id = RunId::new(body["id"].as_str().unwrap());
-        let _run = wait_for_run_status(&db_path, &run_id, RunStatus::Failed).await;
+        let session_id = SessionId::new(body["id"].as_str().unwrap());
+        let _run = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
         let response = app
             .oneshot(authed_request(
                 Method::GET,
-                &format!("/api/runs/{run_id}/events"),
+                &format!("/api/sessions/{session_id}/events"),
                 None,
             ))
             .await
@@ -2378,6 +2451,60 @@ mod tests {
         assert!(content_type.starts_with("text/event-stream"));
         assert!(body.contains("event: failed"));
         assert!(body.contains("Bifrost is not running. Start it with: windie gateway start"));
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn session_survives_event_stream_client_disconnect() {
+        let db_path = temp_database_path();
+        let mock = spawn_mock_bifrost(Duration::from_millis(100)).await;
+        let app = test_app_with_urls(db_path.clone(), &mock.gateway_url, &mock.base_url);
+        let mut store = Store::open_at(&db_path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        let head_message_id = store
+            .insert_message(&conversation_id, None, Role::User, "hello", None)
+            .unwrap();
+        drop(store);
+
+        let response = app
+            .clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/sessions"),
+                Some(json!({"head_message_id": head_message_id.as_str(), "model":"openai/test"})),
+            ))
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+        let session_id = SessionId::new(body["id"].as_str().unwrap());
+
+        let response = app
+            .oneshot(authed_request(
+                Method::GET,
+                &format!("/api/sessions/{session_id}/events"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        drop(response);
+
+        let session =
+            wait_for_session_status(&db_path, &session_id, SessionStatus::Completed).await;
+        let store = Store::open_at(&db_path).unwrap();
+        let messages = store.load_messages(&conversation_id).unwrap();
+        let events = store.load_session_events_after(&session_id, None).unwrap();
+
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert!(session.error.is_none());
+        assert!(messages.iter().any(|message| {
+            message.role == Role::Assistant && message.content == "after disconnect"
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event, crate::session::SessionEvent::Completed { .. }))
+        );
         let _ = fs::remove_file(db_path);
     }
 
@@ -2406,21 +2533,25 @@ mod tests {
     }
 
     fn test_app_with_gateway(store_path: PathBuf, gateway_url: &str) -> Router {
+        test_app_with_urls(store_path, gateway_url, "http://localhost:8080/v1")
+    }
+
+    fn test_app_with_urls(store_path: PathBuf, gateway_url: &str, base_url: &str) -> Router {
         let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
-        let run_manager = Arc::new(RunManager::new(
+        let session_manager = Arc::new(SessionManager::new(
             Some(store_path.clone()),
             gateway_url.to_string(),
-            "http://localhost:8080/v1".to_string(),
+            base_url.to_string(),
             tool_registry.clone(),
         ));
         router(ApiState {
             gateway_url: gateway_url.to_string(),
-            base_url: "http://localhost:8080/v1".to_string(),
+            base_url: base_url.to_string(),
             model: "openai/test".to_string(),
             api_token: "test-token".to_string(),
             store_path: Some(store_path),
             tool_registry,
-            run_manager,
+            session_manager,
         })
     }
 
@@ -2428,7 +2559,7 @@ mod tests {
         store_path: PathBuf,
         tool_registry: Arc<ToolProviderRegistry>,
     ) -> Router {
-        let run_manager = Arc::new(RunManager::new(
+        let session_manager = Arc::new(SessionManager::new(
             Some(store_path.clone()),
             "http://localhost:8080".to_string(),
             "http://localhost:8080/v1".to_string(),
@@ -2441,8 +2572,87 @@ mod tests {
             api_token: "test-token".to_string(),
             store_path: Some(store_path),
             tool_registry,
-            run_manager,
+            session_manager,
         })
+    }
+
+    struct MockBifrost {
+        gateway_url: String,
+        base_url: String,
+    }
+
+    async fn spawn_mock_bifrost(response_delay: Duration) -> MockBifrost {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(handle_mock_bifrost_connection(stream, response_delay));
+            }
+        });
+
+        MockBifrost {
+            gateway_url: format!("http://{address}"),
+            base_url: format!("http://{address}/v1"),
+        }
+    }
+
+    async fn handle_mock_bifrost_connection(
+        mut stream: tokio::net::TcpStream,
+        response_delay: Duration,
+    ) {
+        let mut buffer = vec![0_u8; 8192];
+        let Ok(size) = stream.read(&mut buffer).await else {
+            return;
+        };
+        let request = String::from_utf8_lossy(&buffer[..size]);
+
+        if request.starts_with("GET /health ") {
+            write_mock_response(&mut stream, "text/plain", "ok").await;
+        } else if request.starts_with("GET /api/models/parameters") {
+            write_mock_response(
+                &mut stream,
+                "application/json",
+                r#"{"model_parameters":[],"supports_reasoning":false,"supports_prompt_caching":false}"#,
+            )
+            .await;
+        } else if request.starts_with("POST /v1/responses ") {
+            tokio::time::sleep(response_delay).await;
+            write_mock_response(
+                &mut stream,
+                "text/event-stream",
+                concat!(
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"after disconnect\"}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{}}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+        } else {
+            write_mock_status(&mut stream, 404, "not found").await;
+        }
+    }
+
+    async fn write_mock_response(
+        stream: &mut tokio::net::TcpStream,
+        content_type: &str,
+        body: &str,
+    ) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+    }
+
+    async fn write_mock_status(stream: &mut tokio::net::TcpStream, status: u16, body: &str) {
+        let response = format!(
+            "HTTP/1.1 {status} Error\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
     }
 
     fn authed_request(method: Method, uri: &str, body: Option<Value>) -> HttpRequest<Body> {
@@ -2476,33 +2686,36 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    async fn wait_for_run_status(
+    async fn wait_for_session_status(
         db_path: &PathBuf,
-        run_id: &RunId,
-        status: RunStatus,
-    ) -> crate::run::Run {
+        session_id: &SessionId,
+        status: SessionStatus,
+    ) -> crate::session::Session {
         for _ in 0..50 {
             let store = Store::open_at(db_path).unwrap();
-            let run = store.load_run(run_id).unwrap();
-            if run.status == status {
-                return run;
+            let session = store.load_session(session_id).unwrap();
+            if session.status == status {
+                return session;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
-        Store::open_at(db_path).unwrap().load_run(run_id).unwrap()
+        Store::open_at(db_path)
+            .unwrap()
+            .load_session(session_id)
+            .unwrap()
     }
 
     fn create_waiting_run(
         db_path: &PathBuf,
         conversation_id: &ConversationId,
         head_message_id: &MessageId,
-    ) -> RunId {
+    ) -> SessionId {
         let mut store = Store::open_at(db_path).unwrap();
-        let run_id = RunId::fresh();
+        let session_id = SessionId::fresh();
         store
-            .create_run(
-                &run_id,
+            .create_session(
+                &session_id,
                 conversation_id,
                 Some(head_message_id),
                 "openai/test",
@@ -2510,19 +2723,19 @@ mod tests {
             )
             .unwrap();
         store
-            .update_run_status(&run_id, RunStatus::WaitingForApproval, None)
+            .update_session_status(&session_id, SessionStatus::WaitingForApproval, None)
             .unwrap();
-        run_id
+        session_id
     }
 
     async fn wait_for_run_event_count(
         db_path: &PathBuf,
-        run_id: &RunId,
+        session_id: &SessionId,
         count: usize,
-    ) -> Vec<RunEventRecord> {
+    ) -> Vec<SessionEventRecord> {
         for _ in 0..50 {
             let store = Store::open_at(db_path).unwrap();
-            let events = store.load_run_events_after(run_id, None).unwrap();
+            let events = store.load_session_events_after(session_id, None).unwrap();
             if events.len() >= count {
                 return events;
             }
@@ -2531,7 +2744,7 @@ mod tests {
 
         Store::open_at(db_path)
             .unwrap()
-            .load_run_events_after(run_id, None)
+            .load_session_events_after(session_id, None)
             .unwrap()
     }
 

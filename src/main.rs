@@ -18,12 +18,14 @@ mod operation;
 mod output;
 mod perf;
 mod policy;
-mod run;
 mod runtime;
+mod session;
+mod session_manager;
 mod setup;
 mod store;
 mod tool;
 mod tool_provider;
+mod wakeup;
 
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -35,10 +37,9 @@ use crate::conversation::{
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::operation::MessageInputPart;
-use crate::output::{RuntimeOutput, TerminalOutput};
+use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
-use crate::run::{RunEvent, RunId, RunStatus};
-use crate::runtime::{RuntimeEventSink, RuntimeOutcome};
+use crate::session::SessionId;
 use crate::store::Store;
 use crate::tool::{ProviderToolName, ToolProviderId};
 use crate::tool_provider::ToolProviderRegistry;
@@ -101,24 +102,24 @@ async fn main() -> Result<()> {
         Command::List { json } => list_conversations(json),
         Command::Models => list_models().await,
         Command::New => new_conversation(),
-        Command::RunStart {
+        Command::SessionStart {
             conversation_id,
             head_message_id,
             model,
-        } => run_start(conversation_id, head_message_id, model).await,
-        Command::RunList { conversation_id } => run_list(conversation_id),
-        Command::RunStatus { run_id } => run_status(run_id),
-        Command::RunEvents { run_id } => run_events(run_id),
-        Command::RunApprovals { run_id } => run_approvals(run_id),
-        Command::RunApprove {
-            run_id,
+        } => session_start(conversation_id, head_message_id, model).await,
+        Command::SessionList { conversation_id } => session_list(conversation_id),
+        Command::SessionStatus { session_id } => session_status(session_id),
+        Command::SessionEvents { session_id } => session_events(session_id),
+        Command::SessionApprovals { session_id } => session_approvals(session_id),
+        Command::SessionApprove {
+            session_id,
             tool_call_id,
-        } => run_approve(run_id, tool_call_id).await,
-        Command::RunDeny {
-            run_id,
+        } => session_approve(session_id, tool_call_id).await,
+        Command::SessionDeny {
+            session_id,
             tool_call_id,
-        } => run_deny(run_id, tool_call_id).await,
-        Command::RunStop { run_id } => run_stop(run_id),
+        } => session_deny(session_id, tool_call_id).await,
+        Command::SessionStop { session_id } => session_stop(session_id),
         Command::RemoveConversation(conversation_id) => remove_conversation(conversation_id),
         Command::RemoveMessage {
             conversation_id,
@@ -204,7 +205,7 @@ fn print_version() -> Result<()> {
     Ok(())
 }
 
-/// Runs one benchmark mode and sends the measured baseline to the output
+/// Sessions one benchmark mode and sends the measured baseline to the output
 /// boundary.
 async fn benchmark(
     mode: BenchmarkMode,
@@ -248,7 +249,7 @@ async fn benchmark(
     Ok(())
 }
 
-/// Runs the current local benchmark suite and compares it with the default baseline.
+/// Sessions the current local benchmark suite and compares it with the default baseline.
 async fn compare_baseline(options: BenchmarkOptions) -> Result<()> {
     let baseline_path = perf::default_baseline_path()?;
     let baseline = perf::read_report(&baseline_path)?;
@@ -288,7 +289,7 @@ async fn update_baseline(options: BenchmarkOptions) -> Result<()> {
     Ok(())
 }
 
-/// Runs one user-local environment command.
+/// Sessions one user-local environment command.
 fn env_command(command: EnvCommand) -> Result<()> {
     let output = TerminalOutput;
 
@@ -590,298 +591,89 @@ async fn list_models() -> Result<()> {
     Ok(())
 }
 
-/// Starts and advances one run from an explicit or default conversation head.
-async fn run_start(
+/// Starts and advances one session from an explicit or default conversation head.
+async fn session_start(
     conversation_id: ConversationId,
     head_message_id: Option<MessageId>,
     model: Option<ModelName>,
 ) -> Result<()> {
-    let mut store = Store::open()?;
-    let output = TerminalOutput;
-    let run_id = RunId::fresh();
-    let head_message_id = match head_message_id {
-        Some(message_id) => Some(message_id),
-        None => store.active_message_id(&conversation_id)?,
-    };
-    let model = match model {
-        Some(model) => model,
-        None => operation::conversation_model(&store, &conversation_id)?,
-    };
-    let reasoning = operation::conversation_reasoning(&store, &conversation_id)?;
-    let run = store.create_run(
-        &run_id,
-        &conversation_id,
-        head_message_id.as_ref(),
-        model.as_str(),
-        reasoning.as_ref(),
-    )?;
-
-    output.created_run(&run.id);
-    continue_cli_run(&mut store, &run.id).await
-}
-
-/// Lists persisted runtime runs.
-fn run_list(conversation_id: Option<ConversationId>) -> Result<()> {
-    let store = Store::open()?;
-    let output = TerminalOutput;
-    let runs = match conversation_id {
-        Some(conversation_id) => store.list_conversation_runs(&conversation_id)?,
-        None => store.list_runs()?,
-    };
-
-    output.runs(&runs);
-
-    Ok(())
-}
-
-/// Prints one persisted run status.
-fn run_status(run_id: RunId) -> Result<()> {
-    let store = Store::open()?;
-    let output = TerminalOutput;
-    let run = store.load_run(&run_id)?;
-
-    output.run_status(&run);
-
-    Ok(())
-}
-
-/// Prints persisted run events.
-fn run_events(run_id: RunId) -> Result<()> {
-    let store = Store::open()?;
-    let output = TerminalOutput;
-
-    for event in store.load_run_events_after(&run_id, None)? {
-        output.run_event(&event);
-    }
-
-    Ok(())
-}
-
-/// Lists run-owned approvals for one run.
-fn run_approvals(run_id: RunId) -> Result<()> {
-    let store = Store::open()?;
-    let output = TerminalOutput;
-    let registry = ToolProviderRegistry::new();
-    let run = store.load_run(&run_id)?;
-    let approvals = operation::list_run_approvals_with_registry(&store, &run, &registry)?;
-
-    output.run_approvals(&approvals);
-
-    Ok(())
-}
-
-/// Executes one approved run-owned tool call and continues that run.
-async fn run_approve(run_id: RunId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open()?;
-    let run = store.load_run(&run_id)?;
-    let registry = ToolProviderRegistry::new();
-    let runtime = operation::RunRuntime::new(
+    operation::start_cli_session(
+        conversation_id,
+        head_message_id,
+        model,
         gateway_url(),
         base_url(),
-        Some(ModelName::new(run.model)),
-        run.reasoning,
-        &registry,
-    );
-    let cli_output = CliRunOutput::new(run_id.clone());
-    let events = CliRunEvents::new(run_id.clone());
-    let outcome = operation::approve_run_tool(
-        &cli_output,
-        &events,
-        &mut store,
-        &run.conversation_id,
-        run.current_head_message_id.as_ref(),
-        &tool_call_id,
-        runtime,
     )
-    .await?;
-
-    finish_cli_run(&mut store, &run_id, outcome)
+    .await
 }
 
-/// Stores one denied run-owned tool result and continues that run.
-async fn run_deny(run_id: RunId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open()?;
-    let run = store.load_run(&run_id)?;
-    let registry = ToolProviderRegistry::new();
-    let runtime = operation::RunRuntime::new(
-        gateway_url(),
-        base_url(),
-        Some(ModelName::new(run.model)),
-        run.reasoning,
-        &registry,
-    );
-    let cli_output = CliRunOutput::new(run_id.clone());
-    let events = CliRunEvents::new(run_id.clone());
-    let outcome = operation::deny_run_tool(
-        &cli_output,
-        &events,
-        &mut store,
-        &run.conversation_id,
-        run.current_head_message_id.as_ref(),
-        &tool_call_id,
-        runtime,
-    )
-    .await?;
+/// Lists persisted sessiontime sessions.
+fn session_list(conversation_id: Option<ConversationId>) -> Result<()> {
+    let store = Store::open()?;
+    let output = TerminalOutput;
+    let sessions = match conversation_id {
+        Some(conversation_id) => store.list_conversation_sessions(&conversation_id)?,
+        None => store.list_sessions()?,
+    };
 
-    finish_cli_run(&mut store, &run_id, outcome)
+    output.sessions(&sessions);
+
+    Ok(())
 }
 
-/// Cancels one persisted run.
-fn run_stop(run_id: RunId) -> Result<()> {
-    let mut store = Store::open()?;
+/// Prints one persisted session status.
+fn session_status(session_id: SessionId) -> Result<()> {
+    let store = Store::open()?;
+    let output = TerminalOutput;
+    let session = store.load_session(&session_id)?;
+
+    output.session_status(&session);
+
+    Ok(())
+}
+
+/// Prints persisted session events.
+fn session_events(session_id: SessionId) -> Result<()> {
+    let store = Store::open()?;
     let output = TerminalOutput;
 
-    store.update_run_status(&run_id, RunStatus::Cancelled, None)?;
-    let run = store.load_run(&run_id)?;
-    output.run_status(&run);
+    for event in store.load_session_events_after(&session_id, None)? {
+        output.session_event(&event);
+    }
 
     Ok(())
 }
 
-/// Continues a CLI-owned run until it completes or reaches approval.
-async fn continue_cli_run(store: &mut Store, run_id: &RunId) -> Result<()> {
-    let run = store.load_run(run_id)?;
-    store.update_run_status(run_id, RunStatus::Running, None)?;
+/// Lists session-owned approvals for one session.
+fn session_approvals(session_id: SessionId) -> Result<()> {
+    let store = Store::open()?;
+    let output = TerminalOutput;
     let registry = ToolProviderRegistry::new();
-    let runtime = operation::RunRuntime::new(
-        gateway_url(),
-        base_url(),
-        Some(ModelName::new(run.model)),
-        run.reasoning,
-        &registry,
-    );
-    let cli_output = CliRunOutput::new(run_id.clone());
-    let events = CliRunEvents::new(run_id.clone());
-    let outcome = operation::run_until_blocked(
-        &cli_output,
-        &events,
-        store,
-        &run.conversation_id,
-        run.current_head_message_id.as_ref(),
-        runtime,
-    )
-    .await?;
+    let session = store.load_session(&session_id)?;
+    let approvals = operation::list_session_approvals_with_registry(&store, &session, &registry)?;
 
-    finish_cli_run(store, run_id, outcome)
-}
-
-/// Persists the terminal status/head for a CLI-owned run.
-fn finish_cli_run(store: &mut Store, run_id: &RunId, outcome: RuntimeOutcome) -> Result<()> {
-    match outcome {
-        RuntimeOutcome::Completed { head_message_id } => {
-            store.update_run_head(run_id, head_message_id.as_ref())?;
-            store.update_run_status(run_id, RunStatus::Completed, None)?;
-            store.append_run_event(
-                run_id,
-                RunEvent::Completed {
-                    message_id: head_message_id.map(|id| id.as_str().to_string()),
-                },
-            )?;
-        }
-        RuntimeOutcome::WaitingForApproval { head_message_id } => {
-            store.update_run_head(run_id, Some(&head_message_id))?;
-            store.update_run_status(run_id, RunStatus::WaitingForApproval, None)?;
-            store.append_run_event(run_id, RunEvent::WaitingForApproval)?;
-        }
-    }
+    output.session_approvals(&approvals);
 
     Ok(())
 }
 
-/// CLI runtime output that prints to the terminal and appends replayable events.
-struct CliRunOutput {
-    run_id: RunId,
-    terminal: TerminalOutput,
+/// Executes one approved session-owned tool call and continues that session.
+async fn session_approve(session_id: SessionId, tool_call_id: ToolCallId) -> Result<()> {
+    operation::approve_cli_session_tool(session_id, tool_call_id, gateway_url(), base_url()).await
 }
 
-impl CliRunOutput {
-    fn new(run_id: RunId) -> Self {
-        Self {
-            run_id,
-            terminal: TerminalOutput,
-        }
-    }
-
-    fn record(&self, event: RunEvent) -> Result<()> {
-        let mut store = Store::open()?;
-        store.append_run_event(&self.run_id, event)?;
-
-        Ok(())
-    }
+/// Stores one denied session-owned tool result and continues that session.
+async fn session_deny(session_id: SessionId, tool_call_id: ToolCallId) -> Result<()> {
+    operation::deny_cli_session_tool(session_id, tool_call_id, gateway_url(), base_url()).await
 }
 
-impl RuntimeOutput for CliRunOutput {
-    fn start_assistant_message(&self) {
-        self.terminal.start_assistant_message();
-    }
+/// Cancels one persisted session.
+fn session_stop(session_id: SessionId) -> Result<()> {
+    let output = TerminalOutput;
+    let session = operation::cancel_session(&session_id)?;
+    output.session_status(&session);
 
-    fn assistant_delta(&self, text: &str) -> Result<()> {
-        self.record(RunEvent::AssistantDelta {
-            text: text.to_string(),
-        })?;
-        self.terminal.assistant_delta(text)
-    }
-
-    fn reasoning_delta(&self, text: &str) -> Result<()> {
-        self.record(RunEvent::ReasoningDelta {
-            text: text.to_string(),
-        })
-    }
-
-    fn tool_call_delta(
-        &self,
-        index: u16,
-        id: Option<&str>,
-        name: Option<&str>,
-        arguments_delta: Option<&str>,
-    ) -> Result<()> {
-        self.record(RunEvent::ToolCallDelta {
-            index,
-            id: id.map(str::to_string),
-            name: name.map(str::to_string),
-            arguments_delta: arguments_delta.map(str::to_string),
-        })
-    }
-
-    fn end_assistant_message(&self) {
-        self.terminal.end_assistant_message();
-    }
-
-    fn assistant_tool_calls(&self, tool_calls: &[crate::conversation::ToolCall]) {
-        self.terminal.assistant_tool_calls(tool_calls);
-    }
-}
-
-/// CLI runtime sink for durable message events.
-struct CliRunEvents {
-    run_id: RunId,
-}
-
-impl CliRunEvents {
-    fn new(run_id: RunId) -> Self {
-        Self { run_id }
-    }
-
-    fn record(&self, event: RunEvent) {
-        match Store::open().and_then(|mut store| store.append_run_event(&self.run_id, event)) {
-            Ok(_) => {}
-            Err(error) => eprintln!("failed to append runtime event: {error}"),
-        }
-    }
-}
-
-impl RuntimeEventSink for CliRunEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
-        self.record(RunEvent::AssistantMessageSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-    }
-
-    fn tool_result_saved(&self, message_id: &MessageId) {
-        self.record(RunEvent::ToolResultSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-    }
+    Ok(())
 }
 
 /// Persists the default model for future turns in one conversation.

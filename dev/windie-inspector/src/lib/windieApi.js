@@ -175,8 +175,8 @@ async function streamSse(path, fallbackError, onEvent, options = {}) {
   }
 }
 
-export async function createRun(conversationId, body = {}) {
-  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/runs`, {
+export async function createSession(conversationId, body = {}) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/sessions`, {
     method: "POST",
     body: JSON.stringify({
       head_message_id: body.headMessageId || null,
@@ -186,36 +186,36 @@ export async function createRun(conversationId, body = {}) {
   });
 }
 
-export async function listRuns() {
-  const body = await apiRequest("/api/runs");
-  return body.runs || [];
+export async function listSessions() {
+  const body = await apiRequest("/api/sessions");
+  return body.sessions || [];
 }
 
-export async function getRun(runId) {
-  return apiRequest(`/api/runs/${encodeURIComponent(runId)}`);
+export async function getSession(sessionId) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`);
 }
 
-export async function streamRunEvents(runId, afterEventId, onEvent, options = {}) {
+export async function streamSessionEvents(sessionId, afterEventId, onEvent, options = {}) {
   const cursor =
     afterEventId == null ? "" : `?after=${encodeURIComponent(String(afterEventId))}`;
   return streamSse(
-    `/api/runs/${encodeURIComponent(runId)}/events${cursor}`,
-    "Windie run stream failed",
+    `/api/sessions/${encodeURIComponent(sessionId)}/events${cursor}`,
+    "Windie session stream failed",
     onEvent,
     options
   );
 }
 
-export async function stopRun(runId) {
-  return apiRequest(`/api/runs/${encodeURIComponent(runId)}/stop`, {
+export async function stopSession(sessionId) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, {
     method: "POST",
     body: JSON.stringify({}),
   });
 }
 
-export async function approveRunTool(runId, toolCallId) {
+export async function approveSessionTool(sessionId, toolCallId) {
   return apiRequest(
-    `/api/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(toolCallId)}/approve`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(toolCallId)}/approve`,
     {
       method: "POST",
       body: JSON.stringify({}),
@@ -223,9 +223,9 @@ export async function approveRunTool(runId, toolCallId) {
   );
 }
 
-export async function denyRunTool(runId, toolCallId) {
+export async function denySessionTool(sessionId, toolCallId) {
   return apiRequest(
-    `/api/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(toolCallId)}/deny`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(toolCallId)}/deny`,
     {
       method: "POST",
       body: JSON.stringify({}),
