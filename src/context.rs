@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::conversation::{ConversationId, Message, MessageId, Role};
+use crate::conversation::{ConversationId, Message, MessageId, Role, ToolSchema};
 use crate::store::Compaction;
 use crate::store::Store;
 
@@ -13,6 +13,17 @@ const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
 
 /// Builds the exact message list sent to the model.
 pub struct ContextBuilder;
+
+#[derive(Debug)]
+/// Complete model-facing context for one selected conversation path.
+///
+/// Runtime callers use this shape so messages and tool schemas are resolved
+/// from the same path head. That keeps branch-local system prompts and tools
+/// from leaking across sibling branches.
+pub struct ModelContext {
+    pub messages: Vec<Message>,
+    pub tool_schemas: Vec<ToolSchema>,
+}
 
 #[derive(Debug)]
 /// Inputs needed to flatten model-facing context.
@@ -38,6 +49,17 @@ impl ContextBuilder {
         Ok(Self::flatten(parts))
     }
 
+    /// Loads the active path and its effective model-facing tool schemas.
+    pub fn build_model_context(
+        store: &Store,
+        conversation_id: &ConversationId,
+    ) -> Result<ModelContext> {
+        Ok(ModelContext {
+            messages: Self::build(store, conversation_id)?,
+            tool_schemas: store.load_tool_schemas(conversation_id)?,
+        })
+    }
+
     /// Loads the model-facing context for an explicit message head.
     ///
     /// Runtime sessions use this path so execution is tied to the head captured at
@@ -52,7 +74,7 @@ impl ContextBuilder {
             Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
             None => Vec::new(),
         };
-        let system_prompt = store.system_prompt(conversation_id)?;
+        let system_prompt = store.system_prompt_for_head(conversation_id, head_message_id)?;
         let compaction = store.latest_compaction(conversation_id)?;
 
         Ok(Self::flatten(ContextParts {
@@ -60,6 +82,21 @@ impl ContextBuilder {
             system_prompt,
             compaction,
         }))
+    }
+
+    /// Loads the model context for an explicit path head.
+    ///
+    /// This is the runtime entrypoint. It resolves messages, system prompt, and
+    /// tool schemas against the same captured head.
+    pub fn build_model_context_to_head(
+        store: &Store,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<ModelContext> {
+        Ok(ModelContext {
+            messages: Self::build_to_head(store, conversation_id, head_message_id)?,
+            tool_schemas: store.load_tool_schemas_for_head(conversation_id, head_message_id)?,
+        })
     }
 
     /// Loads the storage-backed pieces needed to build model-facing context.

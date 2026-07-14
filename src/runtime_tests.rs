@@ -559,7 +559,13 @@ async fn approve_active_head_tool_call_with_registry(
         head_message_id.as_ref(),
         tool_call_id,
     )?;
-    let execution = prepare_pending_tool_execution(store, conversation_id, &pending, registry)?;
+    let execution = prepare_pending_tool_execution(
+        store,
+        conversation_id,
+        head_message_id.as_ref(),
+        &pending,
+        registry,
+    )?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
@@ -768,6 +774,84 @@ async fn run_head_passes_tool_schemas_to_llm() {
         .unwrap();
 
     assert_eq!(*llm.tools.lock().unwrap(), vec![tool_schema]);
+}
+
+#[tokio::test]
+async fn explicit_run_head_uses_that_branch_prompt_and_tools() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let shared_id = store
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &shared_id)
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "shared prompt")
+        .unwrap();
+
+    let branch_tool = ToolSchema {
+        name: ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
+        description: "Run a shell command".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+    let branch_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "branch",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &branch_id)
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "branch prompt")
+        .unwrap();
+    store
+        .insert_tool_schema(&conversation_id, &branch_tool)
+        .unwrap();
+    let sibling_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "sibling",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &sibling_id)
+        .unwrap();
+    let llm = CapturingLlm::new();
+    let events = NoopRuntimeEventSink;
+    let registry = ToolProviderRegistry::new();
+
+    advance_turn(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&branch_id),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+
+    let captured_messages = llm.messages.lock().unwrap();
+
+    assert_eq!(captured_messages[0].role, Role::System);
+    assert_eq!(captured_messages[0].content, "branch prompt");
+    assert_eq!(*llm.tools.lock().unwrap(), vec![branch_tool]);
 }
 
 #[tokio::test]

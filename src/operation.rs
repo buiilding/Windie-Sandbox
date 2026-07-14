@@ -458,8 +458,9 @@ pub fn conversation_input_token_context(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Option<InputTokenCountContext>> {
-    let mut model_messages = ContextBuilder::build(store, conversation_id)?;
-    let tool_schemas = store.load_tool_schemas(conversation_id)?;
+    let model_context = ContextBuilder::build_model_context(store, conversation_id)?;
+    let mut model_messages = model_context.messages;
+    let tool_schemas = model_context.tool_schemas;
     let source = if model_messages.is_empty() {
         if tool_schemas.is_empty() {
             return Ok(None);
@@ -1379,8 +1380,13 @@ where
 {
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
-    let execution =
-        prepare_pending_tool_execution(store, conversation_id, &pending, runtime.tools)?;
+    let execution = prepare_pending_tool_execution(
+        store,
+        conversation_id,
+        head_message_id,
+        &pending,
+        runtime.tools,
+    )?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {

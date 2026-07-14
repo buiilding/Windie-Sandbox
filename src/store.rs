@@ -45,7 +45,7 @@ impl FromSql for Role {
 
 #[cfg(test)]
 const DEFAULT_CONVERSATION_ID: &str = "default";
-const DATABASE_SCHEMA_VERSION: i32 = 11;
+const DATABASE_SCHEMA_VERSION: i32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lightweight row used by conversation listing.
@@ -186,7 +186,6 @@ impl Store {
                     model TEXT NOT NULL,
                     reasoning_effort TEXT,
                     active_message_id TEXT,
-                    system_prompt TEXT,
                     tool_approval_mode TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -269,21 +268,35 @@ impl Store {
                     FOREIGN KEY (through_message_id) REFERENCES messages(id)
                 );
 
-                CREATE TABLE IF NOT EXISTS tool_schemas (
+                CREATE TABLE IF NOT EXISTS system_prompts (
+                    id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    parameters_json TEXT NOT NULL,
-                    provider_id TEXT NOT NULL,
-                    provider_tool_name TEXT NOT NULL,
-                    provider_kind TEXT NOT NULL,
-                    permissions_json TEXT NOT NULL,
-                    annotations_json TEXT NOT NULL,
+                    anchor_message_id TEXT,
+                    content TEXT,
+                    action TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
 
-                    PRIMARY KEY (conversation_id, name),
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+                    FOREIGN KEY (anchor_message_id) REFERENCES messages(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS tool_schemas (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    anchor_message_id TEXT,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    parameters_json TEXT,
+                    provider_id TEXT,
+                    provider_tool_name TEXT,
+                    provider_kind TEXT,
+                    permissions_json TEXT,
+                    annotations_json TEXT,
+                    action TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+                    FOREIGN KEY (anchor_message_id) REFERENCES messages(id)
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
@@ -304,8 +317,17 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS compactions_conversation_created_idx
                 ON compactions(conversation_id, created_at);
 
+                CREATE INDEX IF NOT EXISTS system_prompts_conversation_created_idx
+                ON system_prompts(conversation_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS system_prompts_anchor_idx
+                ON system_prompts(conversation_id, anchor_message_id);
+
                 CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
                 ON tool_schemas(conversation_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS tool_schemas_anchor_idx
+                ON tool_schemas(conversation_id, anchor_message_id);
                 ",
             )
             .context("failed to migrate database")?;
@@ -337,12 +359,11 @@ impl Store {
                     model,
                     reasoning_effort,
                     active_message_id,
-                    system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
+                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     id.as_str(),
@@ -372,12 +393,11 @@ impl Store {
                     model,
                     reasoning_effort,
                     active_message_id,
-                    system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, ?4, ?4)
+                VALUES (?1, NULL, ?2, NULL, NULL, ?3, ?4, ?4)
                 ",
                 params![
                     DEFAULT_CONVERSATION_ID,
@@ -459,22 +479,94 @@ impl Store {
         Ok(active_message_id)
     }
 
-    /// Loads the conversation-level system prompt.
-    ///
-    /// The system prompt is not part of the message tree. Context construction
-    /// prepends it to the model-facing messages when it exists.
+    /// Loads the effective system prompt for the conversation's active path.
     pub fn system_prompt(&self, conversation_id: &ConversationId) -> Result<Option<String>> {
-        self.ensure_conversation_exists(conversation_id)?;
+        let head_message_id = self.active_message_id(conversation_id)?;
+        self.system_prompt_for_head(conversation_id, head_message_id.as_ref())
+    }
 
-        self.connection
-            .query_row(
-                "SELECT system_prompt FROM conversations WHERE id = ?1",
-                params![conversation_id.as_str()],
-                |row| row.get(0),
+    /// Loads the effective system prompt for an explicit conversation path.
+    pub fn system_prompt_for_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<Option<String>> {
+        let path_ids = self.context_path_ids(conversation_id, head_message_id)?;
+        let path_set = path_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT anchor_message_id, content, action
+                FROM system_prompts
+                WHERE conversation_id = ?1
+                ORDER BY created_at, rowid
+                ",
             )
-            .optional()
-            .context("failed to load system prompt")
-            .map(Option::flatten)
+            .context("failed to prepare system prompt load")?;
+        let rows = statement
+            .query_map(params![conversation_id.as_str()], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .context("failed to load system prompts")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read system prompts")?;
+        let mut prompt = None;
+
+        for (anchor_message_id, content, action) in rows {
+            if !anchor_applies(anchor_message_id.as_deref(), &path_set) {
+                continue;
+            }
+            match action.as_str() {
+                "set" => prompt = content,
+                "remove" => prompt = None,
+                _ => return Err(anyhow!("unknown system prompt action: {action}")),
+            }
+        }
+
+        Ok(prompt)
+    }
+
+    /// Loads raw system-prompt changes whose anchors apply to one source path.
+    ///
+    /// Forking uses raw changes, not only the effective prompt, so the forked
+    /// path preserves the same edit history and future branch-local overrides.
+    fn system_prompt_changes_for_path(
+        &self,
+        conversation_id: &ConversationId,
+        path_ids: &HashSet<String>,
+    ) -> Result<Vec<StoredSystemPromptChange>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT anchor_message_id, content, action, created_at
+                FROM system_prompts
+                WHERE conversation_id = ?1
+                ORDER BY created_at, rowid
+                ",
+            )
+            .context("failed to prepare system prompt change load")?;
+
+        Ok(statement
+            .query_map(params![conversation_id.as_str()], |row| {
+                Ok(StoredSystemPromptChange {
+                    anchor_message_id: row.get(0)?,
+                    content: row.get(1)?,
+                    action: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .context("failed to load system prompt changes")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read system prompt changes")?
+            .into_iter()
+            .filter(|change| anchor_applies(change.anchor_message_id.as_deref(), path_ids))
+            .collect())
     }
 
     /// Loads the conversation's persisted default model.
@@ -622,35 +714,46 @@ impl Store {
         Ok(())
     }
 
-    /// Sets or replaces the conversation-level system prompt.
-    ///
-    /// Empty text clears the prompt by storing `NULL`. This keeps `set
-    /// systemprompt` idempotent: callers can set it before any messages exist
-    /// or replace it after a prompt already exists.
+    /// Sets or replaces the system prompt at the current active path head.
     pub fn set_system_prompt(
         &mut self,
         conversation_id: &ConversationId,
         content: &str,
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
+        let anchor_message_id = self.active_message_id(conversation_id)?;
+        self.set_system_prompt_at_head(conversation_id, anchor_message_id.as_ref(), content)
+    }
+
+    /// Sets or replaces the system prompt at an explicit path head.
+    pub fn set_system_prompt_at_head(
+        &mut self,
+        conversation_id: &ConversationId,
+        anchor_message_id: Option<&MessageId>,
+        content: &str,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        if let Some(message_id) = anchor_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
 
         let now = now_millis()?;
-        let content = if content.is_empty() {
-            None
-        } else {
-            Some(content)
-        };
+        let action = if content.is_empty() { "remove" } else { "set" };
+        let content = (!content.is_empty()).then_some(content);
         let transaction = self
             .connection
             .transaction()
             .context("failed to start system prompt transaction")?;
 
-        transaction
-            .execute(
-                "UPDATE conversations SET system_prompt = ?1 WHERE id = ?2",
-                params![content, conversation_id.as_str()],
-            )
-            .context("failed to save system prompt")?;
+        insert_system_prompt_change_in_transaction(
+            &transaction,
+            conversation_id,
+            anchor_message_id,
+            content,
+            action,
+            now,
+        )
+        .context("failed to save system prompt")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -660,27 +763,34 @@ impl Store {
         Ok(())
     }
 
-    /// Clears the conversation-level system prompt without changing messages.
+    /// Clears the system prompt at the current active path head.
     pub fn remove_system_prompt(&mut self, conversation_id: &ConversationId) -> Result<()> {
         self.set_system_prompt(conversation_id, "")
     }
 
-    /// Loads all attached provider tools configured on one conversation.
-    ///
-    /// Attached tools are conversation-level model inputs plus provider
-    /// dispatch metadata. They are not message nodes and do not imply automatic
-    /// execution; runtime still requires approval before provider calls.
+    /// Loads all effective provider tools for the conversation's active path.
     pub fn load_attached_tools(
         &self,
         conversation_id: &ConversationId,
     ) -> Result<Vec<AttachedTool>> {
-        self.ensure_conversation_exists(conversation_id)?;
+        let head_message_id = self.active_message_id(conversation_id)?;
+        self.load_attached_tools_for_head(conversation_id, head_message_id.as_ref())
+    }
 
+    /// Loads all effective provider tools for an explicit conversation path.
+    pub fn load_attached_tools_for_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<Vec<AttachedTool>> {
+        let path_ids = self.context_path_ids(conversation_id, head_message_id)?;
+        let path_set = path_ids.iter().cloned().collect::<HashSet<_>>();
         let mut statement = self
             .connection
             .prepare(
                 "
                 SELECT
+                    anchor_message_id,
                     name,
                     description,
                     parameters_json,
@@ -688,7 +798,8 @@ impl Store {
                     provider_tool_name,
                     provider_kind,
                     permissions_json,
-                    annotations_json
+                    annotations_json,
+                    action
                 FROM tool_schemas
                 WHERE conversation_id = ?1
                 ORDER BY created_at, rowid
@@ -696,16 +807,104 @@ impl Store {
             )
             .context("failed to prepare attached tool load")?;
 
-        let attached_tools = statement
-            .query_map(params![conversation_id.as_str()], read_attached_tool_row)
+        let changes = statement
+            .query_map(
+                params![conversation_id.as_str()],
+                read_attached_tool_change_row,
+            )
             .context("failed to load attached tools")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read attached tools")?;
+        let mut effective = HashMap::<String, AttachedTool>::new();
+        let mut order = Vec::<String>::new();
 
-        Ok(attached_tools)
+        for change in changes {
+            if !anchor_applies(change.anchor_message_id.as_deref(), &path_set) {
+                continue;
+            }
+            match change.action.as_str() {
+                "attach" | "update" => {
+                    let attached_tool = change.attached_tool.ok_or_else(|| {
+                        rusqlite::Error::InvalidColumnType(
+                            0,
+                            "attached_tool".to_string(),
+                            Type::Null,
+                        )
+                    })?;
+                    let name = attached_tool.schema_name.as_str().to_string();
+                    if !effective.contains_key(&name) {
+                        order.push(name.clone());
+                    }
+                    effective.insert(name, attached_tool);
+                }
+                "remove" => {
+                    effective.remove(&change.name);
+                    order.retain(|name| name != &change.name);
+                }
+                _ => return Err(anyhow!("unknown tool schema action: {}", change.action)),
+            }
+        }
+
+        Ok(order
+            .into_iter()
+            .filter_map(|name| effective.remove(&name))
+            .collect())
     }
 
-    /// Loads the model-facing schema subset for attached tools.
+    /// Loads raw tool-schema changes whose anchors apply to one source path.
+    fn tool_schema_changes_for_path(
+        &self,
+        conversation_id: &ConversationId,
+        path_ids: &HashSet<String>,
+    ) -> Result<Vec<StoredToolSchemaChange>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT
+                    anchor_message_id,
+                    name,
+                    description,
+                    parameters_json,
+                    provider_id,
+                    provider_tool_name,
+                    provider_kind,
+                    permissions_json,
+                    annotations_json,
+                    action,
+                    created_at
+                FROM tool_schemas
+                WHERE conversation_id = ?1
+                ORDER BY created_at, rowid
+                ",
+            )
+            .context("failed to prepare tool schema change load")?;
+
+        Ok(statement
+            .query_map(params![conversation_id.as_str()], |row| {
+                Ok(StoredToolSchemaChange {
+                    anchor_message_id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    parameters_json: row.get(3)?,
+                    provider_id: row.get(4)?,
+                    provider_tool_name: row.get(5)?,
+                    provider_kind: row.get(6)?,
+                    permissions_json: row.get(7)?,
+                    annotations_json: row.get(8)?,
+                    action: row.get(9)?,
+                    created_at: row.get(10)?,
+                })
+            })
+            .context("failed to load tool schema changes")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read tool schema changes")?
+            .into_iter()
+            .filter(|change| anchor_applies(change.anchor_message_id.as_deref(), path_ids))
+            .collect())
+    }
+
+    /// Loads the effective model-facing schema subset for the active path.
     pub fn load_tool_schemas(&self, conversation_id: &ConversationId) -> Result<Vec<ToolSchema>> {
         Ok(self
             .load_attached_tools(conversation_id)?
@@ -714,37 +913,40 @@ impl Store {
             .collect())
     }
 
-    /// Loads one attached tool by its model-facing schema name.
+    /// Loads the effective model-facing schema subset for an explicit head.
+    pub fn load_tool_schemas_for_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<Vec<ToolSchema>> {
+        Ok(self
+            .load_attached_tools_for_head(conversation_id, head_message_id)?
+            .into_iter()
+            .map(|tool| tool.schema())
+            .collect())
+    }
+
+    /// Loads one effective attached tool by its model-facing schema name.
     pub fn load_attached_tool(
         &self,
         conversation_id: &ConversationId,
         name: &ToolSchemaName,
     ) -> Result<Option<AttachedTool>> {
-        self.ensure_conversation_exists(conversation_id)?;
+        let head_message_id = self.active_message_id(conversation_id)?;
+        self.load_attached_tool_for_head(conversation_id, head_message_id.as_ref(), name)
+    }
 
-        let attached_tool = self
-            .connection
-            .query_row(
-                "
-                SELECT
-                    name,
-                    description,
-                    parameters_json,
-                    provider_id,
-                    provider_tool_name,
-                    provider_kind,
-                    permissions_json,
-                    annotations_json
-                FROM tool_schemas
-                WHERE conversation_id = ?1 AND name = ?2
-                ",
-                params![conversation_id.as_str(), name.as_str()],
-                read_attached_tool_row,
-            )
-            .optional()
-            .context("failed to load attached tool")?;
-
-        Ok(attached_tool)
+    /// Loads one effective attached tool by schema name for an explicit head.
+    pub fn load_attached_tool_for_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+        name: &ToolSchemaName,
+    ) -> Result<Option<AttachedTool>> {
+        Ok(self
+            .load_attached_tools_for_head(conversation_id, head_message_id)?
+            .into_iter()
+            .find(|tool| &tool.schema_name == name))
     }
 
     /// Attaches one provider-backed tool to a conversation.
@@ -755,6 +957,7 @@ impl Store {
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
         validate_attached_tool(attached_tool)?;
+        let anchor_message_id = self.active_message_id(conversation_id)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -762,8 +965,15 @@ impl Store {
             .transaction()
             .context("failed to start attached tool insert transaction")?;
 
-        insert_attached_tool_in_transaction(&transaction, conversation_id, attached_tool, now)
-            .context("failed to attach tool")?;
+        insert_attached_tool_in_transaction(
+            &transaction,
+            conversation_id,
+            anchor_message_id.as_ref(),
+            attached_tool,
+            "attach",
+            now,
+        )
+        .context("failed to attach tool")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -781,12 +991,21 @@ impl Store {
         attached_tools: &[AttachedTool],
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
+        let mut names = HashSet::new();
         for attached_tool in attached_tools {
             validate_attached_tool(attached_tool)?;
+            if !names.insert(attached_tool.schema_name.as_str()) {
+                return Err(error::invalid_request(format!(
+                    "duplicate tool schema in batch: {}",
+                    attached_tool.schema_name
+                )))
+                .context("failed to attach tools");
+            }
         }
         if attached_tools.is_empty() {
             return Ok(());
         }
+        let anchor_message_id = self.active_message_id(conversation_id)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -795,8 +1014,15 @@ impl Store {
             .context("failed to start attached tools insert transaction")?;
 
         for attached_tool in attached_tools {
-            insert_attached_tool_in_transaction(&transaction, conversation_id, attached_tool, now)
-                .context("failed to attach tools")?;
+            insert_attached_tool_in_transaction(
+                &transaction,
+                conversation_id,
+                anchor_message_id.as_ref(),
+                attached_tool,
+                "attach",
+                now,
+            )
+            .context("failed to attach tools")?;
         }
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
@@ -827,46 +1053,33 @@ impl Store {
         self.ensure_tool_schema_exists(conversation_id, current_name)?;
         let attached_tool = AttachedTool::manual(tool_schema.clone());
         validate_attached_tool(&attached_tool)?;
+        let anchor_message_id = self.active_message_id(conversation_id)?;
 
         let now = now_millis()?;
-        let parameters_json = encode_tool_parameters(&attached_tool.parameters)?;
-        let permissions_json = encode_tool_permissions(&attached_tool.permissions)?;
-        let annotations_json = encode_tool_annotations(&attached_tool.annotations)?;
         let transaction = self
             .connection
             .transaction()
             .context("failed to start attached tool update transaction")?;
 
-        transaction
-            .execute(
-                "
-                UPDATE tool_schemas
-                SET name = ?1,
-                    description = ?2,
-                    parameters_json = ?3,
-                    provider_id = ?4,
-                    provider_tool_name = ?5,
-                    provider_kind = ?6,
-                    permissions_json = ?7,
-                    annotations_json = ?8,
-                    updated_at = ?9
-                WHERE conversation_id = ?10 AND name = ?11
-                ",
-                params![
-                    attached_tool.schema_name.as_str(),
-                    attached_tool.description.as_str(),
-                    parameters_json.as_str(),
-                    attached_tool.provider.provider_id.as_str(),
-                    attached_tool.provider.tool_name.as_str(),
-                    attached_tool.provider.kind.as_storage(),
-                    permissions_json.as_str(),
-                    annotations_json.as_str(),
-                    now,
-                    conversation_id.as_str(),
-                    current_name.as_str()
-                ],
+        if current_name != &attached_tool.schema_name {
+            insert_tool_remove_in_transaction(
+                &transaction,
+                conversation_id,
+                anchor_message_id.as_ref(),
+                current_name,
+                now,
             )
-            .context("failed to update attached tool")?;
+            .context("failed to remove renamed attached tool")?;
+        }
+        insert_attached_tool_in_transaction(
+            &transaction,
+            conversation_id,
+            anchor_message_id.as_ref(),
+            &attached_tool,
+            "update",
+            now,
+        )
+        .context("failed to update attached tool")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -884,6 +1097,7 @@ impl Store {
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_tool_schema_exists(conversation_id, name)?;
+        let anchor_message_id = self.active_message_id(conversation_id)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -891,12 +1105,14 @@ impl Store {
             .transaction()
             .context("failed to start tool schema delete transaction")?;
 
-        transaction
-            .execute(
-                "DELETE FROM tool_schemas WHERE conversation_id = ?1 AND name = ?2",
-                params![conversation_id.as_str(), name.as_str()],
-            )
-            .context("failed to remove tool schema")?;
+        insert_tool_remove_in_transaction(
+            &transaction,
+            conversation_id,
+            anchor_message_id.as_ref(),
+            name,
+            now,
+        )
+        .context("failed to remove tool schema")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
             .context("failed to update conversation timestamp")?;
         transaction
@@ -1245,6 +1461,24 @@ impl Store {
             .context("failed to load active path parts")?;
 
         Ok(path)
+    }
+
+    /// Loads message IDs from root to the explicit head for context resolution.
+    fn context_path_ids(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<Vec<String>> {
+        let Some(message_id) = head_message_id else {
+            self.ensure_conversation_exists(conversation_id)?;
+            return Ok(Vec::new());
+        };
+
+        Ok(self
+            .load_path_to_message_rows(conversation_id, message_id)?
+            .into_iter()
+            .filter_map(|message| message.id.map(|id| id.as_str().to_string()))
+            .collect())
     }
 
     /// Loads message rows for one conversation without attaching ordered parts.
@@ -1904,6 +2138,12 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message delete")?;
+        delete_context_for_deleted_messages(
+            &transaction,
+            conversation_id,
+            &splice_delete.deleted_message_ids,
+        )
+        .context("failed to delete path context after message delete")?;
         detach_sessions_from_deleted_messages(
             &transaction,
             conversation_id,
@@ -2056,6 +2296,8 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after conversation truncate")?;
+        delete_context_for_deleted_messages(&transaction, conversation_id, &descendant_ids)
+            .context("failed to delete path context after conversation truncate")?;
         detach_sessions_from_deleted_messages(&transaction, conversation_id, &descendant_ids, now)
             .context("failed to detach runtime sessions after conversation truncate")?;
         set_active_message_in_transaction(
@@ -2112,6 +2354,15 @@ impl Store {
         let source_messages = self
             .load_path_to_message(conversation_id, message_id)
             .context("failed to load messages for conversation fork")?;
+        let source_path_ids = source_messages
+            .iter()
+            .filter_map(|message| message.id.as_ref())
+            .map(|message_id| message_id.as_str().to_string())
+            .collect::<HashSet<_>>();
+        let source_system_prompt_changes =
+            self.system_prompt_changes_for_path(conversation_id, &source_path_ids)?;
+        let source_tool_schema_changes =
+            self.tool_schema_changes_for_path(conversation_id, &source_path_ids)?;
         let source_model = self.conversation_model(conversation_id)?;
         let source_reasoning_effort = self.conversation_reasoning_effort(conversation_id)?;
         let source_tool_approval_mode = self.tool_approval_mode(conversation_id)?;
@@ -2132,12 +2383,11 @@ impl Store {
                     model,
                     reasoning_effort,
                     active_message_id,
-                    system_prompt,
                     tool_approval_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, ?3, NULL, NULL, ?4, ?5, ?5)
+                VALUES (?1, NULL, ?2, ?3, NULL, ?4, ?5, ?5)
                 ",
                 params![
                     forked_conversation_id.as_str(),
@@ -2197,6 +2447,36 @@ impl Store {
             message_id_map.insert(source_message_id.as_str().to_string(), forked_message_id);
         }
 
+        for change in source_system_prompt_changes {
+            let forked_anchor_message_id = change
+                .anchor_message_id
+                .as_ref()
+                .and_then(|message_id| message_id_map.get(message_id));
+            insert_system_prompt_change_in_transaction(
+                &transaction,
+                &forked_conversation_id,
+                forked_anchor_message_id,
+                change.content.as_deref(),
+                change.action.as_str(),
+                change.created_at,
+            )
+            .context("failed to copy forked system prompt")?;
+        }
+
+        for change in source_tool_schema_changes {
+            let forked_anchor_message_id = change
+                .anchor_message_id
+                .as_ref()
+                .and_then(|message_id| message_id_map.get(message_id));
+            insert_tool_schema_change_in_transaction(
+                &transaction,
+                &forked_conversation_id,
+                forked_anchor_message_id,
+                &change,
+            )
+            .context("failed to copy forked tool schema")?;
+        }
+
         let forked_active_message_id = source_messages
             .last()
             .and_then(|message| message.id.as_ref())
@@ -2235,6 +2515,12 @@ impl Store {
                 params![conversation_id.as_str()],
             )
             .context("failed to delete conversation compactions")?;
+        transaction
+            .execute(
+                "DELETE FROM system_prompts WHERE conversation_id = ?1",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to delete conversation system prompts")?;
         transaction
             .execute(
                 "DELETE FROM tool_schemas WHERE conversation_id = ?1",
@@ -2687,20 +2973,7 @@ impl Store {
         conversation_id: &ConversationId,
         name: &ToolSchemaName,
     ) -> Result<()> {
-        let exists = self
-            .connection
-            .query_row(
-                "
-                SELECT 1
-                FROM tool_schemas
-                WHERE conversation_id = ?1 AND name = ?2
-                ",
-                params![conversation_id.as_str(), name.as_str()],
-                |_| Ok(()),
-            )
-            .optional()
-            .context("failed to check tool schema")?
-            .is_some();
+        let exists = self.load_attached_tool(conversation_id, name)?.is_some();
 
         if !exists {
             return Err(error::not_found(format!(
@@ -2831,42 +3104,108 @@ fn assistant_tool_calls(message: &MessageTreeRow) -> Vec<ToolCallId> {
         .unwrap_or_default()
 }
 
-/// Converts one SQLite attached tool row into the runtime attachment type.
-fn read_attached_tool_row(row: &Row<'_>) -> rusqlite::Result<AttachedTool> {
-    let parameters_json = row.get::<_, String>(2)?;
-    let parameters = serde_json::from_str(&parameters_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
+/// One stored tool schema change before effective path resolution.
+struct AttachedToolChange {
+    anchor_message_id: Option<String>,
+    name: String,
+    action: String,
+    attached_tool: Option<AttachedTool>,
+}
+
+/// Raw system-prompt history row used when copying one path into a fork.
+struct StoredSystemPromptChange {
+    anchor_message_id: Option<String>,
+    content: Option<String>,
+    action: String,
+    created_at: i64,
+}
+
+/// Raw tool-schema history row used when copying one path into a fork.
+struct StoredToolSchemaChange {
+    anchor_message_id: Option<String>,
+    name: String,
+    description: Option<String>,
+    parameters_json: Option<String>,
+    provider_id: Option<String>,
+    provider_tool_name: Option<String>,
+    provider_kind: Option<String>,
+    permissions_json: Option<String>,
+    annotations_json: Option<String>,
+    action: String,
+    created_at: i64,
+}
+
+/// Converts one SQLite tool schema history row into a change.
+fn read_attached_tool_change_row(row: &Row<'_>) -> rusqlite::Result<AttachedToolChange> {
+    let anchor_message_id = row.get::<_, Option<String>>(0)?;
+    let name = row.get::<_, String>(1)?;
+    let action = row.get::<_, String>(9)?;
+    if action == "remove" {
+        return Ok(AttachedToolChange {
+            anchor_message_id,
+            name,
+            action,
+            attached_tool: None,
+        });
+    }
+
+    let parameters_json = row.get::<_, Option<String>>(3)?.ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(3, "parameters_json".to_string(), Type::Null)
     })?;
-    let provider_kind_text = row.get::<_, String>(5)?;
+    let parameters = serde_json::from_str(&parameters_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(error))
+    })?;
+    let provider_kind_text = row.get::<_, Option<String>>(6)?.ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(6, "provider_kind".to_string(), Type::Null)
+    })?;
     let provider_kind = ToolProviderKind::from_storage(&provider_kind_text).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
-            5,
+            6,
             Type::Text,
             format!("unknown tool provider kind: {provider_kind_text}").into(),
         )
     })?;
-    let permissions_json = row.get::<_, String>(6)?;
+    let permissions_json = row.get::<_, Option<String>>(7)?.ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(7, "permissions_json".to_string(), Type::Null)
+    })?;
     let permissions =
         serde_json::from_str::<Vec<ToolPermission>>(&permissions_json).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
-        })?;
-    let annotations_json = row.get::<_, String>(7)?;
-    let annotations =
-        serde_json::from_str::<ToolAnnotations>(&annotations_json).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
         })?;
+    let annotations_json = row.get::<_, Option<String>>(8)?.ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(8, "annotations_json".to_string(), Type::Null)
+    })?;
+    let annotations =
+        serde_json::from_str::<ToolAnnotations>(&annotations_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(8, Type::Text, Box::new(error))
+        })?;
 
-    Ok(AttachedTool {
-        schema_name: ToolSchemaName::new(row.get::<_, String>(0)?),
-        description: row.get(1)?,
-        parameters,
-        provider: ToolProviderRef::new(
-            ToolProviderId::new(row.get::<_, String>(3)?),
-            ProviderToolName::new(row.get::<_, String>(4)?),
-            provider_kind,
-        ),
-        permissions,
-        annotations,
+    Ok(AttachedToolChange {
+        anchor_message_id,
+        name: name.clone(),
+        action,
+        attached_tool: Some(AttachedTool {
+            schema_name: ToolSchemaName::new(name),
+            description: row.get::<_, Option<String>>(2)?.ok_or_else(|| {
+                rusqlite::Error::InvalidColumnType(2, "description".to_string(), Type::Null)
+            })?,
+            parameters,
+            provider: ToolProviderRef::new(
+                ToolProviderId::new(row.get::<_, Option<String>>(4)?.ok_or_else(|| {
+                    rusqlite::Error::InvalidColumnType(4, "provider_id".to_string(), Type::Null)
+                })?),
+                ProviderToolName::new(row.get::<_, Option<String>>(5)?.ok_or_else(|| {
+                    rusqlite::Error::InvalidColumnType(
+                        5,
+                        "provider_tool_name".to_string(),
+                        Type::Null,
+                    )
+                })?),
+                provider_kind,
+            ),
+            permissions,
+            annotations,
+        }),
     })
 }
 
@@ -2954,21 +3293,62 @@ fn validate_attached_tool(attached_tool: &AttachedTool) -> Result<()> {
     Ok(())
 }
 
+/// Appends one system-prompt path change inside an existing transaction.
+fn insert_system_prompt_change_in_transaction(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    anchor_message_id: Option<&MessageId>,
+    content: Option<&str>,
+    action: &str,
+    created_at: i64,
+) -> Result<()> {
+    let id = Uuid::new_v4().to_string();
+
+    transaction.execute(
+        "
+        INSERT INTO system_prompts (
+            id,
+            conversation_id,
+            anchor_message_id,
+            content,
+            action,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ",
+        params![
+            id,
+            conversation_id.as_str(),
+            anchor_message_id.map(MessageId::as_str),
+            content,
+            action,
+            created_at
+        ],
+    )?;
+
+    Ok(())
+}
+
 /// Inserts one already-validated attached tool inside an existing transaction.
 fn insert_attached_tool_in_transaction(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
+    anchor_message_id: Option<&MessageId>,
     attached_tool: &AttachedTool,
+    action: &str,
     now: i64,
 ) -> Result<()> {
     let parameters_json = encode_tool_parameters(&attached_tool.parameters)?;
     let permissions_json = encode_tool_permissions(&attached_tool.permissions)?;
     let annotations_json = encode_tool_annotations(&attached_tool.annotations)?;
+    let id = Uuid::new_v4().to_string();
 
     transaction.execute(
         "
         INSERT INTO tool_schemas (
+            id,
             conversation_id,
+            anchor_message_id,
             name,
             description,
             parameters_json,
@@ -2977,13 +3357,15 @@ fn insert_attached_tool_in_transaction(
             provider_kind,
             permissions_json,
             annotations_json,
-            created_at,
-            updated_at
+            action,
+            created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ",
         params![
+            id,
             conversation_id.as_str(),
+            anchor_message_id.map(MessageId::as_str),
             attached_tool.schema_name.as_str(),
             attached_tool.description.as_str(),
             parameters_json.as_str(),
@@ -2992,6 +3374,89 @@ fn insert_attached_tool_in_transaction(
             attached_tool.provider.kind.as_storage(),
             permissions_json.as_str(),
             annotations_json.as_str(),
+            action,
+            now
+        ],
+    )?;
+
+    Ok(())
+}
+
+/// Copies one raw tool-schema path change into a forked conversation.
+fn insert_tool_schema_change_in_transaction(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    anchor_message_id: Option<&MessageId>,
+    change: &StoredToolSchemaChange,
+) -> Result<()> {
+    let id = Uuid::new_v4().to_string();
+
+    transaction.execute(
+        "
+        INSERT INTO tool_schemas (
+            id,
+            conversation_id,
+            anchor_message_id,
+            name,
+            description,
+            parameters_json,
+            provider_id,
+            provider_tool_name,
+            provider_kind,
+            permissions_json,
+            annotations_json,
+            action,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        ",
+        params![
+            id,
+            conversation_id.as_str(),
+            anchor_message_id.map(MessageId::as_str),
+            change.name.as_str(),
+            change.description.as_deref(),
+            change.parameters_json.as_deref(),
+            change.provider_id.as_deref(),
+            change.provider_tool_name.as_deref(),
+            change.provider_kind.as_deref(),
+            change.permissions_json.as_deref(),
+            change.annotations_json.as_deref(),
+            change.action.as_str(),
+            change.created_at
+        ],
+    )?;
+
+    Ok(())
+}
+
+/// Appends a path-scoped tool schema removal inside an existing transaction.
+fn insert_tool_remove_in_transaction(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    anchor_message_id: Option<&MessageId>,
+    name: &ToolSchemaName,
+    now: i64,
+) -> Result<()> {
+    let id = Uuid::new_v4().to_string();
+
+    transaction.execute(
+        "
+        INSERT INTO tool_schemas (
+            id,
+            conversation_id,
+            anchor_message_id,
+            name,
+            action,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, 'remove', ?5)
+        ",
+        params![
+            id,
+            conversation_id.as_str(),
+            anchor_message_id.map(MessageId::as_str),
+            name.as_str(),
             now
         ],
     )?;
@@ -3263,6 +3728,53 @@ fn delete_compactions_for_conversation(
     Ok(())
 }
 
+/// Deletes path-scoped context records anchored to messages being removed.
+fn delete_context_for_deleted_messages(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    deleted_message_ids: &HashSet<String>,
+) -> Result<()> {
+    if deleted_message_ids.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = std::iter::repeat_n("?", deleted_message_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut deleted_ids = deleted_message_ids.iter().cloned().collect::<Vec<_>>();
+    deleted_ids.sort();
+
+    let system_sql = format!(
+        "
+        DELETE FROM system_prompts
+        WHERE conversation_id = ?
+          AND anchor_message_id IN ({placeholders})
+        "
+    );
+    let mut system_params = Vec::with_capacity(deleted_ids.len() + 1);
+    system_params.push(Value::Text(conversation_id.as_str().to_string()));
+    system_params.extend(deleted_ids.iter().cloned().map(Value::Text));
+    transaction
+        .execute(&system_sql, params_from_iter(system_params))
+        .context("failed to delete system prompts for removed messages")?;
+
+    let tool_sql = format!(
+        "
+        DELETE FROM tool_schemas
+        WHERE conversation_id = ?
+          AND anchor_message_id IN ({placeholders})
+        "
+    );
+    let mut tool_params = Vec::with_capacity(deleted_ids.len() + 1);
+    tool_params.push(Value::Text(conversation_id.as_str().to_string()));
+    tool_params.extend(deleted_ids.into_iter().map(Value::Text));
+    transaction
+        .execute(&tool_sql, params_from_iter(tool_params))
+        .context("failed to delete tool schemas for removed messages")?;
+
+    Ok(())
+}
+
 /// Clears run message references that would otherwise point at deleted rows.
 ///
 /// Deleting a conversation branch is a storage operation, but sessions own
@@ -3341,6 +3853,14 @@ fn touch_conversation_in_transaction(
     )?;
 
     Ok(())
+}
+
+/// Returns whether a path-scoped context row applies to the current head path.
+fn anchor_applies(anchor_message_id: Option<&str>, path_ids: &HashSet<String>) -> bool {
+    match anchor_message_id {
+        Some(message_id) => path_ids.contains(message_id),
+        None => true,
+    }
 }
 
 /// Updates the selected active message for a conversation inside an existing

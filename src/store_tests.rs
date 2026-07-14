@@ -365,6 +365,64 @@ fn clears_system_prompt_with_empty_text() {
 }
 
 #[test]
+fn system_prompt_is_resolved_from_selected_message_path() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let shared_id = store
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &shared_id)
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "shared prompt")
+        .unwrap();
+
+    let branch_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "branch",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &branch_id)
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "branch prompt")
+        .unwrap();
+    let sibling_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "sibling",
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .system_prompt_for_head(&conversation_id, Some(&branch_id))
+            .unwrap()
+            .as_deref(),
+        Some("branch prompt")
+    );
+    assert_eq!(
+        store
+            .system_prompt_for_head(&conversation_id, Some(&sibling_id))
+            .unwrap()
+            .as_deref(),
+        Some("shared prompt")
+    );
+}
+
+#[test]
 fn rejects_system_prompt_for_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
 
@@ -694,6 +752,72 @@ fn saves_updates_and_removes_tool_schemas() {
             .load_tool_schemas(&conversation_id)
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn tool_schemas_are_resolved_from_selected_message_path() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let shared_tool = ToolSchema {
+        name: ToolSchemaName::new("shared_tool"),
+        description: "Shared tool".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+    let branch_tool = ToolSchema {
+        name: ToolSchemaName::new("branch_tool"),
+        description: "Branch tool".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let shared_id = store
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &shared_id)
+        .unwrap();
+    store
+        .insert_tool_schema(&conversation_id, &shared_tool)
+        .unwrap();
+
+    let branch_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "branch",
+            None,
+        )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &branch_id)
+        .unwrap();
+    store
+        .insert_tool_schema(&conversation_id, &branch_tool)
+        .unwrap();
+    let sibling_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "sibling",
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .load_tool_schemas_for_head(&conversation_id, Some(&branch_id))
+            .unwrap(),
+        vec![shared_tool.clone(), branch_tool]
+    );
+    assert_eq!(
+        store
+            .load_tool_schemas_for_head(&conversation_id, Some(&sibling_id))
+            .unwrap(),
+        vec![shared_tool]
     );
 }
 
@@ -2286,6 +2410,11 @@ fn forks_conversation_at_message() {
         )],
         ..Default::default()
     };
+    let fork_tool = ToolSchema {
+        name: ToolSchemaName::new("fork_tool"),
+        description: "Forked path tool".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
     let first_id = store
         .insert_message(&conversation_id, None, Role::User, "one", None)
         .unwrap();
@@ -2298,6 +2427,15 @@ fn forks_conversation_at_message() {
             "two",
             Some(&metadata),
         )
+        .unwrap();
+    store
+        .set_active_message(&conversation_id, &second_id)
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "fork prompt")
+        .unwrap();
+    store
+        .insert_tool_schema(&conversation_id, &fork_tool)
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     store
@@ -2321,10 +2459,14 @@ fn forks_conversation_at_message() {
     let forked_reasoning_effort = store
         .conversation_reasoning_effort(&forked_conversation_id)
         .unwrap();
+    let forked_system_prompt = store.system_prompt(&forked_conversation_id).unwrap();
+    let forked_tool_schemas = store.load_tool_schemas(&forked_conversation_id).unwrap();
 
     assert_ne!(forked_conversation_id, conversation_id);
     assert_eq!(forked_model, "anthropic/test");
     assert_eq!(forked_reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(forked_system_prompt.as_deref(), Some("fork prompt"));
+    assert_eq!(forked_tool_schemas, vec![fork_tool]);
     assert_eq!(source_messages.len(), 3);
     assert_eq!(forked_messages.len(), 2);
     assert_eq!(forked_messages[0].role, Role::User);

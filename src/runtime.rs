@@ -100,15 +100,17 @@ where
         events,
     )?;
 
-    let model_messages =
-        ContextBuilder::build_to_head(store, input.conversation_id, head_message_id.as_ref())?;
-    let tool_schemas = store.load_tool_schemas(input.conversation_id)?;
+    let model_context = ContextBuilder::build_model_context_to_head(
+        store,
+        input.conversation_id,
+        head_message_id.as_ref(),
+    )?;
 
     output.start_assistant_message();
     let assistant_response = llm
         .stream(
-            &model_messages,
-            &tool_schemas,
+            &model_context.messages,
+            &model_context.tool_schemas,
             input.model_request.reasoning,
             input.model_request.prompt_cache,
             |event| match event {
@@ -227,7 +229,12 @@ pub(crate) fn pending_approvals_at_head(
         return Ok(Vec::new());
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, input.conversation_id, &tool_call)?;
+    let attached_tool = load_attached_tool_for_call(
+        store,
+        input.conversation_id,
+        input.head_message_id,
+        &tool_call,
+    )?;
     let approval_mode = store.tool_approval_mode(input.conversation_id)?;
 
     if let PolicyDecision::Ask { reason } = policy.decide(
@@ -314,7 +321,12 @@ fn store_policy_denied_tool_results_at_head(
         let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
             return Ok(());
         };
-        let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
+        let attached_tool = load_attached_tool_for_call(
+            store,
+            conversation_id,
+            head_message_id.as_ref(),
+            &tool_call,
+        )?;
         let approval_mode = store.tool_approval_mode(conversation_id)?;
 
         let PolicyDecision::Deny { reason } = policy.decide(
@@ -369,7 +381,12 @@ async fn resolve_next_automatic_tool_call_at_head(
         tool_call,
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let attached_tool = load_attached_tool_for_call(
+        store,
+        conversation_id,
+        head_message_id.as_ref(),
+        &pending.tool_call,
+    )?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
     let result = match policy.decide(
         &pending.tool_call,
@@ -495,11 +512,13 @@ fn active_tool_execution(messages: &[Message]) -> Option<ActiveToolExecution> {
 pub(crate) fn prepare_pending_tool_execution(
     store: &Store,
     conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
     pending: &PendingToolCall,
     registry: &ToolProviderRegistry,
 ) -> Result<PendingToolExecution> {
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let attached_tool =
+        load_attached_tool_for_call(store, conversation_id, head_message_id, &pending.tool_call)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
 
     match policy.decide(
@@ -607,9 +626,14 @@ pub(crate) fn load_pending_tool_call_at_head(
 fn load_attached_tool_for_call(
     store: &Store,
     conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
     tool_call: &ToolCall,
 ) -> Result<Option<AttachedTool>> {
-    store.load_attached_tool(conversation_id, &ToolSchemaName::new(tool_call.name()))
+    store.load_attached_tool_for_head(
+        conversation_id,
+        head_message_id,
+        &ToolSchemaName::new(tool_call.name()),
+    )
 }
 
 /// Returns whether a loaded attached tool has an executor in the current
