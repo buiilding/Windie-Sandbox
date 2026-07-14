@@ -5,6 +5,7 @@ use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, ToolSchema, ToolSchemaName, UnsavedImagePart,
     UnsavedMessagePart,
 };
+use crate::run::{RunId, RunStatus};
 use crate::tool::ToolApprovalMode;
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
@@ -84,7 +85,7 @@ fn insert_tool_result_with_parts(
     parts: &[UnsavedMessagePart],
 ) -> MessageId {
     store
-        .insert_tool_result_message_with_parts(
+        .insert_run_tool_result_message_with_parts(
             conversation_id,
             parent_message_id,
             &ToolCallId::new(tool_call_id),
@@ -1315,6 +1316,90 @@ fn remove_message_deletes_leaf_only() {
 }
 
 #[test]
+fn remove_message_clears_deleted_runtime_run_head() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let run_id = RunId::new("run-delete-head");
+    store
+        .create_run(
+            &run_id,
+            &conversation_id,
+            Some(&second_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let run = store.load_run(&run_id).unwrap();
+
+    assert_eq!(run.start_head_message_id, None);
+    assert_eq!(run.current_head_message_id, None);
+    assert_eq!(run.status, RunStatus::Cancelled);
+}
+
+#[test]
+fn remove_message_clears_deleted_run_start_but_keeps_surviving_current_head() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let third_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+    let run_id = RunId::new("run-delete-start");
+    store
+        .create_run(
+            &run_id,
+            &conversation_id,
+            Some(&second_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store.update_run_head(&run_id, Some(&third_id)).unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let run = store.load_run(&run_id).unwrap();
+    let messages = store.load_messages(&conversation_id).unwrap();
+
+    assert_eq!(run.start_head_message_id, None);
+    assert_eq!(run.current_head_message_id.as_ref(), Some(&third_id));
+    assert_eq!(run.status, RunStatus::Running);
+    assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
+}
+
+#[test]
 fn remove_root_with_one_child_promotes_child_to_root() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
@@ -2112,6 +2197,53 @@ fn truncates_conversation_after_message() {
     assert_eq!(messages[1].content, "two");
     assert_eq!(active_message_id.as_deref(), Some(second_id.as_str()));
     assert!(compaction.is_none());
+}
+
+#[test]
+fn truncate_clears_deleted_runtime_run_head() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let third_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+    let run_id = RunId::new("run-truncate-head");
+    store
+        .create_run(
+            &run_id,
+            &conversation_id,
+            Some(&third_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+
+    store
+        .truncate_after_message(&conversation_id, &first_id)
+        .unwrap();
+
+    let run = store.load_run(&run_id).unwrap();
+
+    assert_eq!(run.start_head_message_id, None);
+    assert_eq!(run.current_head_message_id, None);
+    assert_eq!(run.status, RunStatus::Cancelled);
 }
 
 #[test]

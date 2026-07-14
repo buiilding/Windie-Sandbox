@@ -301,7 +301,7 @@ export function WindieProvider({ children }) {
       if (!convId) return null;
       const [report, approvalBody] = await Promise.all([
         apiRequest(`/api/conversations/${convId}`),
-        apiRequest(`/api/conversations/${convId}/approvals`),
+        apiRequest(`/api/conversations/${convId}/run-approvals`),
       ]);
       const loaded = conversationFromInspection(report, null);
 
@@ -426,6 +426,10 @@ export function WindieProvider({ children }) {
   );
 
   const activePathNodes = useMemo(() => {
+    return pathNodesForConversation(activeConv);
+  }, [activeConv]);
+
+  const selectedPathNodes = useMemo(() => {
     return pathNodesToNode(activeConv, selectedNodeId);
   }, [activeConv, selectedNodeId]);
 
@@ -966,31 +970,31 @@ export function WindieProvider({ children }) {
   );
 
   const approveToolCall = useCallback(
-    async (_convId, toolCallId) => {
-      if (!visibleRunId) return;
+    async (runId, toolCallId) => {
+      if (!runId) return;
       try {
-        const run = await approveRunToolApi(visibleRunId, toolCallId);
+        const run = await approveRunToolApi(runId, toolCallId);
         subscribeToRun(run);
       } catch (error) {
         setApiError(error.message);
         toast.error(error.message);
       }
     },
-    [subscribeToRun, visibleRunId]
+    [subscribeToRun]
   );
 
   const denyToolCall = useCallback(
-    async (_convId, toolCallId) => {
-      if (!visibleRunId) return;
+    async (runId, toolCallId) => {
+      if (!runId) return;
       try {
-        const run = await denyRunToolApi(visibleRunId, toolCallId);
+        const run = await denyRunToolApi(runId, toolCallId);
         subscribeToRun(run);
       } catch (error) {
         setApiError(error.message);
         toast.error(error.message);
       }
     },
-    [subscribeToRun, visibleRunId]
+    [subscribeToRun]
   );
 
   const visibleRun = visibleRunId ? runsById[visibleRunId] || null : null;
@@ -1005,6 +1009,7 @@ export function WindieProvider({ children }) {
     activeConvId,
     selectedNodeId,
     activePathNodes,
+    selectedPathNodes,
     theme,
     treeOverlayOpen,
     contextPreviewOpen,

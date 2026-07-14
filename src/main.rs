@@ -35,10 +35,13 @@ use crate::conversation::{
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::operation::MessageInputPart;
-use crate::output::TerminalOutput;
+use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
+use crate::run::{RunEvent, RunId, RunStatus};
+use crate::runtime::{RuntimeEventSink, RuntimeOutcome};
 use crate::store::Store;
 use crate::tool::{ProviderToolName, ToolProviderId};
+use crate::tool_provider::ToolProviderRegistry;
 
 const BASE_URL: &str = "http://localhost:8080/v1";
 const GATEWAY_URL: &str = "http://localhost:8080";
@@ -58,11 +61,6 @@ async fn main() -> Result<()> {
             conversation_id,
             message_id,
         } => activate_message(conversation_id, message_id),
-        Command::Approvals { conversation_id } => list_approvals(conversation_id),
-        Command::ApproveTool {
-            conversation_id,
-            tool_call_id,
-        } => approve_tool(conversation_id, tool_call_id).await,
         Command::AttachTool {
             conversation_id,
             provider_id,
@@ -103,10 +101,24 @@ async fn main() -> Result<()> {
         Command::List { json } => list_conversations(json),
         Command::Models => list_models().await,
         Command::New => new_conversation(),
-        Command::Query {
+        Command::RunStart {
             conversation_id,
+            head_message_id,
             model,
-        } => query(conversation_id, model).await,
+        } => run_start(conversation_id, head_message_id, model).await,
+        Command::RunList { conversation_id } => run_list(conversation_id),
+        Command::RunStatus { run_id } => run_status(run_id),
+        Command::RunEvents { run_id } => run_events(run_id),
+        Command::RunApprovals { run_id } => run_approvals(run_id),
+        Command::RunApprove {
+            run_id,
+            tool_call_id,
+        } => run_approve(run_id, tool_call_id).await,
+        Command::RunDeny {
+            run_id,
+            tool_call_id,
+        } => run_deny(run_id, tool_call_id).await,
+        Command::RunStop { run_id } => run_stop(run_id),
         Command::RemoveConversation(conversation_id) => remove_conversation(conversation_id),
         Command::RemoveMessage {
             conversation_id,
@@ -121,10 +133,6 @@ async fn main() -> Result<()> {
             conversation_id,
             schema_name,
         } => detach_tool(conversation_id, schema_name),
-        Command::DenyTool {
-            conversation_id,
-            tool_call_id,
-        } => deny_tool(conversation_id, tool_call_id),
         Command::Show(conversation_id) => show_conversation(conversation_id),
         Command::Status => status().await,
         Command::SetSystemPrompt {
@@ -527,39 +535,6 @@ fn detach_tool(conversation_id: ConversationId, schema_name: ToolSchemaName) -> 
     Ok(())
 }
 
-/// Lists pending tool calls that require explicit user approval.
-fn list_approvals(conversation_id: ConversationId) -> Result<()> {
-    let store = Store::open()?;
-    let output = TerminalOutput;
-    let approvals = operation::list_tool_approvals(&store, &conversation_id)?;
-
-    output.tool_approvals(&approvals);
-
-    Ok(())
-}
-
-/// Executes one approved tool call and stores its tool-result message.
-async fn approve_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open()?;
-    let output = TerminalOutput;
-    let result = operation::approve_tool(&mut store, &conversation_id, &tool_call_id).await?;
-
-    output.tool_execution_result(&result);
-
-    Ok(())
-}
-
-/// Stores a rejected tool-result message for one pending tool call.
-fn deny_tool(conversation_id: ConversationId, tool_call_id: ToolCallId) -> Result<()> {
-    let mut store = Store::open()?;
-    let output = TerminalOutput;
-    let result = operation::deny_tool(&mut store, &conversation_id, &tool_call_id)?;
-
-    output.tool_execution_result(&result);
-
-    Ok(())
-}
-
 /// Deletes one conversation and all persisted data owned by it.
 fn remove_conversation(conversation_id: ConversationId) -> Result<()> {
     let mut store = Store::open()?;
@@ -615,28 +590,298 @@ async fn list_models() -> Result<()> {
     Ok(())
 }
 
-/// Runs one model response for an existing conversation.
-///
-/// This is intentionally one runtime turn. If the assistant requests a tool,
-/// the CLI prints the stored tool call and exits; users then compose the next
-/// steps with `windie approvals`, `windie approve` or `windie deny`, and another
-/// `windie query`.
-async fn query(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
+/// Starts and advances one run from an explicit or default conversation head.
+async fn run_start(
+    conversation_id: ConversationId,
+    head_message_id: Option<MessageId>,
+    model: Option<ModelName>,
+) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
-
-    operation::query_conversation(
-        &output,
-        &mut store,
+    let run_id = RunId::fresh();
+    let head_message_id = match head_message_id {
+        Some(message_id) => Some(message_id),
+        None => store.active_message_id(&conversation_id)?,
+    };
+    let model = match model {
+        Some(model) => model,
+        None => operation::conversation_model(&store, &conversation_id)?,
+    };
+    let reasoning = operation::conversation_reasoning(&store, &conversation_id)?;
+    let run = store.create_run(
+        &run_id,
         &conversation_id,
+        head_message_id.as_ref(),
+        model.as_str(),
+        reasoning.as_ref(),
+    )?;
+
+    output.created_run(&run.id);
+    continue_cli_run(&mut store, &run.id).await
+}
+
+/// Lists persisted runtime runs.
+fn run_list(conversation_id: Option<ConversationId>) -> Result<()> {
+    let store = Store::open()?;
+    let output = TerminalOutput;
+    let runs = match conversation_id {
+        Some(conversation_id) => store.list_conversation_runs(&conversation_id)?,
+        None => store.list_runs()?,
+    };
+
+    output.runs(&runs);
+
+    Ok(())
+}
+
+/// Prints one persisted run status.
+fn run_status(run_id: RunId) -> Result<()> {
+    let store = Store::open()?;
+    let output = TerminalOutput;
+    let run = store.load_run(&run_id)?;
+
+    output.run_status(&run);
+
+    Ok(())
+}
+
+/// Prints persisted run events.
+fn run_events(run_id: RunId) -> Result<()> {
+    let store = Store::open()?;
+    let output = TerminalOutput;
+
+    for event in store.load_run_events_after(&run_id, None)? {
+        output.run_event(&event);
+    }
+
+    Ok(())
+}
+
+/// Lists run-owned approvals for one run.
+fn run_approvals(run_id: RunId) -> Result<()> {
+    let store = Store::open()?;
+    let output = TerminalOutput;
+    let registry = ToolProviderRegistry::new();
+    let run = store.load_run(&run_id)?;
+    let approvals = operation::list_run_approvals_with_registry(&store, &run, &registry)?;
+
+    output.run_approvals(&approvals);
+
+    Ok(())
+}
+
+/// Executes one approved run-owned tool call and continues that run.
+async fn run_approve(run_id: RunId, tool_call_id: ToolCallId) -> Result<()> {
+    let mut store = Store::open()?;
+    let run = store.load_run(&run_id)?;
+    let registry = ToolProviderRegistry::new();
+    let runtime = operation::RunRuntime::new(
         gateway_url(),
         base_url(),
-        model,
-        None,
+        Some(ModelName::new(run.model)),
+        run.reasoning,
+        &registry,
+    );
+    let cli_output = CliRunOutput::new(run_id.clone());
+    let events = CliRunEvents::new(run_id.clone());
+    let outcome = operation::approve_run_tool(
+        &cli_output,
+        &events,
+        &mut store,
+        &run.conversation_id,
+        run.current_head_message_id.as_ref(),
+        &tool_call_id,
+        runtime,
     )
     .await?;
 
+    finish_cli_run(&mut store, &run_id, outcome)
+}
+
+/// Stores one denied run-owned tool result and continues that run.
+async fn run_deny(run_id: RunId, tool_call_id: ToolCallId) -> Result<()> {
+    let mut store = Store::open()?;
+    let run = store.load_run(&run_id)?;
+    let registry = ToolProviderRegistry::new();
+    let runtime = operation::RunRuntime::new(
+        gateway_url(),
+        base_url(),
+        Some(ModelName::new(run.model)),
+        run.reasoning,
+        &registry,
+    );
+    let cli_output = CliRunOutput::new(run_id.clone());
+    let events = CliRunEvents::new(run_id.clone());
+    let outcome = operation::deny_run_tool(
+        &cli_output,
+        &events,
+        &mut store,
+        &run.conversation_id,
+        run.current_head_message_id.as_ref(),
+        &tool_call_id,
+        runtime,
+    )
+    .await?;
+
+    finish_cli_run(&mut store, &run_id, outcome)
+}
+
+/// Cancels one persisted run.
+fn run_stop(run_id: RunId) -> Result<()> {
+    let mut store = Store::open()?;
+    let output = TerminalOutput;
+
+    store.update_run_status(&run_id, RunStatus::Cancelled, None)?;
+    let run = store.load_run(&run_id)?;
+    output.run_status(&run);
+
     Ok(())
+}
+
+/// Continues a CLI-owned run until it completes or reaches approval.
+async fn continue_cli_run(store: &mut Store, run_id: &RunId) -> Result<()> {
+    let run = store.load_run(run_id)?;
+    store.update_run_status(run_id, RunStatus::Running, None)?;
+    let registry = ToolProviderRegistry::new();
+    let runtime = operation::RunRuntime::new(
+        gateway_url(),
+        base_url(),
+        Some(ModelName::new(run.model)),
+        run.reasoning,
+        &registry,
+    );
+    let cli_output = CliRunOutput::new(run_id.clone());
+    let events = CliRunEvents::new(run_id.clone());
+    let outcome = operation::run_until_blocked(
+        &cli_output,
+        &events,
+        store,
+        &run.conversation_id,
+        run.current_head_message_id.as_ref(),
+        runtime,
+    )
+    .await?;
+
+    finish_cli_run(store, run_id, outcome)
+}
+
+/// Persists the terminal status/head for a CLI-owned run.
+fn finish_cli_run(store: &mut Store, run_id: &RunId, outcome: RuntimeOutcome) -> Result<()> {
+    match outcome {
+        RuntimeOutcome::Completed { head_message_id } => {
+            store.update_run_head(run_id, head_message_id.as_ref())?;
+            store.update_run_status(run_id, RunStatus::Completed, None)?;
+            store.append_run_event(
+                run_id,
+                RunEvent::Completed {
+                    message_id: head_message_id.map(|id| id.as_str().to_string()),
+                },
+            )?;
+        }
+        RuntimeOutcome::WaitingForApproval { head_message_id } => {
+            store.update_run_head(run_id, Some(&head_message_id))?;
+            store.update_run_status(run_id, RunStatus::WaitingForApproval, None)?;
+            store.append_run_event(run_id, RunEvent::WaitingForApproval)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// CLI runtime output that prints to the terminal and appends replayable events.
+struct CliRunOutput {
+    run_id: RunId,
+    terminal: TerminalOutput,
+}
+
+impl CliRunOutput {
+    fn new(run_id: RunId) -> Self {
+        Self {
+            run_id,
+            terminal: TerminalOutput,
+        }
+    }
+
+    fn record(&self, event: RunEvent) -> Result<()> {
+        let mut store = Store::open()?;
+        store.append_run_event(&self.run_id, event)?;
+
+        Ok(())
+    }
+}
+
+impl RuntimeOutput for CliRunOutput {
+    fn start_assistant_message(&self) {
+        self.terminal.start_assistant_message();
+    }
+
+    fn assistant_delta(&self, text: &str) -> Result<()> {
+        self.record(RunEvent::AssistantDelta {
+            text: text.to_string(),
+        })?;
+        self.terminal.assistant_delta(text)
+    }
+
+    fn reasoning_delta(&self, text: &str) -> Result<()> {
+        self.record(RunEvent::ReasoningDelta {
+            text: text.to_string(),
+        })
+    }
+
+    fn tool_call_delta(
+        &self,
+        index: u16,
+        id: Option<&str>,
+        name: Option<&str>,
+        arguments_delta: Option<&str>,
+    ) -> Result<()> {
+        self.record(RunEvent::ToolCallDelta {
+            index,
+            id: id.map(str::to_string),
+            name: name.map(str::to_string),
+            arguments_delta: arguments_delta.map(str::to_string),
+        })
+    }
+
+    fn end_assistant_message(&self) {
+        self.terminal.end_assistant_message();
+    }
+
+    fn assistant_tool_calls(&self, tool_calls: &[crate::conversation::ToolCall]) {
+        self.terminal.assistant_tool_calls(tool_calls);
+    }
+}
+
+/// CLI runtime sink for durable message events.
+struct CliRunEvents {
+    run_id: RunId,
+}
+
+impl CliRunEvents {
+    fn new(run_id: RunId) -> Self {
+        Self { run_id }
+    }
+
+    fn record(&self, event: RunEvent) {
+        match Store::open().and_then(|mut store| store.append_run_event(&self.run_id, event)) {
+            Ok(_) => {}
+            Err(error) => eprintln!("failed to append runtime event: {error}"),
+        }
+    }
+}
+
+impl RuntimeEventSink for CliRunEvents {
+    fn assistant_message_saved(&self, message_id: &MessageId) {
+        self.record(RunEvent::AssistantMessageSaved {
+            message_id: message_id.as_str().to_string(),
+        });
+    }
+
+    fn tool_result_saved(&self, message_id: &MessageId) {
+        self.record(RunEvent::ToolResultSaved {
+            message_id: message_id.as_str().to_string(),
+        });
+    }
 }
 
 /// Persists the default model for future turns in one conversation.

@@ -26,18 +26,16 @@ use crate::llm::{
     ModelParameterOption, PromptCacheRequest, ReasoningRequest,
 };
 use crate::output::RuntimeOutput;
+use crate::run::{Run, RunId, RunStatus};
 use crate::runtime::{
     PendingToolExecution, RuntimeEventSink, RuntimeInput, RuntimeModelRequest, RuntimeOutcome,
-    approve_tool_call, deny_pending_tool_call, deny_tool_call, execute_pending_tool_call,
-    load_pending_tool_call_at_head, pending_approvals, pending_tool_approvals,
-    pending_tool_approvals_with_registry, prepare_pending_tool_execution,
-    query_conversation_resolving_automatic_tools, run_until_blocked as runtime_run_until_blocked,
-    store_run_pending_tool_result,
+    deny_pending_tool_call, execute_pending_tool_call, load_pending_tool_call_at_head,
+    pending_approvals_at_head, prepare_pending_tool_execution,
+    run_head_until_blocked as runtime_run_head_until_blocked, store_run_pending_tool_result,
 };
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
-    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolExecutionResult,
-    ToolProviderId,
+    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
 };
 use crate::tool_provider::ToolProviderRegistry;
 
@@ -59,6 +57,16 @@ const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
 pub struct ConversationTree {
     pub messages: Vec<Message>,
     pub active_message_id: Option<MessageId>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+/// One run-owned pending approval surfaced to clients.
+pub struct RunToolApprovalRequest {
+    pub run_id: RunId,
+    pub conversation_id: ConversationId,
+    pub run_status: RunStatus,
+    pub head_message_id: Option<MessageId>,
+    pub approval: ToolApprovalRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -841,59 +849,65 @@ pub fn fork_conversation(
     store.fork_conversation_at_message(conversation_id, message_id)
 }
 
-/// Lists pending active-path tool calls that need user approval.
-pub fn list_tool_approvals(
+/// Lists pending tool calls at a run-owned message head.
+pub fn list_run_tool_approvals_with_registry(
     store: &Store,
     conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    registry: &ToolProviderRegistry,
 ) -> Result<Vec<ToolApprovalRequest>> {
-    pending_tool_approvals(store, conversation_id)
+    pending_approvals_at_head(
+        store,
+        RuntimeInput {
+            conversation_id,
+            head_message_id,
+            tools: registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+    )
 }
 
-/// Lists pending active-path tool calls through a caller-owned registry.
-pub fn list_tool_approvals_with_registry(
+/// Lists pending approval requests for one run.
+pub fn list_run_approvals_with_registry(
+    store: &Store,
+    run: &Run,
+    registry: &ToolProviderRegistry,
+) -> Result<Vec<RunToolApprovalRequest>> {
+    let approvals = list_run_tool_approvals_with_registry(
+        store,
+        &run.conversation_id,
+        run.current_head_message_id.as_ref(),
+        registry,
+    )?;
+
+    Ok(approvals
+        .into_iter()
+        .map(|approval| RunToolApprovalRequest {
+            run_id: run.id.clone(),
+            conversation_id: run.conversation_id.clone(),
+            run_status: run.status,
+            head_message_id: run.current_head_message_id.clone(),
+            approval,
+        })
+        .collect())
+}
+
+/// Lists pending run-owned approval requests for a conversation.
+pub fn list_conversation_run_approvals_with_registry(
     store: &Store,
     conversation_id: &ConversationId,
     registry: &ToolProviderRegistry,
-) -> Result<Vec<ToolApprovalRequest>> {
-    pending_tool_approvals_with_registry(store, conversation_id, registry)
-}
+) -> Result<Vec<RunToolApprovalRequest>> {
+    let mut approvals = Vec::new();
 
-/// Runs the shared CLI/API query sequence for the next assistant response.
-///
-/// Clients pass runtime settings in, but this operation owns the repeated
-/// sequence: require the local gateway, construct the OpenAI-compatible Bifrost
-/// client, then let runtime auto-resolve denied or auto-approved tools until it
-/// reaches a normal assistant message or a manual approval boundary.
-pub async fn query_conversation<O>(
-    output: &O,
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    gateway_url: GatewayUrl,
-    base_url: BaseUrl,
-    model_override: Option<ModelName>,
-    reasoning: Option<ReasoningRequest>,
-) -> Result<Message>
-where
-    O: RuntimeOutput,
-{
-    require_gateway_running(gateway_url).await?;
-    let model = resolve_conversation_model(store, conversation_id, model_override)?;
-    let reasoning = resolve_reasoning_request(store, conversation_id, reasoning)?;
-    let reasoning = reasoning_request_for_model(&model, reasoning);
-    let prompt_cache = prompt_cache_request(base_url.clone(), &model, conversation_id).await;
-    let llm = BifrostClient::new(base_url, model);
-    let registry = ToolProviderRegistry::new();
+    for run in store.list_conversation_runs(conversation_id)? {
+        if run.status != RunStatus::WaitingForApproval {
+            continue;
+        }
+        approvals.extend(list_run_approvals_with_registry(store, &run, registry)?);
+    }
 
-    query_conversation_resolving_automatic_tools(
-        output,
-        &llm,
-        store,
-        conversation_id,
-        &registry,
-        reasoning.as_ref(),
-        prompt_cache.as_ref(),
-    )
-    .await
+    Ok(approvals)
 }
 
 /// Provider/runtime inputs needed to execute a run.
@@ -949,7 +963,7 @@ where
         prompt_cache_request(runtime.base_url.clone(), &model, conversation_id).await;
     let llm = BifrostClient::new(runtime.base_url, model);
 
-    runtime_run_until_blocked(
+    runtime_run_head_until_blocked(
         output,
         &llm,
         store,
@@ -1001,24 +1015,6 @@ fn reasoning_request_for_model(
     }
 
     Some(reasoning)
-}
-
-/// Executes one approved pending tool call and persists its result.
-pub async fn approve_tool(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
-) -> Result<ToolExecutionResult> {
-    approve_tool_call(store, conversation_id, tool_call_id).await
-}
-
-/// Persists a rejected result for one pending tool call.
-pub fn deny_tool(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    tool_call_id: &ToolCallId,
-) -> Result<ToolExecutionResult> {
-    deny_tool_call(store, conversation_id, tool_call_id)
 }
 
 /// Executes one approved run-scoped tool call and continues that run.
@@ -1089,7 +1085,7 @@ where
     O: RuntimeOutput,
     E: RuntimeEventSink,
 {
-    if !pending_approvals(
+    if !pending_approvals_at_head(
         store,
         RuntimeInput {
             conversation_id,
@@ -1174,7 +1170,6 @@ fn insert_content(parts: &[MessageInputPart]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversation::{MessageMetadata, ToolCall};
     use crate::mcp::McpCommand;
     use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
     use std::fs;
@@ -1537,47 +1532,6 @@ mod tests {
         assert_eq!(
             store.active_message_id(&conversation_id).unwrap().as_ref(),
             Some(&second_id)
-        );
-    }
-
-    #[test]
-    fn deny_tool_persists_tool_result() {
-        let mut store = Store::open_memory().unwrap();
-        let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
-        let user_id = store
-            .insert_message(&conversation_id, None, Role::User, "run command", None)
-            .unwrap();
-        store
-            .insert_message(
-                &conversation_id,
-                Some(&user_id),
-                Role::Assistant,
-                "",
-                Some(&MessageMetadata {
-                    tool_calls: vec![ToolCall::function(
-                        "call_123",
-                        "run_shell",
-                        r#"{"command":"printf no"}"#,
-                    )],
-                    ..Default::default()
-                }),
-            )
-            .unwrap();
-
-        let result = deny_tool(&mut store, &conversation_id, &ToolCallId::new("call_123")).unwrap();
-        let messages = store.load_active_path(&conversation_id).unwrap();
-
-        assert!(!result.success);
-        assert_eq!(messages.last().unwrap().role, Role::Tool);
-        assert_eq!(
-            messages
-                .last()
-                .unwrap()
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.tool_call_id.as_ref())
-                .map(ToolCallId::as_str),
-            Some("call_123")
         );
     }
 

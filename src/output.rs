@@ -18,9 +18,10 @@ use crate::conversation::{
 use crate::llm::{ModelInfo, ModelName};
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
+use crate::run::{Run, RunEvent, RunEventRecord, RunId};
 use crate::setup::InstallReport;
 use crate::store::ConversationInfo;
-use crate::tool::{ToolApprovalRequest, ToolDefinition, ToolExecutionResult};
+use crate::tool::ToolDefinition;
 
 /// Minimal output interface needed by runtime flows.
 ///
@@ -143,8 +144,8 @@ impl TerminalOutput {
         if let Some(duration) = baseline.context_flatten {
             println!("context flatten: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.prepare_query_turn {
-            println!("prepare query turn: {}", format_duration(duration));
+        if let Some(duration) = baseline.prepare_run_head_turn {
+            println!("prepare run head turn: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.pending_tool_approval_scan {
             println!("pending tool approval scan: {}", format_duration(duration));
@@ -185,22 +186,22 @@ impl TerminalOutput {
                 format_duration(duration)
             );
         }
-        if let Some(duration) = baseline.prepare_query_no_tools {
+        if let Some(duration) = baseline.prepare_run_head_no_tools {
             println!("prepare query no tools: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.prepare_query_completed_tool_chain {
+        if let Some(duration) = baseline.prepare_run_head_completed_tool_chain {
             println!(
                 "prepare query completed tool chain: {}",
                 format_duration(duration)
             );
         }
-        if let Some(duration) = baseline.prepare_query_requires_approval {
+        if let Some(duration) = baseline.prepare_run_head_requires_approval {
             println!(
                 "prepare query requires approval: {}",
                 format_duration(duration)
             );
         }
-        if let Some(duration) = baseline.prepare_query_policy_denied {
+        if let Some(duration) = baseline.prepare_run_head_policy_denied {
             println!("prepare query policy denied: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.splice_remove_branch_point {
@@ -530,8 +531,60 @@ impl TerminalOutput {
         println!();
     }
 
-    /// Prints pending tool approvals in a compact inspectable format.
-    pub fn tool_approvals(&self, approvals: &[ToolApprovalRequest]) {
+    /// Prints the created run ID as machine-readable command output.
+    pub fn created_run(&self, run_id: &RunId) {
+        println!("{run_id}");
+    }
+
+    /// Prints one run's persisted lifecycle state.
+    pub fn run_status(&self, run: &Run) {
+        println!("run {}", run.id);
+        println!("conversation: {}", run.conversation_id);
+        println!(
+            "start head: {}",
+            run.start_head_message_id
+                .as_ref()
+                .map(MessageId::as_str)
+                .unwrap_or("(empty)")
+        );
+        println!(
+            "current head: {}",
+            run.current_head_message_id
+                .as_ref()
+                .map(MessageId::as_str)
+                .unwrap_or("(empty)")
+        );
+        println!("status: {}", run.status);
+        println!("model: {}", run.model);
+        if let Some(error) = run.error.as_ref() {
+            println!("error: {error}");
+        }
+    }
+
+    /// Prints a compact list of runtime runs.
+    pub fn runs(&self, runs: &[Run]) {
+        if runs.is_empty() {
+            println!("no runs");
+            return;
+        }
+
+        println!("runs");
+        for run in runs {
+            println!(
+                "{}  {}  {}  {}",
+                run.id,
+                run.status,
+                run.conversation_id,
+                run.current_head_message_id
+                    .as_ref()
+                    .map(MessageId::as_str)
+                    .unwrap_or("(empty)")
+            );
+        }
+    }
+
+    /// Prints pending run-owned approvals in a compact inspectable format.
+    pub fn run_approvals(&self, approvals: &[crate::operation::RunToolApprovalRequest]) {
         if approvals.is_empty() {
             println!("no pending approvals");
             return;
@@ -539,24 +592,47 @@ impl TerminalOutput {
 
         println!("pending approvals");
         for approval in approvals {
+            let tool_call = &approval.approval.tool_call;
             println!(
-                "{}  {}  {}  {}",
-                approval.tool_call.id,
-                approval.tool_call.name(),
-                approval.reason,
-                text_preview(approval.tool_call.arguments())
+                "{}  {}  {}  {}  {}",
+                approval.run_id,
+                tool_call.id,
+                tool_call.name(),
+                approval.approval.reason,
+                text_preview(tool_call.arguments())
             );
         }
     }
 
-    /// Prints one completed tool execution result summary.
-    pub fn tool_execution_result(&self, result: &ToolExecutionResult) {
-        println!(
-            "tool result  {}  {}  {}",
-            result.tool_call_id,
-            result.tool_name,
-            if result.success { "success" } else { "error" }
-        );
+    /// Prints one persisted run event.
+    pub fn run_event(&self, event: &RunEventRecord) {
+        match &event.event {
+            RunEvent::AssistantDelta { text } => print!("{text}"),
+            RunEvent::ReasoningDelta { text } => print!("{text}"),
+            RunEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments_delta,
+            } => println!(
+                "tool call delta  #{index}  {}  {}  {}",
+                id.as_deref().unwrap_or("(no id)"),
+                name.as_deref().unwrap_or("(no name)"),
+                arguments_delta.as_deref().unwrap_or("")
+            ),
+            RunEvent::AssistantMessageSaved { message_id } => {
+                println!("assistant message saved {message_id}");
+            }
+            RunEvent::ToolResultSaved { message_id } => {
+                println!("tool result saved {message_id}");
+            }
+            RunEvent::WaitingForApproval => println!("waiting for approval"),
+            RunEvent::Completed { message_id } => {
+                println!("completed {}", message_id.as_deref().unwrap_or("(empty)"))
+            }
+            RunEvent::Failed { error, .. } => println!("failed {error}"),
+            RunEvent::Cancelled => println!("cancelled"),
+        }
     }
 }
 
@@ -648,9 +724,6 @@ fn help_lines() -> Vec<String> {
         "  windie tree <conversation_id>",
         "  windie inspect <conversation_id> --json",
         "  windie inspect <conversation_id> --json --model <provider/model>",
-        "  windie approvals <conversation_id>",
-        "  windie approve <conversation_id> <tool_call_id>",
-        "  windie deny <conversation_id> <tool_call_id>",
         "  windie attach <conversation_id> tool <provider_id> <tool_name>",
         "  windie detach <conversation_id> tool <schema_name>",
         "  windie insert <conversation_id> message --role user --text \"hello\"",
@@ -666,8 +739,17 @@ fn help_lines() -> Vec<String> {
         "  windie rm <conversation_id> toolschema <name>",
         "  windie truncate <conversation_id> <message_id>",
         "  windie fork <conversation_id> <message_id>",
-        "  windie query <conversation_id>",
-        "  windie query <conversation_id> --model <provider/model>",
+        "  windie run start <conversation_id>",
+        "  windie run start <conversation_id> --head <message_id>",
+        "  windie run start <conversation_id> --model <provider/model>",
+        "  windie run list",
+        "  windie run list <conversation_id>",
+        "  windie run status <run_id>",
+        "  windie run events <run_id>",
+        "  windie run approvals <run_id>",
+        "  windie run approve <run_id> <tool_call_id>",
+        "  windie run deny <run_id> <tool_call_id>",
+        "  windie run stop <run_id>",
         "  windie status",
         "  windie gateway start",
         "  windie gateway stop",
@@ -694,11 +776,11 @@ fn help_lines() -> Vec<String> {
         "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie models requires the local Bifrost gateway to be running.",
-        "  windie query requires the local Bifrost gateway to be running.",
-        "  windie query uses the conversation model unless --model is passed for one request.",
-        "  windie approvals lists pending tool calls that require user approval.",
-        "  windie approve executes one pending tool call and stores its tool result.",
-        "  windie deny stores a rejected tool result for one pending tool call.",
+        "  windie run start requires the local Bifrost gateway to be running.",
+        "  windie run start uses the conversation model unless --model is passed for the run.",
+        "  windie run approvals lists pending run-owned tool calls that require user approval.",
+        "  windie run approve executes one pending run-owned tool call and continues the run.",
+        "  windie run deny stores a rejected tool result and continues the run.",
         "  windie attach <conversation_id> tool attaches one provider tool to a conversation.",
         "  windie detach <conversation_id> tool detaches one provider tool schema from a conversation.",
         "  windie set <conversation_id> systemprompt sets or replaces the conversation system prompt.",
@@ -826,8 +908,8 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
     );
     push_metric_lines(
         &mut lines,
-        "prepare query turn",
-        report.summary.prepare_query_turn.as_ref(),
+        "prepare run head turn",
+        report.summary.prepare_run_head_turn.as_ref(),
     );
     push_metric_lines(
         &mut lines,
@@ -881,22 +963,25 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
     push_metric_lines(
         &mut lines,
         "prepare query no tools",
-        report.summary.prepare_query_no_tools.as_ref(),
+        report.summary.prepare_run_head_no_tools.as_ref(),
     );
     push_metric_lines(
         &mut lines,
         "prepare query completed tool chain",
-        report.summary.prepare_query_completed_tool_chain.as_ref(),
+        report
+            .summary
+            .prepare_run_head_completed_tool_chain
+            .as_ref(),
     );
     push_metric_lines(
         &mut lines,
         "prepare query requires approval",
-        report.summary.prepare_query_requires_approval.as_ref(),
+        report.summary.prepare_run_head_requires_approval.as_ref(),
     );
     push_metric_lines(
         &mut lines,
         "prepare query policy denied",
-        report.summary.prepare_query_policy_denied.as_ref(),
+        report.summary.prepare_run_head_policy_denied.as_ref(),
     );
     push_metric_lines(
         &mut lines,

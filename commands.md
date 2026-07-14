@@ -62,8 +62,8 @@ that token in the `X-Windie-Api-Token` header. The localhost inspector at
 The API is a JSON test harness over Windie's existing runtime and store
 primitives. It is intended for local tools such as `dev/windie-inspector` to
 test conversation trees, active path selection, message mutation, system
-prompts, attached tools, gateway lifecycle, and one-shot queries without shelling
-out for each operation.
+prompts, attached tools, gateway lifecycle, and run-owned execution without
+shelling out for each operation.
 
 Initial routes:
 
@@ -80,9 +80,7 @@ GET    /api/conversations
 POST   /api/conversations
 GET    /api/conversations/{conversation_id}
 DELETE /api/conversations/{conversation_id}
-GET    /api/conversations/{conversation_id}/approvals
-POST   /api/conversations/{conversation_id}/approvals/{tool_call_id}/approve
-POST   /api/conversations/{conversation_id}/approvals/{tool_call_id}/deny
+GET    /api/conversations/{conversation_id}/run-approvals
 POST   /api/conversations/{conversation_id}/activate
 POST   /api/conversations/{conversation_id}/messages
 PATCH  /api/conversations/{conversation_id}/messages/{message_id}
@@ -98,8 +96,14 @@ DELETE /api/conversations/{conversation_id}/tool-schemas/{name}
 POST   /api/conversations/{conversation_id}/truncate
 POST   /api/conversations/{conversation_id}/fork
 POST   /api/conversations/{conversation_id}/input-tokens
-POST   /api/conversations/{conversation_id}/query
-POST   /api/conversations/{conversation_id}/query-stream
+POST   /api/conversations/{conversation_id}/runs
+GET    /api/runs
+GET    /api/runs/{run_id}
+GET    /api/runs/{run_id}/approvals
+GET    /api/runs/{run_id}/events
+POST   /api/runs/{run_id}/stop
+POST   /api/runs/{run_id}/approvals/{tool_call_id}/approve
+POST   /api/runs/{run_id}/approvals/{tool_call_id}/deny
 ```
 
 `GET /api/model-parameters` returns normalized read-only metadata for the
@@ -109,7 +113,7 @@ Windie fetches the source metadata from Bifrost's
 `/api/models/parameters?model=<model>` endpoint and does not keep its own
 provider/model reasoning or caching table.
 
-`query` and `query-stream` accept an optional request-scoped reasoning override:
+Run creation accepts an optional request-scoped reasoning override:
 
 ```json
 {
@@ -120,21 +124,20 @@ provider/model reasoning or caching table.
 }
 ```
 
-Omitting `reasoning` keeps the provider/model default for that one query.
+Omitting `reasoning` keeps the provider/model default for that run.
 
-Provider prompt caching is automatic for model queries when Bifrost metadata
+Provider prompt caching is automatic for model runs when Bifrost metadata
 reports `supports_prompt_caching: true`. Windie uses the conversation id as the
 stable cache scope. For OpenAI-qualified models, Windie sends
 `prompt_cache_key` plus `prompt_cache_retention: "24h"`. For
 Anthropic-qualified models, Windie sends `cache_control: {"type":"ephemeral"}`.
 If the model is unsupported or metadata lookup fails, Windie sends no cache
-fields and the query continues normally.
+fields and the run continues normally.
 
-The API approval routes use server-sent events. `approve` executes and stores
-the pending tool result, then continues the runtime when no later manual
-approval is waiting. `deny` stores a rejected tool result and follows the same
-continuation rule. Stream events use the same names as `query-stream`:
-`tool_result_saved`, `assistant_message_saved`, `query_done`, and `query_error`.
+Run events use server-sent events. `approve` executes and stores the pending
+tool result for that run, then continues the run when no later manual approval
+is waiting. `deny` stores a rejected tool result and follows the same
+continuation rule. Conversations store state; runs own execution and approvals.
 
 ## Environment And Installation
 
@@ -314,7 +317,7 @@ user
 assistant
 ```
 
-Tool output messages are created only by `windie approve` or `windie deny`
+Tool output messages are created only by run approval commands
 because they must carry the provider tool-call ID they answer.
 
 Examples:
@@ -332,7 +335,7 @@ or interleaving `--text` and `--image` stores multiple parts on the same user
 message in flag order. The message row keeps a plain text preview by joining
 all text parts with newlines. Windie validates local file readability, size,
 basic image extension, and image header. Bifrost/provider owns model capability
-errors, so `query` prints the provider rejection if the selected model does not
+errors, so a run prints the provider rejection if the selected model does not
 accept image input.
 
 ```text
@@ -351,19 +354,19 @@ windie set <conversation_id> systemprompt --text "system prompt"
 
 Set or replace the conversation-level system prompt.
 
-The system prompt is not inserted into the message tree. During `query`, Windie
-prepends it to the active path before sending context to Bifrost. Setting the
-system prompt works on an empty conversation tree and also replaces an existing
-system prompt.
+The system prompt is not inserted into the message tree. During a run, Windie
+prepends it to the run's selected path before sending context to Bifrost.
+Setting the system prompt works on an empty conversation tree and also replaces
+an existing system prompt.
 
 ```text
 windie set <conversation_id> model <provider/model>
 ```
 
-Persist the conversation model used by future `query`, `inspect`, and
+Persist the conversation model used by future runs, `inspect`, and
 developer API calls.
 
-`windie query <conversation_id> --model <provider/model>` remains a one-request
+`windie run start <conversation_id> --model <provider/model>` remains a run
 override. It does not rewrite the persisted conversation model.
 
 ```text
@@ -381,8 +384,8 @@ windie insert <conversation_id> toolschema --name test_tool --description "Devel
 Insert one raw conversation-level tool schema.
 
 A raw tool schema is a developer escape hatch. It is sent to the model during
-`query`, but it is attached to the `manual` provider and has no executor unless
-a real provider-backed tool is attached through `windie attach`.
+a run, but it is attached to the `manual` provider and has no executor unless a
+real provider-backed tool is attached through `windie attach`.
 
 The schema name must be 1-64 ASCII letters, numbers, `_`, or `-`. The
 description must contain non-whitespace text. `--parameters` must be a JSON
@@ -410,9 +413,10 @@ windie activate <conversation_id> <message_id>
 
 Select one message as the active message.
 
-The active message defines the current runtime path through the conversation
-tree. `show`, `insert`, `query`, and context construction use this selected
-path.
+The active message defines the default branch through the conversation tree.
+`show`, `insert`, run start without `--head`, and context preview use this
+selected path. After a run starts, execution follows the run's stored head
+instead of the mutable conversation active path.
 
 ```text
 windie rm <conversation_id>
@@ -461,67 +465,70 @@ conversation tree through one message.
 The forked conversation tree receives new message IDs and can diverge
 independently. The command prints the new conversation tree ID.
 
-## Inference
+## Runs
 
 ```text
-windie query <conversation_id>
+windie run start <conversation_id>
 ```
 
-Run one model response from the active path and insert the assistant message.
-Requires the local Bifrost gateway to already be running.
+Start one execution run from the conversation's active path. Requires the local
+Bifrost gateway to already be running.
 
-If the model returns a tool call, Windie stores the assistant tool-call metadata
-and stops. Tool execution is an explicit separate primitive.
+If the model returns a tool call that requires approval, Windie stores the
+assistant tool-call metadata and marks the run as `waiting_for_approval`.
 
-The composable tool flow is:
+The run-owned tool flow is:
 
 ```text
-windie query <conversation_id>
-windie approvals <conversation_id>
-windie approve <conversation_id> <tool_call_id>
-windie query <conversation_id>
+windie run start <conversation_id>
+windie run approvals <run_id>
+windie run approve <run_id> <tool_call_id>
 ```
 
-Use `windie deny <conversation_id> <tool_call_id>` instead of `approve` to store
-a rejected tool result.
+Use `windie run deny <run_id> <tool_call_id>` instead of `approve` to store a
+rejected tool result.
 
 If policy denies a requested tool, such as an unknown tool name, Windie records a
-failed `role: tool` result automatically during the query turn. It does not show
+failed `role: tool` result automatically during the run. It does not show
 that call as an approval because there is no user decision to make.
 
 ```text
-windie approvals <conversation_id>
+windie run start <conversation_id> --head <message_id>
 ```
 
-List pending active-path model-requested tool calls that require explicit
-user approval. Approvals are derived from persisted messages on the active path:
-an assistant tool call is pending when no active-path `role: tool` message has a
-matching tool-call ID.
+Start one run from an explicit message head instead of the conversation active
+path.
 
 ```text
-windie approve <conversation_id> <tool_call_id>
+windie run approvals <run_id>
 ```
 
-Execute one pending approved provider tool call and store the result as a
-`role: tool` message. Raw/manual schemas do not have executors and are denied
-by policy.
+List pending model-requested tool calls that require explicit approval for one
+run.
 
 ```text
-windie deny <conversation_id> <tool_call_id>
+windie run approve <run_id> <tool_call_id>
+```
+
+Execute one pending approved provider tool call, store the result as a
+`role: tool` message, and continue the run. Raw/manual schemas do not have
+executors and are denied by policy.
+
+```text
+windie run deny <run_id> <tool_call_id>
 ```
 
 Store a rejected `role: tool` result for one pending tool call without executing
-it. Run `windie query <conversation_id>` again after approving or denying to let
-the model continue from the tool result.
+it, then continue the run.
 
 ```text
-windie query <conversation_id> --model <provider/model>
+windie run start <conversation_id> --model <provider/model>
 ```
 
-Run one model response from the active path using a specific model. Requires the
-local Bifrost gateway to already be running.
+Start one run using a specific model. Requires the local Bifrost gateway to
+already be running.
 
-The model name is passed to Bifrost for this one request only. It does not
+The model name is passed to Bifrost for this run only. It does not
 rewrite the persisted conversation model.
 
 Bifrost must have provider config once for each provider used by Windie. The
@@ -532,9 +539,9 @@ Gemini, Groq, OpenRouter, and other providers.
 Examples:
 
 ```text
-windie query <conversation_id> --model openai/gpt-4o-mini
-windie query <conversation_id> --model anthropic/claude-3-5-haiku
-windie query <conversation_id> --model ollama/llama3.2
+windie run start <conversation_id> --model openai/gpt-4o-mini
+windie run start <conversation_id> --model anthropic/claude-3-5-haiku
+windie run start <conversation_id> --model ollama/llama3.2
 ```
 
 ## Runtime Status

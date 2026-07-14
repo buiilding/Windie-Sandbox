@@ -38,9 +38,7 @@ use crate::output::TerminalOutput;
 use crate::run::{Run, RunEventRecord, RunId, RunManager, RunStatus, RunSubscription};
 use crate::setup;
 use crate::store::{ConversationInfo, Store};
-use crate::tool::{
-    ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
-};
+use crate::tool::{ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId};
 use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
 
 const API_TOKEN_HEADER: &str = "x-windie-api-token";
@@ -231,8 +229,8 @@ fn router(state: ApiState) -> Router {
             post(fork_conversation),
         )
         .route(
-            "/api/conversations/{conversation_id}/approvals",
-            get(list_approvals),
+            "/api/conversations/{conversation_id}/run-approvals",
+            get(list_conversation_run_approvals),
         )
         .route(
             "/api/conversations/{conversation_id}/runs",
@@ -240,6 +238,7 @@ fn router(state: ApiState) -> Router {
         )
         .route("/api/runs", get(list_runs))
         .route("/api/runs/{run_id}", get(get_run))
+        .route("/api/runs/{run_id}/approvals", get(list_run_approvals))
         .route("/api/runs/{run_id}/events", get(run_events))
         .route("/api/runs/{run_id}/stop", post(stop_run))
         .route(
@@ -1172,14 +1171,19 @@ async fn fork_conversation(
 }
 
 #[derive(Debug, Serialize)]
-/// Response body for pending tool approvals.
+/// Response body for pending run-owned tool approvals.
 struct ApprovalListResponse {
     approvals: Vec<ApprovalResponse>,
 }
 
 #[derive(Debug, Serialize)]
-/// One pending approval returned to UI clients.
+/// One pending run-owned approval returned to UI clients.
 struct ApprovalResponse {
+    scope: &'static str,
+    run_id: String,
+    conversation_id: String,
+    run_status: RunStatus,
+    head_message_id: Option<String>,
     assistant_message_id: String,
     tool_call_id: String,
     tool_name: String,
@@ -1187,9 +1191,15 @@ struct ApprovalResponse {
     reason: String,
 }
 
-impl From<ToolApprovalRequest> for ApprovalResponse {
-    fn from(approval: ToolApprovalRequest) -> Self {
+impl From<operation::RunToolApprovalRequest> for ApprovalResponse {
+    fn from(request: operation::RunToolApprovalRequest) -> Self {
+        let approval = request.approval;
         Self {
+            scope: "run",
+            run_id: request.run_id.as_str().to_string(),
+            conversation_id: request.conversation_id.as_str().to_string(),
+            run_status: request.run_status,
+            head_message_id: request.head_message_id.map(|id| id.as_str().to_string()),
             assistant_message_id: approval.assistant_message_id.as_str().to_string(),
             tool_call_id: approval.tool_call.id.as_str().to_string(),
             tool_name: approval.tool_call.name().to_string(),
@@ -1199,14 +1209,14 @@ impl From<ToolApprovalRequest> for ApprovalResponse {
     }
 }
 
-/// Lists pending tool calls waiting for approval.
-async fn list_approvals(
+/// Lists pending run-owned tool calls waiting for approval in a conversation.
+async fn list_conversation_run_approvals(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
 ) -> ApiResult<ApprovalListResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let store = open_store(&state)?;
-    let approvals = operation::list_tool_approvals_with_registry(
+    let approvals = operation::list_conversation_run_approvals_with_registry(
         &store,
         &conversation_id,
         &state.tool_registry,
@@ -1214,6 +1224,23 @@ async fn list_approvals(
     .into_iter()
     .map(ApprovalResponse::from)
     .collect();
+
+    Ok(Json(ApprovalListResponse { approvals }))
+}
+
+/// Lists pending tool calls waiting for approval in one run.
+async fn list_run_approvals(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> ApiResult<ApprovalListResponse> {
+    let run_id = RunId::new(run_id);
+    let store = open_store(&state)?;
+    let run = store.load_run(&run_id)?;
+    let approvals =
+        operation::list_run_approvals_with_registry(&store, &run, &state.tool_registry)?
+            .into_iter()
+            .map(ApprovalResponse::from)
+            .collect();
 
     Ok(Json(ApprovalListResponse { approvals }))
 }

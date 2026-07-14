@@ -54,7 +54,7 @@ Important runtime files:
 - `src/context.rs` builds model-facing context from the active conversation
   path.
 - `src/store.rs` owns SQLite persistence.
-- `src/runtime.rs` coordinates one-shot query flows.
+- `src/runtime.rs` coordinates head-based run execution.
 - `src/llm.rs` owns the OpenAI-compatible Bifrost HTTP request path.
 - `src/policy.rs` owns tool execution policy decisions.
 - `src/shell.rs` executes Windie's built-in `run_shell` tool.

@@ -22,12 +22,17 @@ use crate::conversation::{
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::mcp::{self, McpCommand};
-use crate::runtime::{deny_tool_call, pending_tool_approvals, prepare_query_turn};
+use crate::runtime::{
+    NoopRuntimeEventSink, RuntimeInput, RuntimeModelRequest, deny_pending_tool_call,
+    load_pending_tool_call_at_head, pending_approvals_at_head, prepare_run_head_turn,
+    store_run_pending_tool_result,
+};
 use crate::store::Store;
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef,
 };
+use crate::tool_provider::ToolProviderRegistry;
 
 const SCALE_PATH_MESSAGES: usize = 100;
 const LARGE_SCALE_PATH_MESSAGES: usize = 1_000;
@@ -143,7 +148,7 @@ pub struct PerformanceBaseline {
     pub context_system_prompt_load: Option<Duration>,
     pub context_compaction_load: Option<Duration>,
     pub context_flatten: Option<Duration>,
-    pub prepare_query_turn: Option<Duration>,
+    pub prepare_run_head_turn: Option<Duration>,
     pub pending_tool_approval_scan: Option<Duration>,
     pub tool_result_insert: Option<Duration>,
     pub deny_tool_result_persist: Option<Duration>,
@@ -154,10 +159,10 @@ pub struct PerformanceBaseline {
     pub active_path_load_1000: Option<Duration>,
     pub pending_tool_approval_scan_long_path: Option<Duration>,
     pub pending_tool_approval_scan_deep_chain: Option<Duration>,
-    pub prepare_query_no_tools: Option<Duration>,
-    pub prepare_query_completed_tool_chain: Option<Duration>,
-    pub prepare_query_requires_approval: Option<Duration>,
-    pub prepare_query_policy_denied: Option<Duration>,
+    pub prepare_run_head_no_tools: Option<Duration>,
+    pub prepare_run_head_completed_tool_chain: Option<Duration>,
+    pub prepare_run_head_requires_approval: Option<Duration>,
+    pub prepare_run_head_policy_denied: Option<Duration>,
     pub splice_remove_branch_point: Option<Duration>,
     pub splice_remove_root_many_children: Option<Duration>,
     pub splice_remove_tool_group: Option<Duration>,
@@ -218,7 +223,7 @@ pub struct PerformanceSample {
     pub context_compaction_load_us: Option<u64>,
     pub context_flatten_us: Option<u64>,
     #[serde(default)]
-    pub prepare_query_turn_us: Option<u64>,
+    pub prepare_run_head_turn_us: Option<u64>,
     #[serde(default)]
     pub pending_tool_approval_scan_us: Option<u64>,
     #[serde(default)]
@@ -240,13 +245,13 @@ pub struct PerformanceSample {
     #[serde(default)]
     pub pending_tool_approval_scan_deep_chain_us: Option<u64>,
     #[serde(default)]
-    pub prepare_query_no_tools_us: Option<u64>,
+    pub prepare_run_head_no_tools_us: Option<u64>,
     #[serde(default)]
-    pub prepare_query_completed_tool_chain_us: Option<u64>,
+    pub prepare_run_head_completed_tool_chain_us: Option<u64>,
     #[serde(default)]
-    pub prepare_query_requires_approval_us: Option<u64>,
+    pub prepare_run_head_requires_approval_us: Option<u64>,
     #[serde(default)]
-    pub prepare_query_policy_denied_us: Option<u64>,
+    pub prepare_run_head_policy_denied_us: Option<u64>,
     #[serde(default)]
     pub splice_remove_branch_point_us: Option<u64>,
     #[serde(default)]
@@ -306,7 +311,7 @@ pub struct PerformanceSummary {
     pub context_compaction_load: Option<DurationMetric>,
     pub context_flatten: Option<DurationMetric>,
     #[serde(default)]
-    pub prepare_query_turn: Option<DurationMetric>,
+    pub prepare_run_head_turn: Option<DurationMetric>,
     #[serde(default)]
     pub pending_tool_approval_scan: Option<DurationMetric>,
     #[serde(default)]
@@ -328,13 +333,13 @@ pub struct PerformanceSummary {
     #[serde(default)]
     pub pending_tool_approval_scan_deep_chain: Option<DurationMetric>,
     #[serde(default)]
-    pub prepare_query_no_tools: Option<DurationMetric>,
+    pub prepare_run_head_no_tools: Option<DurationMetric>,
     #[serde(default)]
-    pub prepare_query_completed_tool_chain: Option<DurationMetric>,
+    pub prepare_run_head_completed_tool_chain: Option<DurationMetric>,
     #[serde(default)]
-    pub prepare_query_requires_approval: Option<DurationMetric>,
+    pub prepare_run_head_requires_approval: Option<DurationMetric>,
     #[serde(default)]
-    pub prepare_query_policy_denied: Option<DurationMetric>,
+    pub prepare_run_head_policy_denied: Option<DurationMetric>,
     #[serde(default)]
     pub splice_remove_branch_point: Option<DurationMetric>,
     #[serde(default)]
@@ -392,7 +397,7 @@ pub struct PerformanceComparisonRow {
 
 /// Provider-free timings for runtime and write-path primitives.
 struct RuntimeBenchmarkTimings {
-    prepare_query_turn: Duration,
+    prepare_run_head_turn: Duration,
     pending_tool_approval_scan: Duration,
     tool_result_insert: Duration,
     deny_tool_result_persist: Duration,
@@ -403,10 +408,10 @@ struct RuntimeBenchmarkTimings {
     active_path_load_1000: Duration,
     pending_tool_approval_scan_long_path: Duration,
     pending_tool_approval_scan_deep_chain: Duration,
-    prepare_query_no_tools: Duration,
-    prepare_query_completed_tool_chain: Duration,
-    prepare_query_requires_approval: Duration,
-    prepare_query_policy_denied: Duration,
+    prepare_run_head_no_tools: Duration,
+    prepare_run_head_completed_tool_chain: Duration,
+    prepare_run_head_requires_approval: Duration,
+    prepare_run_head_policy_denied: Duration,
     splice_remove_branch_point: Duration,
     splice_remove_root_many_children: Duration,
     splice_remove_tool_group: Duration,
@@ -466,7 +471,7 @@ pub async fn run(
         context_system_prompt_load: None,
         context_compaction_load: None,
         context_flatten: None,
-        prepare_query_turn: None,
+        prepare_run_head_turn: None,
         pending_tool_approval_scan: None,
         tool_result_insert: None,
         deny_tool_result_persist: None,
@@ -477,10 +482,10 @@ pub async fn run(
         active_path_load_1000: None,
         pending_tool_approval_scan_long_path: None,
         pending_tool_approval_scan_deep_chain: None,
-        prepare_query_no_tools: None,
-        prepare_query_completed_tool_chain: None,
-        prepare_query_requires_approval: None,
-        prepare_query_policy_denied: None,
+        prepare_run_head_no_tools: None,
+        prepare_run_head_completed_tool_chain: None,
+        prepare_run_head_requires_approval: None,
+        prepare_run_head_policy_denied: None,
         splice_remove_branch_point: None,
         splice_remove_root_many_children: None,
         splice_remove_tool_group: None,
@@ -599,7 +604,7 @@ pub async fn run(
         }
         BenchmarkMode::Local => {
             let runtime = run_runtime_benchmark()?;
-            baseline.prepare_query_turn = Some(runtime.prepare_query_turn);
+            baseline.prepare_run_head_turn = Some(runtime.prepare_run_head_turn);
             baseline.pending_tool_approval_scan = Some(runtime.pending_tool_approval_scan);
             baseline.tool_result_insert = Some(runtime.tool_result_insert);
             baseline.deny_tool_result_persist = Some(runtime.deny_tool_result_persist);
@@ -612,12 +617,12 @@ pub async fn run(
                 Some(runtime.pending_tool_approval_scan_long_path);
             baseline.pending_tool_approval_scan_deep_chain =
                 Some(runtime.pending_tool_approval_scan_deep_chain);
-            baseline.prepare_query_no_tools = Some(runtime.prepare_query_no_tools);
-            baseline.prepare_query_completed_tool_chain =
-                Some(runtime.prepare_query_completed_tool_chain);
-            baseline.prepare_query_requires_approval =
-                Some(runtime.prepare_query_requires_approval);
-            baseline.prepare_query_policy_denied = Some(runtime.prepare_query_policy_denied);
+            baseline.prepare_run_head_no_tools = Some(runtime.prepare_run_head_no_tools);
+            baseline.prepare_run_head_completed_tool_chain =
+                Some(runtime.prepare_run_head_completed_tool_chain);
+            baseline.prepare_run_head_requires_approval =
+                Some(runtime.prepare_run_head_requires_approval);
+            baseline.prepare_run_head_policy_denied = Some(runtime.prepare_run_head_policy_denied);
             baseline.splice_remove_branch_point = Some(runtime.splice_remove_branch_point);
             baseline.splice_remove_root_many_children =
                 Some(runtime.splice_remove_root_many_children);
@@ -651,11 +656,11 @@ fn apply_benchmark_categories(
     categories: &[BenchmarkCategory],
 ) {
     if !categories.contains(&BenchmarkCategory::Runtime) {
-        baseline.prepare_query_turn = None;
-        baseline.prepare_query_no_tools = None;
-        baseline.prepare_query_completed_tool_chain = None;
-        baseline.prepare_query_requires_approval = None;
-        baseline.prepare_query_policy_denied = None;
+        baseline.prepare_run_head_turn = None;
+        baseline.prepare_run_head_no_tools = None;
+        baseline.prepare_run_head_completed_tool_chain = None;
+        baseline.prepare_run_head_requires_approval = None;
+        baseline.prepare_run_head_policy_denied = None;
     }
     if !categories.contains(&BenchmarkCategory::Tools) {
         baseline.pending_tool_approval_scan = None;
@@ -789,7 +794,7 @@ pub fn compare_reports(
 /// directory. Setup is outside the timing window, so the measured durations are
 /// primitive costs rather than fixture construction.
 fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
-    let prepare_query_turn = benchmark_prepare_query_turn()?;
+    let prepare_run_head_turn = benchmark_prepare_run_head_turn()?;
     let pending_tool_approval_scan = benchmark_pending_tool_approval_scan()?;
     let tool_result_insert = benchmark_tool_result_insert()?;
     let deny_tool_result_persist = benchmark_deny_tool_result_persist()?;
@@ -800,10 +805,10 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let active_path_load_1000 = benchmark_active_path_load(LARGE_SCALE_PATH_MESSAGES)?;
     let pending_tool_approval_scan_long_path = benchmark_pending_tool_approval_scan_long_path()?;
     let pending_tool_approval_scan_deep_chain = benchmark_pending_tool_approval_scan_deep_chain()?;
-    let prepare_query_no_tools = benchmark_prepare_query_no_tools()?;
-    let prepare_query_completed_tool_chain = benchmark_prepare_query_completed_tool_chain()?;
-    let prepare_query_requires_approval = benchmark_prepare_query_requires_approval()?;
-    let prepare_query_policy_denied = benchmark_prepare_query_policy_denied()?;
+    let prepare_run_head_no_tools = benchmark_prepare_run_head_no_tools()?;
+    let prepare_run_head_completed_tool_chain = benchmark_prepare_run_head_completed_tool_chain()?;
+    let prepare_run_head_requires_approval = benchmark_prepare_run_head_requires_approval()?;
+    let prepare_run_head_policy_denied = benchmark_prepare_run_head_policy_denied()?;
     let (splice_remove_branch_point, _branch_deleted_messages, _branch_promoted_children) =
         benchmark_splice_remove_branch_point()?;
     let (splice_remove_root_many_children, _root_deleted_messages, _root_promoted_children) =
@@ -819,7 +824,7 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let fake_mcp_list_call = benchmark_fake_mcp_list_call()?;
 
     Ok(RuntimeBenchmarkTimings {
-        prepare_query_turn,
+        prepare_run_head_turn,
         pending_tool_approval_scan,
         tool_result_insert,
         deny_tool_result_persist,
@@ -830,10 +835,10 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
         active_path_load_1000,
         pending_tool_approval_scan_long_path,
         pending_tool_approval_scan_deep_chain,
-        prepare_query_no_tools,
-        prepare_query_completed_tool_chain,
-        prepare_query_requires_approval,
-        prepare_query_policy_denied,
+        prepare_run_head_no_tools,
+        prepare_run_head_completed_tool_chain,
+        prepare_run_head_requires_approval,
+        prepare_run_head_policy_denied,
         splice_remove_branch_point,
         splice_remove_root_many_children,
         splice_remove_tool_group,
@@ -855,14 +860,64 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     })
 }
 
+fn prepare_active_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
+    let registry = ToolProviderRegistry::new();
+    let events = NoopRuntimeEventSink;
+    let mut head_message_id = store.active_message_id(conversation_id)?;
+
+    prepare_run_head_turn(
+        store,
+        conversation_id,
+        &mut head_message_id,
+        &registry,
+        &events,
+    )
+}
+
+fn pending_active_head_approvals(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<Vec<crate::tool::ToolApprovalRequest>> {
+    let registry = ToolProviderRegistry::new();
+    let head_message_id = store.active_message_id(conversation_id)?;
+
+    pending_approvals_at_head(
+        store,
+        RuntimeInput {
+            conversation_id,
+            head_message_id: head_message_id.as_ref(),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+    )
+}
+
+fn deny_active_head_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+) -> Result<()> {
+    let head_message_id = store.active_message_id(conversation_id)?;
+    let pending = load_pending_tool_call_at_head(
+        store,
+        conversation_id,
+        head_message_id.as_ref(),
+        tool_call_id,
+    )?;
+    let result = deny_pending_tool_call(&pending);
+    store_run_pending_tool_result(store, conversation_id, &pending, &result)?;
+
+    Ok(())
+}
+
 /// Measures query preparation on a minimal ready active path.
-fn benchmark_prepare_query_turn() -> Result<Duration> {
-    with_runtime_store("prepare-query-turn", |store| {
+fn benchmark_prepare_run_head_turn() -> Result<Duration> {
+    with_runtime_store("prepare-run-head-turn", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         insert_user_message(store, &conversation_id, None, "ready")?;
 
         let started = Instant::now();
-        prepare_query_turn(store, &conversation_id)?;
+        prepare_active_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
@@ -886,7 +941,7 @@ fn benchmark_pending_tool_approval_scan() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        let approvals = pending_tool_approvals(store, &conversation_id)?;
+        let approvals = pending_active_head_approvals(store, &conversation_id)?;
         let duration = started.elapsed();
         debug_assert_eq!(approvals.len(), 1);
 
@@ -933,7 +988,7 @@ fn benchmark_deny_tool_result_persist() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        deny_tool_call(store, &conversation_id, &call.id)?;
+        deny_active_head_tool_call(store, &conversation_id, &call.id)?;
         Ok(started.elapsed())
     })
 }
@@ -1056,7 +1111,7 @@ fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        let approvals = pending_tool_approvals(store, &conversation_id)?;
+        let approvals = pending_active_head_approvals(store, &conversation_id)?;
         let duration = started.elapsed();
         debug_assert_eq!(approvals.len(), 1);
 
@@ -1092,7 +1147,7 @@ fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
         }
 
         let started = Instant::now();
-        let approvals = pending_tool_approvals(store, &conversation_id)?;
+        let approvals = pending_active_head_approvals(store, &conversation_id)?;
         let duration = started.elapsed();
         debug_assert_eq!(approvals.len(), 1);
 
@@ -1101,32 +1156,32 @@ fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
 }
 
 /// Measures query preparation on a plain completed active path.
-fn benchmark_prepare_query_no_tools() -> Result<Duration> {
-    with_runtime_store("prepare-query-no-tools", |store| {
+fn benchmark_prepare_run_head_no_tools() -> Result<Duration> {
+    with_runtime_store("prepare-run-head-no-tools", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
 
         let started = Instant::now();
-        prepare_query_turn(store, &conversation_id)?;
+        prepare_active_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
 
 /// Measures query preparation after all requested tool calls have results.
-fn benchmark_prepare_query_completed_tool_chain() -> Result<Duration> {
-    with_runtime_store("prepare-query-completed-tool-chain", |store| {
+fn benchmark_prepare_run_head_completed_tool_chain() -> Result<Duration> {
+    with_runtime_store("prepare-run-head-completed-tool-chain", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         create_completed_tool_chain(store, &conversation_id, TOOL_CHAIN_RESULTS)?;
 
         let started = Instant::now();
-        prepare_query_turn(store, &conversation_id)?;
+        prepare_active_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
 
 /// Measures the rejection path when query is waiting on approval.
-fn benchmark_prepare_query_requires_approval() -> Result<Duration> {
-    with_runtime_store("prepare-query-requires-approval", |store| {
+fn benchmark_prepare_run_head_requires_approval() -> Result<Duration> {
+    with_runtime_store("prepare-run-head-requires-approval", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         attach_test_mcp_tool(store, &conversation_id)?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
@@ -1141,7 +1196,7 @@ fn benchmark_prepare_query_requires_approval() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        let result = prepare_query_turn(store, &conversation_id);
+        let result = prepare_active_head_turn(store, &conversation_id);
         let duration = started.elapsed();
         debug_assert!(result.is_err());
 
@@ -1150,8 +1205,8 @@ fn benchmark_prepare_query_requires_approval() -> Result<Duration> {
 }
 
 /// Measures preparation when policy-denied tool calls are auto-recorded.
-fn benchmark_prepare_query_policy_denied() -> Result<Duration> {
-    with_runtime_store("prepare-query-policy-denied", |store| {
+fn benchmark_prepare_run_head_policy_denied() -> Result<Duration> {
+    with_runtime_store("prepare-run-head-policy-denied", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         let user_id = insert_user_message(store, &conversation_id, None, "use a tool")?;
         let metadata = tool_call_metadata(vec![tool_call(0, "denied_call", "unknown_tool")]);
@@ -1164,7 +1219,7 @@ fn benchmark_prepare_query_policy_denied() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        prepare_query_turn(store, &conversation_id)?;
+        prepare_active_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
@@ -1571,7 +1626,7 @@ impl PerformanceSample {
             context_system_prompt_load_us: baseline.context_system_prompt_load.map(duration_micros),
             context_compaction_load_us: baseline.context_compaction_load.map(duration_micros),
             context_flatten_us: baseline.context_flatten.map(duration_micros),
-            prepare_query_turn_us: baseline.prepare_query_turn.map(duration_micros),
+            prepare_run_head_turn_us: baseline.prepare_run_head_turn.map(duration_micros),
             pending_tool_approval_scan_us: baseline.pending_tool_approval_scan.map(duration_micros),
             tool_result_insert_us: baseline.tool_result_insert.map(duration_micros),
             deny_tool_result_persist_us: baseline.deny_tool_result_persist.map(duration_micros),
@@ -1588,15 +1643,15 @@ impl PerformanceSample {
             pending_tool_approval_scan_deep_chain_us: baseline
                 .pending_tool_approval_scan_deep_chain
                 .map(duration_micros),
-            prepare_query_no_tools_us: baseline.prepare_query_no_tools.map(duration_micros),
-            prepare_query_completed_tool_chain_us: baseline
-                .prepare_query_completed_tool_chain
+            prepare_run_head_no_tools_us: baseline.prepare_run_head_no_tools.map(duration_micros),
+            prepare_run_head_completed_tool_chain_us: baseline
+                .prepare_run_head_completed_tool_chain
                 .map(duration_micros),
-            prepare_query_requires_approval_us: baseline
-                .prepare_query_requires_approval
+            prepare_run_head_requires_approval_us: baseline
+                .prepare_run_head_requires_approval
                 .map(duration_micros),
-            prepare_query_policy_denied_us: baseline
-                .prepare_query_policy_denied
+            prepare_run_head_policy_denied_us: baseline
+                .prepare_run_head_policy_denied
                 .map(duration_micros),
             splice_remove_branch_point_us: baseline.splice_remove_branch_point.map(duration_micros),
             splice_remove_root_many_children_us: baseline
@@ -1692,10 +1747,10 @@ impl PerformanceSummary {
                     .iter()
                     .filter_map(|sample| sample.context_flatten_us),
             ),
-            prepare_query_turn: duration_metric(
+            prepare_run_head_turn: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.prepare_query_turn_us),
+                    .filter_map(|sample| sample.prepare_run_head_turn_us),
             ),
             pending_tool_approval_scan: duration_metric(
                 samples
@@ -1741,25 +1796,25 @@ impl PerformanceSummary {
                     .iter()
                     .filter_map(|sample| sample.pending_tool_approval_scan_deep_chain_us),
             ),
-            prepare_query_no_tools: duration_metric(
+            prepare_run_head_no_tools: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.prepare_query_no_tools_us),
+                    .filter_map(|sample| sample.prepare_run_head_no_tools_us),
             ),
-            prepare_query_completed_tool_chain: duration_metric(
+            prepare_run_head_completed_tool_chain: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.prepare_query_completed_tool_chain_us),
+                    .filter_map(|sample| sample.prepare_run_head_completed_tool_chain_us),
             ),
-            prepare_query_requires_approval: duration_metric(
+            prepare_run_head_requires_approval: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.prepare_query_requires_approval_us),
+                    .filter_map(|sample| sample.prepare_run_head_requires_approval_us),
             ),
-            prepare_query_policy_denied: duration_metric(
+            prepare_run_head_policy_denied: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.prepare_query_policy_denied_us),
+                    .filter_map(|sample| sample.prepare_run_head_policy_denied_us),
             ),
             splice_remove_branch_point: duration_metric(
                 samples
@@ -1919,9 +1974,9 @@ fn comparison_rows(
             &current.context_flatten,
         ),
         (
-            "prepare query turn",
-            &baseline.prepare_query_turn,
-            &current.prepare_query_turn,
+            "prepare run head turn",
+            &baseline.prepare_run_head_turn,
+            &current.prepare_run_head_turn,
         ),
         (
             "pending tool approval scan",
@@ -1971,23 +2026,23 @@ fn comparison_rows(
         ),
         (
             "prepare query no tools",
-            &baseline.prepare_query_no_tools,
-            &current.prepare_query_no_tools,
+            &baseline.prepare_run_head_no_tools,
+            &current.prepare_run_head_no_tools,
         ),
         (
             "prepare query completed tool chain",
-            &baseline.prepare_query_completed_tool_chain,
-            &current.prepare_query_completed_tool_chain,
+            &baseline.prepare_run_head_completed_tool_chain,
+            &current.prepare_run_head_completed_tool_chain,
         ),
         (
             "prepare query requires approval",
-            &baseline.prepare_query_requires_approval,
-            &current.prepare_query_requires_approval,
+            &baseline.prepare_run_head_requires_approval,
+            &current.prepare_run_head_requires_approval,
         ),
         (
             "prepare query policy denied",
-            &baseline.prepare_query_policy_denied,
-            &current.prepare_query_policy_denied,
+            &baseline.prepare_run_head_policy_denied,
+            &current.prepare_run_head_policy_denied,
         ),
         (
             "splice remove branch point",

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, Value, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -1605,40 +1605,6 @@ impl Store {
         )
     }
 
-    /// Inserts a rich tool result with ordered model-facing parts.
-    ///
-    /// This is the multipart companion to `insert_tool_result_message`. It is
-    /// used by screenshot-like tools that need to persist text and image parts
-    /// while preserving the same assistant tool-call ownership invariant.
-    pub fn insert_tool_result_message_with_parts(
-        &mut self,
-        conversation_id: &ConversationId,
-        parent_message_id: &MessageId,
-        tool_call_id: &ToolCallId,
-        content: &str,
-        parts: &[UnsavedMessagePart],
-    ) -> Result<MessageId> {
-        self.ensure_tool_result_parent_matches_call(
-            conversation_id,
-            parent_message_id,
-            tool_call_id,
-        )?;
-        let metadata = MessageMetadata {
-            tool_call_id: Some(tool_call_id.clone()),
-            ..Default::default()
-        };
-
-        self.insert_message_with_parts_unchecked(
-            conversation_id,
-            Some(parent_message_id),
-            Role::Tool,
-            content,
-            parts,
-            Some(&metadata),
-            true,
-        )
-    }
-
     /// Inserts a runtime-produced multipart tool result without changing UI
     /// selection.
     pub fn insert_run_tool_result_message_with_parts(
@@ -1754,7 +1720,7 @@ impl Store {
     ) -> Result<MessageId> {
         if role == Role::Tool {
             return Err(error::invalid_request(
-                "role: tool messages must be created through insert_tool_result_message_with_parts",
+                "role: tool messages must be created through insert_run_tool_result_message_with_parts",
             ));
         }
 
@@ -1925,6 +1891,13 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message delete")?;
+        detach_runtime_runs_from_deleted_messages(
+            &transaction,
+            conversation_id,
+            &splice_delete.deleted_message_ids,
+            now,
+        )
+        .context("failed to detach runtime runs after message delete")?;
         set_active_message_in_transaction(
             &transaction,
             conversation_id,
@@ -2070,6 +2043,13 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after conversation truncate")?;
+        detach_runtime_runs_from_deleted_messages(
+            &transaction,
+            conversation_id,
+            &descendant_ids,
+            now,
+        )
+        .context("failed to detach runtime runs after conversation truncate")?;
         set_active_message_in_transaction(
             &transaction,
             conversation_id,
@@ -3271,6 +3251,70 @@ fn delete_compactions_for_conversation(
         "DELETE FROM compactions WHERE conversation_id = ?1",
         params![conversation_id.as_str()],
     )?;
+
+    Ok(())
+}
+
+/// Clears run message references that would otherwise point at deleted rows.
+///
+/// Deleting a conversation branch is a storage operation, but runs own
+/// execution heads. If the deleted set contains a run's current head, that run
+/// can no longer be resumed safely, so it is cancelled and its current head is
+/// cleared before message deletion enforces foreign keys.
+fn detach_runtime_runs_from_deleted_messages(
+    transaction: &Transaction<'_>,
+    conversation_id: &ConversationId,
+    deleted_message_ids: &HashSet<String>,
+    updated_at: i64,
+) -> Result<()> {
+    if deleted_message_ids.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = std::iter::repeat_n("?", deleted_message_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut deleted_ids = deleted_message_ids.iter().cloned().collect::<Vec<_>>();
+    deleted_ids.sort();
+
+    let start_sql = format!(
+        "
+        UPDATE runtime_runs
+        SET start_head_message_id = NULL,
+            updated_at = ?
+        WHERE conversation_id = ?
+          AND start_head_message_id IN ({placeholders})
+        "
+    );
+    let mut start_params = Vec::with_capacity(deleted_ids.len() + 2);
+    start_params.push(Value::Integer(updated_at));
+    start_params.push(Value::Text(conversation_id.as_str().to_string()));
+    start_params.extend(deleted_ids.iter().cloned().map(Value::Text));
+    transaction
+        .execute(&start_sql, params_from_iter(start_params))
+        .context("failed to clear deleted runtime run start heads")?;
+
+    let current_sql = format!(
+        "
+        UPDATE runtime_runs
+        SET current_head_message_id = NULL,
+            status = CASE
+                WHEN status IN ('running', 'waiting_for_approval') THEN ?
+                ELSE status
+            END,
+            updated_at = ?
+        WHERE conversation_id = ?
+          AND current_head_message_id IN ({placeholders})
+        "
+    );
+    let mut current_params = Vec::with_capacity(deleted_ids.len() + 3);
+    current_params.push(Value::Text(RunStatus::Cancelled.as_storage().to_string()));
+    current_params.push(Value::Integer(updated_at));
+    current_params.push(Value::Text(conversation_id.as_str().to_string()));
+    current_params.extend(deleted_ids.into_iter().map(Value::Text));
+    transaction
+        .execute(&current_sql, params_from_iter(current_params))
+        .context("failed to clear deleted runtime run current heads")?;
 
     Ok(())
 }

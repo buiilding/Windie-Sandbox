@@ -408,7 +408,7 @@ export default function InspectorPanel() {
                       {approval.tool_name}
                     </span>
                     <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                      {approval.tool_call_id.slice(0, 10)}
+                      run {approval.run_id?.slice(0, 8)}
                     </span>
                   </div>
                   <div className="px-2 py-1.5 space-y-1">
@@ -418,11 +418,21 @@ export default function InspectorPanel() {
                     <pre className="font-mono text-[10px] text-muted-foreground bg-surface/60 border border-border p-2 overflow-x-auto whitespace-pre-wrap max-h-32">
                       {formatArguments(approval.arguments)}
                     </pre>
-                    <div className="grid grid-cols-2 gap-1 pt-1">
+                    <div className="grid grid-cols-3 gap-1 pt-1">
+                      <button
+                        data-testid={`approval-view-${approval.tool_call_id}`}
+                        onClick={() => {
+                          setSelectedNodeId(approval.assistant_message_id);
+                          toast.message("approval path selected");
+                        }}
+                        className="h-7 border border-border font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"
+                      >
+                        view path
+                      </button>
                       <button
                         data-testid={`approval-approve-${approval.tool_call_id}`}
                         onClick={() => {
-                          approveToolCall(activeConv.id, approval.tool_call_id);
+                          approveToolCall(approval.run_id, approval.tool_call_id);
                           toast.message("tool approved");
                         }}
                         className="h-7 border border-foreground bg-foreground text-background font-mono text-[10px] uppercase tracking-widest hover:opacity-90"
@@ -432,7 +442,7 @@ export default function InspectorPanel() {
                       <button
                         data-testid={`approval-deny-${approval.tool_call_id}`}
                         onClick={() => {
-                          denyToolCall(activeConv.id, approval.tool_call_id);
+                          denyToolCall(approval.run_id, approval.tool_call_id);
                           toast.message("tool denied");
                         }}
                         className="h-7 border border-border text-[hsl(var(--destructive))] font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"

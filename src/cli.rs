@@ -1,7 +1,7 @@
 //! Startup command parsing for the Windie CLI.
 //!
 //! This module owns command-line arguments only. It maps raw argv text into
-//! typed commands such as `new`, `ls`, `insert`, `update`, `query`, `gateway`,
+//! typed commands such as `new`, `ls`, `insert`, `update`, `run`, `gateway`,
 //! and `bench`. It should not open the database, call Bifrost, or print output.
 
 use std::env;
@@ -12,6 +12,7 @@ use crate::conversation::{
 };
 use crate::llm::ModelName;
 use crate::perf::{BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
+use crate::run::RunId;
 use crate::tool::{ProviderToolName, ToolProviderId};
 
 /// Parsed startup action for one `windie` process.
@@ -27,15 +28,6 @@ pub enum Command {
     Activate {
         conversation_id: ConversationId,
         message_id: MessageId,
-    },
-    /// List tool calls that are waiting for explicit approval.
-    Approvals {
-        conversation_id: ConversationId,
-    },
-    /// Execute one approved tool call.
-    ApproveTool {
-        conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
     },
     /// Attach one provider tool to a conversation.
     AttachTool {
@@ -100,9 +92,33 @@ pub enum Command {
     Models,
     New,
     Noop,
-    Query {
+    RunStart {
         conversation_id: ConversationId,
+        head_message_id: Option<MessageId>,
         model: Option<ModelName>,
+    },
+    RunList {
+        conversation_id: Option<ConversationId>,
+    },
+    RunStatus {
+        run_id: RunId,
+    },
+    RunEvents {
+        run_id: RunId,
+    },
+    RunApprovals {
+        run_id: RunId,
+    },
+    RunApprove {
+        run_id: RunId,
+        tool_call_id: ToolCallId,
+    },
+    RunDeny {
+        run_id: RunId,
+        tool_call_id: ToolCallId,
+    },
+    RunStop {
+        run_id: RunId,
     },
     RemoveConversation(ConversationId),
     RemoveMessage {
@@ -118,10 +134,6 @@ pub enum Command {
     DetachTool {
         conversation_id: ConversationId,
         schema_name: ToolSchemaName,
-    },
-    DenyTool {
-        conversation_id: ConversationId,
-        tool_call_id: ToolCallId,
     },
     Show(ConversationId),
     Status,
@@ -202,17 +214,11 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [command, subject, rest @ ..] if command == "update" && subject == "baseline" => {
             parse_baseline_command(rest, BaselineCommand::Update)
         }
+        [command, rest @ ..] if command == "run" => parse_run_command(rest),
         [arg] if arg == "tools" => Command::Tools { provider_id: None },
         [arg] if arg == "models" => Command::Models,
         [command, provider_id] if command == "tools" => Command::Tools {
             provider_id: Some(ToolProviderId::new(provider_id.as_str())),
-        },
-        [command, conversation_id] if command == "approvals" => Command::Approvals {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-        },
-        [command, conversation_id, tool_call_id] if command == "approve" => Command::ApproveTool {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
         },
         [command, conversation_id, subject, provider_id, tool_name]
             if command == "attach" && subject == "tool" =>
@@ -231,10 +237,6 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
                 schema_name: ToolSchemaName::new(schema_name.as_str()),
             }
         }
-        [command, conversation_id, tool_call_id] if command == "deny" => Command::DenyTool {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
-        },
         [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
         [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
         [arg] if arg == "new" => Command::New,
@@ -310,20 +312,83 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
                 model: ModelName::new(model.as_str()),
             }
         }
-        [command, conversation_id] if command == "query" => Command::Query {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            model: None,
-        },
-        [command, conversation_id, model_flag, model]
-            if command == "query" && model_flag == "--model" =>
-        {
-            Command::Query {
-                conversation_id: ConversationId::new(conversation_id.as_str()),
-                model: Some(ModelName::new(model.as_str())),
-            }
-        }
         [arg] if arg == "status" => Command::Status,
         _ => Command::Invalid,
+    }
+}
+
+/// Parses run-owned execution commands.
+fn parse_run_command(args: &[String]) -> Command {
+    match args {
+        [action, conversation_id, rest @ ..] if action == "start" => {
+            parse_run_start_command(conversation_id, rest)
+        }
+        [action] if action == "list" => Command::RunList {
+            conversation_id: None,
+        },
+        [action, conversation_id] if action == "list" => Command::RunList {
+            conversation_id: Some(ConversationId::new(conversation_id.as_str())),
+        },
+        [action, run_id] if action == "status" => Command::RunStatus {
+            run_id: RunId::new(run_id.as_str()),
+        },
+        [action, run_id] if action == "events" => Command::RunEvents {
+            run_id: RunId::new(run_id.as_str()),
+        },
+        [action, run_id] if action == "approvals" => Command::RunApprovals {
+            run_id: RunId::new(run_id.as_str()),
+        },
+        [action, run_id, tool_call_id] if action == "approve" => Command::RunApprove {
+            run_id: RunId::new(run_id.as_str()),
+            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
+        },
+        [action, run_id, tool_call_id] if action == "deny" => Command::RunDeny {
+            run_id: RunId::new(run_id.as_str()),
+            tool_call_id: ToolCallId::new(tool_call_id.as_str()),
+        },
+        [action, run_id] if action == "stop" => Command::RunStop {
+            run_id: RunId::new(run_id.as_str()),
+        },
+        _ => Command::Invalid,
+    }
+}
+
+/// Parses `windie run start <conversation_id> [--head <message_id>] [--model <provider/model>]`.
+fn parse_run_start_command(conversation_id: &str, args: &[String]) -> Command {
+    let mut head_message_id = None;
+    let mut model = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--head") => {
+                let Some(value) = args.get(index + 1) else {
+                    return Command::Invalid;
+                };
+                if head_message_id.is_some() {
+                    return Command::Invalid;
+                }
+                head_message_id = Some(MessageId::new(value.as_str()));
+                index += 2;
+            }
+            Some("--model") => {
+                let Some(value) = args.get(index + 1) else {
+                    return Command::Invalid;
+                };
+                if model.is_some() {
+                    return Command::Invalid;
+                }
+                model = Some(ModelName::new(value.as_str()));
+                index += 2;
+            }
+            _ => return Command::Invalid,
+        }
+    }
+
+    Command::RunStart {
+        conversation_id: ConversationId::new(conversation_id),
+        head_message_id,
+        model,
     }
 }
 
@@ -741,52 +806,55 @@ mod tests {
     }
 
     #[test]
-    fn reads_approvals_command() {
+    fn reads_run_approvals_command() {
         let command = command_from_args([
             "windie".to_string(),
+            "run".to_string(),
             "approvals".to_string(),
-            "conversation-id".to_string(),
+            "run-id".to_string(),
         ]);
 
         assert!(matches!(
             command,
-            Command::Approvals { conversation_id } if conversation_id.as_str() == "conversation-id"
+            Command::RunApprovals { run_id } if run_id.as_str() == "run-id"
         ));
     }
 
     #[test]
-    fn reads_approve_tool_command() {
+    fn reads_run_approve_command() {
         let command = command_from_args([
             "windie".to_string(),
+            "run".to_string(),
             "approve".to_string(),
-            "conversation-id".to_string(),
+            "run-id".to_string(),
             "call-id".to_string(),
         ]);
 
         assert!(matches!(
             command,
-            Command::ApproveTool {
-                conversation_id,
+            Command::RunApprove {
+                run_id,
                 tool_call_id,
-            } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+            } if run_id.as_str() == "run-id" && tool_call_id.as_str() == "call-id"
         ));
     }
 
     #[test]
-    fn reads_deny_tool_command() {
+    fn reads_run_deny_command() {
         let command = command_from_args([
             "windie".to_string(),
+            "run".to_string(),
             "deny".to_string(),
-            "conversation-id".to_string(),
+            "run-id".to_string(),
             "call-id".to_string(),
         ]);
 
         assert!(matches!(
             command,
-            Command::DenyTool {
-                conversation_id,
+            Command::RunDeny {
+                run_id,
                 tool_call_id,
-            } if conversation_id.as_str() == "conversation-id" && tool_call_id.as_str() == "call-id"
+            } if run_id.as_str() == "run-id" && tool_call_id.as_str() == "call-id"
         ));
     }
 
@@ -1322,17 +1390,19 @@ mod tests {
     }
 
     #[test]
-    fn reads_query_command() {
+    fn reads_run_start_command() {
         let command = command_from_args([
             "windie".to_string(),
-            "query".to_string(),
+            "run".to_string(),
+            "start".to_string(),
             "conversation-id".to_string(),
         ]);
 
         assert!(matches!(
             command,
-            Command::Query {
+            Command::RunStart {
                 conversation_id,
+                head_message_id: None,
                 model: None,
             } if conversation_id.as_str() == "conversation-id"
         ));
@@ -1441,10 +1511,11 @@ mod tests {
     }
 
     #[test]
-    fn reads_query_with_model_command() {
+    fn reads_run_start_with_model_command() {
         let command = command_from_args([
             "windie".to_string(),
-            "query".to_string(),
+            "run".to_string(),
+            "start".to_string(),
             "conversation-id".to_string(),
             "--model".to_string(),
             "openai/gpt-4o-mini".to_string(),
@@ -1452,29 +1523,35 @@ mod tests {
 
         assert!(matches!(
             command,
-            Command::Query {
+            Command::RunStart {
                 conversation_id,
+                head_message_id: None,
                 model: Some(model),
             } if conversation_id.as_str() == "conversation-id" && model.as_str() == "openai/gpt-4o-mini"
         ));
     }
 
     #[test]
-    fn reads_query_with_provider_qualified_model() {
+    fn reads_run_start_with_head_and_provider_qualified_model() {
         let command = command_from_args([
             "windie".to_string(),
-            "query".to_string(),
+            "run".to_string(),
+            "start".to_string(),
             "conversation-id".to_string(),
+            "--head".to_string(),
+            "message-id".to_string(),
             "--model".to_string(),
             "anthropic/claude-3-5-haiku".to_string(),
         ]);
 
         assert!(matches!(
             command,
-            Command::Query {
+            Command::RunStart {
                 conversation_id,
+                head_message_id: Some(message_id),
                 model: Some(model),
             } if conversation_id.as_str() == "conversation-id"
+                && message_id.as_str() == "message-id"
                 && model.as_str() == "anthropic/claude-3-5-haiku"
         ));
     }
