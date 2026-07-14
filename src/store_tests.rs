@@ -408,14 +408,14 @@ fn system_prompt_is_resolved_from_selected_message_path() {
 
     assert_eq!(
         store
-            .system_prompt_for_head(&conversation_id, Some(&branch_id))
+            .effective_system_prompt_for_head(&conversation_id, Some(&branch_id))
             .unwrap()
             .as_deref(),
         Some("branch prompt")
     );
     assert_eq!(
         store
-            .system_prompt_for_head(&conversation_id, Some(&sibling_id))
+            .effective_system_prompt_for_head(&conversation_id, Some(&sibling_id))
             .unwrap()
             .as_deref(),
         Some("shared prompt")

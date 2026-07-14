@@ -482,11 +482,11 @@ impl Store {
     /// Loads the effective system prompt for the conversation's active path.
     pub fn system_prompt(&self, conversation_id: &ConversationId) -> Result<Option<String>> {
         let head_message_id = self.active_message_id(conversation_id)?;
-        self.system_prompt_for_head(conversation_id, head_message_id.as_ref())
+        self.effective_system_prompt_for_head(conversation_id, head_message_id.as_ref())
     }
 
     /// Loads the effective system prompt for an explicit conversation path.
-    pub fn system_prompt_for_head(
+    pub fn effective_system_prompt_for_head(
         &self,
         conversation_id: &ConversationId,
         head_message_id: Option<&MessageId>,
@@ -765,7 +765,17 @@ impl Store {
 
     /// Clears the system prompt at the current active path head.
     pub fn remove_system_prompt(&mut self, conversation_id: &ConversationId) -> Result<()> {
-        self.set_system_prompt(conversation_id, "")
+        let anchor_message_id = self.active_message_id(conversation_id)?;
+        self.remove_system_prompt_at_head(conversation_id, anchor_message_id.as_ref())
+    }
+
+    /// Clears the system prompt at an explicit path head.
+    pub fn remove_system_prompt_at_head(
+        &mut self,
+        conversation_id: &ConversationId,
+        anchor_message_id: Option<&MessageId>,
+    ) -> Result<()> {
+        self.set_system_prompt_at_head(conversation_id, anchor_message_id, "")
     }
 
     /// Loads all effective provider tools for the conversation's active path.
@@ -955,9 +965,26 @@ impl Store {
         conversation_id: &ConversationId,
         attached_tool: &AttachedTool,
     ) -> Result<()> {
-        self.ensure_conversation_exists(conversation_id)?;
-        validate_attached_tool(attached_tool)?;
         let anchor_message_id = self.active_message_id(conversation_id)?;
+        self.insert_attached_tool_at_head(
+            conversation_id,
+            anchor_message_id.as_ref(),
+            attached_tool,
+        )
+    }
+
+    /// Attaches one provider-backed tool to an explicit conversation path.
+    pub fn insert_attached_tool_at_head(
+        &mut self,
+        conversation_id: &ConversationId,
+        anchor_message_id: Option<&MessageId>,
+        attached_tool: &AttachedTool,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        if let Some(message_id) = anchor_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
+        validate_attached_tool(attached_tool)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -968,7 +995,7 @@ impl Store {
         insert_attached_tool_in_transaction(
             &transaction,
             conversation_id,
-            anchor_message_id.as_ref(),
+            anchor_message_id,
             attached_tool,
             "attach",
             now,
@@ -990,7 +1017,25 @@ impl Store {
         conversation_id: &ConversationId,
         attached_tools: &[AttachedTool],
     ) -> Result<()> {
+        let anchor_message_id = self.active_message_id(conversation_id)?;
+        self.insert_attached_tools_at_head(
+            conversation_id,
+            anchor_message_id.as_ref(),
+            attached_tools,
+        )
+    }
+
+    /// Attaches multiple provider-backed tools to an explicit conversation path.
+    pub fn insert_attached_tools_at_head(
+        &mut self,
+        conversation_id: &ConversationId,
+        anchor_message_id: Option<&MessageId>,
+        attached_tools: &[AttachedTool],
+    ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
+        if let Some(message_id) = anchor_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
         let mut names = HashSet::new();
         for attached_tool in attached_tools {
             validate_attached_tool(attached_tool)?;
@@ -1005,7 +1050,6 @@ impl Store {
         if attached_tools.is_empty() {
             return Ok(());
         }
-        let anchor_message_id = self.active_message_id(conversation_id)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -1017,7 +1061,7 @@ impl Store {
             insert_attached_tool_in_transaction(
                 &transaction,
                 conversation_id,
-                anchor_message_id.as_ref(),
+                anchor_message_id,
                 attached_tool,
                 "attach",
                 now,
@@ -1042,6 +1086,20 @@ impl Store {
         self.insert_attached_tool(conversation_id, &AttachedTool::manual(tool_schema.clone()))
     }
 
+    /// Inserts one raw model-facing schema at an explicit conversation path.
+    pub fn insert_tool_schema_at_head(
+        &mut self,
+        conversation_id: &ConversationId,
+        anchor_message_id: Option<&MessageId>,
+        tool_schema: &ToolSchema,
+    ) -> Result<()> {
+        self.insert_attached_tool_at_head(
+            conversation_id,
+            anchor_message_id,
+            &AttachedTool::manual(tool_schema.clone()),
+        )
+    }
+
     /// Updates one existing tool schema, including an optional rename.
     pub fn update_tool_schema(
         &mut self,
@@ -1049,11 +1107,30 @@ impl Store {
         current_name: &ToolSchemaName,
         tool_schema: &ToolSchema,
     ) -> Result<()> {
+        let anchor_message_id = self.active_message_id(conversation_id)?;
+        self.update_tool_schema_at_head(
+            conversation_id,
+            anchor_message_id.as_ref(),
+            current_name,
+            tool_schema,
+        )
+    }
+
+    /// Updates one existing tool schema at an explicit conversation path.
+    pub fn update_tool_schema_at_head(
+        &mut self,
+        conversation_id: &ConversationId,
+        anchor_message_id: Option<&MessageId>,
+        current_name: &ToolSchemaName,
+        tool_schema: &ToolSchema,
+    ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
-        self.ensure_tool_schema_exists(conversation_id, current_name)?;
+        if let Some(message_id) = anchor_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
+        self.ensure_tool_schema_exists_at_head(conversation_id, anchor_message_id, current_name)?;
         let attached_tool = AttachedTool::manual(tool_schema.clone());
         validate_attached_tool(&attached_tool)?;
-        let anchor_message_id = self.active_message_id(conversation_id)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -1065,7 +1142,7 @@ impl Store {
             insert_tool_remove_in_transaction(
                 &transaction,
                 conversation_id,
-                anchor_message_id.as_ref(),
+                anchor_message_id,
                 current_name,
                 now,
             )
@@ -1074,7 +1151,7 @@ impl Store {
         insert_attached_tool_in_transaction(
             &transaction,
             conversation_id,
-            anchor_message_id.as_ref(),
+            anchor_message_id,
             &attached_tool,
             "update",
             now,
@@ -1095,9 +1172,22 @@ impl Store {
         conversation_id: &ConversationId,
         name: &ToolSchemaName,
     ) -> Result<()> {
-        self.ensure_conversation_exists(conversation_id)?;
-        self.ensure_tool_schema_exists(conversation_id, name)?;
         let anchor_message_id = self.active_message_id(conversation_id)?;
+        self.remove_tool_schema_at_head(conversation_id, anchor_message_id.as_ref(), name)
+    }
+
+    /// Removes one tool schema at an explicit conversation path.
+    pub fn remove_tool_schema_at_head(
+        &mut self,
+        conversation_id: &ConversationId,
+        anchor_message_id: Option<&MessageId>,
+        name: &ToolSchemaName,
+    ) -> Result<()> {
+        self.ensure_conversation_exists(conversation_id)?;
+        if let Some(message_id) = anchor_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
+        self.ensure_tool_schema_exists_at_head(conversation_id, anchor_message_id, name)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -1108,7 +1198,7 @@ impl Store {
         insert_tool_remove_in_transaction(
             &transaction,
             conversation_id,
-            anchor_message_id.as_ref(),
+            anchor_message_id,
             name,
             now,
         )
@@ -2966,14 +3056,17 @@ impl Store {
         Ok(())
     }
 
-    /// Returns an error when a tool schema name is not present on the
-    /// conversation being mutated.
-    fn ensure_tool_schema_exists(
+    /// Returns an error when a tool schema name is not present on an explicit
+    /// conversation path.
+    fn ensure_tool_schema_exists_at_head(
         &self,
         conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
         name: &ToolSchemaName,
     ) -> Result<()> {
-        let exists = self.load_attached_tool(conversation_id, name)?.is_some();
+        let exists = self
+            .load_attached_tool_for_head(conversation_id, head_message_id, name)?
+            .is_some();
 
         if !exists {
             return Err(error::not_found(format!(

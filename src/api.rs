@@ -868,9 +868,10 @@ async fn remove_conversation(
 }
 
 #[derive(Debug, Deserialize)]
-/// Request body for setting the conversation-level system prompt.
+/// Request body for setting a system prompt on the active or requested path.
 struct SystemPromptRequest {
     text: String,
+    head_message_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -879,7 +880,33 @@ struct SystemPromptResponse {
     system_prompt: Option<String>,
 }
 
-/// Sets or clears the conversation-level system prompt.
+#[derive(Debug, Deserialize)]
+/// Optional query parameters for path-scoped context mutations.
+struct ContextMutationQuery {
+    head_message_id: Option<String>,
+}
+
+/// Converts an optional API head string into a typed message ID.
+fn requested_head_message_id(head_message_id: Option<String>) -> Option<MessageId> {
+    head_message_id.map(MessageId::new)
+}
+
+/// Loads the effective prompt for a requested head, or the active path when no
+/// explicit head was requested.
+fn system_prompt_response(
+    store: &Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+) -> Result<Option<String>> {
+    match head_message_id {
+        Some(head_message_id) => {
+            store.effective_system_prompt_for_head(conversation_id, Some(head_message_id))
+        }
+        None => store.system_prompt(conversation_id),
+    }
+}
+
+/// Sets or clears the system prompt on the active or requested path.
 async fn set_system_prompt(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
@@ -888,25 +915,43 @@ async fn set_system_prompt(
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
 
-    operation::set_system_prompt(&mut store, &conversation_id, &request.text)?;
+    let head_message_id = requested_head_message_id(request.head_message_id);
+    match head_message_id.as_ref() {
+        Some(head_message_id) => operation::set_system_prompt_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+            &request.text,
+        )?,
+        None => operation::set_system_prompt(&mut store, &conversation_id, &request.text)?,
+    }
 
     Ok(Json(SystemPromptResponse {
-        system_prompt: store.system_prompt(&conversation_id)?,
+        system_prompt: system_prompt_response(&store, &conversation_id, head_message_id.as_ref())?,
     }))
 }
 
-/// Removes the conversation-level system prompt.
+/// Removes the system prompt on the active or requested path.
 async fn remove_system_prompt(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
+    Query(query): Query<ContextMutationQuery>,
 ) -> ApiResult<SystemPromptResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
 
-    operation::remove_system_prompt(&mut store, &conversation_id)?;
+    let head_message_id = requested_head_message_id(query.head_message_id);
+    match head_message_id.as_ref() {
+        Some(head_message_id) => operation::remove_system_prompt_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+        )?,
+        None => operation::remove_system_prompt(&mut store, &conversation_id)?,
+    }
 
     Ok(Json(SystemPromptResponse {
-        system_prompt: None,
+        system_prompt: system_prompt_response(&store, &conversation_id, head_message_id.as_ref())?,
     }))
 }
 
@@ -1009,16 +1054,20 @@ struct ToolSchemaRequest {
     name: String,
     description: String,
     parameters: Value,
+    head_message_id: Option<String>,
 }
 
 impl ToolSchemaRequest {
     /// Converts API JSON into the typed tool schema contract.
-    fn into_tool_schema(self) -> ToolSchema {
-        ToolSchema {
-            name: ToolSchemaName::new(self.name),
-            description: self.description,
-            parameters: self.parameters,
-        }
+    fn into_parts(self) -> (ToolSchema, Option<MessageId>) {
+        (
+            ToolSchema {
+                name: ToolSchemaName::new(self.name),
+                description: self.description,
+                parameters: self.parameters,
+            },
+            requested_head_message_id(self.head_message_id),
+        )
     }
 }
 
@@ -1039,12 +1088,14 @@ struct ToolSchemasResponse {
 struct AttachToolRequest {
     provider_id: String,
     tool_name: String,
+    head_message_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 /// Request body for attaching multiple available provider tools.
 struct AttachToolsRequest {
     tools: Vec<AttachToolRequest>,
+    head_message_id: Option<String>,
 }
 
 /// Attaches one available provider tool to a conversation.
@@ -1056,14 +1107,25 @@ async fn attach_tool(
     let conversation_id = ConversationId::new(conversation_id);
     let provider_id = ToolProviderId::new(request.provider_id);
     let tool_name = ProviderToolName::new(request.tool_name);
+    let head_message_id = requested_head_message_id(request.head_message_id);
     let mut store = open_store(&state)?;
-    let schema_name = operation::attach_tool_with_registry(
-        &mut store,
-        &conversation_id,
-        &provider_id,
-        &tool_name,
-        &state.tool_registry,
-    )?;
+    let schema_name = match head_message_id.as_ref() {
+        Some(head_message_id) => operation::attach_tool_with_registry_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+            &provider_id,
+            &tool_name,
+            &state.tool_registry,
+        )?,
+        None => operation::attach_tool_with_registry(
+            &mut store,
+            &conversation_id,
+            &provider_id,
+            &tool_name,
+            &state.tool_registry,
+        )?,
+    };
 
     Ok(Json(ToolSchemaResponse {
         name: schema_name.as_str().to_string(),
@@ -1077,6 +1139,7 @@ async fn attach_tools(
     Json(request): Json<AttachToolsRequest>,
 ) -> ApiResult<ToolSchemasResponse> {
     let conversation_id = ConversationId::new(conversation_id);
+    let head_message_id = requested_head_message_id(request.head_message_id);
     let requests = request
         .tools
         .into_iter()
@@ -1088,12 +1151,21 @@ async fn attach_tools(
         })
         .collect::<Vec<_>>();
     let mut store = open_store(&state)?;
-    let schema_names = operation::attach_tools_with_registry(
-        &mut store,
-        &conversation_id,
-        &requests,
-        &state.tool_registry,
-    )?;
+    let schema_names = match head_message_id.as_ref() {
+        Some(head_message_id) => operation::attach_tools_with_registry_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+            &requests,
+            &state.tool_registry,
+        )?,
+        None => operation::attach_tools_with_registry(
+            &mut store,
+            &conversation_id,
+            &requests,
+            &state.tool_registry,
+        )?,
+    };
 
     Ok(Json(ToolSchemasResponse {
         names: schema_names
@@ -1103,24 +1175,32 @@ async fn attach_tools(
     }))
 }
 
-/// Inserts one conversation-level tool schema.
+/// Inserts one tool schema on the active or requested path.
 async fn insert_tool_schema(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<ToolSchemaRequest>,
 ) -> ApiResult<ToolSchemaResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let tool_schema = request.into_tool_schema();
+    let (tool_schema, head_message_id) = request.into_parts();
     let mut store = open_store(&state)?;
 
-    operation::insert_tool_schema(&mut store, &conversation_id, &tool_schema)?;
+    match head_message_id.as_ref() {
+        Some(head_message_id) => operation::insert_tool_schema_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+            &tool_schema,
+        )?,
+        None => operation::insert_tool_schema(&mut store, &conversation_id, &tool_schema)?,
+    }
 
     Ok(Json(ToolSchemaResponse {
         name: tool_schema.name.as_str().to_string(),
     }))
 }
 
-/// Updates one conversation-level tool schema.
+/// Updates one tool schema on the active or requested path.
 async fn update_tool_schema(
     State(state): State<ApiState>,
     Path((conversation_id, name)): Path<(String, String)>,
@@ -1128,26 +1208,50 @@ async fn update_tool_schema(
 ) -> ApiResult<ToolSchemaResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let current_name = ToolSchemaName::new(name);
-    let tool_schema = request.into_tool_schema();
+    let (tool_schema, head_message_id) = request.into_parts();
     let mut store = open_store(&state)?;
 
-    operation::update_tool_schema(&mut store, &conversation_id, &current_name, &tool_schema)?;
+    match head_message_id.as_ref() {
+        Some(head_message_id) => operation::update_tool_schema_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+            &current_name,
+            &tool_schema,
+        )?,
+        None => operation::update_tool_schema(
+            &mut store,
+            &conversation_id,
+            &current_name,
+            &tool_schema,
+        )?,
+    }
 
     Ok(Json(ToolSchemaResponse {
         name: tool_schema.name.as_str().to_string(),
     }))
 }
 
-/// Removes one conversation-level tool schema.
+/// Removes one tool schema from the active or requested path.
 async fn remove_tool_schema(
     State(state): State<ApiState>,
     Path((conversation_id, name)): Path<(String, String)>,
+    Query(query): Query<ContextMutationQuery>,
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let name = ToolSchemaName::new(name);
+    let head_message_id = requested_head_message_id(query.head_message_id);
     let mut store = open_store(&state)?;
 
-    operation::remove_tool_schema(&mut store, &conversation_id, &name)?;
+    match head_message_id.as_ref() {
+        Some(head_message_id) => operation::remove_tool_schema_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+            &name,
+        )?,
+        None => operation::remove_tool_schema(&mut store, &conversation_id, &name)?,
+    }
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -1156,12 +1260,22 @@ async fn remove_tool_schema(
 async fn detach_tool(
     State(state): State<ApiState>,
     Path((conversation_id, schema_name)): Path<(String, String)>,
+    Query(query): Query<ContextMutationQuery>,
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let schema_name = ToolSchemaName::new(schema_name);
+    let head_message_id = requested_head_message_id(query.head_message_id);
     let mut store = open_store(&state)?;
 
-    operation::detach_tool(&mut store, &conversation_id, &schema_name)?;
+    match head_message_id.as_ref() {
+        Some(head_message_id) => operation::detach_tool_at_head(
+            &mut store,
+            &conversation_id,
+            Some(head_message_id),
+            &schema_name,
+        )?,
+        None => operation::detach_tool(&mut store, &conversation_id, &schema_name)?,
+    }
 
     Ok(Json(DeletedResponse { deleted: true }))
 }
@@ -2150,6 +2264,106 @@ mod tests {
         )
         .await;
         assert!(listed["conversations"].as_array().unwrap().is_empty());
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn context_mutation_routes_can_target_explicit_heads() {
+        let db_path = temp_database_path();
+        let app = test_app(db_path.clone());
+        let mut store = Store::open_at(&db_path).unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        let root_id = store
+            .insert_message(&conversation_id, None, Role::User, "root", None)
+            .unwrap();
+        let shared_id = store
+            .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
+            .unwrap();
+        let branch_id = store
+            .insert_message(
+                &conversation_id,
+                Some(&shared_id),
+                Role::User,
+                "branch",
+                None,
+            )
+            .unwrap();
+        let sibling_id = store
+            .insert_message(
+                &conversation_id,
+                Some(&shared_id),
+                Role::User,
+                "sibling",
+                None,
+            )
+            .unwrap();
+        store
+            .set_active_message(&conversation_id, &sibling_id)
+            .unwrap();
+        drop(store);
+
+        let prompt_response = response_json(
+            app.clone()
+                .oneshot(authed_request(
+                    Method::PATCH,
+                    &format!("/api/conversations/{conversation_id}/system-prompt"),
+                    Some(json!({
+                        "text": "branch prompt",
+                        "head_message_id": branch_id.as_str()
+                    })),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let tool_response = response_json(
+            app.oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/tool-schemas"),
+                Some(json!({
+                    "name": "branch_tool",
+                    "description": "Branch tool",
+                    "parameters": {"type": "object"},
+                    "head_message_id": branch_id.as_str()
+                })),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+
+        assert_eq!(prompt_response["system_prompt"], "branch prompt");
+        assert_eq!(tool_response["name"], "branch_tool");
+
+        let store = Store::open_at(&db_path).unwrap();
+
+        assert_eq!(
+            store
+                .effective_system_prompt_for_head(&conversation_id, Some(&branch_id))
+                .unwrap()
+                .as_deref(),
+            Some("branch prompt")
+        );
+        assert!(
+            store
+                .effective_system_prompt_for_head(&conversation_id, Some(&sibling_id))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .load_tool_schemas_for_head(&conversation_id, Some(&branch_id))
+                .unwrap()[0]
+                .name
+                .as_str(),
+            "branch_tool"
+        );
+        assert!(
+            store
+                .load_tool_schemas_for_head(&conversation_id, Some(&sibling_id))
+                .unwrap()
+                .is_empty()
+        );
         let _ = fs::remove_file(db_path);
     }
 

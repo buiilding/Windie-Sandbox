@@ -74,7 +74,8 @@ impl ContextBuilder {
             Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
             None => Vec::new(),
         };
-        let system_prompt = store.system_prompt_for_head(conversation_id, head_message_id)?;
+        let system_prompt =
+            store.effective_system_prompt_for_head(conversation_id, head_message_id)?;
         let compaction = store.latest_compaction(conversation_id)?;
 
         Ok(Self::flatten(ContextParts {
@@ -140,7 +141,7 @@ impl ContextBuilder {
     }
 }
 
-/// Prepends the conversation-level system prompt when one is set.
+/// Prepends the effective path-scoped system prompt when one is set.
 fn with_system_prompt(system_prompt: Option<String>, messages: Vec<Message>) -> Vec<Message> {
     let Some(system_prompt) = system_prompt else {
         return messages;

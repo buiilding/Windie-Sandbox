@@ -647,7 +647,7 @@ pub fn update_message(
     store.replace_message(conversation_id, message_id, text)
 }
 
-/// Sets or replaces the conversation-level system prompt.
+/// Sets or replaces the system prompt at the active conversation path.
 pub fn set_system_prompt(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -656,9 +656,28 @@ pub fn set_system_prompt(
     store.set_system_prompt(conversation_id, text)
 }
 
-/// Removes the conversation-level system prompt.
+/// Sets or replaces the system prompt at an explicit conversation path head.
+pub fn set_system_prompt_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    text: &str,
+) -> Result<()> {
+    store.set_system_prompt_at_head(conversation_id, head_message_id, text)
+}
+
+/// Removes the system prompt at the active conversation path.
 pub fn remove_system_prompt(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
     store.remove_system_prompt(conversation_id)
+}
+
+/// Removes the system prompt at an explicit conversation path head.
+pub fn remove_system_prompt_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+) -> Result<()> {
+    store.remove_system_prompt_at_head(conversation_id, head_message_id)
 }
 
 /// Sets the conversation default for attached tool approval.
@@ -730,6 +749,26 @@ pub fn attach_tool_with_registry(
     Ok(schema_name)
 }
 
+/// Attaches one available provider tool to an explicit conversation path.
+pub fn attach_tool_with_registry_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    provider_id: &ToolProviderId,
+    tool_name: &ProviderToolName,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolSchemaName> {
+    let definition = registry.find_tool(provider_id, tool_name)?.ok_or_else(|| {
+        error::not_found(format!("tool does not exist: {provider_id}/{tool_name}"))
+    })?;
+    let attached_tool = definition.attached_tool();
+    let schema_name = attached_tool.schema_name.clone();
+
+    store.insert_attached_tool_at_head(conversation_id, head_message_id, &attached_tool)?;
+
+    Ok(schema_name)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// One requested provider tool attachment in a batch operation.
 pub struct ToolAttachmentInput {
@@ -797,7 +836,54 @@ pub fn attach_tools_with_registry(
     Ok(schema_names)
 }
 
-/// Inserts one conversation-level tool schema.
+/// Attaches multiple available provider tools to an explicit conversation path.
+pub fn attach_tools_with_registry_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    requests: &[ToolAttachmentInput],
+    registry: &ToolProviderRegistry,
+) -> Result<Vec<ToolSchemaName>> {
+    let mut provider_catalogs: HashMap<ToolProviderId, HashMap<ProviderToolName, ToolDefinition>> =
+        HashMap::new();
+
+    for request in requests {
+        if provider_catalogs.contains_key(&request.provider_id) {
+            continue;
+        }
+        let provider_tools = registry.list_provider_tools(&request.provider_id)?;
+        provider_catalogs.insert(
+            request.provider_id.clone(),
+            provider_tools
+                .into_iter()
+                .map(|definition| (definition.provider.tool_name.clone(), definition))
+                .collect(),
+        );
+    }
+
+    let mut attached_tools = Vec::with_capacity(requests.len());
+    let mut schema_names = Vec::with_capacity(requests.len());
+    for request in requests {
+        let definition = provider_catalogs
+            .get(&request.provider_id)
+            .and_then(|provider_tools| provider_tools.get(&request.tool_name))
+            .ok_or_else(|| {
+                error::not_found(format!(
+                    "tool does not exist: {}/{}",
+                    request.provider_id, request.tool_name
+                ))
+            })?;
+        let attached_tool = definition.attached_tool();
+        schema_names.push(attached_tool.schema_name.clone());
+        attached_tools.push(attached_tool);
+    }
+
+    store.insert_attached_tools_at_head(conversation_id, head_message_id, &attached_tools)?;
+
+    Ok(schema_names)
+}
+
+/// Inserts one tool schema at the active conversation path.
 pub fn insert_tool_schema(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -806,7 +892,17 @@ pub fn insert_tool_schema(
     store.insert_tool_schema(conversation_id, tool_schema)
 }
 
-/// Updates one conversation-level tool schema.
+/// Inserts one tool schema at an explicit conversation path.
+pub fn insert_tool_schema_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    tool_schema: &ToolSchema,
+) -> Result<()> {
+    store.insert_tool_schema_at_head(conversation_id, head_message_id, tool_schema)
+}
+
+/// Updates one tool schema at the active conversation path.
 pub fn update_tool_schema(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -816,13 +912,34 @@ pub fn update_tool_schema(
     store.update_tool_schema(conversation_id, current_name, tool_schema)
 }
 
-/// Removes one conversation-level tool schema.
+/// Updates one tool schema at an explicit conversation path.
+pub fn update_tool_schema_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    current_name: &ToolSchemaName,
+    tool_schema: &ToolSchema,
+) -> Result<()> {
+    store.update_tool_schema_at_head(conversation_id, head_message_id, current_name, tool_schema)
+}
+
+/// Removes one tool schema at the active conversation path.
 pub fn remove_tool_schema(
     store: &mut Store,
     conversation_id: &ConversationId,
     name: &ToolSchemaName,
 ) -> Result<()> {
     store.remove_tool_schema(conversation_id, name)
+}
+
+/// Removes one tool schema at an explicit conversation path.
+pub fn remove_tool_schema_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    name: &ToolSchemaName,
+) -> Result<()> {
+    store.remove_tool_schema_at_head(conversation_id, head_message_id, name)
 }
 
 /// Detaches one model-facing tool schema from a conversation.
@@ -832,6 +949,16 @@ pub fn detach_tool(
     schema_name: &ToolSchemaName,
 ) -> Result<()> {
     remove_tool_schema(store, conversation_id, schema_name)
+}
+
+/// Detaches one model-facing tool schema from an explicit conversation path.
+pub fn detach_tool_at_head(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    schema_name: &ToolSchemaName,
+) -> Result<()> {
+    remove_tool_schema_at_head(store, conversation_id, head_message_id, schema_name)
 }
 
 /// Deletes one conversation and all data owned by it.
