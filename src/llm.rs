@@ -1326,9 +1326,9 @@ fn append_optional_text(target: &mut Option<String>, delta: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::metadata::{ToolCallFunction, ToolCallKind};
     use crate::conversation::{
-        ImageAssetId, MessageId, MessageMetadata, Role, ToolCallFunction, ToolCallId, ToolCallKind,
-        ToolSchema, ToolSchemaName,
+        ImageAssetId, MessageId, MessageMetadata, Role, ToolCallId, ToolSchema, ToolSchemaName,
     };
 
     #[test]
