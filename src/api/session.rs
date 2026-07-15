@@ -142,13 +142,12 @@ pub(super) async fn session_events(
         |mut state| async move {
             let record = if let Some(record) = state.replay.pop_front() {
                 record
-            } else if let Some(subscription) = state.subscription.as_mut() {
+            } else {
+                let subscription = state.subscription.as_mut()?;
                 match subscription.recv().await {
                     Ok(record) => record,
                     Err(_) => return None,
                 }
-            } else {
-                return None;
             };
             let event_name = record.event.event_name();
             let data = session_event_data(&record);
