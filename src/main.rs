@@ -19,7 +19,6 @@ mod output;
 mod perf;
 mod runtime;
 mod session;
-mod session_manager;
 mod setup;
 mod store;
 mod tool;

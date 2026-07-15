@@ -33,8 +33,9 @@ use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::TerminalOutput;
-use crate::session::{Session, SessionEventRecord, SessionId, SessionStatus};
-use crate::session_manager::{SessionManager, SessionSubscription};
+use crate::session::{
+    Session, SessionEventRecord, SessionId, SessionManager, SessionStatus, SessionSubscription,
+};
 use crate::setup;
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{
