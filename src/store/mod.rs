@@ -214,5 +214,4 @@ pub(super) fn now_millis() -> Result<i64> {
 }
 
 #[cfg(test)]
-#[path = "../store_tests.rs"]
 mod tests;

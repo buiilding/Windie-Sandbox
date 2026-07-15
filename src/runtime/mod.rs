@@ -672,5 +672,4 @@ pub(crate) fn store_pending_tool_result_at_head(
 
 #[allow(dead_code)]
 #[cfg(test)]
-#[path = "runtime_tests.rs"]
 mod tests;

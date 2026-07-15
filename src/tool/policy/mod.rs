@@ -70,5 +70,4 @@ fn full_access_decision(_attached_tool: &AttachedTool) -> PolicyDecision {
 }
 
 #[cfg(test)]
-#[path = "policy_tests.rs"]
 mod tests;
