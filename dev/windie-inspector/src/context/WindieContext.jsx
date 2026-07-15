@@ -11,8 +11,6 @@ import { toast } from "sonner";
 import {
   apiRequest,
   countConversationInputTokens,
-  conversationFromInspection,
-  conversationSummaryFromApi,
   approveSessionTool as approveSessionToolApi,
   createSession as createSessionApi,
   denySessionTool as denySessionToolApi,
@@ -23,10 +21,15 @@ import {
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
   stopSession as stopSessionApi,
-  streamSessionEvents,
+} from "@/lib/windieApi";
+import { streamSessionEvents } from "@/lib/sessionStream";
+import {
+  conversationFromInspection,
+  conversationSummaryFromApi,
+  sessionFromApi,
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
-} from "@/lib/windieApi";
+} from "@/lib/windieMappers";
 
 const WindieCtx = createContext(null);
 
@@ -70,22 +73,6 @@ function tokenCountKey(conversationId, modelId) {
 
 function isAbortError(error) {
   return error?.name === "AbortError";
-}
-
-function sessionFromApi(session) {
-  if (!session) return null;
-  return {
-    id: session.id,
-    conversationId: session.conversation_id,
-    startHeadMessageId: session.start_head_message_id || null,
-    currentHeadMessageId: session.current_head_message_id || null,
-    status: session.status,
-    model: session.model,
-    reasoning: session.reasoning || null,
-    error: session.error || null,
-    createdAt: session.created_at,
-    updatedAt: session.updated_at,
-  };
 }
 
 function isLiveSession(session) {
@@ -198,6 +185,7 @@ export function WindieProvider({ children }) {
   const subscriptionAbortRef = useRef(null);
   const subscribedSessionIdRef = useRef(null);
   const visibleSessionIdRef = useRef(null);
+  const lastSessionEventIdRef = useRef({});
 
   useEffect(
     () => () => {
@@ -305,7 +293,7 @@ export function WindieProvider({ children }) {
         : "";
       const [report, approvalBody] = await Promise.all([
         apiRequest(`/api/conversations/${convId}${inspectQuery}`),
-        apiRequest(`/api/conversations/${convId}/session-approvals`),
+        apiRequest(`/api/conversations/${convId}/run-approvals`),
       ]);
       const loaded = conversationFromInspection(report, null);
 
@@ -836,7 +824,15 @@ export function WindieProvider({ children }) {
       ) {
         const latest = await getSession(session.id).catch(() => null);
         if (latest) rememberSession(latest);
-        await loadConversation(session.conversationId, { countTokens: false }).catch(() => {});
+        const finalMessageId = data.type === "completed" ? data.message_id || null : null;
+        await loadConversation(session.conversationId, {
+          countTokens: false,
+          selectLast: false,
+          headMessageId: finalMessageId,
+        }).catch(() => {});
+        if (visibleSessionIdRef.current === session.id && finalMessageId) {
+          setSelectedNodeId(finalMessageId);
+        }
         if (data.type !== "waiting_for_approval") {
           setPendingAssistantBySessionId((prev) => ({ ...prev, [session.id]: null }));
         }
@@ -861,8 +857,14 @@ export function WindieProvider({ children }) {
 
       streamSessionEvents(
         normalized.id,
-        null,
-        ({ data }) => handleSessionEvent(normalized, data),
+        lastSessionEventIdRef.current[normalized.id] ?? null,
+        async ({ id, data }) => {
+          await handleSessionEvent(normalized, data);
+          const eventId = id ?? data?.event_id ?? null;
+          if (eventId != null) {
+            lastSessionEventIdRef.current[normalized.id] = eventId;
+          }
+        },
         { signal: controller.signal }
       ).catch((error) => {
         if (!isAbortError(error)) {

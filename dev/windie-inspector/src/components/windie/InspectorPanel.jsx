@@ -235,6 +235,7 @@ export default function InspectorPanel() {
           <div className="space-y-0.5">
             {selectedPathNodes.map((n, i) => {
               if (!n) return null;
+              const id = n.id;
               const token = ROLE_TOKENS[n.message.role];
               const isSel = id === selectedNodeId;
               return (
