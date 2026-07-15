@@ -2,11 +2,10 @@
 
 use super::*;
 use crate::conversation::{
-    MessagePart, TokenUsage, ToolCall, ToolSchema, ToolSchemaName, UnsavedImagePart,
-    UnsavedMessagePart,
+    MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::session::{SessionId, SessionStatus};
-use crate::tool::ToolApprovalMode;
+use crate::tool::{ToolApprovalMode, ToolSchema, ToolSchemaName};
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
     UnsavedMessagePart::Text(text.to_string())
@@ -365,7 +364,7 @@ fn clears_system_prompt_with_empty_text() {
 }
 
 #[test]
-fn system_prompt_is_resolved_from_selected_message_path() {
+fn system_prompt_is_resolved_from_requested_message_path() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let root_id = store
@@ -374,32 +373,26 @@ fn system_prompt_is_resolved_from_selected_message_path() {
     let shared_id = store
         .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
         .unwrap();
-    store
-        .set_active_message(&conversation_id, &shared_id)
-        .unwrap();
-    store
-        .set_system_prompt(&conversation_id, "shared prompt")
+    let shared_prompt_id = store
+        .set_system_prompt_at_head(&conversation_id, Some(&shared_id), "shared prompt")
         .unwrap();
 
     let branch_id = store
         .insert_message(
             &conversation_id,
-            Some(&shared_id),
+            Some(&shared_prompt_id),
             Role::User,
             "branch",
             None,
         )
         .unwrap();
-    store
-        .set_active_message(&conversation_id, &branch_id)
-        .unwrap();
-    store
-        .set_system_prompt(&conversation_id, "branch prompt")
+    let branch_prompt_id = store
+        .set_system_prompt_at_head(&conversation_id, Some(&branch_id), "branch prompt")
         .unwrap();
     let sibling_id = store
         .insert_message(
             &conversation_id,
-            Some(&shared_id),
+            Some(&shared_prompt_id),
             Role::User,
             "sibling",
             None,
@@ -408,7 +401,7 @@ fn system_prompt_is_resolved_from_selected_message_path() {
 
     assert_eq!(
         store
-            .effective_system_prompt_for_head(&conversation_id, Some(&branch_id))
+            .effective_system_prompt_for_head(&conversation_id, Some(&branch_prompt_id))
             .unwrap()
             .as_deref(),
         Some("branch prompt")
@@ -441,18 +434,6 @@ fn loads_empty_messages_for_existing_conversation() {
     let messages = store.load_messages(&conversation_id).unwrap();
 
     assert!(messages.is_empty());
-}
-
-#[test]
-fn loads_empty_active_path_for_empty_conversation() {
-    let store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/test").unwrap();
-
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
-    let path = store.load_active_path(&conversation_id).unwrap();
-
-    assert!(active_message_id.is_none());
-    assert!(path.is_empty());
 }
 
 #[test]
@@ -500,21 +481,7 @@ fn saves_and_loads_messages() {
 }
 
 #[test]
-fn insert_sets_active_message() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/test").unwrap();
-
-    let message_id = store
-        .insert_message(&conversation_id, None, Role::User, "hello", None)
-        .unwrap();
-
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
-
-    assert_eq!(active_message_id.as_deref(), Some(message_id.as_str()));
-}
-
-#[test]
-fn loads_active_path() {
+fn loads_path_to_message() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let root_id = store
@@ -539,36 +506,14 @@ fn loads_active_path() {
         )
         .unwrap();
 
-    store
-        .set_active_message(&conversation_id, &first_branch_id)
+    let path = store
+        .load_path_to_message(&conversation_id, &first_branch_id)
         .unwrap();
-
-    let path = store.load_active_path(&conversation_id).unwrap();
 
     assert_eq!(path.len(), 2);
     assert_eq!(path[0].id.as_deref(), Some(root_id.as_str()));
     assert_eq!(path[1].id.as_deref(), Some(first_branch_id.as_str()));
     assert_ne!(path[1].id.as_deref(), Some(second_branch_id.as_str()));
-}
-
-#[test]
-fn rejects_setting_active_message_from_another_conversation() {
-    let mut store = Store::open_memory().unwrap();
-    let first_conversation_id = store.create_conversation("openai/test").unwrap();
-    let second_conversation_id = store.create_conversation("openai/test").unwrap();
-    let message_id = store
-        .insert_message(&first_conversation_id, None, Role::User, "hello", None)
-        .unwrap();
-
-    let error = store
-        .set_active_message(&second_conversation_id, &message_id)
-        .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("message does not belong to conversation")
-    );
 }
 
 #[test]
@@ -776,10 +721,7 @@ fn tool_schemas_are_resolved_from_selected_message_path() {
         .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
         .unwrap();
     store
-        .set_active_message(&conversation_id, &shared_id)
-        .unwrap();
-    store
-        .insert_tool_schema(&conversation_id, &shared_tool)
+        .insert_tool_schema_at_head(&conversation_id, Some(&shared_id), &shared_tool)
         .unwrap();
 
     let branch_id = store
@@ -792,10 +734,7 @@ fn tool_schemas_are_resolved_from_selected_message_path() {
         )
         .unwrap();
     store
-        .set_active_message(&conversation_id, &branch_id)
-        .unwrap();
-    store
-        .insert_tool_schema(&conversation_id, &branch_tool)
+        .insert_tool_schema_at_head(&conversation_id, Some(&branch_id), &branch_tool)
         .unwrap();
     let sibling_id = store
         .insert_message(
@@ -1360,7 +1299,6 @@ fn remove_message_splices_middle_node_from_chain() {
     store.remove_message(&conversation_id, &second_id).unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
     let compaction = store.latest_compaction(&conversation_id).unwrap();
 
     assert_eq!(
@@ -1369,7 +1307,6 @@ fn remove_message_splices_middle_node_from_chain() {
     );
     assert_eq!(messages[0].id.as_deref(), Some(first_id.as_str()));
     assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
-    assert_eq!(active_message_id.as_deref(), Some(third_id.as_str()));
     assert!(compaction.is_none());
 }
 
@@ -1405,12 +1342,10 @@ fn remove_message_splices_branch_point() {
     store.remove_message(&conversation_id, &second_id).unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
 
     assert_eq!(messages.len(), 3);
     assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
     assert_eq!(message_parent(&messages, &fourth_id), Some(&first_id));
-    assert_eq!(active_message_id.as_deref(), Some(fourth_id.as_str()));
 }
 
 #[test]
@@ -1433,10 +1368,8 @@ fn remove_message_deletes_leaf_only() {
     store.remove_message(&conversation_id, &second_id).unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
 
     assert_eq!(message_ids(&messages), vec![first_id.to_string()]);
-    assert_eq!(active_message_id.as_deref(), Some(first_id.as_str()));
 }
 
 #[test]
@@ -1575,14 +1508,9 @@ fn remove_root_with_multiple_children_promotes_children_to_roots() {
             None,
         )
         .unwrap();
-    store
-        .set_active_message(&conversation_id, &first_id)
-        .unwrap();
-
     store.remove_message(&conversation_id, &first_id).unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
 
     assert_eq!(
         message_ids(&messages),
@@ -1590,47 +1518,10 @@ fn remove_root_with_multiple_children_promotes_children_to_roots() {
     );
     assert!(message_parent(&messages, &second_id).is_none());
     assert!(message_parent(&messages, &third_id).is_none());
-    assert_eq!(active_message_id.as_deref(), Some(second_id.as_str()));
 }
 
 #[test]
-fn remove_active_middle_node_moves_active_to_parent() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/test").unwrap();
-    let first_id = store
-        .insert_message(&conversation_id, None, Role::User, "one", None)
-        .unwrap();
-    let second_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&first_id),
-            Role::Assistant,
-            "two",
-            None,
-        )
-        .unwrap();
-    store
-        .insert_message(
-            &conversation_id,
-            Some(&second_id),
-            Role::User,
-            "three",
-            None,
-        )
-        .unwrap();
-    store
-        .set_active_message(&conversation_id, &second_id)
-        .unwrap();
-
-    store.remove_message(&conversation_id, &second_id).unwrap();
-
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
-
-    assert_eq!(active_message_id.as_deref(), Some(first_id.as_str()));
-}
-
-#[test]
-fn remove_ancestor_keeps_descendant_active() {
+fn remove_middle_node_splices_descendant_to_parent() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
@@ -1657,18 +1548,51 @@ fn remove_ancestor_keeps_descendant_active() {
 
     store.remove_message(&conversation_id, &second_id).unwrap();
 
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
-    let active_path = store.load_active_path(&conversation_id).unwrap();
+    let messages = store.load_messages(&conversation_id).unwrap();
 
-    assert_eq!(active_message_id.as_deref(), Some(third_id.as_str()));
+    assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
+}
+
+#[test]
+fn remove_ancestor_keeps_descendant_path_loadable() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first_id = store
+        .insert_message(&conversation_id, None, Role::User, "one", None)
+        .unwrap();
+    let second_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&first_id),
+            Role::Assistant,
+            "two",
+            None,
+        )
+        .unwrap();
+    let third_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&second_id),
+            Role::User,
+            "three",
+            None,
+        )
+        .unwrap();
+
+    store.remove_message(&conversation_id, &second_id).unwrap();
+
+    let path = store
+        .load_path_to_message(&conversation_id, &third_id)
+        .unwrap();
+
     assert_eq!(
-        message_ids(&active_path),
+        message_ids(&path),
         vec![first_id.to_string(), third_id.to_string()]
     );
 }
 
 #[test]
-fn remove_message_keeps_unrelated_active() {
+fn remove_message_keeps_unrelated_branch() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
@@ -1692,15 +1616,16 @@ fn remove_message_keeps_unrelated_active() {
             None,
         )
         .unwrap();
-    store
-        .set_active_message(&conversation_id, &third_id)
-        .unwrap();
 
     store.remove_message(&conversation_id, &second_id).unwrap();
 
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
+    let messages = store.load_messages(&conversation_id).unwrap();
 
-    assert_eq!(active_message_id.as_deref(), Some(third_id.as_str()));
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.id.as_ref() == Some(&third_id))
+    );
 }
 
 #[test]
@@ -1812,7 +1737,6 @@ fn remove_assistant_tool_call_deletes_tool_pair_and_preserves_later_descendant()
         .unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
 
     assert_eq!(
         message_ids(&messages),
@@ -1829,7 +1753,6 @@ fn remove_assistant_tool_call_deletes_tool_pair_and_preserves_later_descendant()
             .all(|message| message.id.as_ref() != Some(&tool_id))
     );
     assert_eq!(message_parent(&messages, &final_id), Some(&first_id));
-    assert_eq!(active_message_id.as_deref(), Some(final_id.as_str()));
 }
 
 #[test]
@@ -2313,7 +2236,6 @@ fn truncates_conversation_after_message() {
         .unwrap();
 
     let messages = store.load_messages(&conversation_id).unwrap();
-    let active_message_id = store.active_message_id(&conversation_id).unwrap();
     let compaction = store.latest_compaction(&conversation_id).unwrap();
 
     assert_eq!(messages.len(), 2);
@@ -2321,7 +2243,6 @@ fn truncates_conversation_after_message() {
     assert_eq!(messages[1].id.as_deref(), Some(second_id.as_str()));
     assert_eq!(messages[0].content, "one");
     assert_eq!(messages[1].content, "two");
-    assert_eq!(active_message_id.as_deref(), Some(second_id.as_str()));
     assert!(compaction.is_none());
 }
 
@@ -2428,14 +2349,11 @@ fn forks_conversation_at_message() {
             Some(&metadata),
         )
         .unwrap();
-    store
-        .set_active_message(&conversation_id, &second_id)
+    let prompt_id = store
+        .set_system_prompt_at_head(&conversation_id, Some(&second_id), "fork prompt")
         .unwrap();
     store
-        .set_system_prompt(&conversation_id, "fork prompt")
-        .unwrap();
-    store
-        .insert_tool_schema(&conversation_id, &fork_tool)
+        .insert_tool_schema_at_head(&conversation_id, Some(&prompt_id), &fork_tool)
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     store
@@ -2449,38 +2367,47 @@ fn forks_conversation_at_message() {
         .unwrap();
 
     let forked_conversation_id = store
-        .fork_conversation_at_message(&conversation_id, &second_id)
+        .fork_conversation_at_message(&conversation_id, &prompt_id)
         .unwrap();
 
     let source_messages = store.load_messages(&conversation_id).unwrap();
     let forked_messages = store.load_messages(&forked_conversation_id).unwrap();
-    let forked_active_message_id = store.active_message_id(&forked_conversation_id).unwrap();
+    let forked_head_message_id = forked_messages
+        .last()
+        .and_then(|message| message.id.as_ref())
+        .expect("forked path should have a head");
     let forked_model = store.conversation_model(&forked_conversation_id).unwrap();
     let forked_reasoning_effort = store
         .conversation_reasoning_effort(&forked_conversation_id)
         .unwrap();
-    let forked_system_prompt = store.system_prompt(&forked_conversation_id).unwrap();
-    let forked_tool_schemas = store.load_tool_schemas(&forked_conversation_id).unwrap();
+    let forked_system_prompt = store
+        .effective_system_prompt_for_head(&forked_conversation_id, Some(forked_head_message_id))
+        .unwrap();
+    let forked_tool_schemas = store
+        .load_tool_schemas_for_head(&forked_conversation_id, Some(forked_head_message_id))
+        .unwrap();
 
     assert_ne!(forked_conversation_id, conversation_id);
     assert_eq!(forked_model, "anthropic/test");
     assert_eq!(forked_reasoning_effort.as_deref(), Some("high"));
     assert_eq!(forked_system_prompt.as_deref(), Some("fork prompt"));
     assert_eq!(forked_tool_schemas, vec![fork_tool]);
-    assert_eq!(source_messages.len(), 3);
-    assert_eq!(forked_messages.len(), 2);
+    assert_eq!(source_messages.len(), 4);
+    assert_eq!(forked_messages.len(), 3);
     assert_eq!(forked_messages[0].role, Role::User);
     assert_eq!(forked_messages[0].content, "one");
     assert_eq!(forked_messages[1].role, Role::Assistant);
     assert_eq!(forked_messages[1].content, "two");
     assert_eq!(forked_messages[1].metadata.as_ref(), Some(&metadata));
+    assert_eq!(forked_messages[2].role, Role::System);
+    assert_eq!(forked_messages[2].content, "fork prompt");
     assert_ne!(forked_messages[0].id.as_deref(), Some(first_id.as_str()));
     assert_eq!(
         forked_messages[1].parent_message_id.as_deref(),
         forked_messages[0].id.as_deref()
     );
     assert_eq!(
-        forked_active_message_id.as_deref(),
+        forked_messages[2].parent_message_id.as_deref(),
         forked_messages[1].id.as_deref()
     );
 }

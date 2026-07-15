@@ -13,9 +13,8 @@ use futures_util::StreamExt;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
-use crate::conversation::{
-    ImagePart, Message, MessageMetadata, MessagePart, TokenUsage, ToolCall, ToolSchema,
-};
+use crate::conversation::{ImagePart, Message, MessageMetadata, MessagePart, TokenUsage, ToolCall};
+use crate::tool::ToolSchema;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the OpenAI-compatible provider adapter.
@@ -1326,10 +1325,9 @@ fn append_optional_text(target: &mut Option<String>, delta: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversation::metadata::{ToolCallFunction, ToolCallKind};
-    use crate::conversation::{
-        ImageAssetId, MessageId, MessageMetadata, Role, ToolCallId, ToolSchema, ToolSchemaName,
-    };
+    use crate::conversation::assistant_metadata::{ToolCallFunction, ToolCallKind};
+    use crate::conversation::{ImageAssetId, MessageId, MessageMetadata, Role, ToolCallId};
+    use crate::tool::{ToolSchema, ToolSchemaName};
 
     #[test]
     fn base_url_removes_trailing_slash() {

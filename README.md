@@ -28,7 +28,7 @@ read, test, replace, and audit.
 Windie owns:
 
 - local interaction flow
-- conversation trees and active path selection
+- conversation trees and explicit-head path inspection
 - model-facing context construction
 - SQLite persistence
 - localhost developer API primitives

@@ -1,8 +1,9 @@
-//! Message metadata lanes.
+//! Assistant-oriented metadata lanes.
 //!
 //! Metadata is stored beside visible message text so assistant reasoning, tool
 //! calls, refusals, audio, citations, and usage can evolve without overloading
-//! the plain message content field.
+//! the plain message content field. Tool-result messages also use the tool-call
+//! ID lane to link back to the assistant call they answer.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -7,13 +7,11 @@
 use std::env;
 use std::path::PathBuf;
 
-use crate::conversation::{
-    ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
-};
+use crate::conversation::{ConversationId, MessageId, Role, ToolCallId};
 use crate::llm::ModelName;
 use crate::perf::{BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
 use crate::session::SessionId;
-use crate::tool::{ProviderToolName, ToolProviderId};
+use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
 
 /// Parsed startup action for one `windie` process.
 ///
@@ -24,11 +22,6 @@ pub enum Command {
     Api,
     /// Open the local developer inspector with the current API token.
     Inspector,
-    /// Select one message as the active runtime node for a conversation.
-    Activate {
-        conversation_id: ConversationId,
-        message_id: MessageId,
-    },
     /// Attach one provider tool to a conversation.
     AttachTool {
         conversation_id: ConversationId,
@@ -38,10 +31,11 @@ pub enum Command {
     /// Insert one message into a conversation without model inference.
     InsertMessage {
         conversation_id: ConversationId,
+        head_message_id: Option<MessageId>,
         role: Role,
         parts: Vec<InsertPart>,
     },
-    /// Insert one conversation-level tool schema.
+    /// Insert one root-scoped tool schema.
     InsertToolSchema {
         conversation_id: ConversationId,
         tool_schema: ToolSchema,
@@ -49,6 +43,7 @@ pub enum Command {
     /// Print full read-only runtime state as JSON for developer inspection.
     Inspect {
         conversation_id: ConversationId,
+        head_message_id: Option<MessageId>,
         model: Option<ModelName>,
     },
     /// List provider tools that can be attached to conversations.
@@ -244,10 +239,6 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [command, json_flag] if command == "ls" && json_flag == "--json" => {
             Command::List { json: true }
         }
-        [command, conversation_id, message_id] if command == "activate" => Command::Activate {
-            conversation_id: ConversationId::new(conversation_id.as_str()),
-            message_id: MessageId::new(message_id.as_str()),
-        },
         [command, conversation_id] if command == "show" => {
             Command::Show(ConversationId::new(conversation_id.as_str()))
         }
@@ -257,6 +248,7 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         [command, conversation_id, json_flag] if command == "inspect" && json_flag == "--json" => {
             Command::Inspect {
                 conversation_id: ConversationId::new(conversation_id.as_str()),
+                head_message_id: None,
                 model: None,
             }
         }
@@ -265,6 +257,39 @@ fn command_from_args(args: impl IntoIterator<Item = String>) -> Command {
         {
             Command::Inspect {
                 conversation_id: ConversationId::new(conversation_id.as_str()),
+                head_message_id: None,
+                model: Some(ModelName::new(model.as_str())),
+            }
+        }
+        [
+            command,
+            conversation_id,
+            json_flag,
+            head_flag,
+            head_message_id,
+        ] if command == "inspect" && json_flag == "--json" && head_flag == "--head" => {
+            Command::Inspect {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                head_message_id: Some(MessageId::new(head_message_id.as_str())),
+                model: None,
+            }
+        }
+        [
+            command,
+            conversation_id,
+            json_flag,
+            head_flag,
+            head_message_id,
+            model_flag,
+            model,
+        ] if command == "inspect"
+            && json_flag == "--json"
+            && head_flag == "--head"
+            && model_flag == "--model" =>
+        {
+            Command::Inspect {
+                conversation_id: ConversationId::new(conversation_id.as_str()),
+                head_message_id: Some(MessageId::new(head_message_id.as_str())),
                 model: Some(ModelName::new(model.as_str())),
             }
         }
@@ -407,12 +432,23 @@ fn parse_insert_command(args: &[String]) -> Command {
 
 /// Parses `windie insert <conversation_id> message --role <role> [--text <text>] [--image <path>]...`.
 fn parse_insert_message_command(conversation_id: &str, args: &[String]) -> Command {
+    let mut head_message_id = None;
     let mut role = None;
     let mut parts = Vec::new();
     let mut index = 0;
 
     while index < args.len() {
         match args.get(index).map(String::as_str) {
+            Some("--head") => {
+                let Some(value) = args.get(index + 1) else {
+                    return Command::Invalid;
+                };
+                if head_message_id.is_some() {
+                    return Command::Invalid;
+                }
+                head_message_id = Some(MessageId::new(value.as_str()));
+                index += 2;
+            }
             Some("--role") => {
                 let Some(value) = args.get(index + 1) else {
                     return Command::Invalid;
@@ -450,6 +486,7 @@ fn parse_insert_message_command(conversation_id: &str, args: &[String]) -> Comma
 
     Command::InsertMessage {
         conversation_id: ConversationId::new(conversation_id),
+        head_message_id,
         role,
         parts,
     }
@@ -954,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_activate_command() {
+    fn rejects_activate_command() {
         let command = command_from_args([
             "windie".to_string(),
             "activate".to_string(),
@@ -962,13 +999,7 @@ mod tests {
             "message-id".to_string(),
         ]);
 
-        assert!(matches!(
-            command,
-            Command::Activate {
-                conversation_id,
-                message_id,
-            } if conversation_id.as_str() == "conversation-id" && message_id.as_str() == "message-id"
-        ));
+        assert!(matches!(command, Command::Invalid));
     }
 
     #[test]
@@ -995,6 +1026,7 @@ mod tests {
             command,
             Command::InsertMessage {
                 conversation_id,
+                head_message_id: None,
                 role: Role::User,
                 parts,
             } if conversation_id.as_str() == "conversation-id"
@@ -1021,6 +1053,7 @@ mod tests {
             command,
             Command::InsertMessage {
                 conversation_id,
+                head_message_id: None,
                 role: Role::User,
                 parts,
             } if conversation_id.as_str() == "conversation-id"
@@ -1052,6 +1085,7 @@ mod tests {
             command,
             Command::InsertMessage {
                 conversation_id,
+                head_message_id: None,
                 role: Role::User,
                 parts,
             } if conversation_id.as_str() == "conversation-id"
@@ -1086,6 +1120,7 @@ mod tests {
             command,
             Command::InsertMessage {
                 conversation_id,
+                head_message_id: None,
                 role: Role::User,
                 parts,
             } if conversation_id.as_str() == "conversation-id"
@@ -1115,6 +1150,7 @@ mod tests {
             command,
             Command::InsertMessage {
                 conversation_id,
+                head_message_id: None,
                 role: Role::User,
                 parts,
             } if conversation_id.as_str() == "conversation-id"
@@ -1421,6 +1457,7 @@ mod tests {
             command,
             Command::Inspect {
                 conversation_id,
+                head_message_id: None,
                 model: None,
             } if conversation_id.as_str() == "conversation-id"
         ));
@@ -1441,6 +1478,7 @@ mod tests {
             command,
             Command::Inspect {
                 conversation_id,
+                head_message_id: None,
                 model: Some(model),
             } if conversation_id.as_str() == "conversation-id"
                 && model.as_str() == "anthropic/claude-3-5-haiku"

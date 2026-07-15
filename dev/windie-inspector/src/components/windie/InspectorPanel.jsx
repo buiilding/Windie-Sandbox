@@ -60,10 +60,11 @@ export default function InspectorPanel() {
   const {
     activeConv,
     selectedNodeId,
+    selectedPathNodes,
     setSelectedNodeId,
     setSystemPrompt,
     setToolApprovalMode,
-    setActivePathToLeaf,
+    selectPathHead,
     forkFromMessage,
     truncateAfter,
     removeMessage,
@@ -91,7 +92,11 @@ export default function InspectorPanel() {
   }, [activeConv?.id, activeConv?.systemPrompt]);
 
   const selectedNode = selectedNodeId ? activeConv?.nodes[selectedNodeId] : null;
-  const onActivePath = selectedNode && activeConv.activePath.includes(selectedNodeId);
+  const selectedPathIds = useMemo(
+    () => new Set(selectedPathNodes.map((node) => node.id)),
+    [selectedPathNodes]
+  );
+  const onSelectedPath = selectedNode && selectedPathIds.has(selectedNodeId);
   const attachedToolNames = useMemo(
     () => new Set(toolSchemas.map((schema) => schema.name)),
     [toolSchemas]
@@ -222,14 +227,13 @@ export default function InspectorPanel() {
           </div>
         </Section>
 
-        {/* Active Path */}
-        <Section title="active path" testId="inspector-section-active-path" defaultOpen={false}>
+        {/* Selected Path */}
+        <Section title="selected path" testId="inspector-section-active-path" defaultOpen={false}>
           <div className="font-mono text-[10px] text-muted-foreground mb-1.5">
-            {activeConv.activePath.length} nodes
+            {selectedPathNodes.length} nodes
           </div>
           <div className="space-y-0.5">
-            {activeConv.activePath.map((id, i) => {
-              const n = activeConv.nodes[id];
+            {selectedPathNodes.map((n, i) => {
               if (!n) return null;
               const token = ROLE_TOKENS[n.message.role];
               const isSel = id === selectedNodeId;
@@ -330,7 +334,7 @@ export default function InspectorPanel() {
               <KV
                 k="on path"
                 v={
-                  onActivePath ? (
+                  onSelectedPath ? (
                     <span className="text-[hsl(var(--accent))]">yes</span>
                   ) : (
                     <span className="text-muted-foreground">no</span>
@@ -356,8 +360,8 @@ export default function InspectorPanel() {
                 <button
                   data-testid="inspector-action-set-path"
                   onClick={() => {
-                    setActivePathToLeaf(activeConv.id, selectedNode.id);
-                    toast.message("active path set to selection");
+                    selectPathHead(activeConv.id, selectedNode.id);
+                    toast.message("selected path set to selection");
                   }}
                   className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest"
                 >

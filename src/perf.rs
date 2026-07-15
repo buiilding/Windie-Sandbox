@@ -56,7 +56,7 @@ const FAKE_MCP_COMMAND: McpCommand = McpCommand {
     env: &[],
 };
 
-const REPORT_FORMAT_VERSION: u32 = 3;
+const REPORT_FORMAT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -136,15 +136,15 @@ pub struct PerformanceBaseline {
     pub conversation_id: Option<ConversationId>,
     pub store_open: Option<Duration>,
     pub conversation_load: Option<Duration>,
-    pub active_message_lookup: Option<Duration>,
-    pub active_path_row_load: Option<Duration>,
-    pub active_path_part_load: Option<Duration>,
+    pub head_message_lookup: Option<Duration>,
+    pub path_row_load: Option<Duration>,
+    pub path_part_load: Option<Duration>,
     pub tree_load: Option<Duration>,
     pub tree_row_load: Option<Duration>,
     pub tree_part_load: Option<Duration>,
     pub tool_schema_load: Option<Duration>,
     pub context_build: Option<Duration>,
-    pub context_active_path_load: Option<Duration>,
+    pub context_path_load: Option<Duration>,
     pub context_system_prompt_load: Option<Duration>,
     pub context_compaction_load: Option<Duration>,
     pub context_flatten: Option<Duration>,
@@ -155,8 +155,8 @@ pub struct PerformanceBaseline {
     pub splice_remove: Option<Duration>,
     pub truncate: Option<Duration>,
     pub context_build_after_tool_chain: Option<Duration>,
-    pub active_path_load_100: Option<Duration>,
-    pub active_path_load_1000: Option<Duration>,
+    pub path_load_100: Option<Duration>,
+    pub path_load_1000: Option<Duration>,
     pub pending_tool_approval_scan_long_path: Option<Duration>,
     pub pending_tool_approval_scan_deep_chain: Option<Duration>,
     pub prepare_run_head_no_tools: Option<Duration>,
@@ -208,17 +208,17 @@ pub struct PerformanceReport {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerformanceSample {
     pub store_open_us: Option<u64>,
-    pub active_path_load_us: Option<u64>,
-    pub active_message_lookup_us: Option<u64>,
-    pub active_path_row_load_us: Option<u64>,
-    pub active_path_part_load_us: Option<u64>,
+    pub path_load_us: Option<u64>,
+    pub head_message_lookup_us: Option<u64>,
+    pub path_row_load_us: Option<u64>,
+    pub path_part_load_us: Option<u64>,
     pub tree_load_us: Option<u64>,
     pub tree_row_load_us: Option<u64>,
     pub tree_part_load_us: Option<u64>,
     #[serde(default)]
     pub tool_schema_load_us: Option<u64>,
     pub context_build_us: Option<u64>,
-    pub context_active_path_load_us: Option<u64>,
+    pub context_path_load_us: Option<u64>,
     pub context_system_prompt_load_us: Option<u64>,
     pub context_compaction_load_us: Option<u64>,
     pub context_flatten_us: Option<u64>,
@@ -237,9 +237,9 @@ pub struct PerformanceSample {
     #[serde(default)]
     pub context_build_after_tool_chain_us: Option<u64>,
     #[serde(default)]
-    pub active_path_load_100_us: Option<u64>,
+    pub path_load_100_us: Option<u64>,
     #[serde(default)]
-    pub active_path_load_1000_us: Option<u64>,
+    pub path_load_1000_us: Option<u64>,
     #[serde(default)]
     pub pending_tool_approval_scan_long_path_us: Option<u64>,
     #[serde(default)]
@@ -274,7 +274,7 @@ pub struct PerformanceSample {
     pub provider_tool_attach_load_us: Option<u64>,
     #[serde(default)]
     pub fake_mcp_list_call_us: Option<u64>,
-    pub active_path_messages: Option<usize>,
+    pub path_messages: Option<usize>,
     pub tree_messages: Option<usize>,
     #[serde(default)]
     pub requested_tool_calls: Option<usize>,
@@ -296,17 +296,17 @@ pub struct PerformanceSample {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerformanceSummary {
     pub store_open: Option<DurationMetric>,
-    pub active_path_load: Option<DurationMetric>,
-    pub active_message_lookup: Option<DurationMetric>,
-    pub active_path_row_load: Option<DurationMetric>,
-    pub active_path_part_load: Option<DurationMetric>,
+    pub path_load: Option<DurationMetric>,
+    pub head_message_lookup: Option<DurationMetric>,
+    pub path_row_load: Option<DurationMetric>,
+    pub path_part_load: Option<DurationMetric>,
     pub tree_load: Option<DurationMetric>,
     pub tree_row_load: Option<DurationMetric>,
     pub tree_part_load: Option<DurationMetric>,
     #[serde(default)]
     pub tool_schema_load: Option<DurationMetric>,
     pub context_build: Option<DurationMetric>,
-    pub context_active_path_load: Option<DurationMetric>,
+    pub context_path_load: Option<DurationMetric>,
     pub context_system_prompt_load: Option<DurationMetric>,
     pub context_compaction_load: Option<DurationMetric>,
     pub context_flatten: Option<DurationMetric>,
@@ -325,9 +325,9 @@ pub struct PerformanceSummary {
     #[serde(default)]
     pub context_build_after_tool_chain: Option<DurationMetric>,
     #[serde(default)]
-    pub active_path_load_100: Option<DurationMetric>,
+    pub path_load_100: Option<DurationMetric>,
     #[serde(default)]
-    pub active_path_load_1000: Option<DurationMetric>,
+    pub path_load_1000: Option<DurationMetric>,
     #[serde(default)]
     pub pending_tool_approval_scan_long_path: Option<DurationMetric>,
     #[serde(default)]
@@ -404,8 +404,8 @@ struct RuntimeBenchmarkTimings {
     splice_remove: Duration,
     truncate: Duration,
     context_build_after_tool_chain: Duration,
-    active_path_load_100: Duration,
-    active_path_load_1000: Duration,
+    path_load_100: Duration,
+    path_load_1000: Duration,
     pending_tool_approval_scan_long_path: Duration,
     pending_tool_approval_scan_deep_chain: Duration,
     prepare_run_head_no_tools: Duration,
@@ -423,7 +423,7 @@ struct RuntimeBenchmarkTimings {
     context_build_with_image_parts: Duration,
     provider_tool_attach_load: Duration,
     fake_mcp_list_call: Duration,
-    active_path_messages: usize,
+    path_messages: usize,
     tree_messages: usize,
     requested_tool_calls: usize,
     resolved_tool_results: usize,
@@ -435,7 +435,7 @@ struct RuntimeBenchmarkTimings {
 /// Counts and duration from the context-after-tool-chain scenario.
 struct RuntimeContextBenchmark {
     duration: Duration,
-    active_path_messages: usize,
+    path_messages: usize,
     tree_messages: usize,
     requested_tool_calls: usize,
     resolved_tool_results: usize,
@@ -459,15 +459,15 @@ pub async fn run(
         conversation_id,
         store_open: None,
         conversation_load: None,
-        active_message_lookup: None,
-        active_path_row_load: None,
-        active_path_part_load: None,
+        head_message_lookup: None,
+        path_row_load: None,
+        path_part_load: None,
         tree_load: None,
         tree_row_load: None,
         tree_part_load: None,
         tool_schema_load: None,
         context_build: None,
-        context_active_path_load: None,
+        context_path_load: None,
         context_system_prompt_load: None,
         context_compaction_load: None,
         context_flatten: None,
@@ -478,8 +478,8 @@ pub async fn run(
         splice_remove: None,
         truncate: None,
         context_build_after_tool_chain: None,
-        active_path_load_100: None,
-        active_path_load_1000: None,
+        path_load_100: None,
+        path_load_1000: None,
         pending_tool_approval_scan_long_path: None,
         pending_tool_approval_scan_deep_chain: None,
         prepare_run_head_no_tools: None,
@@ -521,29 +521,28 @@ pub async fn run(
                 .expect("conversation benchmark requires conversation id");
 
             let load_started = Instant::now();
-            let active_message_lookup_started = Instant::now();
-            let active_message_id = store.active_message_id(conversation_id)?;
-            let active_message_lookup = active_message_lookup_started.elapsed();
-            let active_path = if let Some(active_message_id) = active_message_id.as_ref() {
+            let head_lookup_started = Instant::now();
+            let head_message_id = latest_message_id(&store, conversation_id)?;
+            let head_message_lookup = head_lookup_started.elapsed();
+            let path = if let Some(head_message_id) = head_message_id.as_ref() {
                 let row_started = Instant::now();
-                let messages =
-                    store.load_path_to_message_rows(conversation_id, active_message_id)?;
+                let messages = store.load_path_to_message_rows(conversation_id, head_message_id)?;
                 let row_load = row_started.elapsed();
 
                 let part_started = Instant::now();
                 let mut messages = messages;
                 store
                     .attach_message_parts(&mut messages)
-                    .context("failed to load active path parts")?;
+                    .context("failed to load path parts")?;
                 let part_load = part_started.elapsed();
 
                 (messages, row_load, part_load)
             } else {
                 (Vec::new(), Duration::ZERO, Duration::ZERO)
             };
-            let loaded_messages = active_path.0.len();
-            let active_path_row_load = active_path.1;
-            let active_path_part_load = active_path.2;
+            let loaded_messages = path.0.len();
+            let path_row_load = path.1;
+            let path_part_load = path.2;
             let conversation_load = load_started.elapsed();
 
             let tree_started = Instant::now();
@@ -560,16 +559,22 @@ pub async fn run(
             let tree_load = tree_started.elapsed();
 
             let tool_schema_started = Instant::now();
-            let _ = store.load_tool_schemas(conversation_id)?;
+            let _ = store.load_tool_schemas_for_head(conversation_id, head_message_id.as_ref())?;
             let tool_schema_load = tool_schema_started.elapsed();
 
             let context_started = Instant::now();
-            let context_active_path_started = Instant::now();
-            let context_active_path = store.load_active_path(conversation_id)?;
-            let context_active_path_load = context_active_path_started.elapsed();
+            let context_path_started = Instant::now();
+            let context_path = match head_message_id.as_ref() {
+                Some(head_message_id) => {
+                    store.load_path_to_message(conversation_id, head_message_id)?
+                }
+                None => Vec::new(),
+            };
+            let context_path_load = context_path_started.elapsed();
 
             let context_system_prompt_started = Instant::now();
-            let context_system_prompt = store.system_prompt(conversation_id)?;
+            let _context_system_prompt = store
+                .effective_system_prompt_for_head(conversation_id, head_message_id.as_ref())?;
             let context_system_prompt_load = context_system_prompt_started.elapsed();
 
             let context_compaction_started = Instant::now();
@@ -578,8 +583,7 @@ pub async fn run(
 
             let context_flatten_started = Instant::now();
             let _ = ContextBuilder::flatten(ContextParts {
-                active_path: context_active_path,
-                system_prompt: context_system_prompt,
+                path: context_path,
                 compaction: context_compaction,
             });
             let context_flatten = context_flatten_started.elapsed();
@@ -587,15 +591,15 @@ pub async fn run(
 
             baseline.store_open = Some(store_open);
             baseline.conversation_load = Some(conversation_load);
-            baseline.active_message_lookup = Some(active_message_lookup);
-            baseline.active_path_row_load = Some(active_path_row_load);
-            baseline.active_path_part_load = Some(active_path_part_load);
+            baseline.head_message_lookup = Some(head_message_lookup);
+            baseline.path_row_load = Some(path_row_load);
+            baseline.path_part_load = Some(path_part_load);
             baseline.tree_load = Some(tree_load);
             baseline.tree_row_load = Some(tree_row_load);
             baseline.tree_part_load = Some(tree_part_load);
             baseline.tool_schema_load = Some(tool_schema_load);
             baseline.context_build = Some(context_build);
-            baseline.context_active_path_load = Some(context_active_path_load);
+            baseline.context_path_load = Some(context_path_load);
             baseline.context_system_prompt_load = Some(context_system_prompt_load);
             baseline.context_compaction_load = Some(context_compaction_load);
             baseline.context_flatten = Some(context_flatten);
@@ -611,8 +615,8 @@ pub async fn run(
             baseline.splice_remove = Some(runtime.splice_remove);
             baseline.truncate = Some(runtime.truncate);
             baseline.context_build_after_tool_chain = Some(runtime.context_build_after_tool_chain);
-            baseline.active_path_load_100 = Some(runtime.active_path_load_100);
-            baseline.active_path_load_1000 = Some(runtime.active_path_load_1000);
+            baseline.path_load_100 = Some(runtime.path_load_100);
+            baseline.path_load_1000 = Some(runtime.path_load_1000);
             baseline.pending_tool_approval_scan_long_path =
                 Some(runtime.pending_tool_approval_scan_long_path);
             baseline.pending_tool_approval_scan_deep_chain =
@@ -636,7 +640,7 @@ pub async fn run(
             baseline.context_build_with_image_parts = Some(runtime.context_build_with_image_parts);
             baseline.provider_tool_attach_load = Some(runtime.provider_tool_attach_load);
             baseline.fake_mcp_list_call = Some(runtime.fake_mcp_list_call);
-            baseline.loaded_messages = Some(runtime.active_path_messages);
+            baseline.loaded_messages = Some(runtime.path_messages);
             baseline.tree_messages = Some(runtime.tree_messages);
             baseline.requested_tool_calls = Some(runtime.requested_tool_calls);
             baseline.resolved_tool_results = Some(runtime.resolved_tool_results);
@@ -684,8 +688,8 @@ fn apply_benchmark_categories(
         baseline.truncated_messages = None;
     }
     if !categories.contains(&BenchmarkCategory::Persistence) {
-        baseline.active_path_load_100 = None;
-        baseline.active_path_load_1000 = None;
+        baseline.path_load_100 = None;
+        baseline.path_load_1000 = None;
         baseline.loaded_messages = None;
         baseline.tree_messages = None;
     }
@@ -801,8 +805,8 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     let (splice_remove, deleted_messages, promoted_children) = benchmark_splice_remove()?;
     let (truncate, truncated_messages) = benchmark_truncate()?;
     let context = benchmark_context_after_tool_chain()?;
-    let active_path_load_100 = benchmark_active_path_load(SCALE_PATH_MESSAGES)?;
-    let active_path_load_1000 = benchmark_active_path_load(LARGE_SCALE_PATH_MESSAGES)?;
+    let path_load_100 = benchmark_path_load(SCALE_PATH_MESSAGES)?;
+    let path_load_1000 = benchmark_path_load(LARGE_SCALE_PATH_MESSAGES)?;
     let pending_tool_approval_scan_long_path = benchmark_pending_tool_approval_scan_long_path()?;
     let pending_tool_approval_scan_deep_chain = benchmark_pending_tool_approval_scan_deep_chain()?;
     let prepare_run_head_no_tools = benchmark_prepare_run_head_no_tools()?;
@@ -831,8 +835,8 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
         splice_remove,
         truncate,
         context_build_after_tool_chain: context.duration,
-        active_path_load_100,
-        active_path_load_1000,
+        path_load_100,
+        path_load_1000,
         pending_tool_approval_scan_long_path,
         pending_tool_approval_scan_deep_chain,
         prepare_run_head_no_tools,
@@ -850,7 +854,7 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
         context_build_with_image_parts,
         provider_tool_attach_load,
         fake_mcp_list_call,
-        active_path_messages: context.active_path_messages,
+        path_messages: context.path_messages,
         tree_messages: context.tree_messages,
         requested_tool_calls: context.requested_tool_calls,
         resolved_tool_results: context.resolved_tool_results,
@@ -860,10 +864,10 @@ fn run_runtime_benchmark() -> Result<RuntimeBenchmarkTimings> {
     })
 }
 
-fn prepare_active_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
+fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
     let registry = ToolProviderRegistry::new();
     let events = NoopRuntimeEventSink;
-    let mut head_message_id = store.active_message_id(conversation_id)?;
+    let mut head_message_id = latest_message_id(store, conversation_id)?;
 
     prepare_head_turn(
         store,
@@ -874,12 +878,12 @@ fn prepare_active_head_turn(store: &mut Store, conversation_id: &ConversationId)
     )
 }
 
-fn pending_active_head_approvals(
+fn pending_latest_head_approvals(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Vec<crate::tool::ToolApprovalRequest>> {
     let registry = ToolProviderRegistry::new();
-    let head_message_id = store.active_message_id(conversation_id)?;
+    let head_message_id = latest_message_id(store, conversation_id)?;
 
     pending_approvals_at_head(
         store,
@@ -892,12 +896,12 @@ fn pending_active_head_approvals(
     )
 }
 
-fn deny_active_head_tool_call(
+fn deny_latest_head_tool_call(
     store: &mut Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<()> {
-    let head_message_id = store.active_message_id(conversation_id)?;
+    let head_message_id = latest_message_id(store, conversation_id)?;
     let pending = load_pending_tool_call_at_head(
         store,
         conversation_id,
@@ -910,19 +914,19 @@ fn deny_active_head_tool_call(
     Ok(())
 }
 
-/// Measures query preparation on a minimal ready active path.
+/// Measures query preparation on a minimal ready path.
 fn benchmark_prepare_head_turn() -> Result<Duration> {
     with_runtime_store("prepare-run-head-turn", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         insert_user_message(store, &conversation_id, None, "ready")?;
 
         let started = Instant::now();
-        prepare_active_head_turn(store, &conversation_id)?;
+        prepare_latest_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
 
-/// Measures active-path scanning for the next approval-required tool call.
+/// Measures path scanning for the next approval-required tool call.
 fn benchmark_pending_tool_approval_scan() -> Result<Duration> {
     with_runtime_store("pending-tool-approval-scan", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
@@ -941,7 +945,7 @@ fn benchmark_pending_tool_approval_scan() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        let approvals = pending_active_head_approvals(store, &conversation_id)?;
+        let approvals = pending_latest_head_approvals(store, &conversation_id)?;
         let duration = started.elapsed();
         debug_assert_eq!(approvals.len(), 1);
 
@@ -988,7 +992,7 @@ fn benchmark_deny_tool_result_persist() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        deny_active_head_tool_call(store, &conversation_id, &call.id)?;
+        deny_latest_head_tool_call(store, &conversation_id, &call.id)?;
         Ok(started.elapsed())
     })
 }
@@ -1059,19 +1063,21 @@ fn benchmark_context_after_tool_chain() -> Result<RuntimeContextBenchmark> {
         )?;
         let first_result_id =
             insert_tool_result(store, &conversation_id, &assistant_id, &first_call.id)?;
-        let _second_result_id =
+        let second_result_id =
             insert_tool_result(store, &conversation_id, &first_result_id, &second_call.id)?;
 
-        let active_path_messages = store.load_active_path(&conversation_id)?.len();
+        let path_messages = store
+            .load_path_to_message(&conversation_id, &second_result_id)?
+            .len();
         let tree_messages = store.load_message_tree(&conversation_id)?.len();
 
         let started = Instant::now();
-        let _ = ContextBuilder::build(store, &conversation_id)?;
+        let _ = ContextBuilder::build_messages(store, &conversation_id, Some(&second_result_id))?;
         let duration = started.elapsed();
 
         Ok(RuntimeContextBenchmark {
             duration,
-            active_path_messages,
+            path_messages,
             tree_messages,
             requested_tool_calls: 2,
             resolved_tool_results: 2,
@@ -1079,14 +1085,15 @@ fn benchmark_context_after_tool_chain() -> Result<RuntimeContextBenchmark> {
     })
 }
 
-/// Measures active-path loading for a generated message chain.
-fn benchmark_active_path_load(message_count: usize) -> Result<Duration> {
-    with_runtime_store(&format!("active-path-load-{message_count}"), |store| {
+/// Measures explicit path loading for a generated message chain.
+fn benchmark_path_load(message_count: usize) -> Result<Duration> {
+    with_runtime_store(&format!("path-load-{message_count}"), |store| {
         let conversation_id = store.create_conversation("openai/test")?;
-        create_message_chain(store, &conversation_id, message_count)?;
+        let head_message_id = create_message_chain(store, &conversation_id, message_count)?
+            .expect("message chain fixture should have a head");
 
         let started = Instant::now();
-        let messages = store.load_active_path(&conversation_id)?;
+        let messages = store.load_path_to_message(&conversation_id, &head_message_id)?;
         let duration = started.elapsed();
         debug_assert_eq!(messages.len(), message_count);
 
@@ -1111,7 +1118,7 @@ fn benchmark_pending_tool_approval_scan_long_path() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        let approvals = pending_active_head_approvals(store, &conversation_id)?;
+        let approvals = pending_latest_head_approvals(store, &conversation_id)?;
         let duration = started.elapsed();
         debug_assert_eq!(approvals.len(), 1);
 
@@ -1147,7 +1154,7 @@ fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
         }
 
         let started = Instant::now();
-        let approvals = pending_active_head_approvals(store, &conversation_id)?;
+        let approvals = pending_latest_head_approvals(store, &conversation_id)?;
         let duration = started.elapsed();
         debug_assert_eq!(approvals.len(), 1);
 
@@ -1155,14 +1162,14 @@ fn benchmark_pending_tool_approval_scan_deep_chain() -> Result<Duration> {
     })
 }
 
-/// Measures query preparation on a plain completed active path.
+/// Measures query preparation on a plain completed path.
 fn benchmark_prepare_run_head_no_tools() -> Result<Duration> {
     with_runtime_store("prepare-run-head-no-tools", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
 
         let started = Instant::now();
-        prepare_active_head_turn(store, &conversation_id)?;
+        prepare_latest_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
@@ -1174,7 +1181,7 @@ fn benchmark_prepare_run_head_completed_tool_chain() -> Result<Duration> {
         create_completed_tool_chain(store, &conversation_id, TOOL_CHAIN_RESULTS)?;
 
         let started = Instant::now();
-        prepare_active_head_turn(store, &conversation_id)?;
+        prepare_latest_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
@@ -1196,7 +1203,7 @@ fn benchmark_prepare_run_head_requires_approval() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        let result = prepare_active_head_turn(store, &conversation_id);
+        let result = prepare_latest_head_turn(store, &conversation_id);
         let duration = started.elapsed();
         debug_assert!(result.is_err());
 
@@ -1219,7 +1226,7 @@ fn benchmark_prepare_run_head_policy_denied() -> Result<Duration> {
         )?;
 
         let started = Instant::now();
-        prepare_active_head_turn(store, &conversation_id)?;
+        prepare_latest_head_turn(store, &conversation_id)?;
         Ok(started.elapsed())
     })
 }
@@ -1276,9 +1283,8 @@ fn benchmark_splice_remove_tool_group() -> Result<Duration> {
     with_runtime_store("splice-remove-tool-group", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
         let assistant_id = create_completed_tool_chain(store, &conversation_id, 2)?;
-        let second_result_id = store
-            .active_message_id(&conversation_id)?
-            .expect("tool chain fixture should have active result");
+        let second_result_id = latest_message_id(store, &conversation_id)?
+            .expect("tool chain fixture should have result");
         store.insert_message(
             &conversation_id,
             Some(&second_result_id),
@@ -1323,10 +1329,11 @@ fn benchmark_truncate_large_subtree() -> Result<(Duration, usize)> {
 fn benchmark_context_plain(message_count: usize) -> Result<Duration> {
     with_runtime_store(&format!("context-plain-{message_count}"), |store| {
         let conversation_id = store.create_conversation("openai/test")?;
-        create_message_chain(store, &conversation_id, message_count)?;
+        let head_message_id = create_message_chain(store, &conversation_id, message_count)?
+            .expect("message chain fixture should have a head");
 
         let started = Instant::now();
-        let _ = ContextBuilder::build(store, &conversation_id)?;
+        let _ = ContextBuilder::build_messages(store, &conversation_id, Some(&head_message_id))?;
         Ok(started.elapsed())
     })
 }
@@ -1335,11 +1342,16 @@ fn benchmark_context_plain(message_count: usize) -> Result<Duration> {
 fn benchmark_context_with_system_prompt() -> Result<Duration> {
     with_runtime_store("context-with-system-prompt", |store| {
         let conversation_id = store.create_conversation("openai/test")?;
-        create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?;
-        store.set_system_prompt(&conversation_id, "You are a concise local runtime.")?;
+        let head_message_id = create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?
+            .expect("message chain fixture should have a head");
+        let prompt_id = store.set_system_prompt_at_head(
+            &conversation_id,
+            Some(&head_message_id),
+            "You are a concise local runtime.",
+        )?;
 
         let started = Instant::now();
-        let _ = ContextBuilder::build(store, &conversation_id)?;
+        let _ = ContextBuilder::build_messages(store, &conversation_id, Some(&prompt_id))?;
         Ok(started.elapsed())
     })
 }
@@ -1372,10 +1384,11 @@ fn benchmark_context_with_compaction() -> Result<Duration> {
         }
 
         let checkpoint_id = checkpoint_id.expect("message chain fixture should have a checkpoint");
+        let head_message_id = parent_id.expect("message chain fixture should have a head");
         store.save_compaction(&conversation_id, &checkpoint_id, "summary")?;
 
         let started = Instant::now();
-        let _ = ContextBuilder::build(store, &conversation_id)?;
+        let _ = ContextBuilder::build_messages(store, &conversation_id, Some(&head_message_id))?;
         Ok(started.elapsed())
     })
 }
@@ -1403,9 +1416,10 @@ fn benchmark_context_with_image_parts() -> Result<Duration> {
             )?;
             parent_id = Some(id);
         }
+        let head_message_id = parent_id.expect("image fixture should have a head");
 
         let started = Instant::now();
-        let _ = ContextBuilder::build(store, &conversation_id)?;
+        let _ = ContextBuilder::build_messages(store, &conversation_id, Some(&head_message_id))?;
         Ok(started.elapsed())
     })
 }
@@ -1499,7 +1513,7 @@ fn attach_test_mcp_tool(store: &mut Store, conversation_id: &ConversationId) -> 
 /// Builds the provider-backed test tool used by runtime benchmarks.
 fn test_tool_definition() -> ToolDefinition {
     ToolDefinition {
-        schema_name: crate::conversation::ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
+        schema_name: crate::tool::ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
         display_name: "Desktop Commander read_file".to_string(),
         description: "Read a file through Desktop Commander.".to_string(),
         parameters: serde_json::json!({"type":"object"}),
@@ -1513,7 +1527,7 @@ fn test_tool_definition() -> ToolDefinition {
     }
 }
 
-/// Creates a linear active path with alternating user and assistant messages.
+/// Creates a linear path with alternating user and assistant messages.
 fn create_message_chain(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -1538,6 +1552,14 @@ fn create_message_chain(
     }
 
     Ok(parent_id)
+}
+
+/// Returns the most recently inserted message ID for a conversation.
+fn latest_message_id(store: &Store, conversation_id: &ConversationId) -> Result<Option<MessageId>> {
+    Ok(store
+        .load_message_rows(conversation_id)?
+        .last()
+        .and_then(|message| message.id.clone()))
 }
 
 /// Creates one assistant tool-call message with all requested results stored.
@@ -1613,16 +1635,16 @@ impl PerformanceSample {
     fn from_baseline(baseline: &PerformanceBaseline) -> Self {
         Self {
             store_open_us: baseline.store_open.map(duration_micros),
-            active_path_load_us: baseline.conversation_load.map(duration_micros),
-            active_message_lookup_us: baseline.active_message_lookup.map(duration_micros),
-            active_path_row_load_us: baseline.active_path_row_load.map(duration_micros),
-            active_path_part_load_us: baseline.active_path_part_load.map(duration_micros),
+            path_load_us: baseline.conversation_load.map(duration_micros),
+            head_message_lookup_us: baseline.head_message_lookup.map(duration_micros),
+            path_row_load_us: baseline.path_row_load.map(duration_micros),
+            path_part_load_us: baseline.path_part_load.map(duration_micros),
             tree_load_us: baseline.tree_load.map(duration_micros),
             tree_row_load_us: baseline.tree_row_load.map(duration_micros),
             tree_part_load_us: baseline.tree_part_load.map(duration_micros),
             tool_schema_load_us: baseline.tool_schema_load.map(duration_micros),
             context_build_us: baseline.context_build.map(duration_micros),
-            context_active_path_load_us: baseline.context_active_path_load.map(duration_micros),
+            context_path_load_us: baseline.context_path_load.map(duration_micros),
             context_system_prompt_load_us: baseline.context_system_prompt_load.map(duration_micros),
             context_compaction_load_us: baseline.context_compaction_load.map(duration_micros),
             context_flatten_us: baseline.context_flatten.map(duration_micros),
@@ -1635,8 +1657,8 @@ impl PerformanceSample {
             context_build_after_tool_chain_us: baseline
                 .context_build_after_tool_chain
                 .map(duration_micros),
-            active_path_load_100_us: baseline.active_path_load_100.map(duration_micros),
-            active_path_load_1000_us: baseline.active_path_load_1000.map(duration_micros),
+            path_load_100_us: baseline.path_load_100.map(duration_micros),
+            path_load_1000_us: baseline.path_load_1000.map(duration_micros),
             pending_tool_approval_scan_long_path_us: baseline
                 .pending_tool_approval_scan_long_path
                 .map(duration_micros),
@@ -1672,7 +1694,7 @@ impl PerformanceSample {
                 .map(duration_micros),
             provider_tool_attach_load_us: baseline.provider_tool_attach_load.map(duration_micros),
             fake_mcp_list_call_us: baseline.fake_mcp_list_call.map(duration_micros),
-            active_path_messages: baseline.loaded_messages,
+            path_messages: baseline.loaded_messages,
             tree_messages: baseline.tree_messages,
             requested_tool_calls: baseline.requested_tool_calls,
             resolved_tool_results: baseline.resolved_tool_results,
@@ -1692,25 +1714,17 @@ impl PerformanceSummary {
     fn from_samples(samples: &[PerformanceSample]) -> Self {
         Self {
             store_open: duration_metric(samples.iter().filter_map(|sample| sample.store_open_us)),
-            active_path_load: duration_metric(
+            path_load: duration_metric(samples.iter().filter_map(|sample| sample.path_load_us)),
+            head_message_lookup: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.active_path_load_us),
+                    .filter_map(|sample| sample.head_message_lookup_us),
             ),
-            active_message_lookup: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_message_lookup_us),
+            path_row_load: duration_metric(
+                samples.iter().filter_map(|sample| sample.path_row_load_us),
             ),
-            active_path_row_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_row_load_us),
-            ),
-            active_path_part_load: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_part_load_us),
+            path_part_load: duration_metric(
+                samples.iter().filter_map(|sample| sample.path_part_load_us),
             ),
             tree_load: duration_metric(samples.iter().filter_map(|sample| sample.tree_load_us)),
             tree_row_load: duration_metric(
@@ -1727,10 +1741,10 @@ impl PerformanceSummary {
             context_build: duration_metric(
                 samples.iter().filter_map(|sample| sample.context_build_us),
             ),
-            context_active_path_load: duration_metric(
+            context_path_load: duration_metric(
                 samples
                     .iter()
-                    .filter_map(|sample| sample.context_active_path_load_us),
+                    .filter_map(|sample| sample.context_path_load_us),
             ),
             context_system_prompt_load: duration_metric(
                 samples
@@ -1776,15 +1790,11 @@ impl PerformanceSummary {
                     .iter()
                     .filter_map(|sample| sample.context_build_after_tool_chain_us),
             ),
-            active_path_load_100: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_load_100_us),
+            path_load_100: duration_metric(
+                samples.iter().filter_map(|sample| sample.path_load_100_us),
             ),
-            active_path_load_1000: duration_metric(
-                samples
-                    .iter()
-                    .filter_map(|sample| sample.active_path_load_1000_us),
+            path_load_1000: duration_metric(
+                samples.iter().filter_map(|sample| sample.path_load_1000_us),
             ),
             pending_tool_approval_scan_long_path: duration_metric(
                 samples
@@ -1912,25 +1922,21 @@ fn comparison_rows(
 ) -> Vec<PerformanceComparisonRow> {
     [
         ("store open", &baseline.store_open, &current.store_open),
+        ("path load", &baseline.path_load, &current.path_load),
         (
-            "active path load",
-            &baseline.active_path_load,
-            &current.active_path_load,
+            "head message lookup",
+            &baseline.head_message_lookup,
+            &current.head_message_lookup,
         ),
         (
-            "active message lookup",
-            &baseline.active_message_lookup,
-            &current.active_message_lookup,
+            "path row load",
+            &baseline.path_row_load,
+            &current.path_row_load,
         ),
         (
-            "active path row load",
-            &baseline.active_path_row_load,
-            &current.active_path_row_load,
-        ),
-        (
-            "active path part/image load",
-            &baseline.active_path_part_load,
-            &current.active_path_part_load,
+            "path part/image load",
+            &baseline.path_part_load,
+            &current.path_part_load,
         ),
         ("tree load", &baseline.tree_load, &current.tree_load),
         (
@@ -1954,9 +1960,9 @@ fn comparison_rows(
             &current.context_build,
         ),
         (
-            "context active path load",
-            &baseline.context_active_path_load,
-            &current.context_active_path_load,
+            "context path load",
+            &baseline.context_path_load,
+            &current.context_path_load,
         ),
         (
             "context system prompt load",
@@ -2005,14 +2011,14 @@ fn comparison_rows(
             &current.context_build_after_tool_chain,
         ),
         (
-            "active path load 100",
-            &baseline.active_path_load_100,
-            &current.active_path_load_100,
+            "path load 100",
+            &baseline.path_load_100,
+            &current.path_load_100,
         ),
         (
-            "active path load 1000",
-            &baseline.active_path_load_1000,
-            &current.active_path_load_1000,
+            "path load 1000",
+            &baseline.path_load_1000,
+            &current.path_load_1000,
         ),
         (
             "pending tool approval scan long path",
@@ -2160,7 +2166,7 @@ mod tests {
             runs: 2,
             samples: vec![],
             summary: PerformanceSummary {
-                active_path_load: Some(DurationMetric {
+                path_load: Some(DurationMetric {
                     min_us: 100,
                     median_us: 100,
                     p95_us: 100,
@@ -2171,7 +2177,7 @@ mod tests {
         };
         let current = PerformanceReport {
             summary: PerformanceSummary {
-                active_path_load: Some(DurationMetric {
+                path_load: Some(DurationMetric {
                     min_us: 125,
                     median_us: 125,
                     p95_us: 125,
@@ -2186,7 +2192,7 @@ mod tests {
         let comparison = compare_reports(&baseline, &current);
 
         assert_eq!(comparison.rows.len(), 1);
-        assert_eq!(comparison.rows[0].name, "active path load");
+        assert_eq!(comparison.rows[0].name, "path load");
         assert_eq!(comparison.rows[0].change_percent, 25.0);
     }
 
@@ -2201,10 +2207,10 @@ mod tests {
             runs: 1,
             samples: vec![PerformanceSample {
                 store_open_us: Some(10),
-                active_path_load_us: Some(20),
+                path_load_us: Some(20),
                 tree_load_us: None,
                 context_build_us: Some(30),
-                active_path_messages: Some(1),
+                path_messages: Some(1),
                 tree_messages: Some(1),
                 gateway_ready_us: None,
                 first_token_us: None,
@@ -2219,7 +2225,7 @@ mod tests {
                     p95_us: 10,
                     max_us: 10,
                 }),
-                active_path_load: Some(DurationMetric {
+                path_load: Some(DurationMetric {
                     min_us: 20,
                     median_us: 20,
                     p95_us: 20,
@@ -2237,7 +2243,7 @@ mod tests {
         };
         let current = PerformanceReport {
             summary: PerformanceSummary {
-                active_path_load: Some(DurationMetric {
+                path_load: Some(DurationMetric {
                     min_us: 40,
                     median_us: 40,
                     p95_us: 40,
@@ -2270,7 +2276,7 @@ mod tests {
             comparison
                 .rows
                 .iter()
-                .any(|row| row.name == "active path load" && row.change_percent == 100.0)
+                .any(|row| row.name == "path load" && row.change_percent == 100.0)
         );
 
         let _ = std::fs::remove_file(baseline_path);

@@ -27,9 +27,7 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
-use crate::conversation::{
-    ConversationId, ImageAssetId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
-};
+use crate::conversation::{ConversationId, ImageAssetId, MessageId, Role, ToolCallId};
 use crate::error::{self, WindieErrorKind};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
@@ -39,7 +37,9 @@ use crate::session::{Session, SessionEventRecord, SessionId, SessionStatus};
 use crate::session_manager::{SessionManager, SessionSubscription};
 use crate::setup;
 use crate::store::{ConversationInfo, Store};
-use crate::tool::{ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId};
+use crate::tool::{
+    ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
+};
 use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
 use crate::wakeup::ContinueWakeup;
 
@@ -169,10 +169,6 @@ fn router(state: ApiState) -> Router {
         .route(
             "/api/conversations/{conversation_id}",
             get(inspect_conversation).delete(remove_conversation),
-        )
-        .route(
-            "/api/conversations/{conversation_id}/activate",
-            post(activate_message),
         )
         .route(
             "/api/conversations/{conversation_id}/messages",
@@ -670,8 +666,14 @@ async fn inspect_conversation(
 ) -> ApiResult<InspectionReport> {
     let conversation_id = ConversationId::new(conversation_id);
     let store = open_store(&state)?;
+    let head_message_id = query.head_message_id.clone().map(MessageId::new);
     let model_override = query.model.clone().map(ModelName::new);
-    let report = operation::inspect_conversation(&store, &conversation_id, model_override)?;
+    let report = operation::inspect_conversation(
+        &store,
+        &conversation_id,
+        head_message_id.as_ref(),
+        model_override,
+    )?;
 
     Ok(Json(report))
 }
@@ -679,41 +681,20 @@ async fn inspect_conversation(
 #[derive(Debug, Deserialize)]
 /// Optional query parameters for inspection.
 struct InspectQuery {
+    head_message_id: Option<String>,
     model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-/// Request body for selecting the active message.
+/// Request body for operations that target a message.
 struct MessageIdRequest {
     message_id: String,
-}
-
-#[derive(Debug, Serialize)]
-/// Response for message selection.
-struct ActiveMessageResponse {
-    active_message_id: String,
-}
-
-/// Selects the active message for a conversation.
-async fn activate_message(
-    State(state): State<ApiState>,
-    Path(conversation_id): Path<String>,
-    Json(request): Json<MessageIdRequest>,
-) -> ApiResult<ActiveMessageResponse> {
-    let conversation_id = ConversationId::new(conversation_id);
-    let message_id = MessageId::new(request.message_id);
-    let mut store = open_store(&state)?;
-
-    operation::activate_message(&mut store, &conversation_id, &message_id)?;
-
-    Ok(Json(ActiveMessageResponse {
-        active_message_id: message_id.as_str().to_string(),
-    }))
 }
 
 #[derive(Debug, Deserialize)]
 /// Request body for inserting one message.
 struct InsertMessageRequest {
+    head_message_id: Option<String>,
     role: Role,
     text: Option<String>,
     #[serde(default)]
@@ -735,16 +716,23 @@ struct MessageIdResponse {
     message_id: String,
 }
 
-/// Inserts one message under the current active message.
+/// Inserts one message under the requested head.
 async fn insert_message(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<InsertMessageRequest>,
 ) -> ApiResult<MessageIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
+    let head_message_id = requested_head_message_id(request.head_message_id);
     let parts = normalize_insert_parts(request.text, request.parts)?;
     let mut store = open_store(&state)?;
-    let message_id = operation::insert_message(&mut store, &conversation_id, request.role, &parts)?;
+    let message_id = operation::insert_message(
+        &mut store,
+        &conversation_id,
+        head_message_id.as_ref(),
+        request.role,
+        &parts,
+    )?;
 
     Ok(Json(MessageIdResponse {
         message_id: message_id.as_str().to_string(),
@@ -878,6 +866,7 @@ struct SystemPromptRequest {
 /// Response for system prompt mutation.
 struct SystemPromptResponse {
     system_prompt: Option<String>,
+    message_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -891,21 +880,6 @@ fn requested_head_message_id(head_message_id: Option<String>) -> Option<MessageI
     head_message_id.map(MessageId::new)
 }
 
-/// Loads the effective prompt for a requested head, or the active path when no
-/// explicit head was requested.
-fn system_prompt_response(
-    store: &Store,
-    conversation_id: &ConversationId,
-    head_message_id: Option<&MessageId>,
-) -> Result<Option<String>> {
-    match head_message_id {
-        Some(head_message_id) => {
-            store.effective_system_prompt_for_head(conversation_id, Some(head_message_id))
-        }
-        None => store.system_prompt(conversation_id),
-    }
-}
-
 /// Sets or clears the system prompt on the active or requested path.
 async fn set_system_prompt(
     State(state): State<ApiState>,
@@ -916,7 +890,7 @@ async fn set_system_prompt(
     let mut store = open_store(&state)?;
 
     let head_message_id = requested_head_message_id(request.head_message_id);
-    match head_message_id.as_ref() {
+    let system_message_id = match head_message_id.as_ref() {
         Some(head_message_id) => operation::set_system_prompt_at_head(
             &mut store,
             &conversation_id,
@@ -924,10 +898,12 @@ async fn set_system_prompt(
             &request.text,
         )?,
         None => operation::set_system_prompt(&mut store, &conversation_id, &request.text)?,
-    }
+    };
 
     Ok(Json(SystemPromptResponse {
-        system_prompt: system_prompt_response(&store, &conversation_id, head_message_id.as_ref())?,
+        system_prompt: store
+            .effective_system_prompt_for_head(&conversation_id, Some(&system_message_id))?,
+        message_id: system_message_id.as_str().to_string(),
     }))
 }
 
@@ -941,17 +917,19 @@ async fn remove_system_prompt(
     let mut store = open_store(&state)?;
 
     let head_message_id = requested_head_message_id(query.head_message_id);
-    match head_message_id.as_ref() {
+    let system_message_id = match head_message_id.as_ref() {
         Some(head_message_id) => operation::remove_system_prompt_at_head(
             &mut store,
             &conversation_id,
             Some(head_message_id),
         )?,
         None => operation::remove_system_prompt(&mut store, &conversation_id)?,
-    }
+    };
 
     Ok(Json(SystemPromptResponse {
-        system_prompt: system_prompt_response(&store, &conversation_id, head_message_id.as_ref())?,
+        system_prompt: store
+            .effective_system_prompt_for_head(&conversation_id, Some(&system_message_id))?,
+        message_id: system_message_id.as_str().to_string(),
     }))
 }
 
@@ -1016,7 +994,7 @@ async fn set_conversation_reasoning(
 }
 
 #[derive(Debug, Deserialize)]
-/// Request body for setting the conversation-level tool approval mode.
+/// Request body for setting the conversation default tool approval mode.
 struct ToolApprovalModeRequest {
     mode: ToolApprovalMode,
 }
@@ -1285,18 +1263,15 @@ async fn truncate_conversation(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
     Json(request): Json<MessageIdRequest>,
-) -> ApiResult<ActiveMessageResponse> {
+) -> ApiResult<MessageIdResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let message_id = MessageId::new(request.message_id);
     let mut store = open_store(&state)?;
 
     operation::truncate_conversation(&mut store, &conversation_id, &message_id)?;
 
-    Ok(Json(ActiveMessageResponse {
-        active_message_id: store
-            .active_message_id(&conversation_id)?
-            .map(|id| id.as_str().to_string())
-            .unwrap_or_default(),
+    Ok(Json(MessageIdResponse {
+        message_id: message_id.as_str().to_string(),
     }))
 }
 
@@ -1616,6 +1591,7 @@ fn session_event_data(record: &SessionEventRecord) -> String {
 /// Request body for counting the current model-facing input tokens.
 struct InputTokensRequest {
     model: Option<String>,
+    head_message_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1664,7 +1640,12 @@ async fn count_input_tokens(
         &conversation_id,
         request.model.map(ModelName::new),
     )?;
-    let context = operation::conversation_input_token_context(&store, &conversation_id)?;
+    let head_message_id = request.head_message_id.map(MessageId::new);
+    let context = operation::conversation_input_token_context(
+        &store,
+        &conversation_id,
+        head_message_id.as_ref(),
+    )?;
     let source = context
         .as_ref()
         .map(|context| context.source().as_str().to_string());
@@ -2151,7 +2132,7 @@ mod tests {
         assert_eq!(inspected["system_prompt"], "Use short answers.");
         assert_eq!(inspected["tool_approval_mode"], "auto_approve_attached");
         assert_eq!(inspected["messages"][0]["content"], "hello from api");
-        assert_eq!(inspected["active_path"][0]["content"], "hello from api");
+        assert!(inspected["path"].as_array().unwrap().is_empty());
         assert_eq!(inspected["model_context"][0]["role"], "system");
         assert_eq!(inspected["tool_schemas"][0]["name"], "run_shell");
         let _ = fs::remove_file(db_path);
@@ -2297,9 +2278,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        store
-            .set_active_message(&conversation_id, &sibling_id)
-            .unwrap();
+        let _ = sibling_id;
         drop(store);
 
         let prompt_response = response_json(
@@ -2336,10 +2315,11 @@ mod tests {
         assert_eq!(tool_response["name"], "branch_tool");
 
         let store = Store::open_at(&db_path).unwrap();
+        let prompt_message_id = MessageId::new(prompt_response["message_id"].as_str().unwrap());
 
         assert_eq!(
             store
-                .effective_system_prompt_for_head(&conversation_id, Some(&branch_id))
+                .effective_system_prompt_for_head(&conversation_id, Some(&prompt_message_id))
                 .unwrap()
                 .as_deref(),
             Some("branch prompt")
@@ -2352,7 +2332,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .load_tool_schemas_for_head(&conversation_id, Some(&branch_id))
+                .load_tool_schemas_for_head(&conversation_id, Some(&prompt_message_id))
                 .unwrap()[0]
                 .name
                 .as_str(),
@@ -2476,11 +2456,7 @@ mod tests {
         let db_path = temp_database_path();
         let app = test_app(db_path.clone());
         let conversation_id = insert_multi_tool_call_assistant(&db_path);
-        let head_message_id = Store::open_at(&db_path)
-            .unwrap()
-            .active_message_id(&conversation_id)
-            .unwrap()
-            .unwrap();
+        let head_message_id = latest_message_id(&db_path, &conversation_id);
         let session_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
 
         let response = app
@@ -2513,11 +2489,7 @@ mod tests {
         let registry = Arc::new(registry_with_cached_test_tool());
         let app = test_app_with_tool_registry(db_path.clone(), registry.clone());
         let conversation_id = insert_attached_multi_tool_call_assistant(&db_path);
-        let head_message_id = Store::open_at(&db_path)
-            .unwrap()
-            .active_message_id(&conversation_id)
-            .unwrap()
-            .unwrap();
+        let head_message_id = latest_message_id(&db_path, &conversation_id);
         let session_id = create_waiting_run(&db_path, &conversation_id, &head_message_id);
 
         let response = app
@@ -2583,7 +2555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_wakeup_starts_session_from_active_head() {
+    async fn query_wakeup_starts_session_from_requested_head() {
         let db_path = temp_database_path();
         let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
         let mut store = Store::open_at(&db_path).unwrap();
@@ -2597,7 +2569,10 @@ mod tests {
             .oneshot(authed_request(
                 Method::POST,
                 &format!("/api/conversations/{conversation_id}/wakeups/query"),
-                Some(json!({"model":"openai/test"})),
+                Some(json!({
+                    "head_message_id": head_message_id.as_str(),
+                    "model":"openai/test"
+                })),
             ))
             .await
             .unwrap();
@@ -2940,6 +2915,16 @@ mod tests {
             .update_session_status(&session_id, SessionStatus::WaitingForApproval, None)
             .unwrap();
         session_id
+    }
+
+    fn latest_message_id(db_path: &PathBuf, conversation_id: &ConversationId) -> MessageId {
+        Store::open_at(db_path)
+            .unwrap()
+            .load_message_tree(conversation_id)
+            .unwrap()
+            .last()
+            .and_then(|message| message.id.clone())
+            .expect("test fixture should have a latest message")
     }
 
     async fn wait_for_run_event_count(

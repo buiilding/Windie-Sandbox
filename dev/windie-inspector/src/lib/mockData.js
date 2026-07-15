@@ -1,7 +1,7 @@
 /**
  * Windie mock data.
  * Conceptual data types:
- *   Conversation: { id, name, model, systemPrompt, rootId, nodes: {id -> Node}, activePath: [id...], updatedAt, tags }
+ *   Conversation: { id, name, model, systemPrompt, rootId, nodes: {id -> Node}, selectedPath: [id...], updatedAt, tags }
  *   Node: { id, parentId, childrenIds: [id], message: Message }
  *   Message: { role: 'system'|'user'|'assistant'|'tool', parts: [Part], metadata?: AssistantMetadata, model?, timestamp, tokens? }
  *   Part: { type: 'text'|'image', text?, url?, alt? }
@@ -141,12 +141,12 @@ const c1 = (() => {
       parts: [
         {
           type: "text",
-          text: "Core primitive: ConversationTree. Every message is a node with a parent and 0..n children. The runtime never mutates history — forks create sibling branches. An ActivePath is just an ordered list of node ids selected from the tree; the model context is derived from that path at query time.\n\nMinimal surface:\n  • append(nodeId, message) -> nodeId\n  • fork(nodeId) -> nodeId (new sibling parent)\n  • set_active_path([nodeIds])\n  • query(path) -> stream",
+          text: "Core primitive: ConversationTree. Every message is a node with a parent and 0..n children. The runtime never mutates history — forks create sibling branches. An SelectedPath is just an ordered list of node ids selected from the tree; the model context is derived from that path at query time.\n\nMinimal surface:\n  • append(nodeId, message) -> nodeId\n  • fork(nodeId) -> nodeId (new sibling parent)\n  • select_selected_path([nodeIds])\n  • query(path) -> stream",
         },
       ],
       metadata: {
         reasoning:
-          "User wants a runtime shape, not a product pitch. Keep it primitive-first. Emphasize immutability of history + explicit active path selection. Avoid mentioning tool execution — out of scope.",
+          "User wants a runtime shape, not a product pitch. Keep it primitive-first. Emphasize immutability of history + explicit selected path selection. Avoid mentioning tool execution — out of scope.",
         annotations: [
           { label: "primitive", note: "ConversationTree is the atom" },
           { label: "invariant", note: "history is append-only; forks == siblings" },
@@ -176,7 +176,7 @@ const c1 = (() => {
       parts: [
         {
           type: "text",
-          text: "Roughly, yes. The tree/path split is right. One correction: your 'context assembler' block belongs inside query(), not as a persistent store. The tree is the store; assembly is a pure function of (tree, activePath, systemPrompt).",
+          text: "Roughly, yes. The tree/path split is right. One correction: your 'context assembler' block belongs inside query(), not as a persistent store. The tree is the store; assembly is a pure function of (tree, selectedPath, systemPrompt).",
         },
       ],
       metadata: {
@@ -215,7 +215,7 @@ const c1 = (() => {
       parts: [
         {
           type: "text",
-          text: '# /etc/windie/runtime.toml\n[runtime]\nmodel_default = "windie-local-32b"\nmax_active_path = 128\nfork_policy   = "copy-on-branch"\n\n[storage]\nbackend = "sqlite"\npath    = "~/.windie/tree.db"\n\n[tools]\nenabled = ["fs.read_file","fs.list_dir","vec.search"]',
+          text: '# /etc/windie/runtime.toml\n[runtime]\nmodel_default = "windie-local-32b"\nmax_selected_path = 128\nfork_policy   = "copy-on-branch"\n\n[storage]\nbackend = "sqlite"\npath    = "~/.windie/tree.db"\n\n[tools]\nenabled = ["fs.read_file","fs.list_dir","vec.search"]',
         },
       ],
       metadata: { toolCallId: "call_01", toolName: "fs.read_file" },
@@ -277,7 +277,7 @@ const c1 = (() => {
       parts: [
         {
           type: "text",
-          text: "edit(nodeId, newMessage) creates a sibling node with the new content and re-points the active path to it. The original node is still in the tree, just no longer on the selected path. Nothing is destructive.",
+          text: "edit(nodeId, newMessage) creates a sibling node with the new content and re-points the selected path to it. The original node is still in the tree, just no longer on the selected path. Nothing is destructive.",
         },
       ],
       tokens: 61,
@@ -287,13 +287,13 @@ const c1 = (() => {
 
   return {
     id: "conv_arch",
-    name: "runtime primitive: tree + active path",
+    name: "runtime primitive: tree + selected path",
     model: "windie-local-32b",
     systemPrompt:
       "You are Windie, a local AI runtime primitive. Respond concisely. When asked to inspect files, use fs.* tools. Prefer plain text over markdown flourishes.",
     rootId: built.rootId,
     nodes: built.nodes,
-    activePath: built.path,
+    selectedPath: built.path,
     alternatePath: [built.path[0], built.path[1], ...branchIds],
     updatedAt: "2026-02-04T10:15:44Z",
     tags: ["runtime", "design"],
@@ -375,7 +375,7 @@ const c2 = (() => {
       "You are Windie. When the user asks for diagnostics, prefer fs.list_dir + fs.read_file. Do not invent file paths.",
     rootId: built.rootId,
     nodes: built.nodes,
-    activePath: built.path,
+    selectedPath: built.path,
     updatedAt: "2026-02-03T18:02:26Z",
     tags: ["debug", "streaming"],
   };
@@ -434,7 +434,7 @@ const c3 = (() => {
       "You are Windie. Refuse anything that requires unattended remote execution — this runtime is local-only by design.",
     rootId: built.rootId,
     nodes: built.nodes,
-    activePath: built.path,
+    selectedPath: built.path,
     updatedAt: "2026-02-02T09:44:17Z",
     tags: ["refusal"],
   };
@@ -507,7 +507,7 @@ const c4 = (() => {
       "You are Windie. When summarizing audio, keep timestamps and speakers explicit.",
     rootId: built.rootId,
     nodes: built.nodes,
-    activePath: built.path,
+    selectedPath: built.path,
     updatedAt: "2026-02-01T14:20:11Z",
     tags: ["audio", "summary"],
   };
@@ -539,7 +539,7 @@ const c5 = (() => {
       parts: [
         {
           type: "text",
-          text: "One-liner: RuntimeRequestPreview is the deterministic projection of (tree, activePath, systemPrompt, conversation model) into the exact payload the runtime would send. It is a *preview* — it must never mutate state.\n\nMinimum fields:\n  • model             (persisted conversation model)\n  • messages          (flattened active path)\n  • tools             (enabled tool schemas)\n  • token_budget      (remaining budget after path)\n  • hash              (stable content hash for reproducibility)",
+          text: "One-liner: RuntimeRequestPreview is the deterministic projection of (tree, selectedPath, systemPrompt, conversation model) into the exact payload the runtime would send. It is a *preview* — it must never mutate state.\n\nMinimum fields:\n  • model             (persisted conversation model)\n  • messages          (flattened selected path)\n  • tools             (enabled tool schemas)\n  • token_budget      (remaining budget after path)\n  • hash              (stable content hash for reproducibility)",
         },
       ],
       metadata: {
@@ -594,7 +594,7 @@ const c5 = (() => {
       "You are Windie. The user is writing a spec. Push back when the spec is ambiguous.",
     rootId: built.rootId,
     nodes: built.nodes,
-    activePath: built.path,
+    selectedPath: built.path,
     updatedAt: "2026-01-31T11:01:07Z",
     tags: ["spec"],
   };
@@ -628,7 +628,7 @@ const c6 = (() => {
     systemPrompt: "You are Windie. Answer in ≤2 lines.",
     rootId: built.rootId,
     nodes: built.nodes,
-    activePath: built.path,
+    selectedPath: built.path,
     updatedAt: "2026-01-30T08:12:06Z",
     tags: ["misc"],
   };

@@ -31,9 +31,7 @@ use anyhow::Result;
 use std::net::SocketAddr;
 
 use crate::cli::{Command, EnvCommand, InsertPart};
-use crate::conversation::{
-    ConversationId, MessageId, Role, ToolCallId, ToolSchema, ToolSchemaName,
-};
+use crate::conversation::{ConversationId, MessageId, Role, ToolCallId};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::operation::MessageInputPart;
@@ -41,7 +39,7 @@ use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
 use crate::session::SessionId;
 use crate::store::Store;
-use crate::tool::{ProviderToolName, ToolProviderId};
+use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
 use crate::tool_provider::ToolProviderRegistry;
 
 const BASE_URL: &str = "http://localhost:8080/v1";
@@ -58,10 +56,6 @@ async fn main() -> Result<()> {
         Command::Api => api().await,
         Command::Inspector => open_inspector(),
         Command::Noop => Ok(()),
-        Command::Activate {
-            conversation_id,
-            message_id,
-        } => activate_message(conversation_id, message_id),
         Command::AttachTool {
             conversation_id,
             provider_id,
@@ -83,17 +77,19 @@ async fn main() -> Result<()> {
         Command::GatewayStop => stop_gateway().await,
         Command::InsertMessage {
             conversation_id,
+            head_message_id,
             role,
             parts,
-        } => insert_message(conversation_id, role, &parts),
+        } => insert_message(conversation_id, head_message_id, role, &parts),
         Command::InsertToolSchema {
             conversation_id,
             tool_schema,
         } => insert_tool_schema(conversation_id, &tool_schema),
         Command::Inspect {
             conversation_id,
+            head_message_id,
             model,
-        } => inspect_conversation(conversation_id, model),
+        } => inspect_conversation(conversation_id, head_message_id, model),
         Command::Tools { provider_id } => list_tools(provider_id),
         Command::Fork {
             conversation_id,
@@ -350,11 +346,11 @@ fn list_conversations(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Loads and prints the active path for one conversation.
+/// Loads and prints all messages for one conversation.
 fn show_conversation(conversation_id: ConversationId) -> Result<()> {
     let store = Store::open()?;
     let output = TerminalOutput;
-    let messages = operation::active_path(&store, &conversation_id)?;
+    let messages = store.load_messages(&conversation_id)?;
 
     output.conversation_messages(&messages);
 
@@ -367,7 +363,7 @@ fn show_tree(conversation_id: ConversationId) -> Result<()> {
     let output = TerminalOutput;
     let tree = operation::conversation_tree(&store, &conversation_id)?;
 
-    output.conversation_tree(&tree.messages, tree.active_message_id.as_ref());
+    output.conversation_tree(&tree.messages);
 
     Ok(())
 }
@@ -377,10 +373,15 @@ fn show_tree(conversation_id: ConversationId) -> Result<()> {
 /// This is the machine-facing inspection path for developer tools. It mirrors
 /// the data used by query execution without sending a provider request or
 /// mutating the conversation.
-fn inspect_conversation(conversation_id: ConversationId, model: Option<ModelName>) -> Result<()> {
+fn inspect_conversation(
+    conversation_id: ConversationId,
+    head_message_id: Option<MessageId>,
+    model: Option<ModelName>,
+) -> Result<()> {
     let store = Store::open()?;
     let output = TerminalOutput;
-    let report = operation::inspect_conversation(&store, &conversation_id, model)?;
+    let report =
+        operation::inspect_conversation(&store, &conversation_id, head_message_id.as_ref(), model)?;
 
     output.inspection_report_json(&report)
 }
@@ -415,14 +416,22 @@ fn attach_tool(
 }
 
 /// Inserts one explicit message into a conversation.
-///
-/// The parent is set to the active message so the store keeps a tree and the
-/// runtime continues from the selected path.
-fn insert_message(conversation_id: ConversationId, role: Role, parts: &[InsertPart]) -> Result<()> {
+fn insert_message(
+    conversation_id: ConversationId,
+    head_message_id: Option<MessageId>,
+    role: Role,
+    parts: &[InsertPart],
+) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
     let input_parts = message_input_parts(parts);
-    let message_id = operation::insert_message(&mut store, &conversation_id, role, &input_parts)?;
+    let message_id = operation::insert_message(
+        &mut store,
+        &conversation_id,
+        head_message_id.as_ref(),
+        role,
+        &input_parts,
+    )?;
 
     output.inserted_message(&message_id);
 
@@ -440,17 +449,6 @@ fn message_input_parts(parts: &[InsertPart]) -> Vec<MessageInputPart> {
         .collect()
 }
 
-/// Selects one message as the active runtime node.
-fn activate_message(conversation_id: ConversationId, message_id: MessageId) -> Result<()> {
-    let mut store = Store::open()?;
-    let output = TerminalOutput;
-
-    operation::activate_message(&mut store, &conversation_id, &message_id)?;
-    output.activated_message(&message_id);
-
-    Ok(())
-}
-
 /// Replaces one message's text without querying the model.
 fn update_message(
     conversation_id: ConversationId,
@@ -466,7 +464,7 @@ fn update_message(
     Ok(())
 }
 
-/// Sets or replaces the conversation-level system prompt.
+/// Sets or replaces the root-scoped system prompt.
 fn set_system_prompt(conversation_id: ConversationId, text: &str) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
@@ -477,7 +475,7 @@ fn set_system_prompt(conversation_id: ConversationId, text: &str) -> Result<()> 
     Ok(())
 }
 
-/// Clears the conversation-level system prompt.
+/// Clears the root-scoped system prompt.
 fn remove_system_prompt(conversation_id: ConversationId) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
@@ -488,7 +486,7 @@ fn remove_system_prompt(conversation_id: ConversationId) -> Result<()> {
     Ok(())
 }
 
-/// Inserts one conversation-level tool schema.
+/// Inserts one root-scoped tool schema.
 fn insert_tool_schema(conversation_id: ConversationId, tool_schema: &ToolSchema) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;
@@ -499,7 +497,7 @@ fn insert_tool_schema(conversation_id: ConversationId, tool_schema: &ToolSchema)
     Ok(())
 }
 
-/// Updates one conversation-level tool schema.
+/// Updates one root-scoped tool schema.
 fn update_tool_schema(
     conversation_id: ConversationId,
     current_name: ToolSchemaName,
@@ -514,7 +512,7 @@ fn update_tool_schema(
     Ok(())
 }
 
-/// Removes one conversation-level tool schema.
+/// Removes one root-scoped tool schema.
 fn remove_tool_schema(conversation_id: ConversationId, name: ToolSchemaName) -> Result<()> {
     let mut store = Store::open()?;
     let output = TerminalOutput;

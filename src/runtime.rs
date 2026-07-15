@@ -2,22 +2,20 @@
 //!
 //! Coordinates runtime flows across output, store, context, and LLM components.
 //! Session-owned execution advances from explicit message heads so clients do not
-//! query from the mutable conversation active path.
+//! query from the mutable conversation path.
 
 use std::collections::HashSet;
 
 use anyhow::Result;
 
 use crate::context::ContextBuilder;
-use crate::conversation::{
-    ConversationId, Message, MessageId, Role, ToolCall, ToolCallId, ToolSchemaName,
-};
+use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, ToolCallId};
 use crate::error;
 use crate::llm::{LlmStreamEvent, PromptCacheRequest, ReasoningRequest, RuntimeLlm};
 use crate::output::RuntimeOutput;
 use crate::policy::{PolicyDecision, ToolPolicy};
 use crate::store::Store;
-use crate::tool::{AttachedTool, ToolApprovalRequest, ToolExecutionResult};
+use crate::tool::{AttachedTool, ToolApprovalRequest, ToolExecutionResult, ToolSchemaName};
 use crate::tool_provider::ToolProviderRegistry;
 
 /// Receives durable runtime state changes during run execution.
@@ -100,7 +98,7 @@ where
         events,
     )?;
 
-    let model_context = ContextBuilder::build_model_context_to_head(
+    let model_context = ContextBuilder::build_model_context(
         store,
         input.conversation_id,
         head_message_id.as_ref(),

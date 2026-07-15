@@ -84,12 +84,15 @@ export async function listModels() {
   }));
 }
 
-export async function countConversationInputTokens(conversationId, model = null) {
+export async function countConversationInputTokens(conversationId, model = null, headMessageId = null) {
   const body = await apiRequest(
     `/api/conversations/${encodeURIComponent(conversationId)}/input-tokens`,
     {
       method: "POST",
-      body: JSON.stringify({ model: model || null }),
+      body: JSON.stringify({
+        model: model || null,
+        head_message_id: headMessageId || null,
+      }),
     }
   );
 
@@ -256,7 +259,7 @@ export function conversationSummaryFromApi(summary) {
     toolApprovalMode: "manual",
     rootId: null,
     nodes: {},
-    activePath: [],
+    selectedPath: [],
     updatedAt: new Date().toISOString(),
     tags: [],
     messageCount: summary.message_count || 0,
@@ -297,14 +300,14 @@ export function conversationFromInspection(report, fallback) {
     }
   }
 
-  const activePath = (report.active_path || [])
+  const selectedPath = (report.path || report.selected_path || [])
     .map((message) => message.id)
     .filter((id) => id && nodes[id]);
   const rootIds = Object.values(nodes)
     .filter((node) => node.parentId === null)
     .map((node) => node.id);
   const rootId =
-    activePath[0] ||
+    selectedPath[0] ||
     rootIds[0] ||
     null;
 
@@ -319,7 +322,7 @@ export function conversationFromInspection(report, fallback) {
     rootId,
     rootIds,
     nodes,
-    activePath,
+    selectedPath,
     updatedAt: new Date().toISOString(),
     tags: fallback?.tags || [],
     messageCount: Object.keys(nodes).length,

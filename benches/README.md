@@ -7,13 +7,13 @@ Conversation benchmark reports include both top-level timings and lower-level
 breakdowns:
 
 ```text
-active message lookup
-active path row load
-active path part/image load
+head message lookup
+path row load
+path part/image load
 tree row load
 tree part/image load
 tool schema load
-context active path load
+context path load
 context system prompt load
 context compaction load
 context flatten
@@ -49,12 +49,12 @@ percentage changes mean the current code is slower.
 mixed conversation tree.
 
 ```text
-active path messages: 100
+path messages: 100
 tree messages: 164
 ```
 
-The fixture includes a conversation-level system prompt, one conversation-level
-tool schema, inserted user/assistant/tool messages, single text messages,
+The fixture includes a root-scoped system prompt, one root-scoped tool schema,
+inserted user/assistant/tool messages, single text messages,
 image-only user messages, single text plus image messages, repeated image
 parts, repeated text parts, interleaved text/image parts, one short inactive
 branch, and five moderate inactive branch chains from the main path.

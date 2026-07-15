@@ -3,7 +3,7 @@
 use super::*;
 use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, MessageId, MessageMetadata, MessagePart,
-    Role, ToolCall, ToolSchema, ToolSchemaName,
+    Role, ToolCall,
 };
 use crate::llm::ReasoningRequest;
 use crate::perf::{
@@ -13,7 +13,7 @@ use crate::perf::{
 use crate::store::Compaction;
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolDefinition, ToolPermission,
-    ToolProviderId, ToolProviderKind, ToolProviderRef,
+    ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
 
 #[test]
@@ -35,7 +35,6 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie models".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
     assert!(lines.contains(&"  windie ls --json".to_string()));
-    assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie show <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie tree <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie inspect <conversation_id> --json".to_string()));
@@ -404,7 +403,7 @@ fn serializes_inspection_report_with_runtime_state() {
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversation_id"], "conversation-id");
-    assert_eq!(value["active_message_id"], "assistant-id");
+    assert_eq!(value["head_message_id"], "assistant-id");
     assert_eq!(value["model"], "anthropic/claude-3-5-haiku");
     assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
@@ -422,7 +421,7 @@ fn serializes_inspection_report_with_runtime_state() {
     );
     assert_eq!(value["messages"][1]["metadata"]["refusal"], "no");
     assert_eq!(value["messages"][1]["metadata"]["reasoning"], "because");
-    assert_eq!(value["active_path"][0]["id"], "user-id");
+    assert_eq!(value["path"][0]["id"], "user-id");
     assert_eq!(value["model_context"][0]["role"], "system");
     assert_eq!(value["latest_compaction"]["id"], "compaction-id");
 }
@@ -456,15 +455,15 @@ fn formats_message_tree_with_active_marker() {
         },
     ];
 
-    let lines = tree_lines(&messages, Some(&MessageId::new("active-id")));
+    let lines = tree_lines(&messages);
 
     assert_eq!(
         lines,
         vec![
             "tree",
-            "  user  root-id  root",
-            "  * assistant  active-id  active",
-            "    assistant  branch-id  branch",
+            "user  root-id  root",
+            "  assistant  active-id  active",
+            "  assistant  branch-id  branch",
         ]
     );
 }

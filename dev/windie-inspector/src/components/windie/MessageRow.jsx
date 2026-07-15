@@ -290,7 +290,6 @@ export default function MessageRow({ node, index, isLast }) {
     truncateAfter,
     removeMessage,
     editMessage,
-    setActivePathToLeaf,
   } = useWindie();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => node.message.parts.find((p) => p.type === "text")?.text || "");

@@ -75,17 +75,21 @@ function layoutTree(conv) {
 export default function TreeOverlay() {
   const {
     activeConv,
+    selectedPathNodes,
     setTreeOverlayOpen,
     selectedNodeId,
     setSelectedNodeId,
-    setActivePathToLeaf,
+    selectPathHead,
     forkFromMessage,
     truncateAfter,
     removeMessage,
   } = useWindie();
 
   const layout = useMemo(() => layoutTree(activeConv), [activeConv]);
-  const pathSet = useMemo(() => new Set(activeConv.activePath), [activeConv.activePath]);
+  const pathSet = useMemo(
+    () => new Set(selectedPathNodes.map((node) => node.id)),
+    [selectedPathNodes]
+  );
 
   return (
     <div
@@ -99,7 +103,7 @@ export default function TreeOverlay() {
           <span className="text-muted-foreground">
             {Object.keys(activeConv.nodes).length} nodes ·{" "}
             {Object.values(activeConv.nodes).filter((n) => n.childrenIds.length > 1).length} branch
-            points · active path {activeConv.activePath.length}
+            points · selected path {selectedPathNodes.length}
           </span>
         </div>
         <button
@@ -224,8 +228,8 @@ export default function TreeOverlay() {
                 node={activeConv.nodes[selectedNodeId]}
                 onPath={pathSet.has(selectedNodeId)}
                 onSetPath={() => {
-                  setActivePathToLeaf(activeConv.id, selectedNodeId);
-                  toast.message("active path set");
+                  selectPathHead(activeConv.id, selectedNodeId);
+                  toast.message("selected path set");
                 }}
                 onFork={() => {
                   forkFromMessage(activeConv.id, selectedNodeId);

@@ -61,9 +61,9 @@ that token in the `X-Windie-Api-Token` header. The localhost inspector at
 
 The API is a JSON test harness over Windie's existing runtime and store
 primitives. It is intended for local tools such as `dev/windie-inspector` to
-test conversation trees, active path selection, message mutation, system
-prompts, attached tools, gateway lifecycle, and run-owned execution without
-shelling out for each operation.
+test conversation trees, explicit-head path inspection, message mutation,
+system prompts, attached tools, gateway lifecycle, and session-owned execution
+without shelling out for each operation.
 
 Initial routes:
 
@@ -78,10 +78,9 @@ POST   /api/gateway/start
 POST   /api/gateway/stop
 GET    /api/conversations
 POST   /api/conversations
-GET    /api/conversations/{conversation_id}
+GET    /api/conversations/{conversation_id}?head_message_id=<message_id>
 DELETE /api/conversations/{conversation_id}
 GET    /api/conversations/{conversation_id}/run-approvals
-POST   /api/conversations/{conversation_id}/activate
 POST   /api/conversations/{conversation_id}/messages
 PATCH  /api/conversations/{conversation_id}/messages/{message_id}
 DELETE /api/conversations/{conversation_id}/messages/{message_id}
@@ -96,6 +95,16 @@ DELETE /api/conversations/{conversation_id}/tool-schemas/{name}
 POST   /api/conversations/{conversation_id}/truncate
 POST   /api/conversations/{conversation_id}/fork
 POST   /api/conversations/{conversation_id}/input-tokens
+POST   /api/conversations/{conversation_id}/sessions
+POST   /api/conversations/{conversation_id}/wakeups/query
+POST   /api/conversations/{conversation_id}/wakeups/continue
+GET    /api/sessions
+GET    /api/sessions/{session_id}
+GET    /api/sessions/{session_id}/approvals
+GET    /api/sessions/{session_id}/events
+POST   /api/sessions/{session_id}/stop
+POST   /api/sessions/{session_id}/approvals/{tool_call_id}/approve
+POST   /api/sessions/{session_id}/approvals/{tool_call_id}/deny
 POST   /api/conversations/{conversation_id}/runs
 GET    /api/runs
 GET    /api/runs/{run_id}
@@ -138,6 +147,8 @@ Run events use server-sent events. `approve` executes and stores the pending
 tool result for that run, then continues the run when no later manual approval
 is waiting. `deny` stores a rejected tool result and follows the same
 continuation rule. Conversations store state; runs own execution and approvals.
+The `/runs` routes are compatibility aliases for the primary `/sessions`
+routes.
 
 ## Environment And Installation
 
@@ -263,11 +274,10 @@ for developer tools.
 windie show <conversation_id>
 ```
 
-Show message previews for the active path in one conversation tree.
+Show all message previews in one conversation tree.
 
-Output includes each active-path message role, message ID, and one-line text
-preview. If the conversation tree has no active messages, it prints
-`no messages`.
+Output includes each message role, message ID, and one-line text preview. If
+the conversation tree has no messages, it prints `no messages`.
 
 ```text
 windie tree <conversation_id>
@@ -275,19 +285,20 @@ windie tree <conversation_id>
 
 Show the full message tree for one conversation tree.
 
-Output includes all branches. Indentation shows parent/child structure. `*`
-marks the active message.
+Output includes all branches. Indentation shows parent/child structure.
 
 ```text
 windie inspect <conversation_id> --json
+windie inspect <conversation_id> --json --head <message_id>
 windie inspect <conversation_id> --json --model <provider/model>
+windie inspect <conversation_id> --json --head <message_id> --model <provider/model>
 ```
 
 Print full read-only runtime state as JSON for developer tools and inspection.
 
-The output includes the conversation ID, active message ID, effective model,
-conversation-level system prompt, conversation-level tool schemas, full message
-tree, active path, exact model-facing context, and latest compaction checkpoint.
+The output includes the conversation ID, requested head message ID, effective
+model, resolved system prompt, resolved tool schemas, full message tree,
+selected path, exact model-facing context, and latest compaction checkpoint.
 Messages include IDs, parent IDs, role, content, ordered parts, and assistant
 metadata. Image parts include asset ID, MIME type, and byte count; raw image
 bytes are not printed.
@@ -299,6 +310,7 @@ not rewrite the persisted conversation model.
 
 ```text
 windie insert <conversation_id> message --role user --text "hello"
+windie insert <conversation_id> message --head <message_id> --role user --text "hello"
 windie insert <conversation_id> message --role user --text "what is this?" --image ./image.png
 windie insert <conversation_id> message --role user --text "compare these" --image ./a.png --image ./b.png
 windie insert <conversation_id> message --role user --text "first" --image ./a.png --text "second" --image ./b.png
@@ -306,9 +318,9 @@ windie insert <conversation_id> message --role user --text "first" --image ./a.p
 
 Insert one message into a conversation tree without querying the model.
 
-The new message is inserted as a child of the active message and becomes the new
-active message. If the conversation tree is empty, the new message becomes the
-root.
+The new message is inserted as a root message unless `--head <message_id>` is
+passed. With `--head`, the new message is inserted as a child of that explicit
+head.
 
 The role must currently be one of:
 
@@ -352,12 +364,12 @@ metadata such as tool calls, reasoning, refusal, audio, and annotations.
 windie set <conversation_id> systemprompt --text "system prompt"
 ```
 
-Set or replace the conversation-level system prompt.
+Set or replace the root-scoped system prompt.
 
-The system prompt is not inserted into the message tree. During a run, Windie
-prepends it to the run's selected path before sending context to Bifrost.
-Setting the system prompt works on an empty conversation tree and also replaces
-an existing system prompt.
+The CLI writes this at the root/default scope. During a run, Windie resolves
+the effective prompt for the requested head and prepends it before sending
+context to Bifrost. The API can also target an explicit head with
+`head_message_id`.
 
 ```text
 windie set <conversation_id> model <provider/model>
@@ -373,7 +385,7 @@ override. It does not rewrite the persisted conversation model.
 windie rm <conversation_id> systemprompt
 ```
 
-Remove the conversation-level system prompt without changing messages.
+Remove the root-scoped system prompt without changing other messages.
 
 ## Raw Tool Schemas
 
@@ -381,7 +393,7 @@ Remove the conversation-level system prompt without changing messages.
 windie insert <conversation_id> toolschema --name test_tool --description "Developer test tool" --parameters '{"type":"object","properties":{"value":{"type":"string"}}}'
 ```
 
-Insert one raw conversation-level tool schema.
+Insert one raw root-scoped tool schema.
 
 A raw tool schema is a developer escape hatch. It is sent to the model during
 a run, but it is attached to the `manual` provider and has no executor unless a
@@ -403,20 +415,9 @@ provider path.
 windie rm <conversation_id> toolschema test_tool
 ```
 
-Remove one conversation-level tool schema.
+Remove one root-scoped tool schema.
 
 ## Tree Control
-
-```text
-windie activate <conversation_id> <message_id>
-```
-
-Select one message as the active message.
-
-The active message defines the default branch through the conversation tree.
-`show`, `insert`, run start without `--head`, and context preview use this
-selected path. After a run starts, execution follows the run's stored head
-instead of the mutable conversation active path.
 
 ```text
 windie rm <conversation_id>
@@ -469,10 +470,12 @@ independently. The command prints the new conversation tree ID.
 
 ```text
 windie run start <conversation_id>
+windie run start <conversation_id> --head <message_id>
 ```
 
-Start one execution run from the conversation's active path. Requires the local
-Bifrost gateway to already be running.
+Start one execution session from the optional explicit message head. Requires
+the local Bifrost gateway to already be running. Without `--head`, the session
+starts from an empty/root conversation context.
 
 If the model returns a tool call that requires approval, Windie stores the
 assistant tool-call metadata and marks the run as `waiting_for_approval`.

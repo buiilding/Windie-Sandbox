@@ -22,8 +22,9 @@ developer API harness for testing those primitives:
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
-Conversation storage is a tree. Runtime execution uses one selected active path
-through that tree. Model context is the flattened active path.
+Conversation storage is a tree. Runtime execution uses an explicit selected
+message head through that tree. Model context is the flattened path to that
+head.
 
 ## Collaboration Rule
 
@@ -113,9 +114,9 @@ Allowed in the current scope:
 - Multiple persisted conversations.
 - Message insert, update, and remove primitives.
 - User image input with copied local image bytes.
-- Conversation-level system prompt primitive.
+- Root-scoped and explicit-head system prompt primitive.
 - Conversation truncate and fork primitives.
-- Active path selection and full conversation tree inspection.
+- Explicit-head path inspection and full conversation tree inspection.
 - Read-only JSON inspection for developer tools.
 - JSON API access to the same explicit runtime/store primitives as the CLI.
 - One-shot conversation query primitive.

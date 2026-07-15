@@ -16,12 +16,12 @@ use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
-use crate::conversation::{ToolCall, ToolSchemaName, UnsavedImagePart, UnsavedMessagePart};
+use crate::conversation::{ToolCall, UnsavedImagePart, UnsavedMessagePart};
 use crate::error;
 use crate::mcp::{self, McpCommand, McpEnv, McpEnvValue, McpSessionPool, McpTool};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolExecutionResult,
-    ToolPermission, ToolProviderId, ToolProviderKind, ToolProviderRef,
+    ToolPermission, ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";

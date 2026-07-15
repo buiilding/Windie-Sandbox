@@ -1,8 +1,8 @@
-//! Message part data.
+//! User-facing message part data.
 //!
-//! Parts allow one message to carry ordered text and local images. Durable image
-//! storage is owned by `store.rs`; this module only defines the typed runtime
-//! shapes for saved and unsaved parts.
+//! Parts allow a user-facing message to carry ordered text and local images.
+//! Durable image storage is owned by `store.rs`; this module only defines the
+//! typed runtime shapes for saved and unsaved parts.
 
 use crate::conversation::ImageAssetId;
 

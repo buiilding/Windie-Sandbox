@@ -12,16 +12,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::conversation::{
-    ConversationId, Message, MessageId, MessagePart, ToolCall, ToolSchemaName,
-};
+use crate::conversation::{ConversationId, Message, MessageId, MessagePart, ToolCall};
 use crate::llm::{ModelInfo, ModelName};
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
 use crate::setup::InstallReport;
 use crate::store::ConversationInfo;
-use crate::tool::ToolDefinition;
+use crate::tool::{ToolDefinition, ToolSchemaName};
 
 /// Minimal output interface needed by runtime flows.
 ///
@@ -106,16 +104,16 @@ impl TerminalOutput {
             println!("store open: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.conversation_load {
-            println!("active path load: {}", format_duration(duration));
+            println!("path load: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.active_message_lookup {
-            println!("active message lookup: {}", format_duration(duration));
+        if let Some(duration) = baseline.head_message_lookup {
+            println!("head message lookup: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.active_path_row_load {
-            println!("active path row load: {}", format_duration(duration));
+        if let Some(duration) = baseline.path_row_load {
+            println!("path row load: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.active_path_part_load {
-            println!("active path part/image load: {}", format_duration(duration));
+        if let Some(duration) = baseline.path_part_load {
+            println!("path part/image load: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.tree_load {
             println!("tree load: {}", format_duration(duration));
@@ -132,8 +130,8 @@ impl TerminalOutput {
         if let Some(duration) = baseline.context_build {
             println!("context build: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.context_active_path_load {
-            println!("context active path load: {}", format_duration(duration));
+        if let Some(duration) = baseline.context_path_load {
+            println!("context path load: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.context_system_prompt_load {
             println!("context system prompt load: {}", format_duration(duration));
@@ -168,11 +166,11 @@ impl TerminalOutput {
                 format_duration(duration)
             );
         }
-        if let Some(duration) = baseline.active_path_load_100 {
-            println!("active path load 100: {}", format_duration(duration));
+        if let Some(duration) = baseline.path_load_100 {
+            println!("path load 100: {}", format_duration(duration));
         }
-        if let Some(duration) = baseline.active_path_load_1000 {
-            println!("active path load 1000: {}", format_duration(duration));
+        if let Some(duration) = baseline.path_load_1000 {
+            println!("path load 1000: {}", format_duration(duration));
         }
         if let Some(duration) = baseline.pending_tool_approval_scan_long_path {
             println!(
@@ -250,7 +248,7 @@ impl TerminalOutput {
             println!("fake mcp list/call: {}", format_duration(duration));
         }
         if let Some(loaded_messages) = baseline.loaded_messages {
-            println!("active path messages: {loaded_messages}");
+            println!("path messages: {loaded_messages}");
         }
         if let Some(tree_messages) = baseline.tree_messages {
             println!("tree messages: {tree_messages}");
@@ -363,7 +361,7 @@ impl TerminalOutput {
         println!("updated message {message_id}");
     }
 
-    /// Confirms that the conversation-level system prompt was set.
+    /// Confirms that the root-scoped system prompt was set.
     pub fn set_system_prompt(&self, conversation_id: &ConversationId) {
         println!("set systemprompt {conversation_id}");
     }
@@ -373,7 +371,7 @@ impl TerminalOutput {
         println!("set model {conversation_id} {model}");
     }
 
-    /// Confirms that the conversation-level system prompt was removed.
+    /// Confirms that the root-scoped system prompt was removed.
     pub fn removed_system_prompt(&self, conversation_id: &ConversationId) {
         println!("removed systemprompt {conversation_id}");
     }
@@ -394,10 +392,6 @@ impl TerminalOutput {
     }
 
     /// Confirms that one message was selected as active.
-    pub fn activated_message(&self, message_id: &MessageId) {
-        println!("activated message {message_id}");
-    }
-
     /// Confirms that one conversation was removed.
     pub fn removed_conversation(&self, conversation_id: &ConversationId) {
         println!("removed conversation {conversation_id}");
@@ -489,8 +483,8 @@ impl TerminalOutput {
     }
 
     /// Prints the full message tree with indentation and active marker.
-    pub fn conversation_tree(&self, messages: &[Message], active_message_id: Option<&MessageId>) {
-        for line in tree_lines(messages, active_message_id) {
+    pub fn conversation_tree(&self, messages: &[Message]) {
+        for line in tree_lines(messages) {
             println!("{line}");
         }
     }
@@ -722,11 +716,12 @@ fn help_lines() -> Vec<String> {
         "  windie new",
         "  windie ls",
         "  windie ls --json",
-        "  windie activate <conversation_id> <message_id>",
         "  windie show <conversation_id>",
         "  windie tree <conversation_id>",
         "  windie inspect <conversation_id> --json",
+        "  windie inspect <conversation_id> --json --head <message_id>",
         "  windie inspect <conversation_id> --json --model <provider/model>",
+        "  windie inspect <conversation_id> --json --head <message_id> --model <provider/model>",
         "  windie attach <conversation_id> tool <provider_id> <tool_name>",
         "  windie detach <conversation_id> tool <schema_name>",
         "  windie insert <conversation_id> message --role user --text \"hello\"",
@@ -848,25 +843,21 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
     }
 
     push_metric_lines(&mut lines, "store open", report.summary.store_open.as_ref());
+    push_metric_lines(&mut lines, "path load", report.summary.path_load.as_ref());
     push_metric_lines(
         &mut lines,
-        "active path load",
-        report.summary.active_path_load.as_ref(),
+        "head message lookup",
+        report.summary.head_message_lookup.as_ref(),
     );
     push_metric_lines(
         &mut lines,
-        "active message lookup",
-        report.summary.active_message_lookup.as_ref(),
+        "path row load",
+        report.summary.path_row_load.as_ref(),
     );
     push_metric_lines(
         &mut lines,
-        "active path row load",
-        report.summary.active_path_row_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "active path part/image load",
-        report.summary.active_path_part_load.as_ref(),
+        "path part/image load",
+        report.summary.path_part_load.as_ref(),
     );
     push_metric_lines(&mut lines, "tree load", report.summary.tree_load.as_ref());
     push_metric_lines(
@@ -891,8 +882,8 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
     );
     push_metric_lines(
         &mut lines,
-        "context active path load",
-        report.summary.context_active_path_load.as_ref(),
+        "context path load",
+        report.summary.context_path_load.as_ref(),
     );
     push_metric_lines(
         &mut lines,
@@ -942,13 +933,13 @@ fn performance_report_lines(report: &PerformanceReport) -> Vec<String> {
     );
     push_metric_lines(
         &mut lines,
-        "active path load 100",
-        report.summary.active_path_load_100.as_ref(),
+        "path load 100",
+        report.summary.path_load_100.as_ref(),
     );
     push_metric_lines(
         &mut lines,
-        "active path load 1000",
-        report.summary.active_path_load_1000.as_ref(),
+        "path load 1000",
+        report.summary.path_load_1000.as_ref(),
     );
     push_metric_lines(
         &mut lines,
@@ -1177,7 +1168,7 @@ fn message_lines(messages: &[Message]) -> Vec<String> {
 }
 
 /// Converts a full message tree into indented CLI lines.
-fn tree_lines(messages: &[Message], active_message_id: Option<&MessageId>) -> Vec<String> {
+fn tree_lines(messages: &[Message]) -> Vec<String> {
     if messages.is_empty() {
         return vec!["no messages".to_string()];
     }
@@ -1195,7 +1186,7 @@ fn tree_lines(messages: &[Message], active_message_id: Option<&MessageId>) -> Ve
     }
 
     let mut lines = vec!["tree".to_string()];
-    append_tree_lines(&mut lines, &children_by_parent, None, active_message_id, 0);
+    append_tree_lines(&mut lines, &children_by_parent, None, 0);
 
     lines
 }
@@ -1205,7 +1196,6 @@ fn append_tree_lines(
     lines: &mut Vec<String>,
     children_by_parent: &HashMap<Option<String>, Vec<&Message>>,
     parent_id: Option<&str>,
-    active_message_id: Option<&MessageId>,
     depth: usize,
 ) {
     let parent_key = parent_id.map(str::to_string);
@@ -1219,16 +1209,9 @@ fn append_tree_lines(
             .as_ref()
             .map(|id| id.as_str())
             .unwrap_or("<unsaved>");
-        let active_marker =
-            if active_message_id.is_some_and(|active_id| Some(active_id) == message.id.as_ref()) {
-                "*"
-            } else {
-                " "
-            };
         lines.push(format!(
-            "{}{} {}  {}  {}",
+            "{}{}  {}  {}",
             "  ".repeat(depth),
-            active_marker,
             message.role.as_str(),
             id,
             message_preview(message)
@@ -1237,7 +1220,6 @@ fn append_tree_lines(
             lines,
             children_by_parent,
             message.id.as_ref().map(MessageId::as_str),
-            active_message_id,
             depth + 1,
         );
     }

@@ -11,12 +11,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::context::{ContextBuilder, ContextParts};
+use crate::context::ContextBuilder;
 use serde::Serialize;
 
 use crate::conversation::{
-    ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCallId, ToolSchema,
-    ToolSchemaName, UnsavedImagePart, UnsavedMessagePart,
+    ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCallId,
+    UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
@@ -36,6 +36,7 @@ use crate::session::{Session, SessionEvent, SessionId, SessionStatus};
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
+    ToolSchema, ToolSchemaName,
 };
 use crate::tool_provider::ToolProviderRegistry;
 use crate::wakeup::{ContinueWakeup, Wakeup};
@@ -54,10 +55,9 @@ pub enum MessageInputPart {
 
 const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
 
-/// Full message tree plus the selected active node.
+/// Full durable message tree.
 pub struct ConversationTree {
     pub messages: Vec<Message>,
-    pub active_message_id: Option<MessageId>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,14 +155,14 @@ pub enum ReasoningParameterSource {
 /// It deliberately summarizes image bytes instead of exposing raw image data.
 pub struct InspectionReport {
     conversation_id: String,
-    active_message_id: Option<String>,
+    head_message_id: Option<String>,
     model: String,
     reasoning: Option<ReasoningRequest>,
     system_prompt: Option<String>,
     tool_approval_mode: ToolApprovalMode,
     tool_schemas: Vec<ToolSchema>,
     messages: Vec<InspectionMessage>,
-    active_path: Vec<InspectionMessage>,
+    path: Vec<InspectionMessage>,
     model_context: Vec<InspectionMessage>,
     latest_compaction: Option<InspectionCompaction>,
 }
@@ -172,27 +172,27 @@ impl InspectionReport {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         conversation_id: &ConversationId,
-        active_message_id: Option<&MessageId>,
+        head_message_id: Option<&MessageId>,
         model: &str,
         reasoning: Option<ReasoningRequest>,
         system_prompt: Option<String>,
         tool_approval_mode: ToolApprovalMode,
         tool_schemas: Vec<ToolSchema>,
         messages: Vec<Message>,
-        active_path: Vec<Message>,
+        path: Vec<Message>,
         model_context: Vec<Message>,
         latest_compaction: Option<Compaction>,
     ) -> Self {
         Self {
             conversation_id: conversation_id.as_str().to_string(),
-            active_message_id: active_message_id.map(|id| id.as_str().to_string()),
+            head_message_id: head_message_id.map(|id| id.as_str().to_string()),
             model: model.to_string(),
             reasoning,
             system_prompt,
             tool_approval_mode,
             tool_schemas,
             messages: inspection_messages(messages),
-            active_path: inspection_messages(active_path),
+            path: inspection_messages(path),
             model_context: inspection_messages(model_context),
             latest_compaction: latest_compaction.map(InspectionCompaction::from_compaction),
         }
@@ -457,8 +457,10 @@ fn conversation_prompt_cache_request(conversation_id: &ConversationId) -> Prompt
 pub fn conversation_input_token_context(
     store: &Store,
     conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
 ) -> Result<Option<InputTokenCountContext>> {
-    let model_context = ContextBuilder::build_model_context(store, conversation_id)?;
+    let model_context =
+        ContextBuilder::build_model_context(store, conversation_id, head_message_id)?;
     let mut model_messages = model_context.messages;
     let tool_schemas = model_context.tool_schemas;
     let source = if model_messages.is_empty() {
@@ -509,63 +511,56 @@ pub async fn count_input_tokens_for_context(
         .map(Some)
 }
 
-/// Loads the active path shown by the CLI and inspector.
-pub fn active_path(store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
-    store.load_active_path(conversation_id)
-}
-
-/// Loads the full tree and active message pointer for inspection.
+/// Loads the full tree for inspection.
 pub fn conversation_tree(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<ConversationTree> {
     let messages = store.load_message_tree(conversation_id)?;
-    let active_message_id = store.active_message_id(conversation_id)?;
 
-    Ok(ConversationTree {
-        messages,
-        active_message_id,
-    })
+    Ok(ConversationTree { messages })
 }
 
 /// Loads the shared read-only inspection snapshot used by CLI JSON and API.
 pub fn inspect_conversation(
     store: &Store,
     conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
     model_override: Option<ModelName>,
 ) -> Result<InspectionReport> {
     let model = resolve_conversation_model(store, conversation_id, model_override)?;
     let reasoning = conversation_reasoning(store, conversation_id)?;
-    let active_message_id = store.active_message_id(conversation_id)?;
     let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
     let messages = store.load_message_tree(conversation_id)?;
-    let tool_schemas = store.load_tool_schemas(conversation_id)?;
-    let context_parts = ContextBuilder::load_parts(store, conversation_id)?;
-    let model_context = ContextBuilder::flatten(ContextParts {
-        active_path: context_parts.active_path.clone(),
-        system_prompt: context_parts.system_prompt.clone(),
-        compaction: context_parts.compaction.clone(),
-    });
+    let tool_schemas = store.load_tool_schemas_for_head(conversation_id, head_message_id)?;
+    let path = match head_message_id {
+        Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
+        None => Vec::new(),
+    };
+    let model_context = ContextBuilder::build_messages(store, conversation_id, head_message_id)?;
+    let system_prompt = store.effective_system_prompt_for_head(conversation_id, head_message_id)?;
+    let latest_compaction = store.latest_compaction(conversation_id)?;
 
     Ok(InspectionReport::new(
         conversation_id,
-        active_message_id.as_ref(),
+        head_message_id,
         model.as_str(),
         reasoning,
-        context_parts.system_prompt,
+        system_prompt,
         tool_approval_mode,
         tool_schemas,
         messages,
-        context_parts.active_path,
+        path,
         model_context,
-        context_parts.compaction,
+        latest_compaction,
     ))
 }
 
-/// Inserts one message below the current active message.
+/// Inserts one message below an explicit parent message.
 pub fn insert_message(
     store: &mut Store,
     conversation_id: &ConversationId,
+    parent_message_id: Option<&MessageId>,
     role: Role,
     parts: &[MessageInputPart],
 ) -> Result<MessageId> {
@@ -577,7 +572,6 @@ pub fn insert_message(
         ));
     }
 
-    let parent_message_id = store.active_message_id(conversation_id)?;
     let has_image = parts.iter().any(|part| {
         matches!(
             part,
@@ -611,7 +605,7 @@ pub fn insert_message(
 
         return store.insert_message_with_parts(
             conversation_id,
-            parent_message_id.as_ref(),
+            parent_message_id,
             Role::User,
             &content,
             &message_parts,
@@ -619,22 +613,7 @@ pub fn insert_message(
         );
     }
 
-    store.insert_message(
-        conversation_id,
-        parent_message_id.as_ref(),
-        role,
-        &content,
-        None,
-    )
-}
-
-/// Selects one message as the active runtime node.
-pub fn activate_message(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    message_id: &MessageId,
-) -> Result<()> {
-    store.set_active_message(conversation_id, message_id)
+    store.insert_message(conversation_id, parent_message_id, role, &content, None)
 }
 
 /// Replaces visible message text without changing metadata.
@@ -647,27 +626,30 @@ pub fn update_message(
     store.replace_message(conversation_id, message_id, text)
 }
 
-/// Sets or replaces the system prompt at the active conversation path.
+/// Inserts a system prompt message at the active conversation path.
 pub fn set_system_prompt(
     store: &mut Store,
     conversation_id: &ConversationId,
     text: &str,
-) -> Result<()> {
+) -> Result<MessageId> {
     store.set_system_prompt(conversation_id, text)
 }
 
-/// Sets or replaces the system prompt at an explicit conversation path head.
+/// Inserts a system prompt message at an explicit conversation path head.
 pub fn set_system_prompt_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     text: &str,
-) -> Result<()> {
+) -> Result<MessageId> {
     store.set_system_prompt_at_head(conversation_id, head_message_id, text)
 }
 
 /// Removes the system prompt at the active conversation path.
-pub fn remove_system_prompt(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
+pub fn remove_system_prompt(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+) -> Result<MessageId> {
     store.remove_system_prompt(conversation_id)
 }
 
@@ -676,7 +658,7 @@ pub fn remove_system_prompt_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
-) -> Result<()> {
+) -> Result<MessageId> {
     store.remove_system_prompt_at_head(conversation_id, head_message_id)
 }
 
@@ -1090,10 +1072,7 @@ impl<'a> RuntimeDependencies<'a> {
 
 /// Creates a durable session from a wakeup and captures the head/model used.
 pub fn start_session_from_wakeup(store: &mut Store, wakeup: ContinueWakeup) -> Result<Session> {
-    let head_message_id = match wakeup.head_message_id {
-        Some(message_id) => Some(message_id),
-        None => store.active_message_id(&wakeup.conversation_id)?,
-    };
+    let head_message_id = wakeup.head_message_id;
     let model = match wakeup.model {
         Some(model) => model,
         None => conversation_model(store, &wakeup.conversation_id)?,
@@ -1665,12 +1644,15 @@ mod tests {
         let message_id = insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::User,
             &[MessageInputPart::Text("hello".to_string())],
         )
         .unwrap();
 
-        let messages = active_path(&store, &conversation_id).unwrap();
+        let messages = store
+            .load_path_to_message(&conversation_id, &message_id)
+            .unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id.as_ref(), Some(&message_id));
         assert_eq!(messages[0].content, "hello");
@@ -1782,6 +1764,7 @@ mod tests {
         let error = insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::Tool,
             &[MessageInputPart::Text("tool output".to_string())],
         )
@@ -1807,6 +1790,7 @@ mod tests {
         insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::User,
             &[
                 MessageInputPart::Text("first".to_string()),
@@ -1815,7 +1799,7 @@ mod tests {
         )
         .unwrap();
 
-        let messages = active_path(&store, &conversation_id).unwrap();
+        let messages = store.load_messages(&conversation_id).unwrap();
         assert_eq!(messages[0].content, "first");
         assert_eq!(messages[0].parts.len(), 2);
         fs::remove_file(image_path).unwrap();
@@ -1829,6 +1813,7 @@ mod tests {
         insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::User,
             &[
                 MessageInputPart::Text("clipboard".to_string()),
@@ -1840,7 +1825,7 @@ mod tests {
         )
         .unwrap();
 
-        let messages = active_path(&store, &conversation_id).unwrap();
+        let messages = store.load_messages(&conversation_id).unwrap();
         assert_eq!(messages[0].content, "clipboard");
         assert_eq!(messages[0].parts.len(), 2);
     }
@@ -1860,7 +1845,7 @@ mod tests {
         )
         .unwrap();
 
-        let context = conversation_input_token_context(&store, &conversation_id)
+        let context = conversation_input_token_context(&store, &conversation_id, None)
             .unwrap()
             .unwrap();
 
@@ -1892,6 +1877,7 @@ mod tests {
         let user_id = insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::User,
             &[MessageInputPart::Text("hello".to_string())],
         )
@@ -1906,17 +1892,18 @@ mod tests {
             .save_compaction(&conversation_id, &user_id, "hello happened")
             .unwrap();
 
-        let report = inspect_conversation(&store, &conversation_id, None).unwrap();
+        let report = inspect_conversation(&store, &conversation_id, Some(&user_id), None).unwrap();
         let value = serde_json::to_value(report).unwrap();
 
         assert_eq!(value["conversation_id"], conversation_id.as_str());
-        assert_eq!(value["active_message_id"], user_id.as_str());
+        assert_eq!(value["head_message_id"], user_id.as_str());
         assert_eq!(value["model"], "anthropic/test");
         assert_eq!(value["reasoning"]["effort"], "high");
         assert_eq!(value["system_prompt"], "You are concise.");
         assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
-        assert_eq!(value["messages"][0]["id"], user_id.as_str());
-        assert_eq!(value["active_path"][0]["id"], user_id.as_str());
+        assert_eq!(value["messages"][0]["role"], "system");
+        assert_eq!(value["messages"][1]["id"], user_id.as_str());
+        assert_eq!(value["path"][0]["id"], user_id.as_str());
         assert_eq!(value["model_context"][0]["role"], "system");
         assert_eq!(value["latest_compaction"]["content"], "hello happened");
     }
@@ -1989,6 +1976,7 @@ mod tests {
         let first_id = insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::User,
             &[MessageInputPart::Text("first".to_string())],
         )
@@ -1996,31 +1984,29 @@ mod tests {
         let second_id = insert_message(
             &mut store,
             &conversation_id,
+            Some(&first_id),
             Role::Assistant,
             &[MessageInputPart::Text("second".to_string())],
         )
         .unwrap();
 
-        activate_message(&mut store, &conversation_id, &first_id).unwrap();
         update_message(&mut store, &conversation_id, &second_id, "second updated").unwrap();
-        activate_message(&mut store, &conversation_id, &second_id).unwrap();
 
-        let path = store.load_active_path(&conversation_id).unwrap();
+        let path = store
+            .load_path_to_message(&conversation_id, &second_id)
+            .unwrap();
         assert_eq!(path.len(), 2);
         assert_eq!(path[1].content, "second updated");
-        assert_eq!(
-            store.active_message_id(&conversation_id).unwrap().as_ref(),
-            Some(&second_id)
-        );
     }
 
     #[test]
-    fn start_session_from_wakeup_captures_active_head() {
+    fn start_session_from_wakeup_captures_requested_head() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
         let user_id = insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::User,
             &[MessageInputPart::Text("hello".to_string())],
         )
@@ -2030,7 +2016,7 @@ mod tests {
             &mut store,
             crate::wakeup::ContinueWakeup {
                 conversation_id: conversation_id.clone(),
-                head_message_id: None,
+                head_message_id: Some(user_id.clone()),
                 model: None,
                 reasoning: None,
             },
@@ -2051,6 +2037,7 @@ mod tests {
         let head_message_id = insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::Assistant,
             &[MessageInputPart::Text("tool call pending".to_string())],
         )
@@ -2093,6 +2080,7 @@ mod tests {
         let head_message_id = insert_message(
             &mut store,
             &conversation_id,
+            None,
             Role::Assistant,
             &[MessageInputPart::Text("complete".to_string())],
         )

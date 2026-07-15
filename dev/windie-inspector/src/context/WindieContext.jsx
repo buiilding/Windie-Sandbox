@@ -94,7 +94,7 @@ function isLiveSession(session) {
 
 function pathNodesForConversation(conversation) {
   if (!conversation) return [];
-  return conversation.activePath.map((id) => conversation.nodes[id]).filter(Boolean);
+  return (conversation.selectedPath || []).map((id) => conversation.nodes[id]).filter(Boolean);
 }
 
 function pathNodesToNode(conversation, nodeId) {
@@ -299,8 +299,12 @@ export function WindieProvider({ children }) {
   const loadConversation = useCallback(
     async (convId, options = {}) => {
       if (!convId) return null;
+      const headMessageId = options.headMessageId ?? selectedNodeId;
+      const inspectQuery = headMessageId
+        ? `?head_message_id=${encodeURIComponent(headMessageId)}`
+        : "";
       const [report, approvalBody] = await Promise.all([
-        apiRequest(`/api/conversations/${convId}`),
+        apiRequest(`/api/conversations/${convId}${inspectQuery}`),
         apiRequest(`/api/conversations/${convId}/session-approvals`),
       ]);
       const loaded = conversationFromInspection(report, null);
@@ -314,7 +318,7 @@ export function WindieProvider({ children }) {
       });
 
       if (options.selectLast !== false) {
-        const last = loaded?.activePath?.[loaded.activePath.length - 1] || loaded?.rootId || null;
+        const last = loaded?.selectedPath?.[loaded.selectedPath.length - 1] || loaded?.rootId || null;
         setSelectedNodeId((current) => (current && loaded?.nodes[current] ? current : last));
       }
       setApprovals(approvalBody.approvals || []);
@@ -333,7 +337,7 @@ export function WindieProvider({ children }) {
           },
         }));
 
-        countConversationInputTokens(loaded.id)
+        countConversationInputTokens(loaded.id, null, headMessageId || null)
           .then((count) => {
             setInputTokenCounts((prev) => {
               if (prev[countKey]?.latestRequestId !== requestId) return prev;
@@ -374,7 +378,7 @@ export function WindieProvider({ children }) {
 
       return loaded;
     },
-    []
+    [selectedNodeId]
   );
 
   useEffect(() => {
@@ -425,10 +429,6 @@ export function WindieProvider({ children }) {
     [conversations, activeConvId]
   );
 
-  const activePathNodes = useMemo(() => {
-    return pathNodesForConversation(activeConv);
-  }, [activeConv]);
-
   const selectedPathNodes = useMemo(() => {
     return pathNodesToNode(activeConv, selectedNodeId);
   }, [activeConv, selectedNodeId]);
@@ -439,8 +439,8 @@ export function WindieProvider({ children }) {
   );
 
   const activeContextSignatures = useMemo(
-    () => contextSignatureParts(activeConv, activeModelId, activePathNodes),
-    [activeConv, activeModelId, activePathNodes]
+    () => contextSignatureParts(activeConv, activeModelId, selectedPathNodes),
+    [activeConv, activeModelId, selectedPathNodes]
   );
 
   const activeCatalogModel = useMemo(
@@ -454,7 +454,7 @@ export function WindieProvider({ children }) {
     const inputCount = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
     const currentInputCount =
       inputCount?.signature === activeContextSignatures.fullSignature ? inputCount : null;
-    const postQueryTotalTokens = latestAssistantTotalTokens(activePathNodes);
+    const postQueryTotalTokens = latestAssistantTotalTokens(selectedPathNodes);
     const used = currentInputCount?.inputTokens ?? postQueryTotalTokens;
 
     return {
@@ -471,7 +471,7 @@ export function WindieProvider({ children }) {
     };
   }, [
     activeConv?.id,
-    activePathNodes,
+    selectedPathNodes,
     activeContextSignatures.fullSignature,
     activeCatalogModel,
     activeModelId,
@@ -567,10 +567,13 @@ export function WindieProvider({ children }) {
       runMutation(() =>
         apiRequest(`/api/conversations/${convId}/system-prompt`, {
           method: "PATCH",
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({
+            text,
+            head_message_id: selectedNodeId || null,
+          }),
         })
       ),
-    [runMutation]
+    [runMutation, selectedNodeId]
   );
 
   const setConversationModel = useCallback(
@@ -605,10 +608,11 @@ export function WindieProvider({ children }) {
           body: JSON.stringify({
             provider_id: toolSchema.providerId,
             tool_name: toolSchema.providerToolName,
+            head_message_id: selectedNodeId || null,
           }),
         })
       ),
-    [runMutation]
+    [runMutation, selectedNodeId]
   );
 
   const addToolSchemas = useCallback(
@@ -617,6 +621,7 @@ export function WindieProvider({ children }) {
         apiRequest(`/api/conversations/${convId}/tools/batch`, {
           method: "POST",
           body: JSON.stringify({
+            head_message_id: selectedNodeId || null,
             tools: toolSchemas.map((toolSchema) => ({
               provider_id: toolSchema.providerId,
               tool_name: toolSchema.providerToolName,
@@ -624,49 +629,56 @@ export function WindieProvider({ children }) {
           }),
         })
       ),
-    [runMutation]
+    [runMutation, selectedNodeId]
   );
 
   const removeToolSchema = useCallback(
     (convId, name) =>
       runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(name)}`, {
-          method: "DELETE",
-        })
+        apiRequest(
+          `/api/conversations/${convId}/tools/${encodeURIComponent(name)}${
+            selectedNodeId ? `?head_message_id=${encodeURIComponent(selectedNodeId)}` : ""
+          }`,
+          {
+            method: "DELETE",
+          }
+        )
       ),
-    [runMutation]
+    [runMutation, selectedNodeId]
   );
 
   const removeToolSchemas = useCallback(
     (convId, names) =>
       runMutation(async () => {
         for (const name of names) {
-          await apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(name)}`, {
-            method: "DELETE",
-          });
+          await apiRequest(
+            `/api/conversations/${convId}/tools/${encodeURIComponent(name)}${
+              selectedNodeId ? `?head_message_id=${encodeURIComponent(selectedNodeId)}` : ""
+            }`,
+            {
+              method: "DELETE",
+            }
+          );
         }
       }),
-    [runMutation]
+    [runMutation, selectedNodeId]
   );
 
-  const setActivePathToLeaf = useCallback(
-    (convId, leafId) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/activate`, {
-          method: "POST",
-          body: JSON.stringify({ message_id: leafId }),
-        })
-      ),
-    [runMutation]
+  const selectPathHead = useCallback(
+    (_convId, leafId) => {
+      setSelectedNodeId(leafId);
+      return Promise.resolve();
+    },
+    []
   );
 
-  const setActivePath = useCallback(
+  const selectPath = useCallback(
     (convId, path) => {
       const leafId = path[path.length - 1];
       if (!leafId) return Promise.resolve();
-      return setActivePathToLeaf(convId, leafId);
+      return selectPathHead(convId, leafId);
     },
-    [setActivePathToLeaf]
+    [selectPathHead]
   );
 
   const truncateAfter = useCallback(
@@ -807,6 +819,7 @@ export function WindieProvider({ children }) {
         await loadConversation(session.conversationId, {
           countTokens: false,
           selectLast: false,
+          headMessageId: data.message_id || null,
         });
         if (visibleSessionIdRef.current === session.id && data.message_id) {
           setSelectedNodeId(data.message_id);
@@ -903,10 +916,14 @@ export function WindieProvider({ children }) {
         const parts = await messagePartsForSend(text, attachments);
         const inserted = await apiRequest(`/api/conversations/${convId}/messages`, {
           method: "POST",
-          body: JSON.stringify({ role: "user", parts }),
+          body: JSON.stringify({
+            head_message_id: selectedNodeId || null,
+            role: "user",
+            parts,
+          }),
         });
-        await loadConversation(convId);
         setSelectedNodeId(inserted.message_id);
+        await loadConversation(convId, { headMessageId: inserted.message_id });
         const session = await createSessionApi(convId, {
           headMessageId: inserted.message_id,
           model: activeConv?.model || null,
@@ -919,7 +936,7 @@ export function WindieProvider({ children }) {
         toast.error(error.message);
       }
     },
-    [activeConv?.model, activeReasoning, loadConversation, subscribeToSession]
+    [activeConv?.model, activeReasoning, loadConversation, selectedNodeId, subscribeToSession]
   );
 
   const continueConversation = useCallback(
@@ -1008,7 +1025,6 @@ export function WindieProvider({ children }) {
     activeConv,
     activeConvId,
     selectedNodeId,
-    activePathNodes,
     selectedPathNodes,
     theme,
     treeOverlayOpen,
@@ -1052,8 +1068,8 @@ export function WindieProvider({ children }) {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
-    setActivePath,
-    setActivePathToLeaf,
+    selectPath,
+    selectPathHead,
     truncateAfter,
     removeMessage,
     editMessage,

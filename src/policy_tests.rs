@@ -2,10 +2,10 @@
 
 use super::*;
 
-use crate::conversation::{ToolCall, ToolSchema, ToolSchemaName};
+use crate::conversation::ToolCall;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,
-    ToolProviderId, ToolProviderKind, ToolProviderRef,
+    ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
 
 #[test]
