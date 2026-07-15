@@ -10,21 +10,17 @@ It is not part of the runtime boundary: it must call explicit API primitives
 and must not own provider logic, persistence, context construction, runtime
 state transitions, tool execution, or permission policy.
 
-Install dependencies once, then start the current API and hot-reloading preview
-together:
+Run it from this repo with:
 
 ```bash
-scripts/setup.sh
-scripts/dev.sh
+target/release/windie inspector
 ```
 
-Open the inspector with the printed API token:
+Start the API from the repository root:
 
-```text
-http://localhost:3000?windie_token=<printed token>
+```bash
+target/release/windie api
 ```
 
-For self-editing work, keep the active coding conversation in the operator UI
-served by an installed `windie api`. Use this port-3000 client only as the
-editable preview. Hot reload disconnects its event subscription, then replays
-the active backend run; it does not own or cancel the loop.
+The inspector command starts the React dev server when needed and opens the
+browser with the API token already attached.

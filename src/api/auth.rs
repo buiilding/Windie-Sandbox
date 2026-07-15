@@ -1,9 +1,6 @@
-//! Local API token middleware.
+//! Local API token authentication middleware.
 
-use super::{
-    API_TOKEN_HEADER, ApiState, ErrorResponse, IntoResponse, Json, Method, Next, Request, Response,
-    State, StatusCode,
-};
+use super::*;
 
 /// Requires the current local API token before executing non-health requests.
 ///

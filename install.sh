@@ -1,58 +1,53 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-REPOSITORY="${WINDIE_GITHUB_REPOSITORY:-buiilding/Windie-Sandbox}"
-PREFIX="${WINDIE_INSTALL_ROOT:-$HOME/.local}"
-VERSION="${WINDIE_VERSION:-latest}"
+repo="${WINDIE_REPO:-buiilding/Windie-Sandbox}"
+install_dir="${WINDIE_INSTALL_DIR:-$HOME/.local/bin}"
+windie_home="${WINDIE_HOME:-$HOME/.windie}"
 
-case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64) LABEL="macos-aarch64" ;;
-  Darwin-x86_64) LABEL="macos-x86_64" ;;
-  Linux-x86_64) LABEL="linux-x86_64" ;;
-  Linux-aarch64|Linux-arm64) LABEL="linux-aarch64" ;;
-  *)
-    echo "Windie does not publish a binary for $(uname -s) $(uname -m) yet." >&2
-    exit 1
-    ;;
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+case "$arch" in
+  x86_64|amd64) arch="x86_64" ;;
+  arm64|aarch64) arch="aarch64" ;;
+  *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
 esac
 
-if [ "$VERSION" = "latest" ]; then
-  BASE_URL="https://github.com/$REPOSITORY/releases/latest/download"
-else
-  BASE_URL="https://github.com/$REPOSITORY/releases/download/$VERSION"
+case "$os" in
+  darwin|linux) ;;
+  *) echo "unsupported operating system: $os" >&2; exit 1 ;;
+esac
+
+mkdir -p "$install_dir" "$windie_home/bifrost" "$windie_home/benchmarks"
+if [ ! -f "$windie_home/.env" ]; then
+  : > "$windie_home/.env"
 fi
 
-ARCHIVE="windie-$LABEL.tar.gz"
-TEMP="$(mktemp -d)"
-trap 'rm -rf "$TEMP"' EXIT
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
 
-curl -fL "$BASE_URL/$ARCHIVE" -o "$TEMP/$ARCHIVE"
-curl -fL "$BASE_URL/$ARCHIVE.sha256" -o "$TEMP/$ARCHIVE.sha256"
+asset="windie-$os-$arch.tar.gz"
+url="https://github.com/$repo/releases/latest/download/$asset"
 
-EXPECTED="$(awk '{print $1}' "$TEMP/$ARCHIVE.sha256")"
-if command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL="$(sha256sum "$TEMP/$ARCHIVE" | awk '{print $1}')"
-else
-  ACTUAL="$(shasum -a 256 "$TEMP/$ARCHIVE" | awk '{print $1}')"
-fi
-if [ "$EXPECTED" != "$ACTUAL" ]; then
-  echo "Windie archive checksum did not match." >&2
+curl -fsSL "$url" -o "$tmp_dir/$asset"
+tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
+
+if [ ! -f "$tmp_dir/windie" ]; then
+  echo "release asset did not contain windie binary" >&2
   exit 1
 fi
 
-mkdir -p "$TEMP/extracted"
-tar -C "$TEMP/extracted" -xzf "$TEMP/$ARCHIVE"
-RELEASE_ID="$($TEMP/extracted/windie --version | awk '{print $2}')-$LABEL"
-DESTINATION="$PREFIX/lib/windie/releases/$RELEASE_ID"
-mkdir -p "$PREFIX/lib/windie/releases" "$PREFIX/bin"
-rm -rf "$DESTINATION"
-mv "$TEMP/extracted" "$DESTINATION"
-ln -s "$DESTINATION/windie" "$PREFIX/bin/.windie-next-$$"
-mv -f "$PREFIX/bin/.windie-next-$$" "$PREFIX/bin/windie"
+install -m 0755 "$tmp_dir/windie" "$install_dir/windie"
 
-echo "Installed Windie at $PREFIX/bin/windie"
-case ":$PATH:" in
-  *":$PREFIX/bin:"*) ;;
-  *) echo "Add $PREFIX/bin to PATH." ;;
-esac
-"$PREFIX/bin/windie" doctor
+if ! command -v npx >/dev/null 2>&1; then
+  echo "windie installed, but npx was not found on PATH" >&2
+  echo "install Node.js/npm before starting the Bifrost gateway" >&2
+  exit 1
+fi
+
+npx --version >/dev/null
+
+echo "windie installed at $install_dir/windie"
+echo "windie home ready at $windie_home"
+echo "provider keys file: $windie_home/.env"
+echo "Bifrost runtime: public npx package @maximhq/bifrost"

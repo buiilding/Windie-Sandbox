@@ -1,16 +1,6 @@
-//! Benchmark metric, report, and comparison tests.
+//! Performance tests.
 
-use super::metrics::{REPORT_FORMAT_VERSION, duration_metric};
 use super::*;
-
-fn fixed_metric(value: u64) -> DurationMetric {
-    DurationMetric {
-        min_us: value,
-        median_us: value,
-        p95_us: value,
-        max_us: value,
-    }
-}
 
 #[test]
 fn summarizes_duration_samples() {
@@ -23,76 +13,35 @@ fn summarizes_duration_samples() {
 }
 
 #[test]
-fn reads_legacy_null_metrics() {
-    let sample: PerformanceSample = serde_json::from_value(serde_json::json!({
-        "store_open_us": 10,
-        "first_token_us": null,
-        "active_path_messages": 2
-    }))
-    .unwrap();
-    let summary: PerformanceSummary = serde_json::from_value(serde_json::json!({
-        "store_open": {
-            "min_us": 10,
-            "median_us": 10,
-            "p95_us": 10,
-            "max_us": 10
-        },
-        "first_token": null
-    }))
-    .unwrap();
-
-    assert_eq!(sample.durations_us[&MetricName::StoreOpen], 10);
-    assert_eq!(sample.counts[&CountName::ActivePathMessages], 2);
-    assert!(summary.get(MetricName::StoreOpen).is_some());
-    assert!(summary.get(MetricName::FirstToken).is_none());
-}
-
-#[test]
-fn reads_runtime_ownership_metrics() {
-    let sample: PerformanceSample = serde_json::from_value(serde_json::json!({
-        "inspection_snapshot_1000_us": 2300,
-        "fork_conversation_1000_us": 6100,
-        "run_action_lifecycle_us": 190,
-        "run_admission_contention_us": 120,
-        "fake_mcp_catalog_singleflight_us": 32000,
-        "provider_catalog_starts": 1
-    }))
-    .unwrap();
-
-    assert_eq!(
-        sample.durations_us[&MetricName::InspectionSnapshot1000],
-        2300
-    );
-    assert_eq!(sample.durations_us[&MetricName::ForkConversation1000], 6100);
-    assert_eq!(sample.durations_us[&MetricName::RunActionLifecycle], 190);
-    assert_eq!(
-        sample.durations_us[&MetricName::RunAdmissionContention],
-        120
-    );
-    assert_eq!(
-        sample.durations_us[&MetricName::FakeMcpCatalogSingleflight],
-        32000
-    );
-    assert_eq!(sample.counts[&CountName::ProviderCatalogStarts], 1);
-}
-
-#[test]
 fn compares_report_medians() {
-    let mut baseline_summary = PerformanceSummary::default();
-    baseline_summary.insert(MetricName::ActivePathLoad, fixed_metric(100));
     let baseline = PerformanceReport {
         format_version: REPORT_FORMAT_VERSION,
-        mode: BenchmarkMode::Conversation,
+        mode: BenchmarkMode::Local,
+        categories: BenchmarkCategory::all(),
         model: "model".to_string(),
-        conversation_id: Some("conversation-id".to_string()),
+        conversation_id: None,
         runs: 2,
         samples: vec![],
-        summary: baseline_summary,
+        summary: PerformanceSummary {
+            path_load: Some(DurationMetric {
+                min_us: 100,
+                median_us: 100,
+                p95_us: 100,
+                max_us: 100,
+            }),
+            ..PerformanceSummary::default()
+        },
     };
-    let mut current_summary = baseline.summary.clone();
-    current_summary.insert(MetricName::ActivePathLoad, fixed_metric(125));
     let current = PerformanceReport {
-        summary: current_summary,
+        summary: PerformanceSummary {
+            path_load: Some(DurationMetric {
+                min_us: 125,
+                median_us: 125,
+                p95_us: 125,
+                max_us: 125,
+            }),
+            ..baseline.summary.clone()
+        },
         runs: 3,
         ..baseline.clone()
     };
@@ -100,35 +49,65 @@ fn compares_report_medians() {
     let comparison = compare_reports(&baseline, &current);
 
     assert_eq!(comparison.rows.len(), 1);
-    assert_eq!(comparison.rows[0].name, "active path load");
+    assert_eq!(comparison.rows[0].name, "path load");
     assert_eq!(comparison.rows[0].change_percent, 25.0);
 }
 
 #[test]
 fn reads_json_report_and_compares_it() {
-    let mut sample = PerformanceSample::default();
-    sample.durations_us.insert(MetricName::StoreOpen, 10);
-    sample.durations_us.insert(MetricName::ActivePathLoad, 20);
-    sample.durations_us.insert(MetricName::ContextBuild, 30);
-    sample.counts.insert(CountName::ActivePathMessages, 1);
-    sample.counts.insert(CountName::TreeMessages, 1);
-    let mut baseline_summary = PerformanceSummary::default();
-    baseline_summary.insert(MetricName::StoreOpen, fixed_metric(10));
-    baseline_summary.insert(MetricName::ActivePathLoad, fixed_metric(20));
-    baseline_summary.insert(MetricName::ContextBuild, fixed_metric(30));
     let baseline = PerformanceReport {
         format_version: REPORT_FORMAT_VERSION,
-        mode: BenchmarkMode::Conversation,
+        mode: BenchmarkMode::Local,
+        categories: BenchmarkCategory::all(),
         model: "model".to_string(),
-        conversation_id: Some("conversation-id".to_string()),
+        conversation_id: None,
         runs: 1,
-        samples: vec![sample],
-        summary: baseline_summary,
+        samples: vec![PerformanceSample {
+            store_open_us: Some(10),
+            path_load_us: Some(20),
+            tree_load_us: None,
+            context_build_us: Some(30),
+            path_messages: Some(1),
+            tree_messages: Some(1),
+            gateway_ready_us: None,
+            first_token_us: None,
+            full_response_us: None,
+            response_bytes: None,
+            ..PerformanceSample::default()
+        }],
+        summary: PerformanceSummary {
+            store_open: Some(DurationMetric {
+                min_us: 10,
+                median_us: 10,
+                p95_us: 10,
+                max_us: 10,
+            }),
+            path_load: Some(DurationMetric {
+                min_us: 20,
+                median_us: 20,
+                p95_us: 20,
+                max_us: 20,
+            }),
+            tree_load: None,
+            context_build: Some(DurationMetric {
+                min_us: 30,
+                median_us: 30,
+                p95_us: 30,
+                max_us: 30,
+            }),
+            ..PerformanceSummary::default()
+        },
     };
-    let mut current_summary = baseline.summary.clone();
-    current_summary.insert(MetricName::ActivePathLoad, fixed_metric(40));
     let current = PerformanceReport {
-        summary: current_summary,
+        summary: PerformanceSummary {
+            path_load: Some(DurationMetric {
+                min_us: 40,
+                median_us: 40,
+                p95_us: 40,
+                max_us: 40,
+            }),
+            ..baseline.summary.clone()
+        },
         ..baseline.clone()
     };
     let baseline_path = std::env::temp_dir().join(format!(
@@ -154,7 +133,7 @@ fn reads_json_report_and_compares_it() {
         comparison
             .rows
             .iter()
-            .any(|row| row.name == "active path load" && row.change_percent == 100.0)
+            .any(|row| row.name == "path load" && row.change_percent == 100.0)
     );
 
     let _ = std::fs::remove_file(baseline_path);

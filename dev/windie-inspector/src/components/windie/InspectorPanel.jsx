@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useWindie } from "@/context/WindieContext";
-import { ROLE_TOKENS } from "@/lib/roleTokens";
+import { ROLE_TOKENS } from "@/lib/mockData";
 import {
   ChevronRight,
   Pencil,
@@ -60,10 +60,11 @@ export default function InspectorPanel() {
   const {
     activeConv,
     selectedNodeId,
+    selectedPathNodes,
     setSelectedNodeId,
     setSystemPrompt,
     setToolApprovalMode,
-    setActivePathToLeaf,
+    selectPathHead,
     forkFromMessage,
     truncateAfter,
     removeMessage,
@@ -77,6 +78,7 @@ export default function InspectorPanel() {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
+    toolProviderStatuses,
   } = useWindie();
   const [editingSys, setEditingSys] = useState(false);
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
@@ -90,7 +92,11 @@ export default function InspectorPanel() {
   }, [activeConv?.id, activeConv?.systemPrompt]);
 
   const selectedNode = selectedNodeId ? activeConv?.nodes[selectedNodeId] : null;
-  const onActivePath = selectedNode && activeConv.activePath.includes(selectedNodeId);
+  const selectedPathIds = useMemo(
+    () => new Set(selectedPathNodes.map((node) => node.id)),
+    [selectedPathNodes]
+  );
+  const onSelectedPath = selectedNode && selectedPathIds.has(selectedNodeId);
   const attachedToolNames = useMemo(
     () => new Set(toolSchemas.map((schema) => schema.name)),
     [toolSchemas]
@@ -130,6 +136,10 @@ export default function InspectorPanel() {
   const groupedToolSchemas = useMemo(
     () => groupToolSchemasByProvider(availableToolSchemas),
     [availableToolSchemas]
+  );
+  const unavailableToolProviders = useMemo(
+    () => (toolProviderStatuses || []).filter((provider) => !provider.available),
+    [toolProviderStatuses]
   );
 
   useEffect(() => {
@@ -217,15 +227,15 @@ export default function InspectorPanel() {
           </div>
         </Section>
 
-        {/* Active Path */}
-        <Section title="active path" testId="inspector-section-active-path" defaultOpen={false}>
+        {/* Selected Path */}
+        <Section title="selected path" testId="inspector-section-active-path" defaultOpen={false}>
           <div className="font-mono text-[10px] text-muted-foreground mb-1.5">
-            {activeConv.activePath.length} nodes
+            {selectedPathNodes.length} nodes
           </div>
           <div className="space-y-0.5">
-            {activeConv.activePath.map((id, i) => {
-              const n = activeConv.nodes[id];
+            {selectedPathNodes.map((n, i) => {
               if (!n) return null;
+              const id = n.id;
               const token = ROLE_TOKENS[n.message.role];
               const isSel = id === selectedNodeId;
               return (
@@ -325,7 +335,7 @@ export default function InspectorPanel() {
               <KV
                 k="on path"
                 v={
-                  onActivePath ? (
+                  onSelectedPath ? (
                     <span className="text-[hsl(var(--accent))]">yes</span>
                   ) : (
                     <span className="text-muted-foreground">no</span>
@@ -351,8 +361,8 @@ export default function InspectorPanel() {
                 <button
                   data-testid="inspector-action-set-path"
                   onClick={() => {
-                    setActivePathToLeaf(activeConv.id, selectedNode.id);
-                    toast.message("active path set to selection");
+                    selectPathHead(activeConv.id, selectedNode.id);
+                    toast.message("selected path set to selection");
                   }}
                   className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest"
                 >
@@ -403,7 +413,7 @@ export default function InspectorPanel() {
                       {approval.tool_name}
                     </span>
                     <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                      {approval.tool_call_id.slice(0, 10)}
+                      session {approval.session_id?.slice(0, 8)}
                     </span>
                   </div>
                   <div className="px-2 py-1.5 space-y-1">
@@ -413,11 +423,21 @@ export default function InspectorPanel() {
                     <pre className="font-mono text-[10px] text-muted-foreground bg-surface/60 border border-border p-2 overflow-x-auto whitespace-pre-wrap max-h-32">
                       {formatArguments(approval.arguments)}
                     </pre>
-                    <div className="grid grid-cols-2 gap-1 pt-1">
+                    <div className="grid grid-cols-3 gap-1 pt-1">
+                      <button
+                        data-testid={`approval-view-${approval.tool_call_id}`}
+                        onClick={() => {
+                          setSelectedNodeId(approval.assistant_message_id);
+                          toast.message("approval path selected");
+                        }}
+                        className="h-7 border border-border font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"
+                      >
+                        view path
+                      </button>
                       <button
                         data-testid={`approval-approve-${approval.tool_call_id}`}
                         onClick={() => {
-                          approveToolCall(activeConv.id, approval.tool_call_id);
+                          approveToolCall(approval.session_id, approval.tool_call_id);
                           toast.message("tool approved");
                         }}
                         className="h-7 border border-foreground bg-foreground text-background font-mono text-[10px] uppercase tracking-widest hover:opacity-90"
@@ -427,7 +447,7 @@ export default function InspectorPanel() {
                       <button
                         data-testid={`approval-deny-${approval.tool_call_id}`}
                         onClick={() => {
-                          denyToolCall(activeConv.id, approval.tool_call_id);
+                          denyToolCall(approval.session_id, approval.tool_call_id);
                           toast.message("tool denied");
                         }}
                         className="h-7 border border-border text-[hsl(var(--destructive))] font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"
@@ -450,7 +470,7 @@ export default function InspectorPanel() {
           resetKey={activeConv.id}
         >
           <div className="space-y-2">
-            {availableToolSchemas.length > 0 ? (
+            {availableToolSchemas.length > 0 || unavailableToolProviders.length > 0 ? (
               <div className="space-y-2">
                 {groupedToolSchemas.map((group) => {
                   const unattachedTools = group.tools.filter(
@@ -622,6 +642,24 @@ export default function InspectorPanel() {
                     </div>
                   );
                 })}
+                {unavailableToolProviders.map((provider) => (
+                  <div
+                    key={provider.providerId}
+                    className="border border-border bg-surface/20 px-2 py-2"
+                  >
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                      {provider.displayName || providerLabel(provider.providerId)}
+                    </div>
+                    <div className="mt-1 font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]">
+                      unavailable
+                    </div>
+                    {provider.error && (
+                      <div className="mt-1 text-[10px] text-muted-foreground leading-snug break-words">
+                        {provider.error}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             ) : (
               <div className="font-mono text-[11px] text-muted-foreground">
@@ -638,7 +676,9 @@ export default function InspectorPanel() {
 function providerLabel(providerId) {
   if (providerId === "windie") return "Windie";
   if (providerId === "cua-driver") return "CUA Driver";
+  if (providerId === "desktop-commander") return "Desktop Commander";
   if (providerId === "blender-mcp") return "Blender MCP";
+  if (providerId === "brightdata") return "Bright Data";
   return providerId || "Unknown Provider";
 }
 

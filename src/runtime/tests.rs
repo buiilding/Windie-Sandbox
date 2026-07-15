@@ -7,16 +7,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
-use crate::conversation::{
-    Message, MessageMetadata, ToolCall, ToolCallId, ToolSchema, ToolSchemaName,
-};
+use crate::conversation::{Message, MessageMetadata, ToolCall, ToolCallId};
 use crate::llm::{
     AssistantResponse, FinishReason, LlmStreamEvent, PromptCacheRequest, ReasoningRequest,
 };
 use crate::mcp::McpCommand;
 use crate::tool::{
-    ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission, ToolProviderId,
-    ToolProviderKind, ToolProviderRef,
+    ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolExecutionResult, ToolPermission,
+    ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
 use crate::tool_provider::ToolProviderRegistry;
 
@@ -62,22 +60,20 @@ impl RecordingRuntimeEvents {
 }
 
 impl RuntimeEventSink for RecordingRuntimeEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) -> Result<()> {
+    fn assistant_message_saved(&self, message_id: &MessageId) {
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::AssistantMessageSaved(
                 message_id.clone(),
             ));
-        Ok(())
     }
 
-    fn tool_result_saved(&self, message_id: &MessageId) -> Result<()> {
+    fn tool_result_saved(&self, message_id: &MessageId) {
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::ToolResultSaved(message_id.clone()));
-        Ok(())
     }
 }
 
@@ -312,15 +308,297 @@ impl RuntimeLlm for ToolThenReplyLlm {
     }
 }
 
+fn latest_head(store: &Store, conversation_id: &ConversationId) -> Option<MessageId> {
+    store
+        .load_message_tree(conversation_id)
+        .unwrap()
+        .last()
+        .and_then(|message| message.id.clone())
+}
+
+fn path_to_head(
+    store: &Store,
+    conversation_id: &ConversationId,
+    head_message_id: &MessageId,
+) -> Vec<Message> {
+    store
+        .load_path_to_message(conversation_id, head_message_id)
+        .unwrap()
+}
+
+fn path(store: &Store, conversation_id: &ConversationId) -> Vec<Message> {
+    latest_head(store, conversation_id)
+        .as_ref()
+        .map(|head_message_id| path_to_head(store, conversation_id, head_message_id))
+        .unwrap_or_default()
+}
+
+fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
+    let registry = ToolProviderRegistry::new();
+    let events = NoopRuntimeEventSink;
+    let mut head_message_id = latest_head(store, conversation_id);
+
+    prepare_head_turn(
+        store,
+        conversation_id,
+        &mut head_message_id,
+        &registry,
+        &events,
+    )?;
+
+    Ok(())
+}
+
+fn pending_latest_head_approvals(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<Vec<crate::tool::ToolApprovalRequest>> {
+    let registry = ToolProviderRegistry::new();
+    let head_message_id = latest_head(store, conversation_id);
+
+    pending_approvals_at_head(
+        store,
+        RuntimeInput {
+            conversation_id,
+            head_message_id: head_message_id.as_ref(),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+    )
+}
+
+fn validate_latest_head_availability(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<()> {
+    let head_message_id = latest_head(store, conversation_id);
+    let registry = ToolProviderRegistry::new();
+
+    pending_approvals_at_head(
+        store,
+        RuntimeInput {
+            conversation_id,
+            head_message_id: head_message_id.as_ref(),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+    )?;
+    let messages = match head_message_id.as_ref() {
+        Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
+        None => Vec::new(),
+    };
+    let Some(execution) = active_tool_execution(&messages) else {
+        return Ok(());
+    };
+    let Some(tool_call) = execution.next_pending_tool_call() else {
+        return Ok(());
+    };
+
+    Err(error::invalid_request(format!(
+        "tool call requires result before query: {}",
+        tool_call.id
+    )))
+}
+
+async fn run_latest_head_once<O, L>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+{
+    let registry = ToolProviderRegistry::new();
+    let events = NoopRuntimeEventSink;
+
+    run_latest_head_once_with_registry_and_events(
+        output,
+        llm,
+        store,
+        conversation_id,
+        &registry,
+        &events,
+        RuntimeModelRequest::new(None, None),
+    )
+    .await
+}
+
+async fn run_latest_head_once_with_registry_and_events<O, L, E>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+    events: &E,
+    model_request: RuntimeModelRequest<'_>,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+    E: RuntimeEventSink,
+{
+    let head_message_id = latest_head(store, conversation_id);
+
+    let message = advance_turn(
+        output,
+        llm,
+        store,
+        RuntimeInput {
+            conversation_id,
+            head_message_id: head_message_id.as_ref(),
+            tools: registry,
+            model_request,
+        },
+        events,
+    )
+    .await?;
+    Ok(message)
+}
+
+async fn run_latest_head_until_blocked<O, L>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+    reasoning: Option<&ReasoningRequest>,
+    prompt_cache: Option<&PromptCacheRequest>,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+{
+    let events = NoopRuntimeEventSink;
+
+    run_latest_head_until_blocked_with_events(
+        output,
+        llm,
+        store,
+        conversation_id,
+        registry,
+        &events,
+        RuntimeModelRequest::new(reasoning, prompt_cache),
+    )
+    .await
+}
+
+async fn run_latest_head_until_blocked_with_events<O, L, E>(
+    output: &O,
+    llm: &L,
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    registry: &ToolProviderRegistry,
+    events: &E,
+    model_request: RuntimeModelRequest<'_>,
+) -> Result<Message>
+where
+    O: RuntimeOutput,
+    L: RuntimeLlm,
+    E: RuntimeEventSink,
+{
+    let head_message_id = latest_head(store, conversation_id);
+    let outcome = advance_until_blocked(
+        output,
+        llm,
+        store,
+        RuntimeInput {
+            conversation_id,
+            head_message_id: head_message_id.as_ref(),
+            tools: registry,
+            model_request,
+        },
+        events,
+    )
+    .await?;
+    let head_message_id = match outcome {
+        RuntimeOutcome::Completed {
+            head_message_id: Some(head_message_id),
+        }
+        | RuntimeOutcome::WaitingForApproval { head_message_id } => head_message_id,
+        RuntimeOutcome::Completed {
+            head_message_id: None,
+        } => return Err(anyhow!("run did not create a head message")),
+    };
+    let messages = path_to_head(store, conversation_id, &head_message_id);
+
+    messages
+        .into_iter()
+        .rev()
+        .find(|message| message.role == Role::Assistant)
+        .ok_or_else(|| anyhow!("run did not create an assistant message"))
+}
+
+async fn approve_latest_head_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+) -> Result<ToolExecutionResult> {
+    let registry = ToolProviderRegistry::new();
+
+    approve_latest_head_tool_call_with_registry(store, conversation_id, tool_call_id, &registry)
+        .await
+}
+
+async fn approve_latest_head_tool_call_with_registry(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
+    let head_message_id = latest_head(store, conversation_id);
+    let pending = load_pending_tool_call_at_head(
+        store,
+        conversation_id,
+        head_message_id.as_ref(),
+        tool_call_id,
+    )?;
+    let execution = prepare_pending_tool_execution(
+        store,
+        conversation_id,
+        head_message_id.as_ref(),
+        &pending,
+        registry,
+    )?;
+    let result = match execution {
+        PendingToolExecution::Finished(result) => result,
+        PendingToolExecution::Execute(attached_tool) => {
+            execute_pending_tool_call(&pending, &attached_tool, registry).await?
+        }
+    };
+    store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+
+    Ok(result)
+}
+
+fn deny_latest_head_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    tool_call_id: &ToolCallId,
+) -> Result<ToolExecutionResult> {
+    let head_message_id = latest_head(store, conversation_id);
+    let pending = load_pending_tool_call_at_head(
+        store,
+        conversation_id,
+        head_message_id.as_ref(),
+        tool_call_id,
+    )?;
+    let result = deny_pending_tool_call(&pending);
+    store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+
+    Ok(result)
+}
+
 #[tokio::test]
-async fn query_conversation_saves_assistant_message() {
+async fn run_head_saves_assistant_message() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "hello", None)
         .unwrap();
 
-    let assistant_message = query_conversation_once(
+    let assistant_message = run_latest_head_once(
         &NoopOutput,
         &ReplyLlm::new("hello back"),
         &mut store,
@@ -346,17 +624,81 @@ async fn query_conversation_saves_assistant_message() {
         messages[1].parent_message_id.as_deref(),
         messages[0].id.as_deref()
     );
+}
+
+#[tokio::test]
+async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "branch here", None)
+        .unwrap();
+    let registry = ToolProviderRegistry::new();
+    let events = NoopRuntimeEventSink;
+
+    let first_outcome = advance_until_blocked(
+        &NoopOutput,
+        &ReplyLlm::new("first branch"),
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&user_id),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+    let second_outcome = advance_until_blocked(
+        &NoopOutput,
+        &ReplyLlm::new("second branch"),
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&user_id),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+
+    let first_id = match first_outcome {
+        RuntimeOutcome::Completed {
+            head_message_id: Some(message_id),
+        } => message_id,
+        _ => panic!("first explicit-head execution did not complete"),
+    };
+    let second_id = match second_outcome {
+        RuntimeOutcome::Completed {
+            head_message_id: Some(message_id),
+        } => message_id,
+        _ => panic!("second explicit-head execution did not complete"),
+    };
+    let first_path = path_to_head(&store, &conversation_id, &first_id);
+    let second_path = path_to_head(&store, &conversation_id, &second_id);
+
+    assert_ne!(first_id, second_id);
+    assert_eq!(first_path.len(), 2);
+    assert_eq!(second_path.len(), 2);
+    assert_eq!(first_path[0].id.as_ref(), Some(&user_id));
+    assert_eq!(second_path[0].id.as_ref(), Some(&user_id));
+    assert_eq!(first_path[1].content, "first branch");
+    assert_eq!(second_path[1].content, "second branch");
     assert_eq!(
-        store
-            .active_message_id(&conversation_id)
-            .unwrap()
-            .as_deref(),
-        messages[1].id.as_deref()
+        first_path[1].parent_message_id.as_deref(),
+        Some(user_id.as_str())
+    );
+    assert_eq!(
+        second_path[1].parent_message_id.as_deref(),
+        Some(user_id.as_str())
     );
 }
 
 #[tokio::test]
-async fn query_conversation_uses_active_path() {
+async fn run_head_uses_requested_head_path() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let root_id = store
@@ -380,14 +722,24 @@ async fn query_conversation_uses_active_path() {
             None,
         )
         .unwrap();
-    store
-        .set_active_message(&conversation_id, &active_id)
-        .unwrap();
     let llm = CapturingLlm::new();
+    let events = NoopRuntimeEventSink;
+    let registry = ToolProviderRegistry::new();
 
-    query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
-        .await
-        .unwrap();
+    advance_turn(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&active_id),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
 
     let captured = llm.messages.lock().unwrap();
 
@@ -397,7 +749,7 @@ async fn query_conversation_uses_active_path() {
 }
 
 #[tokio::test]
-async fn query_conversation_passes_tool_schemas_to_llm() {
+async fn run_head_passes_tool_schemas_to_llm() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let tool_schema = ToolSchema {
@@ -413,7 +765,7 @@ async fn query_conversation_passes_tool_schemas_to_llm() {
         .unwrap();
     let llm = CapturingLlm::new();
 
-    query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
+    run_latest_head_once(&NoopOutput, &llm, &mut store, &conversation_id)
         .await
         .unwrap();
 
@@ -421,7 +773,76 @@ async fn query_conversation_passes_tool_schemas_to_llm() {
 }
 
 #[tokio::test]
-async fn query_approve_query_composes_provider_tool_flow() {
+async fn explicit_run_head_uses_that_branch_prompt_and_tools() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let shared_id = store
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
+        .unwrap();
+    let shared_prompt_id = store
+        .set_system_prompt_at_head(&conversation_id, Some(&shared_id), "shared prompt")
+        .unwrap();
+
+    let branch_tool = ToolSchema {
+        name: ToolSchemaName::new(TEST_TOOL_SCHEMA_NAME),
+        description: "Run a shell command".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+    };
+    let branch_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_prompt_id),
+            Role::User,
+            "branch",
+            None,
+        )
+        .unwrap();
+    let branch_prompt_id = store
+        .set_system_prompt_at_head(&conversation_id, Some(&branch_id), "branch prompt")
+        .unwrap();
+    store
+        .insert_tool_schema_at_head(&conversation_id, Some(&branch_prompt_id), &branch_tool)
+        .unwrap();
+    store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_prompt_id),
+            Role::User,
+            "sibling",
+            None,
+        )
+        .unwrap();
+    let llm = CapturingLlm::new();
+    let events = NoopRuntimeEventSink;
+    let registry = ToolProviderRegistry::new();
+
+    advance_turn(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&branch_prompt_id),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+
+    let captured_messages = llm.messages.lock().unwrap();
+
+    assert_eq!(captured_messages[0].role, Role::System);
+    assert_eq!(captured_messages[0].content, "branch prompt");
+    assert_eq!(*llm.tools.lock().unwrap(), vec![branch_tool]);
+}
+
+#[tokio::test]
+async fn session_approve_run_composes_provider_tool_flow() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
@@ -431,11 +852,10 @@ async fn query_approve_query_composes_provider_tool_flow() {
     let llm = ToolThenReplyLlm::new();
     let registry = test_mcp_registry();
 
-    let tool_call_message =
-        query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
-            .await
-            .unwrap();
-    let result = approve_tool_call_with_registry(
+    let tool_call_message = run_latest_head_once(&NoopOutput, &llm, &mut store, &conversation_id)
+        .await
+        .unwrap();
+    let result = approve_latest_head_tool_call_with_registry(
         &mut store,
         &conversation_id,
         &ToolCallId::new("call_123"),
@@ -443,10 +863,9 @@ async fn query_approve_query_composes_provider_tool_flow() {
     )
     .await
     .unwrap();
-    let assistant_message =
-        query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
-            .await
-            .unwrap();
+    let assistant_message = run_latest_head_once(&NoopOutput, &llm, &mut store, &conversation_id)
+        .await
+        .unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
     let second_turn_messages = llm.second_turn_messages.lock().unwrap();
 
@@ -492,22 +911,20 @@ async fn auto_approval_executes_tool_and_queries_again() {
         .unwrap();
     let llm = ToolThenReplyLlm::new();
     let registry = test_mcp_registry();
-    let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
-    let run = store.create_runtime_run(&conversation_id).unwrap();
-    let cancellation = RunCancellation::default();
 
-    let assistant_message = query_conversation_resolving_automatic_tools(
+    let assistant_message = run_latest_head_until_blocked(
         &NoopOutput,
         &llm,
         &mut store,
         &conversation_id,
         &registry,
-        RuntimeModelRequest::new(&run.id, &cancellation, &snapshot, None, None),
+        None,
+        None,
     )
     .await
     .unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let messages = path(&store, &conversation_id);
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
     let second_turn_messages = llm.second_turn_messages.lock().unwrap();
 
     assert_eq!(assistant_message.role, Role::Assistant);
@@ -523,48 +940,7 @@ async fn auto_approval_executes_tool_and_queries_again() {
 }
 
 #[tokio::test]
-async fn manual_runtime_query_leaves_tool_call_available_for_approval() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/test").unwrap();
-    attach_test_mcp_tool(&mut store, &conversation_id);
-    store
-        .insert_message(&conversation_id, None, Role::User, "list files", None)
-        .unwrap();
-    let llm = ToolThenReplyLlm::new();
-    let registry = test_mcp_registry();
-    let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
-    let run = store.create_runtime_run(&conversation_id).unwrap();
-    let cancellation = RunCancellation::default();
-
-    let tool_call_message = query_conversation_resolving_automatic_tools(
-        &NoopOutput,
-        &llm,
-        &mut store,
-        &conversation_id,
-        &registry,
-        RuntimeModelRequest::new(&run.id, &cancellation, &snapshot, None, None),
-    )
-    .await
-    .unwrap();
-    let approvals =
-        pending_tool_approvals_with_registry(&store, &conversation_id, &registry).unwrap();
-    let result = approve_tool_call_with_registry(
-        &mut store,
-        &conversation_id,
-        &ToolCallId::new("call_123"),
-        &registry,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(tool_call_message.role, Role::Assistant);
-    assert_eq!(approvals.len(), 1);
-    assert_eq!(approvals[0].tool_call.id.as_str(), "call_123");
-    assert!(result.success);
-}
-
-#[tokio::test]
-async fn auto_approval_emits_persisted_runtime_events() {
+async fn auto_approval_emits_persisted_session_events() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
@@ -577,23 +953,20 @@ async fn auto_approval_emits_persisted_runtime_events() {
     let llm = ToolThenReplyLlm::new();
     let registry = test_mcp_registry();
     let events = RecordingRuntimeEvents::new();
-    let snapshot = runtime_snapshot(&store, &conversation_id).unwrap();
-    let run = store.create_runtime_run(&conversation_id).unwrap();
-    let cancellation = RunCancellation::default();
 
-    query_conversation_resolving_automatic_tools_with_events(
+    run_latest_head_until_blocked_with_events(
         &NoopOutput,
         &llm,
         &mut store,
         &conversation_id,
         &registry,
         &events,
-        RuntimeModelRequest::new(&run.id, &cancellation, &snapshot, None, None),
+        RuntimeModelRequest::new(None, None),
     )
     .await
     .unwrap();
 
-    let messages = store.load_active_path(&conversation_id).unwrap();
+    let messages = path(&store, &conversation_id);
     let recorded = events.events.lock().unwrap().clone();
 
     assert_eq!(
@@ -607,7 +980,7 @@ async fn auto_approval_emits_persisted_runtime_events() {
 }
 
 #[tokio::test]
-async fn query_conversation_once_saves_tool_calls_without_executing() {
+async fn run_latest_head_once_saves_tool_calls_without_executing() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
@@ -615,7 +988,7 @@ async fn query_conversation_once_saves_tool_calls_without_executing() {
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
 
-    query_conversation_once(&NoopOutput, &ToolCallLlm, &mut store, &conversation_id)
+    run_latest_head_once(&NoopOutput, &ToolCallLlm, &mut store, &conversation_id)
         .await
         .unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
@@ -630,7 +1003,7 @@ async fn query_conversation_once_saves_tool_calls_without_executing() {
 }
 
 #[tokio::test]
-async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
+async fn run_latest_head_once_auto_stores_policy_denied_tool_result() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
@@ -638,7 +1011,7 @@ async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
         .insert_message(&conversation_id, None, Role::User, "use a tool", None)
         .unwrap();
 
-    query_conversation_once(
+    run_latest_head_once(
         &NoopOutput,
         &UnknownToolCallLlm,
         &mut store,
@@ -646,8 +1019,8 @@ async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
     )
     .await
     .unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let messages = path(&store, &conversation_id);
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
 
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[1].role, Role::Assistant);
@@ -662,7 +1035,7 @@ async fn query_conversation_once_auto_stores_policy_denied_tool_result() {
         Some("call_unknown")
     );
     assert!(approvals.is_empty());
-    validate_query_availability(&store, &conversation_id).unwrap();
+    validate_latest_head_availability(&store, &conversation_id).unwrap();
 }
 
 #[tokio::test]
@@ -673,11 +1046,11 @@ async fn detached_tool_call_is_auto_denied() {
         .insert_message(&conversation_id, None, Role::User, "list files", None)
         .unwrap();
 
-    query_conversation_once(&NoopOutput, &ToolCallLlm, &mut store, &conversation_id)
+    run_latest_head_once(&NoopOutput, &ToolCallLlm, &mut store, &conversation_id)
         .await
         .unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let messages = path(&store, &conversation_id);
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
 
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[2].role, Role::Tool);
@@ -687,7 +1060,7 @@ async fn detached_tool_call_is_auto_denied() {
             .contains("Tool is not attached: desktop_commander__read_file")
     );
     assert!(approvals.is_empty());
-    validate_query_availability(&store, &conversation_id).unwrap();
+    validate_latest_head_availability(&store, &conversation_id).unwrap();
 }
 
 #[test]
@@ -721,9 +1094,9 @@ fn removed_tool_schema_makes_existing_pending_call_policy_denied() {
         )
         .unwrap();
 
-    prepare_query_turn(&mut store, &conversation_id).unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    prepare_latest_head_turn(&mut store, &conversation_id).unwrap();
+    let messages = path(&store, &conversation_id);
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
 
     assert_eq!(messages[2].role, Role::Tool);
     assert!(
@@ -744,7 +1117,7 @@ async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() 
         .insert_message(&conversation_id, None, Role::User, "use tools", None)
         .unwrap();
 
-    query_conversation_once(
+    run_latest_head_once(
         &NoopOutput,
         &UnknownThenProviderToolCallLlm,
         &mut store,
@@ -752,8 +1125,8 @@ async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() 
     )
     .await
     .unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let messages = path(&store, &conversation_id);
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
 
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[2].role, Role::Tool);
@@ -763,7 +1136,7 @@ async fn policy_denied_tool_results_stop_before_tool_calls_requiring_approval() 
 }
 
 #[tokio::test]
-async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_query() {
+async fn prepare_latest_head_turn_resolves_existing_policy_denied_tool_call_before_query() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_tool_schema(&mut store, &conversation_id, "unknown_tool");
@@ -784,8 +1157,8 @@ async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_que
         .unwrap();
     let llm = CapturingLlm::new();
 
-    prepare_query_turn(&mut store, &conversation_id).unwrap();
-    query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
+    prepare_latest_head_turn(&mut store, &conversation_id).unwrap();
+    run_latest_head_once(&NoopOutput, &llm, &mut store, &conversation_id)
         .await
         .unwrap();
     let captured = llm.messages.lock().unwrap();
@@ -804,7 +1177,7 @@ async fn prepare_query_turn_resolves_existing_policy_denied_tool_call_before_que
 }
 
 #[tokio::test]
-async fn pending_tool_approvals_lists_pending_provider_calls() {
+async fn pending_latest_head_approvals_lists_pending_provider_calls() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
@@ -828,7 +1201,7 @@ async fn pending_tool_approvals_lists_pending_provider_calls() {
         )
         .unwrap();
 
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
 
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].tool_call.id.as_str(), "call_123");
@@ -837,7 +1210,7 @@ async fn pending_tool_approvals_lists_pending_provider_calls() {
 }
 
 #[tokio::test]
-async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
+async fn pending_latest_head_approvals_ignores_inactive_branch_tool_calls() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let user_id = store
@@ -869,8 +1242,8 @@ async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
         )
         .unwrap();
 
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
-    let error = approve_tool_call(
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
+    let error = approve_latest_head_tool_call(
         &mut store,
         &conversation_id,
         &ToolCallId::new("call_inactive"),
@@ -887,7 +1260,7 @@ async fn pending_tool_approvals_ignores_inactive_branch_tool_calls() {
 }
 
 #[tokio::test]
-async fn approve_tool_call_executes_provider_and_stores_tool_result() {
+async fn approve_latest_head_tool_call_executes_provider_and_stores_tool_result() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     attach_test_mcp_tool(&mut store, &conversation_id);
@@ -912,7 +1285,7 @@ async fn approve_tool_call_executes_provider_and_stores_tool_result() {
         .unwrap();
 
     let registry = test_mcp_registry();
-    let result = approve_tool_call_with_registry(
+    let result = approve_latest_head_tool_call_with_registry(
         &mut store,
         &conversation_id,
         &ToolCallId::new("call_123"),
@@ -921,7 +1294,7 @@ async fn approve_tool_call_executes_provider_and_stores_tool_result() {
     .await
     .unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
 
     assert!(result.success);
     assert_eq!(messages.len(), 3);
@@ -939,7 +1312,7 @@ async fn approve_tool_call_executes_provider_and_stores_tool_result() {
 }
 
 #[test]
-fn deny_tool_call_stores_rejected_tool_result() {
+fn deny_latest_head_tool_call_stores_rejected_tool_result() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let user_id = store
@@ -963,7 +1336,8 @@ fn deny_tool_call_stores_rejected_tool_result() {
         .unwrap();
 
     let result =
-        deny_tool_call(&mut store, &conversation_id, &ToolCallId::new("call_123")).unwrap();
+        deny_latest_head_tool_call(&mut store, &conversation_id, &ToolCallId::new("call_123"))
+            .unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
 
     assert!(!result.success);
@@ -978,7 +1352,7 @@ async fn multi_tool_approvals_resolve_in_metadata_order() {
     let (_assistant_id, _first_call, _second_call) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
 
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].tool_call.id.as_str(), "call_1");
@@ -992,21 +1366,31 @@ async fn multi_tool_approvals_store_results_as_linear_chain() {
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
     let registry = test_mcp_registry();
 
-    approve_tool_call_with_registry(&mut store, &conversation_id, &first_call_id, &registry)
-        .await
-        .unwrap();
-    let approvals = pending_tool_approvals(&store, &conversation_id).unwrap();
+    approve_latest_head_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &first_call_id,
+        &registry,
+    )
+    .await
+    .unwrap();
+    let approvals = pending_latest_head_approvals(&store, &conversation_id).unwrap();
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0].tool_call.id.as_str(), "call_2");
 
-    approve_tool_call_with_registry(&mut store, &conversation_id, &second_call_id, &registry)
-        .await
-        .unwrap();
+    approve_latest_head_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &second_call_id,
+        &registry,
+    )
+    .await
+    .unwrap();
     let llm = CapturingLlm::new();
-    let final_message = query_conversation_once(&NoopOutput, &llm, &mut store, &conversation_id)
+    let final_message = run_latest_head_once(&NoopOutput, &llm, &mut store, &conversation_id)
         .await
         .unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
+    let messages = path(&store, &conversation_id);
     let captured = llm.messages.lock().unwrap();
 
     assert_eq!(messages.len(), 5);
@@ -1057,7 +1441,7 @@ async fn approving_later_tool_call_before_previous_call_rejects() {
     let (_assistant_id, _first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
-    let error = approve_tool_call(&mut store, &conversation_id, &second_call_id)
+    let error = approve_latest_head_tool_call(&mut store, &conversation_id, &second_call_id)
         .await
         .unwrap_err();
 
@@ -1068,24 +1452,27 @@ async fn approving_later_tool_call_before_previous_call_rejects() {
 }
 
 #[tokio::test]
-async fn query_rejects_until_all_tool_calls_have_results() {
+async fn run_rejects_until_all_tool_calls_have_results() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let (_assistant_id, first_call_id, _second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
     let registry = test_mcp_registry();
 
-    let first_error =
-        query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
-            .await
-            .unwrap_err();
-    approve_tool_call_with_registry(&mut store, &conversation_id, &first_call_id, &registry)
+    let first_error = run_latest_head_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
         .await
-        .unwrap();
-    let second_error =
-        query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
-            .await
-            .unwrap_err();
+        .unwrap_err();
+    approve_latest_head_tool_call_with_registry(
+        &mut store,
+        &conversation_id,
+        &first_call_id,
+        &registry,
+    )
+    .await
+    .unwrap();
+    let second_error = run_latest_head_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
+        .await
+        .unwrap_err();
 
     assert_eq!(
         first_error.to_string(),
@@ -1104,9 +1491,9 @@ fn denying_multi_tool_call_uses_linear_chain_parent() {
     let (_assistant_id, first_call_id, second_call_id) =
         insert_multi_tool_call_assistant(&mut store, &conversation_id);
 
-    deny_tool_call(&mut store, &conversation_id, &first_call_id).unwrap();
-    deny_tool_call(&mut store, &conversation_id, &second_call_id).unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
+    deny_latest_head_tool_call(&mut store, &conversation_id, &first_call_id).unwrap();
+    deny_latest_head_tool_call(&mut store, &conversation_id, &second_call_id).unwrap();
+    let messages = path(&store, &conversation_id);
 
     assert_eq!(messages[2].role, Role::Tool);
     assert_eq!(messages[3].role, Role::Tool);
@@ -1118,11 +1505,11 @@ fn denying_multi_tool_call_uses_linear_chain_parent() {
 }
 
 #[tokio::test]
-async fn query_conversation_reports_llm_failure() {
+async fn run_head_reports_llm_failure() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
 
-    let error = query_conversation_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
+    let error = run_latest_head_once(&NoopOutput, &FailingLlm, &mut store, &conversation_id)
         .await
         .unwrap_err();
 

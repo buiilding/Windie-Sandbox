@@ -3,17 +3,17 @@
 use super::*;
 use crate::conversation::{
     CompactionId, ConversationId, ImageAssetId, ImagePart, MessageId, MessageMetadata, MessagePart,
-    Role, ToolCall, ToolSchema, ToolSchemaName,
+    Role, ToolCall,
 };
 use crate::llm::ReasoningRequest;
 use crate::perf::{
-    BenchmarkMode, DurationMetric, MetricName, PerformanceComparison, PerformanceComparisonRow,
-    PerformanceReport, PerformanceSummary,
+    BenchmarkCategory, BenchmarkMode, DurationMetric, PerformanceComparison,
+    PerformanceComparisonRow, PerformanceReport, PerformanceSummary,
 };
 use crate::store::Compaction;
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolDefinition, ToolPermission,
-    ToolProviderId, ToolProviderKind, ToolProviderRef,
+    ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
 
 #[test]
@@ -30,11 +30,11 @@ fn formats_help_lines() {
     assert_eq!(lines[0], "windie");
     assert!(lines.contains(&"Usage:".to_string()));
     assert!(lines.contains(&"  windie".to_string()));
+    assert!(lines.contains(&"  windie inspector".to_string()));
     assert!(lines.contains(&"  windie tools".to_string()));
     assert!(lines.contains(&"  windie models".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
     assert!(lines.contains(&"  windie ls --json".to_string()));
-    assert!(lines.contains(&"  windie activate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie show <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie tree <conversation_id>".to_string()));
     assert!(lines.contains(&"  windie inspect <conversation_id> --json".to_string()));
@@ -68,16 +68,25 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie rm <conversation_id> toolschema <name>".to_string()));
     assert!(lines.contains(&"  windie truncate <conversation_id> <message_id>".to_string()));
     assert!(lines.contains(&"  windie fork <conversation_id> <message_id>".to_string()));
-    assert!(lines.contains(&"  windie query <conversation_id>".to_string()));
-    assert!(
-        lines.contains(&"  windie query <conversation_id> --model <provider/model>".to_string())
-    );
+    assert!(lines.contains(&"  windie run start <conversation_id>".to_string()));
+    assert!(lines.contains(&"  windie run status <session_id>".to_string()));
+    assert!(lines.contains(&"  windie run approvals <session_id>".to_string()));
+    assert!(lines.contains(&"  windie run approve <session_id> <tool_call_id>".to_string()));
+    assert!(lines.contains(&"  windie run deny <session_id> <tool_call_id>".to_string()));
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
-    assert!(lines.contains(&"  windie bench <conversation_id>".to_string()));
-    assert!(lines.contains(&"  windie bench <conversation_id> --runs 100 --json".to_string()));
-    assert!(lines.contains(&"  windie bench compare <baseline.json> <current.json>".to_string()));
-    assert!(lines.contains(&"  windie bench live".to_string()));
+    assert!(lines.contains(&"  windie install <target>".to_string()));
+    assert!(lines.contains(&"  windie env KEY=value".to_string()));
+    assert!(lines.contains(&"  windie bench".to_string()));
+    assert!(
+        lines.contains(
+            &"  windie bench --persistence --conversation --runtime --tools --mutations --mcp"
+                .to_string()
+        )
+    );
+    assert!(lines.contains(&"  windie compare baseline".to_string()));
+    assert!(lines.contains(&"  windie update baseline".to_string()));
+    assert!(!lines.contains(&"  windie bench live".to_string()));
     assert!(lines.contains(&"Options:".to_string()));
 }
 
@@ -163,11 +172,13 @@ fn formats_conversations() {
     let conversations = vec![
         ConversationInfo {
             id: ConversationId::new("first"),
+            title: None,
             model: "openai/test".to_string(),
             message_count: 1,
         },
         ConversationInfo {
             id: ConversationId::new("second"),
+            title: None,
             model: "openai/test".to_string(),
             message_count: 2,
         },
@@ -182,9 +193,27 @@ fn formats_conversations() {
 }
 
 #[test]
+fn formats_conversation_title() {
+    let conversations = vec![ConversationInfo {
+        id: ConversationId::new("chat-id"),
+        title: Some("work notes".to_string()),
+        model: "openai/test".to_string(),
+        message_count: 3,
+    }];
+
+    let lines = conversation_lines(&conversations);
+
+    assert_eq!(
+        lines,
+        vec!["conversations", "chat-id  3 messages  work notes"]
+    );
+}
+
+#[test]
 fn serializes_conversation_list_report() {
     let conversations = vec![ConversationInfo {
         id: ConversationId::new("chat-id"),
+        title: Some("work notes".to_string()),
         model: "anthropic/test".to_string(),
         message_count: 3,
     }];
@@ -193,7 +222,7 @@ fn serializes_conversation_list_report() {
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversations"][0]["id"], "chat-id");
-    assert!(value["conversations"][0].get("title").is_none());
+    assert_eq!(value["conversations"][0]["title"], "work notes");
     assert_eq!(value["conversations"][0]["model"], "anthropic/test");
     assert_eq!(value["conversations"][0]["message_count"], 3);
 }
@@ -311,7 +340,7 @@ fn serializes_inspection_report_with_runtime_state() {
         Some("You are concise.".to_string()),
         ToolApprovalMode::Manual,
         vec![tool_schema],
-        message_views(vec![
+        vec![
             Message {
                 id: Some(MessageId::new("user-id")),
                 parent_message_id: None,
@@ -335,16 +364,16 @@ fn serializes_inspection_report_with_runtime_state() {
                 parts: Vec::new(),
                 metadata: Some(metadata),
             },
-        ]),
-        message_views(vec![Message {
+        ],
+        vec![Message {
             id: Some(MessageId::new("user-id")),
             parent_message_id: None,
             role: Role::User,
             content: "look".to_string(),
             parts: Vec::new(),
             metadata: None,
-        }]),
-        message_views(vec![
+        }],
+        vec![
             Message {
                 id: None,
                 parent_message_id: None,
@@ -361,7 +390,7 @@ fn serializes_inspection_report_with_runtime_state() {
                 parts: Vec::new(),
                 metadata: None,
             },
-        ]),
+        ],
         Some(Compaction {
             id: CompactionId::new("compaction-id"),
             conversation_id: ConversationId::new("conversation-id"),
@@ -369,19 +398,17 @@ fn serializes_inspection_report_with_runtime_state() {
             content: "summary".to_string(),
             created_at: 123,
         }),
-        Vec::new(),
     );
 
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversation_id"], "conversation-id");
-    assert_eq!(value["active_message_id"], "assistant-id");
+    assert_eq!(value["head_message_id"], "assistant-id");
     assert_eq!(value["model"], "anthropic/claude-3-5-haiku");
     assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_approval_mode"], "manual");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
-    assert_eq!(value["execution_claims"], serde_json::json!([]));
     assert_eq!(value["messages"][0]["parts"][0]["type"], "text");
     assert_eq!(value["messages"][0]["parts"][1]["type"], "image");
     assert_eq!(value["messages"][0]["parts"][1]["asset_id"], "image-id");
@@ -394,16 +421,9 @@ fn serializes_inspection_report_with_runtime_state() {
     );
     assert_eq!(value["messages"][1]["metadata"]["refusal"], "no");
     assert_eq!(value["messages"][1]["metadata"]["reasoning"], "because");
-    assert_eq!(value["active_path"][0]["id"], "user-id");
+    assert_eq!(value["path"][0]["id"], "user-id");
     assert_eq!(value["model_context"][0]["role"], "system");
     assert_eq!(value["latest_compaction"]["id"], "compaction-id");
-}
-
-fn message_views(messages: Vec<Message>) -> Vec<MessageView> {
-    messages
-        .into_iter()
-        .map(MessageView::from_message)
-        .collect()
 }
 
 #[test]
@@ -435,19 +455,15 @@ fn formats_message_tree_with_active_marker() {
         },
     ];
 
-    let messages = messages
-        .into_iter()
-        .map(MessageView::from_message)
-        .collect::<Vec<_>>();
-    let lines = tree_lines(&messages, Some(&MessageId::new("active-id")));
+    let lines = tree_lines(&messages);
 
     assert_eq!(
         lines,
         vec![
             "tree",
-            "  user  root-id  root",
-            "  * assistant  active-id  active",
-            "    assistant  branch-id  branch",
+            "user  root-id  root",
+            "  assistant  active-id  active",
+            "  assistant  branch-id  branch",
         ]
     );
 }
@@ -498,30 +514,29 @@ fn formats_duration_as_seconds() {
 
 #[test]
 fn formats_performance_report_lines() {
-    let mut summary = PerformanceSummary::default();
-    summary.insert(
-        MetricName::StoreOpen,
-        DurationMetric {
-            min_us: 100,
-            median_us: 200,
-            p95_us: 300,
-            max_us: 400,
-        },
-    );
     let report = PerformanceReport {
-        format_version: 4,
-        mode: BenchmarkMode::Conversation,
+        format_version: 3,
+        mode: BenchmarkMode::Local,
+        categories: BenchmarkCategory::all(),
         model: "openai/gpt-4o-mini".to_string(),
-        conversation_id: Some("conversation-id".to_string()),
+        conversation_id: None,
         runs: 3,
         samples: vec![],
-        summary,
+        summary: PerformanceSummary {
+            store_open: Some(DurationMetric {
+                min_us: 100,
+                median_us: 200,
+                p95_us: 300,
+                max_us: 400,
+            }),
+            ..PerformanceSummary::default()
+        },
     };
 
     let lines = performance_report_lines(&report);
 
     assert_eq!(lines[0], "performance report");
-    assert!(lines.contains(&"mode: conversation".to_string()));
+    assert!(lines.contains(&"mode: local".to_string()));
     assert!(lines.contains(&"runs: 3".to_string()));
     assert!(lines.contains(&"store open:".to_string()));
     assert!(lines.contains(&"  median: 200us".to_string()));
@@ -530,8 +545,8 @@ fn formats_performance_report_lines() {
 #[test]
 fn formats_performance_comparison_lines() {
     let comparison = PerformanceComparison {
-        baseline_mode: BenchmarkMode::Conversation,
-        current_mode: BenchmarkMode::Conversation,
+        baseline_mode: BenchmarkMode::Local,
+        current_mode: BenchmarkMode::Local,
         baseline_runs: 100,
         current_runs: 100,
         rows: vec![PerformanceComparisonRow {
@@ -545,13 +560,12 @@ fn formats_performance_comparison_lines() {
     let lines = performance_comparison_lines(&comparison);
 
     assert_eq!(lines[0], "performance comparison");
-    assert!(lines.contains(&"baseline: conversation (100 runs)".to_string()));
-    assert!(lines.contains(&"current: conversation (100 runs)".to_string()));
+    assert!(lines.contains(&"baseline: local (100 runs)".to_string()));
+    assert!(lines.contains(&"current: local (100 runs)".to_string()));
     assert!(lines.contains(&"context build: 100us -> 80us (-20.0%)".to_string()));
 }
 
 #[test]
-fn live_benchmark_mode_reports_provider_call() {
-    assert!(crate::perf::BenchmarkMode::Live.may_call_provider());
-    assert!(!crate::perf::BenchmarkMode::Conversation.may_call_provider());
+fn local_benchmark_mode_never_reports_provider_call() {
+    assert!(!crate::perf::BenchmarkMode::Local.may_call_provider());
 }

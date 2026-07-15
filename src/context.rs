@@ -5,9 +5,10 @@
 
 use anyhow::Result;
 
-use crate::conversation::{ConversationId, Message, MessageView, Role};
+use crate::conversation::{ConversationId, Message, MessageId, Role};
 use crate::store::Compaction;
 use crate::store::Store;
+use crate::tool::ToolSchema;
 
 const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
 
@@ -15,143 +16,137 @@ const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
 pub struct ContextBuilder;
 
 #[derive(Debug)]
+/// Complete model-facing context for one selected conversation path.
+///
+/// Runtime callers use this shape so messages and tool schemas are resolved
+/// from the same path head. That keeps branch-local system messages and tools
+/// from leaking across sibling branches.
+pub struct ModelContext {
+    pub messages: Vec<Message>,
+    pub tool_schemas: Vec<ToolSchema>,
+}
+
+#[derive(Debug)]
 /// Inputs needed to flatten model-facing context.
 ///
 /// `perf.rs` can load these fields step by step and time each load without
 /// putting benchmark timing logic inside this module.
 pub struct ContextParts {
-    pub active_path: Vec<Message>,
-    pub system_prompt: Option<String>,
+    pub path: Vec<Message>,
     pub compaction: Option<Compaction>,
 }
 
 impl ContextBuilder {
-    /// Loads the active path unless a compaction checkpoint exists on that path.
+    /// Loads the model-facing messages for an explicit path head.
     ///
-    /// With a saved system prompt, the model sees that prompt first. With
-    /// compaction, the model also sees one synthetic system summary plus the
-    /// active-path messages after the checkpoint. The full uncompressed tree
-    /// remains in SQLite.
-    pub fn build(store: &Store, conversation_id: &ConversationId) -> Result<Vec<Message>> {
-        let parts = Self::load_parts(store, conversation_id)?;
-
-        Ok(Self::flatten(parts))
-    }
-
-    /// Builds context from a run's immutable prompt and compaction snapshot.
-    pub fn build_with_configuration(
+    /// System prompt edits are normal `Role::System` messages in the selected
+    /// path. The model sees only the latest non-empty system message first.
+    /// With compaction, the model also sees one synthetic system summary plus
+    /// path messages after the checkpoint. The full uncompressed tree remains
+    /// in SQLite.
+    pub fn build_messages(
         store: &Store,
         conversation_id: &ConversationId,
-        system_prompt: Option<String>,
-        compaction: Option<Compaction>,
+        head_message_id: Option<&MessageId>,
     ) -> Result<Vec<Message>> {
-        Ok(Self::flatten(ContextParts {
-            active_path: store.load_active_path(conversation_id)?,
-            system_prompt,
-            compaction,
-        }))
-    }
-
-    /// Loads the storage-backed pieces needed to build model-facing context.
-    ///
-    /// This helper has no benchmark timers. Benchmark code can call each store
-    /// method directly when it needs a lower-level timing breakdown.
-    pub fn load_parts(store: &Store, conversation_id: &ConversationId) -> Result<ContextParts> {
-        let active_path = store.load_active_path(conversation_id)?;
-        let system_prompt = store.system_prompt(conversation_id)?;
+        let mut path = store.load_root_system_messages(conversation_id)?;
+        if let Some(message_id) = head_message_id {
+            path.extend(store.load_path_to_message(conversation_id, message_id)?);
+        }
         let compaction = store.latest_compaction(conversation_id)?;
 
-        Ok(ContextParts {
-            active_path,
-            system_prompt,
-            compaction,
+        Ok(Self::flatten(ContextParts { path, compaction }))
+    }
+
+    /// Loads the model context for an explicit path head.
+    ///
+    /// This is the runtime entrypoint. It resolves messages and tool schemas
+    /// against the same captured head.
+    pub fn build_model_context(
+        store: &Store,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<ModelContext> {
+        Ok(ModelContext {
+            messages: Self::build_messages(store, conversation_id, head_message_id)?,
+            tool_schemas: store.load_tool_schemas_for_head(conversation_id, head_message_id)?,
         })
     }
 
     /// Flattens loaded context parts into the exact messages sent to the model.
     pub fn flatten(parts: ContextParts) -> Vec<Message> {
-        let ContextParts {
-            active_path,
-            system_prompt,
-            compaction,
-        } = parts;
+        let ContextParts { path, compaction } = parts;
 
-        flatten_context(
-            active_path,
-            system_prompt,
-            compaction.as_ref(),
-            |message| message.id.as_ref().map(|id| id.as_str()),
-            system_prompt_message,
-        )
-    }
-
-    /// Builds the metadata-only projection used by inspection without loading
-    /// image bytes or duplicating model-context ordering rules.
-    pub fn flatten_view(
-        active_path: Vec<MessageView>,
-        system_prompt: Option<String>,
-        compaction: Option<&Compaction>,
-    ) -> Vec<MessageView> {
-        flatten_context(
-            active_path,
-            system_prompt,
-            compaction,
-            |message| message.id.as_deref(),
-            system_prompt_message_view,
-        )
-    }
-}
-
-/// Applies compaction and system-prompt ordering to any message projection.
-fn flatten_context<T>(
-    active_path: Vec<T>,
-    system_prompt: Option<String>,
-    compaction: Option<&Compaction>,
-    message_id: impl Fn(&T) -> Option<&str>,
-    system_message: impl Fn(String) -> T,
-) -> Vec<T> {
-    let mut messages = if let Some(compaction) = compaction {
-        if let Some(index) = active_path
+        let Some(compaction) = compaction else {
+            return model_messages_from_path(path, None);
+        };
+        let effective_system_message = effective_system_message(&path);
+        let Some(compaction_index) = path
             .iter()
-            .position(|message| message_id(message) == Some(compaction.through_message_id.as_str()))
-        {
-            let mut compacted = vec![system_message(format!(
-                "{COMPACTION_PREFIX}{}",
-                compaction.content
-            ))];
-            compacted.extend(active_path.into_iter().skip(index + 1));
-            compacted
-        } else {
-            active_path
-        }
-    } else {
-        active_path
-    };
-    if let Some(system_prompt) = system_prompt {
-        messages.insert(0, system_message(system_prompt));
+            .position(|message| message.id.as_ref() == Some(&compaction.through_message_id))
+        else {
+            return model_messages_from_path(path, None);
+        };
+
+        model_messages_from_path(
+            path.into_iter().skip(compaction_index + 1).collect(),
+            Some((
+                effective_system_message,
+                compaction_message(&compaction.content),
+            )),
+        )
     }
-    messages
 }
 
-/// Converts a saved system prompt into a model-facing system message.
-fn system_prompt_message(content: String) -> Message {
+/// Builds provider-facing messages from one path segment.
+///
+/// System prompt edits are persisted as normal tree messages. Providers should
+/// still receive a single current system instruction, so historical system
+/// messages are removed and the latest non-empty one is placed first. An empty
+/// latest system message acts as a branch-local clear marker.
+fn model_messages_from_path(
+    messages: Vec<Message>,
+    compaction: Option<(Option<Message>, Message)>,
+) -> Vec<Message> {
+    let effective_system_message = compaction
+        .as_ref()
+        .map(|(message, _)| message.clone())
+        .unwrap_or_else(|| effective_system_message(&messages));
+    let mut model_messages = Vec::with_capacity(messages.len() + usize::from(compaction.is_some()));
+
+    if let Some(system_message) = effective_system_message {
+        model_messages.push(system_message);
+    }
+    if let Some((_, compaction_message)) = compaction {
+        model_messages.push(compaction_message);
+    }
+
+    model_messages.extend(
+        messages
+            .into_iter()
+            .filter(|message| message.role != Role::System),
+    );
+
+    model_messages
+}
+
+/// Returns the effective prompt message from a path.
+fn effective_system_message(messages: &[Message]) -> Option<Message> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::System)
+        .filter(|message| !message.content.trim().is_empty())
+        .cloned()
+}
+
+/// Converts a saved compaction into a system message for the model.
+fn compaction_message(content: &str) -> Message {
     Message {
         id: None,
         parent_message_id: None,
         role: Role::System,
-        content,
-        parts: Vec::new(),
-        metadata: None,
-    }
-}
-
-/// Converts synthetic context text into a metadata-only system message.
-fn system_prompt_message_view(content: String) -> MessageView {
-    MessageView {
-        id: None,
-        parent_message_id: None,
-        role: Role::System,
-        content,
+        content: format!("{COMPACTION_PREFIX}{content}"),
         parts: Vec::new(),
         metadata: None,
     }
@@ -169,7 +164,7 @@ mod tests {
         let first_id = store
             .insert_message(&conversation_id, None, Role::User, "hello", None)
             .unwrap();
-        store
+        let second_id = store
             .insert_message(
                 &conversation_id,
                 Some(&first_id),
@@ -179,7 +174,8 @@ mod tests {
             )
             .unwrap();
 
-        let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
+        let messages =
+            ContextBuilder::build_messages(&store, &conversation_id, Some(&second_id)).unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::User);
@@ -189,21 +185,52 @@ mod tests {
     }
 
     #[test]
-    fn prepends_conversation_system_prompt() {
+    fn prepends_latest_system_message() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
-        store
+        let prompt_id = store
             .set_system_prompt(&conversation_id, "You are concise.")
             .unwrap();
-        store
-            .insert_message(&conversation_id, None, Role::User, "hello", None)
+        let user_id = store
+            .insert_message(
+                &conversation_id,
+                Some(&prompt_id),
+                Role::User,
+                "hello",
+                None,
+            )
             .unwrap();
 
-        let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
+        let messages =
+            ContextBuilder::build_messages(&store, &conversation_id, Some(&user_id)).unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::System);
         assert_eq!(messages[0].content, "You are concise.");
+        assert_eq!(messages[1].role, Role::User);
+        assert_eq!(messages[1].content, "hello");
+    }
+
+    #[test]
+    fn only_latest_system_message_reaches_model() {
+        let mut store = Store::open_memory().unwrap();
+        let conversation_id = store.create_conversation("openai/test").unwrap();
+        let first_id = store
+            .set_system_prompt(&conversation_id, "old prompt")
+            .unwrap();
+        let user_id = store
+            .insert_message(&conversation_id, Some(&first_id), Role::User, "hello", None)
+            .unwrap();
+        let prompt_id = store
+            .set_system_prompt_at_head(&conversation_id, Some(&user_id), "new prompt")
+            .unwrap();
+
+        let messages =
+            ContextBuilder::build_messages(&store, &conversation_id, Some(&prompt_id)).unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[0].content, "new prompt");
         assert_eq!(messages[1].role, Role::User);
         assert_eq!(messages[1].content, "hello");
     }
@@ -225,7 +252,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        store
+        let third_id = store
             .insert_message(
                 &conversation_id,
                 Some(&second_id),
@@ -238,7 +265,8 @@ mod tests {
             .save_compaction(&conversation_id, &second_id, "one and two happened")
             .unwrap();
 
-        let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
+        let messages =
+            ContextBuilder::build_messages(&store, &conversation_id, Some(&third_id)).unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::System);
@@ -251,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_compaction_outside_active_path() {
+    fn ignores_compaction_outside_requested_path() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
 
@@ -279,11 +307,8 @@ mod tests {
         store
             .save_compaction(&conversation_id, &inactive_id, "inactive summary")
             .unwrap();
-        store
-            .set_active_message(&conversation_id, &active_id)
-            .unwrap();
-
-        let messages = ContextBuilder::build(&store, &conversation_id).unwrap();
+        let messages =
+            ContextBuilder::build_messages(&store, &conversation_id, Some(&active_id)).unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "root");

@@ -22,8 +22,9 @@ developer API harness for testing those primitives:
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
-Conversation storage is a tree. Runtime execution uses one selected active path
-through that tree. Model context is the flattened active path.
+Conversation storage is a tree. Runtime execution uses an explicit selected
+message head through that tree. Model context is the flattened path to that
+head.
 
 ## Collaboration Rule
 
@@ -73,190 +74,162 @@ Engineers should be able to understand, test, and replace each component without
 reading the whole codebase. If a design becomes hard to explain, treat that as a
 code smell.
 
-## Ownership Boundaries
-
-```text
-Windie owns local interaction, conversation/runtime flow, and future local tools.
-Bifrost owns provider inference, model routing, provider keys, and LLM observability. Reason: Bifrost proves itself to be the fastest, lightest provider adapter.
-Clients own user interface surfaces such as CLI, desktop app, browser UI, or voice.
-```
-
-For multimodal input, Windie owns local file reading, durable copied image
-storage, typed message parts, and OpenAI-compatible request shape. Bifrost and
-the provider own model capability rejection.
-
-The current CLI is the first client and the first runtime surface. It is not the
-whole product.
-
-For each provider Windie wants Bifrost to use, Bifrost needs provider config
-once. The provider row names the provider, such as `anthropic`. The key row
-points to the environment variable, such as `env.ANTHROPIC_API_KEY`. Use the
-same pattern for Gemini, Groq, OpenRouter, and other providers. Actual secrets
-stay in Windie's canonical `~/.config/windie/providers.env`, shared by approved
-MCP providers and Bifrost.
-
-## Current Scope
-
-Build only the foundational local CLI runtime primitives and the localhost
-developer API needed to test them.
-
-Allowed in the current scope:
-
-- Rust CLI binary.
-- Localhost-only Rust API server for developer test harnesses.
-- Localhost developer frontend under `dev/` for testing runtime primitives
-  through the API.
-- Hardcoded default endpoint/model while the foundation is still forming.
-- Explicit primitive CLI commands.
-- Streaming assistant output.
-- Typed conversation and message data model.
-- SQLite-backed conversation persistence.
-- Multiple persisted conversations.
-- Message insert, update, and remove primitives.
-- User image input with copied local image bytes.
-- Conversation-level system prompt primitive.
-- Conversation truncate and fork primitives.
-- Active path selection and full conversation tree inspection.
-- Read-only JSON inspection for developer tools.
-- JSON API access to the same explicit runtime/store primitives as the CLI.
-- One-shot conversation query primitive.
-- Conversation-level persisted model selection with optional per-query override
-  for explicit one-shot calls.
-- Tool-call receiving and persistence.
-- Conversation-level attached tool persistence and model request serialization.
-- Typed assistant metadata lanes for tool calls, reasoning, refusal, audio, and
-  annotations.
-- Unified tool provider layer for code-approved MCP providers and future
-  plugins.
-- Backend-owned runtime runs with persisted ordered events, explicit
-  cancellation, and reconnectable UI subscriptions.
-- Code-approved MCP provider tools through the same attached-tool and approval
-  boundary.
-- Conversation-level manual or full-access approval mode for attached executable
-  tools.
-- Tool result persistence as `role: tool` messages linked to provider tool-call
-  IDs.
-- Model-facing context construction.
-- Future-ready compaction storage.
-- Basic local performance baselines, repeated benchmark runs, and JSON
-  benchmark comparison.
-- OpenAI-compatible `/responses` requests.
-- OpenAI-compatible Responses image request serialization.
-- Bifrost gateway health check.
-- Explicit Bifrost gateway start and stop commands.
-- Version-pinned public Bifrost gateway startup through npm or Docker.
-- Explicit `WINDIE_BIFROST_BIN` override for official local development builds.
-- Canonical provider-key environment shared by Windie and Bifrost.
-- Versioned installed binaries and a bundled stable operator UI that remain
-  separate from editable source and preview UI builds.
-- Clean module boundaries.
-
-Not in scope yet:
-
-- TUI.
-- Desktop UI.
-- Production browser UI.
-- Voice UI.
-- Open-ended autonomous agent loops outside explicit query, approval, and
-  full-access primitives.
-- Browser use.
-- Production/general computer use outside code-approved developer MCP providers.
-- Plugin systems.
-- Production web dashboard.
-- General config files beyond the canonical provider-key environment.
-- Global model selection.
-- Slash commands.
-- Automatic history compaction.
-- Memory systems beyond persisted conversation messages and future compaction checkpoints.
-- Killing Bifrost automatically on Windie exit.
-- User-configurable arbitrary MCP servers.
-
-The CLI should be boring, explicit, and composable. Future TUI, desktop,
-browser, voice, SDK, background worker, plugin, and wakeup clients should
-converge through the same shared operation/runtime path to the same primitives.
-
-The `dev/windie-inspector` frontend is a localhost developer client for testing
-and inspecting runtime primitives. It may call the API, render runtime state,
-and exercise explicit store/runtime operations. It must not own provider logic,
-persistence, model context construction, runtime state transitions, tool
-execution, or permission policy.
-
 ## Architecture
 
 The code should stay split by concrete responsibilities:
 
-```text
-src/main.rs          wires components together
-src/api.rs           localhost API composition, shared state, and errors
-src/api/             API routes by auth, gateway, conversation, tool, and run ownership
-src/cli.rs           startup CLI arguments
-src/cli/execute.rs   CLI command execution adapter
-src/cli/tests.rs     startup CLI argument tests
-src/operation.rs     shared CLI/API operation orchestration
-src/operation/       conversation, model, tool, and execution operations
-src/operation/tests.rs shared operation orchestration tests
-src/output.rs        terminal and JSON output only
-src/output/tests.rs  terminal output tests
-src/policy.rs        tool execution policy and approval boundary
-src/policy/tests.rs  tool execution policy tests
-src/conversation.rs  message types, model-facing tool schema types, and assistant metadata types
-src/context.rs       model-facing context construction
-src/error.rs         typed user-facing Windie error categories
-src/gateway.rs       Bifrost gateway availability and lifecycle
-src/image_input.rs   local image file loading
-src/llm.rs           typed LLM contracts and Bifrost client facade
-src/llm/             Bifrost HTTP client, model metadata, Responses wire format, and SSE ownership
-src/mcp.rs           MCP stdio JSON-RPC client and session pool
-src/perf.rs          benchmark facade and public options
-src/perf/            benchmark metrics/reporting, scenarios, and tests
-src/perf/scenarios/  conversation, runtime, fixture, and live benchmark ownership
-src/paths.rs         installed and development filesystem locations
-src/run.rs           backend run lifecycle and reconnectable event journal
-src/doctor.rs        installation and integration diagnostics
-src/runtime.rs       one-shot runtime query coordination
-src/runtime/tests.rs runtime flow tests
-src/tool.rs          tool provider, attachment, approval, and execution result types
-src/tool_provider.rs tool provider registry and dispatch
-src/tool_provider/tests.rs tool provider registry and dispatch tests
-src/store.rs         SQLite transaction and tree-integrity facade
-src/store/           persistence and tests by schema, run, conversation, message, tool, image, and compaction ownership
-```
+Mental model:
+- conversation/id.rs: ids; ConversationID, MessageID, ImageAssetID, CompactionID.
+- conversation/message.rs: Core Message node, Message + Role. Roles are system, user, assistant, tool. System is system prompt message, User is user input message, Assistant is assistant response message, Tool is the tool output message corresponding to assistant response message tool call.
+- conversation/assistant_metadata.rs: Assitant message Metadata; toolcall, reasoning, assistant audio, assistant annotation, assistant citation, assistant token usage, assistant refusal. Also includes toolcallid to link with tool output message.
+- conversation/mods.rs: Module boundary and re-exports for conversation types.
+- conversation/user_part.rs: User input message parts, including image part and text part.
+- input/: concrete user input loading before conversation storage.
+- input/mod.rs: Public boundary and re-exports for input folder.
+- input/image.rs: reads and validates user-provided local image files before they are copied into conversation storage.
+- llm/client.rs: does HTTP to Bifrost.
+- llm/mod.rs: Public boundary and re-exports for llm folder.
+- llm/model.rs: handle model discovery/parameters.
+- llm/responses.rs: provider JSON structs, typed mirror of the provider's Responses API JSON.
+- llm/serialization.rs: turn Windie types into provider wire types. Message + ToolSchema -> ResponsesRequest.
+- llm/stream.rs: turn provider stream events into Windie assistant stream. SSE events -> AssitantResponse.
+- store/mod.rs: Public boundary and re-exports for store folder.
+- store/compaction.rs: summary checkpoint store, saves and loads compaction checkpoints.
+- store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
+- store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
+- store/schema.rs: database shape, schema version checks, table creation, indexes, and unsupported database version rejection.
+- store/session.rs: stores sessions, update current heads/status, store/replays session events.
+- store/system_prompt.rs: store path-scoped system prompt messages.
+- store/tool_schema.rs: store path-scoped tool schema rows.
+- operation/: shared workflow layer between clients and core systems.
+- operation/mod.rs: Public boundary and re-exports for operation folder.
+- operation/conversation.rs: conversation workflows.
+- operation/gateway.rs: gateway/model metadata/input-token workflows.
+- operation/input.rs: message input part and image loading workflows.
+- operation/inspection.rs: Read-only inspection snapshots for a conversation/head, including tree, selected path, model context, prompt, tools, and compaction.
+- operation/message.rs: message and system prompts mutations workflows.
+- operation/tool.rs: tool catalog, attachments, mutations workflows.
+- operation/session.rs: session lifecycle and runtime advancement workflows.
+- operation/session_approval.rs: session-owned tool approval workflows.
+- operation/session_cli.rs: CLI adapter over session workflows.
+- api/: localhost HTTP interface for clients to access Windie runtime primitives.
+- api/mod.rs: Public boundary and re-exports for api folder.
+- api/router.rs: maps HTTP URLs to API handlers and applies shared request rules.
+- api/state.rs: shared API server state passed into route handlers.
+- api/error.rs: turns internal Windie errors into HTTP JSON errors.
+- api/auth.rs: API token gate before protected routes run.
+- api/sse.rs: formats session events for live HTTP streaming.
+- api/health.rs: API health and runtime status routes.
+- api/gateway.rs: model, gateway, and input-token HTTP routes.
+- api/conversation.rs: conversation-level HTTP routes.
+- api/inspection.rs: conversation inspection HTTP route.
+- api/message.rs: message and system prompt HTTP routes.
+- api/tool.rs: tool catalog, attachment, and tool mutation HTTP routes.
+- api/session.rs: session lifecycle and event HTTP routes.
+- api/session_approval.rs: session approval HTTP routes.
+- cli/: parses terminal arguments into typed CLI commands.
+- cli/mod.rs: Public boundary and re-exports for cli folder.
+- cli/command.rs: Contract between cli parse and main.rs. Defines parse CLI command types.
+- cli/parser.rs: Reads argv and decides which CLI parse should handle it.
+- cli/session.rs: Parses session commands, `windie run ...`, etc.
+- cli/message.rs: Parses message-related commands, `insert .. message`, `update ... message`, etc.
+- cli/tool_schema.rs: Parses tool schema commands, `windie insert <conversation_id> toolschema ... `, etc.
+- cli/bench.rs: Parses benchmark commands, `windie bench`, etc.
+- cli/env.rs: Parses environment variable commands, `windie env KEY=value`, etc.
+- tool/: common tool schema Windie uses for all tool systems.
+- tool/mod.rs: Public boundary and re-exports for tool folder.
+- tool/approval.rs: Approval data types: approval mode and pending approval request.
+- tool/policy.rs: Approval decision rules: allow, ask, or deny a pending tool call.
+- tool/provider.rs: Provider identity types: typed references from Windie tools to executable backends.
+- tool/result.rs: Tool output execution result shape.
+- tool/schema.rs: Model-facing tool schema.
+- tool_provider/: Manages executable tools.
+- tool_provider/mod.rs: Public boundary and re-exports for tool_provider folder.
+- tool_provider/registry.rs: The provider-neutral registry, for mcps, builtins, skills, plugins, returns them as available tools. organize and route across catalog families.
+- tool_provider/mcp/mod.rs: Public boundary and re-exports for tool_provider/mcp folder.
+- tool_provider/mcp/approved.rs: Approved MCP providers for Windie.
+- tool_provider/mcp/blender.rs: Blender MCP definition.
+- tool_provider/mcp/brightdata.rs: Brightdata MCP definition.
+- tool_provider/mcp/cua.rs: Cua Driver MCP definition.
+- tool_provider/mcp/desktop_commander.rs: Desktop Commander MCP definition.
+- tool_provider/mcp/provider.rs: Generic MCP backend adapter; list MCP tools, converts them into Windie ToolDefinition.
+- tool_provider/mcp/executor.rs: Executes already-approved MCP tool calls.
+- tool_provider/mcp/result.rs: MCP result normalization, errors into output, text, image to message parts, build the visible preview stored on the tool message row.
+- session/: session domain types and live session supervision.
+- session/mod.rs: Public boundary and re-exports for session folder.
+- session/event.rs: event types for obsrvable session activity. Records observable events from a running session/agent loop such as streamed assistant text, tool calls, approvals, completion, failure, and cancellation.
+- session/id.rs: SessionID type for identifying a session.
+- session/manager.rs: manages live background session tasks, approvals, cancellation, and publishes session events.
+- session/model.rs: durable session record and lifecycle status. Exists so a session can outlive any one client and can be inspected, resumed, approved, or replayed later.
+- perf/:
+- perf/mod.rs: Public boundary and re-exports for perf folder.
+- perf/mode.rs: benchmark mode, category and option types.
+- perf/report.rs: benchmark result data and duration summaries.
+- perf/comparison.rs: compared benchmark reports against baseline report.
+- perf/runner.rs: benchmark execution entry points.
+- perf/fixture.rs: temporary benchmark conversation creation/setup.
+- perf/storage.rs: reads and writes benchmark report files.
+- dev/: local developer tooling.
+- dev/mod.rs: Public boundary and re-exports for dev folder.
+- dev/inspector.rs: launch the local browser inspector UI and passes it the API token.
+- local/: user-local Windie environment setup.
+- local/mod.rs: Public boundary and re-exports for local folder.
+- local/setup.rs: user-local Windie setup, ~/.windie/.env editing, API token storage, and approved dependency installs.
+- main.rs: front desk for the windie binary.
+- context.rs: model-facing context finalizer, resolve system prompt, tool schema, messages, compaction summary given one explicit message head.
+- runtime.rs: simple input/output engine for the LLM. query the path, llm returns the message.
+- mcp.rs: starts the mcp stdio client.
+- gateway.rs: manages the Bifrost LLM gateway.
+- wakeup.rs: why the llm is queried.
+- error.rs: Typed Windie errors.
+- ../dev/windie-inspector: local browser developer UI for inspecting and testing Windie through the API.
+
+Conversations are durable message trees:
+- insert: add a child message under a selected head.
+- rm: remove a node, splicing the tree or deleting tool-call groups when needed.
+- truncate: remove descendants after a selected node.
+- fork: copy a selected path into a new conversation.
+- update: replace node content.
+- session/query: run from a selected head and append assistant/tool nodes as results.
+- show/tree/inspect: inspect the tree, path, and model-facing context.
 
 Keep boundaries strict:
 
-- Only `llm.rs` and `llm/` should know about provider HTTP request details.
+- Only `llm/` should know about provider HTTP request details.
 - Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
-- Only `api.rs` and `api/` should know about localhost API routes, JSON request bodies, and HTTP response mapping.
-- Only `cli.rs` and `cli/` should know about startup CLI argument handling and
-  CLI-specific execution adaptation.
-- Only `operation.rs` and `operation/` should own shared CLI/API orchestration over store/runtime
+- Only `api/` should know about localhost API routes, JSON request bodies, SSE, auth, and HTTP response mapping.
+- Only `cli/` should know about startup CLI argument parsing.
+- Only `operation/` should own shared CLI/API orchestration over store/runtime
   primitives. It should not parse argv, map HTTP, format terminal output,
   execute shell commands, or know provider HTTP details.
 - Only `gateway.rs` should know about gateway health/availability/startup checks.
-- Only `image_input.rs` should know about local image file loading.
+- Only `input/` should know about local user input loading before conversation storage.
 - Only `output.rs` should know about terminal and JSON output formatting.
-- Only `policy.rs` should decide whether tool execution is allowed, denied, or
-  requires approval.
-- Only `conversation.rs` should own message roles, typed conversation/message
-  identifiers, model-facing tool schema types, and assistant metadata types.
+- Only `tool/policy.rs` should decide whether tool execution is allowed, denied,
+  or requires approval.
+- Only `conversation/` should own message roles, typed conversation/message
+  identifiers, user parts, model-facing tool schema types, and assistant metadata
+  types.
+- Only `session/` should own session domain types, session events, and live
+  session task management.
 - Only `context.rs` should decide what history the model sees.
 - Only `error.rs` should own typed Windie error categories used across client
   protocol boundaries.
-- Only `perf.rs` and `perf/` should own benchmark timing logic.
-- Only `paths.rs` should decide Windie data, config, and bundled UI locations.
-- Only `run.rs` should own backend run lifecycle, event sequencing, replay,
-  interruption, and explicit cancellation.
-- Only `doctor.rs` should inspect installation and external launcher readiness.
+- Only `perf/` should own benchmark timing logic, reports, comparisons, and
+  benchmark fixture setup.
 - Only `runtime.rs` should coordinate query-like runtime flows.
-- Only `tool_provider.rs` should own provider catalog and execution dispatch
+- Only `local/` should own user-local directory setup, `~/.windie/.env`
+  editing, and approved dependency install/check commands.
+- Only `dev/` should own local developer helper launchers such as the inspector.
+- Only `tool_provider/` should own provider catalog and execution dispatch
   across code-approved MCP providers and future plugins.
-- Only `store.rs` and `store/` should own persisted message history, attached tools, and
+- Only `store/` should own persisted message history, attached tools, and
   know about SQLite tables and queries.
-- Only `tool.rs` should own tool provider, attachment, approval, and execution
+- Only `tool/` should own tool provider, attachment, approval, and execution
   result data shared across runtime, output, policy, store, and executors.
 - `main.rs` should stay small and only wire components together.
 
-Schema compatibility is not a current goal. `store.rs` should create the
+Schema compatibility is not a current goal. `store/` should create the
 current schema for fresh databases and reject unsupported older or newer schema
 versions clearly instead of carrying partial legacy migrations.
 
@@ -282,29 +255,3 @@ versions clearly instead of carrying partial legacy migrations.
 - Do not reintroduce slash commands unless explicitly requested.
 - Do not add agent/tool behavior until explicitly requested.
 - Keep dependencies small and justified.
-
-## Commit Workflow
-
-Use normal Git commands. Before committing a meaningful code change, run the
-project correctness check:
-
-```bash
-scripts/check.sh
-git commit
-git push
-```
-
-Keep commit messages explicit about what changed, why, and which behavior or
-ownership boundary is affected. Documentation-only and similarly narrow changes
-do not require performance measurements.
-
-Benchmarks are opt-in and belong to performance-sensitive work:
-
-```bash
-scripts/bench.sh runtime
-scripts/bench.sh conversation <conversation_id>
-```
-
-Do not put machine-local benchmark output into commit messages. Preserve a
-reviewed report as a local baseline with `scripts/bench.sh update-baseline` when
-that comparison is useful.

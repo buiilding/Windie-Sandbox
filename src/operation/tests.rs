@@ -1,61 +1,6 @@
-//! Shared operation orchestration tests.
+//! Operation workflow tests.
 
 use super::*;
-
-#[test]
-fn runtime_snapshot_is_immutable_after_configuration_changes() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/first").unwrap();
-    store
-        .set_conversation_reasoning_effort(&conversation_id, Some("medium"))
-        .unwrap();
-    store
-        .set_system_prompt(&conversation_id, "first prompt")
-        .unwrap();
-    store
-        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
-        .unwrap();
-    store
-        .insert_tool_schema(
-            &conversation_id,
-            &ToolSchema {
-                name: ToolSchemaName::new("first_tool"),
-                description: "first".to_string(),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-        )
-        .unwrap();
-
-    let (model, reasoning, snapshot) =
-        capture_runtime_snapshot(&store, &conversation_id, None, None).unwrap();
-
-    store
-        .set_conversation_model(&conversation_id, "openai/second")
-        .unwrap();
-    store
-        .set_system_prompt(&conversation_id, "second prompt")
-        .unwrap();
-    store
-        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::Manual)
-        .unwrap();
-    store
-        .remove_tool_schema(&conversation_id, &ToolSchemaName::new("first_tool"))
-        .unwrap();
-
-    assert_eq!(model.as_str(), "openai/first");
-    assert_eq!(reasoning.unwrap().effort.as_deref(), Some("medium"));
-    assert_eq!(snapshot.system_prompt.as_deref(), Some("first prompt"));
-    assert_eq!(
-        snapshot.approval_mode,
-        ToolApprovalMode::AutoApproveAttached
-    );
-    assert_eq!(snapshot.attached_tools.len(), 1);
-    assert_eq!(
-        snapshot.attached_tools[0].schema_name.as_str(),
-        "first_tool"
-    );
-}
-use crate::conversation::{MessageMetadata, ToolCall};
 use crate::mcp::McpCommand;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
 use std::fs;
@@ -72,12 +17,15 @@ fn inserts_text_message() {
     let message_id = insert_message(
         &mut store,
         &conversation_id,
+        None,
         Role::User,
         &[MessageInputPart::Text("hello".to_string())],
     )
     .unwrap();
 
-    let messages = active_path(&store, &conversation_id).unwrap();
+    let messages = store
+        .load_path_to_message(&conversation_id, &message_id)
+        .unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].id.as_ref(), Some(&message_id));
     assert_eq!(messages[0].content, "hello");
@@ -91,6 +39,64 @@ fn builds_conversation_prompt_cache_request() {
 
     assert_eq!(prompt_cache.key, "windie:conversation-id");
     assert_eq!(prompt_cache.retention.as_deref(), Some("24h"));
+}
+
+#[test]
+fn openai_reasoning_effort_requests_visible_summary() {
+    let reasoning = reasoning_request_for_model(
+        &ModelName::new("openai/gpt-5.5"),
+        Some(ReasoningRequest {
+            effort: Some("high".to_string()),
+            summary: None,
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(reasoning.effort.as_deref(), Some("high"));
+    assert_eq!(reasoning.summary.as_deref(), Some("auto"));
+}
+
+#[test]
+fn openai_reasoning_preserves_explicit_summary() {
+    let reasoning = reasoning_request_for_model(
+        &ModelName::new("openai/gpt-5.5"),
+        Some(ReasoningRequest {
+            effort: Some("high".to_string()),
+            summary: Some("detailed".to_string()),
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(reasoning.effort.as_deref(), Some("high"));
+    assert_eq!(reasoning.summary.as_deref(), Some("detailed"));
+}
+
+#[test]
+fn anthropic_reasoning_does_not_request_openai_summary() {
+    let reasoning = reasoning_request_for_model(
+        &ModelName::new("anthropic/claude-fable-5"),
+        Some(ReasoningRequest {
+            effort: Some("high".to_string()),
+            summary: None,
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(reasoning.effort.as_deref(), Some("high"));
+    assert_eq!(reasoning.summary, None);
+}
+
+#[test]
+fn empty_reasoning_request_stays_absent() {
+    let reasoning = reasoning_request_for_model(
+        &ModelName::new("openai/gpt-5.5"),
+        Some(ReasoningRequest {
+            effort: None,
+            summary: None,
+        }),
+    );
+
+    assert_eq!(reasoning, None);
 }
 
 #[test]
@@ -131,6 +137,7 @@ fn rejects_direct_tool_message_insert() {
     let error = insert_message(
         &mut store,
         &conversation_id,
+        None,
         Role::Tool,
         &[MessageInputPart::Text("tool output".to_string())],
     )
@@ -156,6 +163,7 @@ fn inserts_multi_part_message() {
     insert_message(
         &mut store,
         &conversation_id,
+        None,
         Role::User,
         &[
             MessageInputPart::Text("first".to_string()),
@@ -164,7 +172,7 @@ fn inserts_multi_part_message() {
     )
     .unwrap();
 
-    let messages = active_path(&store, &conversation_id).unwrap();
+    let messages = store.load_messages(&conversation_id).unwrap();
     assert_eq!(messages[0].content, "first");
     assert_eq!(messages[0].parts.len(), 2);
     fs::remove_file(image_path).unwrap();
@@ -178,6 +186,7 @@ fn inserts_loaded_image_bytes() {
     insert_message(
         &mut store,
         &conversation_id,
+        None,
         Role::User,
         &[
             MessageInputPart::Text("clipboard".to_string()),
@@ -189,7 +198,7 @@ fn inserts_loaded_image_bytes() {
     )
     .unwrap();
 
-    let messages = active_path(&store, &conversation_id).unwrap();
+    let messages = store.load_messages(&conversation_id).unwrap();
     assert_eq!(messages[0].content, "clipboard");
     assert_eq!(messages[0].parts.len(), 2);
 }
@@ -209,7 +218,7 @@ fn input_token_context_uses_synthetic_input_for_tool_only_setup() {
     )
     .unwrap();
 
-    let context = conversation_input_token_context(&store, &conversation_id)
+    let context = conversation_input_token_context(&store, &conversation_id, None)
         .unwrap()
         .unwrap();
 
@@ -241,6 +250,7 @@ fn inspection_snapshot_includes_runtime_state() {
     let user_id = insert_message(
         &mut store,
         &conversation_id,
+        None,
         Role::User,
         &[MessageInputPart::Text("hello".to_string())],
     )
@@ -255,17 +265,18 @@ fn inspection_snapshot_includes_runtime_state() {
         .save_compaction(&conversation_id, &user_id, "hello happened")
         .unwrap();
 
-    let report = inspect_conversation(&store, &conversation_id, None).unwrap();
+    let report = inspect_conversation(&store, &conversation_id, Some(&user_id), None).unwrap();
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversation_id"], conversation_id.as_str());
-    assert_eq!(value["active_message_id"], user_id.as_str());
+    assert_eq!(value["head_message_id"], user_id.as_str());
     assert_eq!(value["model"], "anthropic/test");
     assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
-    assert_eq!(value["messages"][0]["id"], user_id.as_str());
-    assert_eq!(value["active_path"][0]["id"], user_id.as_str());
+    assert_eq!(value["messages"][0]["role"], "system");
+    assert_eq!(value["messages"][1]["id"], user_id.as_str());
+    assert_eq!(value["path"][0]["id"], user_id.as_str());
     assert_eq!(value["model_context"][0]["role"], "system");
     assert_eq!(value["latest_compaction"]["content"], "hello happened");
 }
@@ -338,6 +349,7 @@ fn shared_operations_match_direct_store_state() {
     let first_id = insert_message(
         &mut store,
         &conversation_id,
+        None,
         Role::User,
         &[MessageInputPart::Text("first".to_string())],
     )
@@ -345,72 +357,131 @@ fn shared_operations_match_direct_store_state() {
     let second_id = insert_message(
         &mut store,
         &conversation_id,
+        Some(&first_id),
         Role::Assistant,
         &[MessageInputPart::Text("second".to_string())],
     )
     .unwrap();
 
-    activate_message(&mut store, &conversation_id, &first_id).unwrap();
     update_message(&mut store, &conversation_id, &second_id, "second updated").unwrap();
-    activate_message(&mut store, &conversation_id, &second_id).unwrap();
 
-    let path = store.load_active_path(&conversation_id).unwrap();
+    let path = store
+        .load_path_to_message(&conversation_id, &second_id)
+        .unwrap();
     assert_eq!(path.len(), 2);
     assert_eq!(path[1].content, "second updated");
+}
+
+#[test]
+fn start_session_from_wakeup_captures_requested_head() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let user_id = insert_message(
+        &mut store,
+        &conversation_id,
+        None,
+        Role::User,
+        &[MessageInputPart::Text("hello".to_string())],
+    )
+    .unwrap();
+
+    let session = start_session_from_wakeup(
+        &mut store,
+        crate::wakeup::ContinueWakeup {
+            conversation_id: conversation_id.clone(),
+            head_message_id: Some(user_id.clone()),
+            model: None,
+            reasoning: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(session.conversation_id, conversation_id);
+    assert_eq!(session.start_head_message_id.as_ref(), Some(&user_id));
+    assert_eq!(session.current_head_message_id.as_ref(), Some(&user_id));
+    assert_eq!(session.model, "openai/test");
+    assert_eq!(session.status, SessionStatus::Running);
+}
+
+#[test]
+fn resume_session_from_wakeup_resolves_waiting_approval() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let head_message_id = insert_message(
+        &mut store,
+        &conversation_id,
+        None,
+        Role::Assistant,
+        &[MessageInputPart::Text("tool call pending".to_string())],
+    )
+    .unwrap();
+    let session_id = SessionId::fresh();
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&head_message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::WaitingForApproval, None)
+        .unwrap();
+
+    let resume = resume_session_from_wakeup(
+        &store,
+        crate::wakeup::Wakeup::ApproveTool(crate::wakeup::ToolDecisionWakeup {
+            session_id: session_id.clone(),
+            tool_call_id: ToolCallId::new("call_1"),
+        }),
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(resume.session.id, session_id);
     assert_eq!(
-        store.active_message_id(&conversation_id).unwrap().as_ref(),
-        Some(&second_id)
+        resume.action,
+        SessionResumeAction::ApproveTool(ToolCallId::new("call_1"))
     );
 }
 
 #[test]
-fn deny_tool_persists_tool_result() {
+fn resume_session_from_wakeup_ignores_non_waiting_approval() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
-    let user_id = store
-        .insert_message(&conversation_id, None, Role::User, "run command", None)
-        .unwrap();
-    store
-        .insert_message(
-            &conversation_id,
-            Some(&user_id),
-            Role::Assistant,
-            "",
-            Some(&MessageMetadata {
-                tool_calls: vec![ToolCall::function(
-                    "call_123",
-                    "run_shell",
-                    r#"{"command":"printf no"}"#,
-                )],
-                ..Default::default()
-            }),
-        )
-        .unwrap();
-
-    let run = store.create_runtime_run(&conversation_id).unwrap();
-    let cancellation = RunCancellation::default();
-    let result = deny_tool(
+    let head_message_id = insert_message(
         &mut store,
         &conversation_id,
-        &ToolCallId::new("call_123"),
-        &run.id,
-        &cancellation,
+        None,
+        Role::Assistant,
+        &[MessageInputPart::Text("complete".to_string())],
     )
     .unwrap();
-    let messages = store.load_active_path(&conversation_id).unwrap();
+    let session_id = SessionId::fresh();
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&head_message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Completed, None)
+        .unwrap();
 
-    assert!(!result.success);
-    assert_eq!(messages.last().unwrap().role, Role::Tool);
-    assert_eq!(
-        messages
-            .last()
-            .unwrap()
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.tool_call_id.as_ref())
-            .map(ToolCallId::as_str),
-        Some("call_123")
-    );
+    let resume = resume_session_from_wakeup(
+        &store,
+        crate::wakeup::Wakeup::DenyTool(crate::wakeup::ToolDecisionWakeup {
+            session_id,
+            tool_call_id: ToolCallId::new("call_1"),
+        }),
+    )
+    .unwrap();
+
+    assert!(resume.is_none());
 }
 
 fn temp_image_path(extension: &str) -> PathBuf {
@@ -454,70 +525,4 @@ fn desktop_commander_read_file_definition() -> ToolDefinition {
         permissions: vec![ToolPermission::ExternalProcess],
         annotations: ToolAnnotations::default(),
     }
-}
-
-#[test]
-fn destructive_mutations_reject_while_conversation_is_running() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
-    let message_id = store
-        .insert_message(&conversation_id, None, Role::User, "hello", None)
-        .unwrap();
-    store.create_runtime_run(&conversation_id).unwrap();
-
-    assert!(
-        update_message(&mut store, &conversation_id, &message_id, "changed")
-            .unwrap_err()
-            .to_string()
-            .contains("running action")
-    );
-    assert!(
-        remove_message(&mut store, &conversation_id, &message_id)
-            .unwrap_err()
-            .to_string()
-            .contains("running action")
-    );
-    assert!(
-        truncate_conversation(&mut store, &conversation_id, &message_id)
-            .unwrap_err()
-            .to_string()
-            .contains("running action")
-    );
-    assert!(
-        remove_conversation(&mut store, &conversation_id)
-            .unwrap_err()
-            .to_string()
-            .contains("running action")
-    );
-}
-
-#[test]
-fn non_destructive_path_operations_remain_available_while_running() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
-    let root_id = store
-        .insert_message(&conversation_id, None, Role::User, "root", None)
-        .unwrap();
-    store.create_runtime_run(&conversation_id).unwrap();
-
-    let branch_id = insert_message(
-        &mut store,
-        &conversation_id,
-        Role::User,
-        &[MessageInputPart::Text("branch".to_string())],
-    )
-    .unwrap();
-    activate_message(&mut store, &conversation_id, &root_id).unwrap();
-    let forked_id = fork_conversation(&mut store, &conversation_id, &root_id).unwrap();
-
-    assert_eq!(
-        store.active_message_id(&conversation_id).unwrap(),
-        Some(root_id)
-    );
-    assert!(
-        store
-            .load_path_to_message(&conversation_id, &branch_id)
-            .is_ok()
-    );
-    assert!(store.load_active_path(&forked_id).is_ok());
 }

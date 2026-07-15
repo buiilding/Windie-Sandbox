@@ -1,50 +1,37 @@
-//! Tool provider registry and dispatch tests.
+//! Tests for tool provider catalog, MCP mapping, and result normalization.
 
-use super::*;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use anyhow::anyhow;
+use serde_json::{Value, json};
+
+use super::ToolProviderRegistry;
+use super::mcp::{
+    McpProviderDefinition, McpToolProvider, approved_mcp_provider, mcp_schema_name,
+    mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview,
+};
+use crate::conversation::{ToolCall, UnsavedMessagePart};
+use crate::mcp::{self as mcp_protocol, McpCommand, McpTool};
+use crate::tool::{
+    AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission,
+    ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchemaName,
+};
 
 fn approved_cua_provider() -> McpToolProvider {
-    let definition = APPROVED_MCP_PROVIDERS
-        .iter()
-        .copied()
-        .find(|definition| definition.provider_id == "cua-driver")
-        .unwrap();
-    McpToolProvider::new(definition)
+    McpToolProvider::new(approved_mcp_provider("cua-driver").unwrap())
 }
 
 fn approved_desktop_commander_provider() -> McpToolProvider {
-    let definition = APPROVED_MCP_PROVIDERS
-        .iter()
-        .copied()
-        .find(|definition| definition.provider_id == "desktop-commander")
-        .unwrap();
-    McpToolProvider::new(definition)
+    McpToolProvider::new(approved_mcp_provider("desktop-commander").unwrap())
 }
 
 fn approved_blender_mcp_provider() -> McpToolProvider {
-    let definition = APPROVED_MCP_PROVIDERS
-        .iter()
-        .copied()
-        .find(|definition| definition.provider_id == "blender-mcp")
-        .unwrap();
-    McpToolProvider::new(definition)
+    McpToolProvider::new(approved_mcp_provider("blender-mcp").unwrap())
 }
 
 fn approved_brightdata_provider() -> McpToolProvider {
-    let definition = APPROVED_MCP_PROVIDERS
-        .iter()
-        .copied()
-        .find(|definition| definition.provider_id == "brightdata")
-        .unwrap();
-    McpToolProvider::new(definition)
-}
-
-fn approved_exa_provider() -> McpToolProvider {
-    let definition = APPROVED_MCP_PROVIDERS
-        .iter()
-        .copied()
-        .find(|definition| definition.provider_id == "exa")
-        .unwrap();
-    McpToolProvider::new(definition)
+    McpToolProvider::new(approved_mcp_provider("brightdata").unwrap())
 }
 
 fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {
@@ -83,7 +70,7 @@ fn cua_mcp_tools_map_to_provider_backed_definitions() {
         name: "click".to_string(),
         description: "Click somewhere".to_string(),
         input_schema: json!({"type":"object"}),
-        annotations: Some(mcp::McpToolAnnotations {
+        annotations: Some(mcp_protocol::McpToolAnnotations {
             read_only_hint: Some(false),
         }),
     });
@@ -106,7 +93,7 @@ fn desktop_commander_mcp_tools_map_to_provider_backed_definitions() {
         name: "read_file".to_string(),
         description: "Read a file".to_string(),
         input_schema: json!({"type":"object"}),
-        annotations: Some(mcp::McpToolAnnotations {
+        annotations: Some(mcp_protocol::McpToolAnnotations {
             read_only_hint: Some(true),
         }),
     });
@@ -135,7 +122,7 @@ fn blender_mcp_tools_map_to_provider_backed_definitions() {
         name: "get_scene_info".to_string(),
         description: "Get scene info".to_string(),
         input_schema: json!({"type":"object"}),
-        annotations: Some(mcp::McpToolAnnotations {
+        annotations: Some(mcp_protocol::McpToolAnnotations {
             read_only_hint: Some(true),
         }),
     });
@@ -161,7 +148,7 @@ fn brightdata_mcp_tools_map_to_provider_backed_definitions() {
         name: "search_engine".to_string(),
         description: "Search live web results".to_string(),
         input_schema: json!({"type":"object"}),
-        annotations: Some(mcp::McpToolAnnotations {
+        annotations: Some(mcp_protocol::McpToolAnnotations {
             read_only_hint: Some(true),
         }),
     });
@@ -178,52 +165,10 @@ fn brightdata_mcp_tools_map_to_provider_backed_definitions() {
 }
 
 #[test]
-fn exa_mcp_tools_map_to_provider_backed_definitions() {
-    let provider = approved_exa_provider();
-    let definition = provider.definition_from_mcp_tool(McpTool {
-        name: "web_search_exa".to_string(),
-        description: "Search the web".to_string(),
-        input_schema: json!({"type":"object"}),
-        annotations: Some(mcp::McpToolAnnotations {
-            read_only_hint: Some(true),
-        }),
-    });
-
-    assert_eq!(definition.schema_name.as_str(), "exa__web_search_exa");
-    assert_eq!(definition.provider.provider_id.as_str(), "exa");
-    assert_eq!(definition.provider.tool_name.as_str(), "web_search_exa");
-    assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
-    assert_eq!(
-        definition.permissions,
-        vec![ToolPermission::ExternalProcess]
-    );
-    assert_eq!(definition.annotations.read_only, Some(true));
-}
-
-#[test]
-fn exa_provider_uses_pinned_package_and_explicit_api_key() {
-    let provider = approved_exa_provider();
-
-    assert_eq!(provider.command.program, "npx");
-    assert_eq!(provider.command.args, ["-y", "exa-mcp-server@3.2.1"]);
-    assert_eq!(
-        provider.command.env,
-        [McpEnv {
-            key: "EXA_API_KEY",
-            value: McpEnvValue::UserEnv("EXA_API_KEY"),
-        }]
-    );
-}
-
-#[test]
 fn desktop_commander_config_allows_every_directory() {
     let config = json!({
-        "blockedCommands": desktop_commander_blocked_commands(),
         "allowedDirectories": [],
         "telemetryEnabled": false,
-        "fileWriteLineLimit": 50,
-        "fileReadLineLimit": 1000,
-        "pendingWelcomeOnboarding": false
     });
 
     assert_eq!(config["allowedDirectories"].as_array().unwrap().len(), 0);
@@ -235,64 +180,30 @@ fn mcp_tool_result_parts_decode_text_images_and_structured_content() {
     let result = json!({
         "content": [
             {"type": "text", "text": "desktop screenshot"},
-            {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}
+            {"type": "image", "mimeType": "image/png", "data": "AQID"}
         ],
         "structuredContent": {
             "screen_width": 1710
         }
     });
 
-    let result = mcp::decode_tool_result(result).unwrap();
     let parts = mcp_tool_result_parts(&result).unwrap();
 
     assert_eq!(parts.len(), 3);
     assert!(matches!(&parts[0], UnsavedMessagePart::Text(text) if text == "desktop screenshot"));
     assert!(matches!(&parts[1], UnsavedMessagePart::Image(image)
-        if image.mime_type == "image/png"
-            && image.bytes == vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]));
+        if image.mime_type == "image/png" && image.bytes == vec![1, 2, 3]));
     assert!(matches!(&parts[2], UnsavedMessagePart::Text(text)
         if text == "structuredContent: {\"screen_width\":1710}"));
     assert_eq!(
         tool_result_preview(&parts),
-        "desktop screenshot\n[image: image/png, 8 bytes]\nstructuredContent: {\"screen_width\":1710}"
+        "desktop screenshot\n[image: image/png, 3 bytes]\nstructuredContent: {\"screen_width\":1710}"
     );
 }
 
 #[test]
-fn mcp_tool_result_rejects_invalid_image_bytes() {
-    let result = json!({
-        "content": [
-            {"type": "image", "mimeType": "image/png", "data": "AQID"}
-        ]
-    });
-
-    let result = mcp::decode_tool_result(result).unwrap();
-    let error = mcp_tool_result_parts(&result).unwrap_err();
-
-    assert!(error.to_string().contains("invalid MCP image result"));
-}
-
-#[test]
-fn mcp_tool_result_rejects_aggregate_size_overflow() {
-    let mut total = MCP_TOOL_RESULT_MAX_BYTES;
-
-    let error = add_mcp_result_bytes(&mut total, 1).unwrap_err();
-
-    assert!(error.to_string().contains("MCP tool result exceeds"));
-}
-
-#[test]
-fn tool_result_preview_is_bounded_without_splitting_utf8() {
-    let text = "a".repeat(TOOL_RESULT_PREVIEW_MAX_BYTES - 1) + "é";
-    let preview = tool_result_preview(&[UnsavedMessagePart::Text(text)]);
-
-    assert!(preview.ends_with("\n[truncated]"));
-    assert!(preview.len() <= TOOL_RESULT_PREVIEW_MAX_BYTES + "\n[truncated]".len());
-}
-
-#[test]
 fn mcp_tool_call_timeout_becomes_failed_tool_result() {
-    let error: anyhow::Error = mcp::McpRequestTimeout::new(
+    let error: anyhow::Error = mcp_protocol::McpRequestTimeout::new(
         "desktop-commander",
         "tools/call",
         std::time::Duration::from_secs(300),
@@ -413,25 +324,6 @@ fn registry_recognizes_brightdata_as_approved_provider() {
 }
 
 #[test]
-fn registry_recognizes_exa_as_approved_provider() {
-    let registry = ToolProviderRegistry::new();
-    let attached_tool = AttachedTool {
-        schema_name: ToolSchemaName::new("exa__web_search_exa"),
-        description: "Search the web".to_string(),
-        parameters: json!({"type":"object"}),
-        provider: ToolProviderRef::new(
-            ToolProviderId::new("exa"),
-            ProviderToolName::new("web_search_exa"),
-            ToolProviderKind::Mcp,
-        ),
-        permissions: vec![ToolPermission::ExternalProcess],
-        annotations: ToolAnnotations::default(),
-    };
-
-    assert!(registry.can_execute(&attached_tool));
-}
-
-#[test]
 fn registry_finds_tools_from_cached_provider_catalog() {
     let provider_id = ToolProviderId::new("missing-mcp");
     let tool = cached_test_tool(provider_id.as_str(), "cached_tool");
@@ -455,7 +347,6 @@ fn registry_finds_tools_from_cached_provider_catalog() {
         })],
         mcp_session_pool: None,
         catalog_cache,
-        catalog_loads: Arc::new(CatalogLoads::default()),
     };
 
     let found = registry
@@ -463,76 +354,6 @@ fn registry_finds_tools_from_cached_provider_catalog() {
         .unwrap();
 
     assert_eq!(found, Some(tool));
-}
-
-#[test]
-#[cfg(unix)]
-fn concurrent_catalog_requests_start_one_provider_process() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let nonce = uuid::Uuid::new_v4();
-    let script_path = std::env::temp_dir().join(format!("windie-catalog-{nonce}.sh"));
-    let starts_path = std::env::temp_dir().join(format!("windie-catalog-{nonce}.starts"));
-    let script = format!(
-        r#"#!/bin/sh
-printf 'start\n' >> '{}'
-while IFS= read -r line; do
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"test","version":"1"}}}}}}'
-      ;;
-    *'"method":"tools/list"'*)
-      sleep 0.2
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"search","description":"Search","inputSchema":{{"type":"object"}}}}]}}}}'
-      ;;
-  esac
-done
-"#,
-        starts_path.display()
-    );
-    std::fs::write(&script_path, script).unwrap();
-    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let program = Box::leak(script_path.to_string_lossy().into_owned().into_boxed_str());
-    let registry = Arc::new(ToolProviderRegistry {
-        mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
-            provider_id: "single-flight-test",
-            schema_prefix: "single_flight_test",
-            display_name: "Single Flight Test",
-            command: McpCommand {
-                program,
-                args: &[],
-                env: &[],
-            },
-            shutdown_command: None,
-            setup: None,
-        })],
-        mcp_session_pool: None,
-        catalog_cache: test_cache(),
-        catalog_loads: Arc::new(CatalogLoads::default()),
-    });
-    let barrier = Arc::new(std::sync::Barrier::new(3));
-    let workers = (0..2)
-        .map(|_| {
-            let registry = Arc::clone(&registry);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                registry.list_provider_tools(&ToolProviderId::new("single-flight-test"))
-            })
-        })
-        .collect::<Vec<_>>();
-    barrier.wait();
-
-    for worker in workers {
-        let tools = worker.join().unwrap().unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].schema_name.as_str(), "single_flight_test__search");
-    }
-    let starts = std::fs::read_to_string(&starts_path).unwrap();
-    assert_eq!(starts.lines().count(), 1);
-
-    let _ = std::fs::remove_file(script_path);
-    let _ = std::fs::remove_file(starts_path);
 }
 
 #[test]
@@ -573,7 +394,6 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
         ],
         mcp_session_pool: None,
         catalog_cache,
-        catalog_loads: Arc::new(CatalogLoads::default()),
     };
 
     let tools = registry.list_available_tools().unwrap();

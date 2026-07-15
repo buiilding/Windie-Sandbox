@@ -1,71 +1,10 @@
-//! Database opening, configuration, and schema creation.
+//! SQLite schema creation and version validation.
 
-use super::{
-    Connection, Context, DATABASE_SCHEMA_VERSION, OptionalExtension, Path, PathBuf, Result, Store,
-    anyhow, fs, params, paths,
-};
+use super::*;
+
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 15;
 
 impl Store {
-    /// Opens the default user database in Windie's data directory.
-    pub fn open() -> Result<Self> {
-        Self::open_at(default_database_path()?)
-    }
-
-    /// Opens a database at a specific path, creating parent directories and
-    /// applying schema setup.
-    pub fn open_at(path: impl AsRef<Path>) -> Result<Self> {
-        if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent).context("failed to create database directory")?;
-        }
-
-        let store = Self {
-            connection: Connection::open(path).context("failed to open database")?,
-        };
-        store.configure()?;
-        store.migrate()?;
-        store.optimize()?;
-
-        Ok(store)
-    }
-
-    #[cfg(test)]
-    /// Opens an in-memory database for isolated tests.
-    pub(crate) fn open_memory() -> Result<Self> {
-        let store = Self {
-            connection: Connection::open_in_memory().context("failed to open memory database")?,
-        };
-        store.configure()?;
-        store.migrate()?;
-        store.optimize()?;
-
-        Ok(store)
-    }
-
-    /// Applies SQLite settings used by Windie.
-    ///
-    /// Foreign keys protect relationships, WAL improves normal local write
-    /// behavior, and busy timeout makes brief lock contention less fragile.
-    fn configure(&self) -> Result<()> {
-        self.connection
-            .execute_batch(
-                "
-                PRAGMA foreign_keys = ON;
-                PRAGMA journal_mode = WAL;
-                PRAGMA synchronous = NORMAL;
-                PRAGMA busy_timeout = 5000;
-                ",
-            )
-            .context("failed to configure database")
-    }
-
-    /// Lets SQLite refresh planner statistics when it decides optimization is
-    /// useful.
-    fn optimize(&self) -> Result<()> {
-        self.connection
-            .execute_batch("PRAGMA optimize;")
-            .context("failed to optimize database")
-    }
-
     /// Creates or validates the current schema.
     ///
     /// Windie refuses to open databases from any other schema version. This
@@ -94,15 +33,12 @@ impl Store {
                 "
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
+                    title TEXT,
                     model TEXT NOT NULL,
                     reasoning_effort TEXT,
-                    active_message_id TEXT,
-                    system_prompt TEXT,
                     tool_approval_mode TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-
-                    FOREIGN KEY (active_message_id) REFERENCES messages(id)
+                    updated_at INTEGER NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (
@@ -138,6 +74,39 @@ impl Store {
                     FOREIGN KEY (image_asset_id) REFERENCES image_assets(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    start_head_message_id TEXT,
+                    current_head_message_id TEXT,
+                    status TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    reasoning TEXT,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+                    FOREIGN KEY (start_head_message_id) REFERENCES messages(id),
+                    FOREIGN KEY (current_head_message_id) REFERENCES messages(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS session_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sessions_conversation
+                ON sessions(conversation_id);
+
+                CREATE INDEX IF NOT EXISTS idx_session_events_run_id_id
+                ON session_events(session_id, id);
+
                 CREATE TABLE IF NOT EXISTS compactions (
                     id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
@@ -150,64 +119,22 @@ impl Store {
                 );
 
                 CREATE TABLE IF NOT EXISTS tool_schemas (
-                    conversation_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    parameters_json TEXT NOT NULL,
-                    provider_id TEXT NOT NULL,
-                    provider_tool_name TEXT NOT NULL,
-                    provider_kind TEXT NOT NULL,
-                    permissions_json TEXT NOT NULL,
-                    annotations_json TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-
-                    PRIMARY KEY (conversation_id, name),
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS runtime_runs (
                     id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    owner_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    error TEXT,
-                    lease_expires_at INTEGER NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS runtime_run_events (
-                    run_id TEXT NOT NULL,
-                    sequence INTEGER NOT NULL,
-                    payload_json TEXT NOT NULL,
+                    parent_message_id TEXT,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    parameters_json TEXT,
+                    provider_id TEXT,
+                    provider_tool_name TEXT,
+                    provider_kind TEXT,
+                    permissions_json TEXT,
+                    annotations_json TEXT,
+                    state TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
 
-                    PRIMARY KEY (run_id, sequence),
-                    FOREIGN KEY (run_id) REFERENCES runtime_runs(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS tool_call_executions (
-                    conversation_id TEXT NOT NULL,
-                    assistant_message_id TEXT NOT NULL,
-                    tool_call_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK (
-                        status IN ('executing', 'completed', 'failed', 'interrupted', 'unknown')
-                    ),
-                    result_message_id TEXT,
-                    error TEXT,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-
-                    PRIMARY KEY (assistant_message_id, tool_call_id),
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-                    FOREIGN KEY (assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE,
-                    FOREIGN KEY (run_id) REFERENCES runtime_runs(id) ON DELETE CASCADE,
-                    FOREIGN KEY (result_message_id) REFERENCES messages(id) ON DELETE SET NULL
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+                    FOREIGN KEY (parent_message_id) REFERENCES messages(id)
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
@@ -231,15 +158,8 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
                 ON tool_schemas(conversation_id, created_at);
 
-                CREATE INDEX IF NOT EXISTS runtime_runs_conversation_updated_idx
-                ON runtime_runs(conversation_id, updated_at);
-
-                CREATE UNIQUE INDEX IF NOT EXISTS runtime_runs_one_running_per_conversation_idx
-                ON runtime_runs(conversation_id)
-                WHERE status = 'running';
-
-                CREATE INDEX IF NOT EXISTS runtime_run_events_run_sequence_idx
-                ON runtime_run_events(run_id, sequence);
+                CREATE INDEX IF NOT EXISTS tool_schemas_parent_idx
+                ON tool_schemas(conversation_id, parent_message_id);
                 ",
             )
             .context("failed to migrate database")?;
@@ -255,9 +175,8 @@ impl Store {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .context("failed to read database schema version")
     }
-}
 
-impl Store {
+    /// Checks whether one SQLite table already exists.
     fn table_exists(&self, table_name: &str) -> Result<bool> {
         let exists = self
             .connection
@@ -276,7 +195,4 @@ impl Store {
 
         Ok(exists)
     }
-}
-fn default_database_path() -> Result<PathBuf> {
-    Ok(paths::database_path())
 }

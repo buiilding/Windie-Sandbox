@@ -1,61 +1,67 @@
-//! SSE decoding and streamed assistant response accumulation.
+//! Responses stream parsing and assistant response assembly.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
 
-use super::{AssistantResponse, FinishReason, LlmStreamEvent, MessageMetadata};
-use crate::conversation::{TokenUsage, ToolCall};
+use crate::conversation::{MessageMetadata, TokenUsage, ToolCall};
 
-#[derive(Debug, Deserialize)]
-/// One streamed Responses server-sent event payload from Bifrost.
-struct ResponsesStreamEvent {
-    #[serde(rename = "type")]
-    kind: String,
-    output_index: Option<u16>,
-    delta: Option<String>,
-    text: Option<String>,
-    refusal: Option<String>,
-    arguments: Option<String>,
-    item: Option<ResponsesStreamItem>,
-    response: Option<ResponsesStreamResponse>,
-    error: Option<ResponsesStreamError>,
-    message: Option<String>,
+use super::responses::{ResponsesStreamEvent, ResponsesStreamItem, ResponsesStreamResponse};
+
+#[derive(Debug, Clone, PartialEq)]
+/// Complete assistant response received from a streaming Responses request.
+pub struct AssistantResponse {
+    pub content: String,
+    pub metadata: MessageMetadata,
+    pub finish_reason: Option<FinishReason>,
 }
 
-#[derive(Debug, Deserialize)]
-/// Stream item used by `response.output_item.*` events.
-struct ResponsesStreamItem {
-    id: Option<String>,
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    call_id: Option<String>,
-    name: Option<String>,
-    arguments: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+/// One live event emitted while parsing a streamed assistant response.
+///
+/// These events are display-only. `AssistantStreamState` still assembles the
+/// final assistant content and metadata, and runtime persistence uses that
+/// complete response as the source of truth.
+pub enum LlmStreamEvent<'a> {
+    /// Natural-language assistant output text.
+    AssistantDelta(&'a str),
+    /// Reasoning-summary text reported by providers that expose it.
+    ReasoningDelta(&'a str),
+    /// Incremental function-call metadata or argument text.
+    ToolCallDelta {
+        index: u16,
+        id: Option<&'a str>,
+        name: Option<&'a str>,
+        arguments_delta: Option<&'a str>,
+    },
 }
 
-#[derive(Debug, Deserialize)]
-/// Terminal response body used by failed/incomplete Responses events.
-struct ResponsesStreamResponse {
-    error: Option<ResponsesStreamError>,
-    usage: Option<serde_json::Value>,
+#[derive(Debug, Clone, PartialEq)]
+/// Token count returned by Bifrost's Responses input-token endpoint.
+///
+/// `input_tokens` is the model-facing input count for the request Windie built.
+/// Bifrost may also return provider-specific totals or breakdown fields, so the
+/// full response is preserved for future UI or persistence work.
+pub struct InputTokenCount {
+    pub input_tokens: u64,
+    pub total_tokens: Option<u64>,
+    pub model: Option<String>,
+    pub raw: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
-/// Error payload embedded in Responses stream events.
-struct ResponsesStreamError {
-    message: Option<String>,
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    code: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Normalized reason the provider stopped the assistant stream.
+pub enum FinishReason {
+    Stop,
+    Length,
+    ToolCalls,
 }
-
 #[derive(Debug, Default)]
 /// In-progress assistant stream state.
-struct AssistantStreamState {
-    content: String,
-    metadata: MessageMetadata,
+pub(super) struct AssistantStreamState {
+    pub(super) content: String,
+    pub(super) metadata: MessageMetadata,
     tool_calls: BTreeMap<u16, PartialToolCall>,
     finish_reason: Option<FinishReason>,
 }
@@ -67,45 +73,9 @@ struct PartialToolCall {
     name: Option<String>,
     arguments: String,
 }
-
-/// Incrementally decodes network chunks into one complete assistant response.
-pub(super) struct ResponseStreamDecoder {
-    byte_buffer: Vec<u8>,
-    text_buffer: String,
-    state: AssistantStreamState,
-}
-
-impl ResponseStreamDecoder {
-    pub(super) fn new() -> Self {
-        Self {
-            byte_buffer: Vec::new(),
-            text_buffer: String::new(),
-            state: AssistantStreamState::default(),
-        }
-    }
-
-    pub(super) fn push<F>(&mut self, chunk: &[u8], handle_delta: &mut F) -> Result<()>
-    where
-        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
-    {
-        self.byte_buffer.extend_from_slice(chunk);
-        append_valid_utf8(&mut self.byte_buffer, &mut self.text_buffer)?;
-        process_stream_lines(&mut self.text_buffer, &mut self.state, handle_delta)
-    }
-
-    pub(super) fn finish<F>(mut self, handle_delta: &mut F) -> Result<AssistantResponse>
-    where
-        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
-    {
-        finish_utf8(&mut self.byte_buffer, &mut self.text_buffer)?;
-        process_final_stream_line(&mut self.text_buffer, &mut self.state, handle_delta)?;
-        self.state.finalize()
-    }
-}
-
 /// Moves all currently valid UTF-8 text from bytes into the text buffer while
 /// keeping an incomplete final character for the next network chunk.
-fn append_valid_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
+pub(super) fn append_valid_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
     match std::str::from_utf8(byte_buffer) {
         Ok(text) => {
             text_buffer.push_str(text);
@@ -133,7 +103,7 @@ fn append_valid_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Res
 
 /// Flushes remaining UTF-8 bytes after the stream ends and rejects incomplete
 /// trailing characters.
-fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
+pub(super) fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()> {
     append_valid_utf8(byte_buffer, text_buffer)?;
 
     if !byte_buffer.is_empty() {
@@ -144,7 +114,7 @@ fn finish_utf8(byte_buffer: &mut Vec<u8>, text_buffer: &mut String) -> Result<()
 }
 
 /// Processes every complete newline-delimited SSE line currently buffered.
-fn process_stream_lines<F>(
+pub(super) fn process_stream_lines<F>(
     buffer: &mut String,
     state: &mut AssistantStreamState,
     handle_delta: &mut F,
@@ -163,7 +133,7 @@ where
 
 /// Processes one final stream line when the server closes without a trailing
 /// newline.
-fn process_final_stream_line<F>(
+pub(super) fn process_final_stream_line<F>(
     buffer: &mut String,
     state: &mut AssistantStreamState,
     handle_delta: &mut F,
@@ -180,7 +150,7 @@ where
 }
 
 /// Parses one SSE line and forwards assistant content deltas.
-fn process_stream_line<F>(
+pub(super) fn process_stream_line<F>(
     line: &str,
     state: &mut AssistantStreamState,
     handle_delta: &mut F,
@@ -227,10 +197,17 @@ impl AssistantStreamState {
                     append_optional_text(&mut self.metadata.refusal, &refusal);
                 }
             }
-            "response.reasoning_summary_text.delta" => {
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                 if let Some(reasoning) = event.delta {
                     append_optional_text(&mut self.metadata.reasoning, &reasoning);
                     handle_delta(LlmStreamEvent::ReasoningDelta(&reasoning))?;
+                }
+            }
+            "response.reasoning_summary_text.done" | "response.reasoning_text.done" => {
+                if self.metadata.reasoning.is_none()
+                    && let Some(reasoning) = event.text
+                {
+                    self.metadata.reasoning = Some(reasoning);
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -372,7 +349,7 @@ impl AssistantStreamState {
     }
 
     /// Converts the stream state into a complete assistant response.
-    fn finalize(self) -> Result<AssistantResponse> {
+    pub(super) fn finalize(self) -> Result<AssistantResponse> {
         let mut metadata = self.metadata;
         let tool_calls = self
             .tool_calls
@@ -417,6 +394,26 @@ fn token_usage_from_raw(raw: serde_json::Value) -> TokenUsage {
     }
 }
 
+/// Extracts the stable count fields from Bifrost's input-token response.
+pub(super) fn input_token_count_from_raw(raw: serde_json::Value) -> Result<InputTokenCount> {
+    let input_tokens = raw
+        .get("input_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("responses input token response missing input_tokens"))?;
+    let total_tokens = raw.get("total_tokens").and_then(serde_json::Value::as_u64);
+    let model = raw
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
+    Ok(InputTokenCount {
+        input_tokens,
+        total_tokens,
+        model,
+        raw,
+    })
+}
+
 /// Returns the most useful error text from a failed Responses stream event.
 fn event_error_text(event: &ResponsesStreamEvent) -> String {
     event
@@ -444,6 +441,3 @@ fn append_optional_text(target: &mut Option<String>, delta: &str) {
         None => *target = Some(delta.to_string()),
     }
 }
-
-#[cfg(test)]
-mod tests;

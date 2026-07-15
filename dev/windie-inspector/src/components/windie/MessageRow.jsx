@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useWindie } from "@/context/WindieContext";
 import { fetchImageAsset } from "@/lib/windieApi";
-import { ROLE_TOKENS } from "@/lib/roleTokens";
+import { ROLE_TOKENS } from "@/lib/mockData";
 import {
   GitBranch,
   Scissors,
@@ -290,7 +290,6 @@ export default function MessageRow({ node, index, isLast }) {
     truncateAfter,
     removeMessage,
     editMessage,
-    setActivePathToLeaf,
   } = useWindie();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => node.message.parts.find((p) => p.type === "text")?.text || "");
