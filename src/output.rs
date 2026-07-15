@@ -14,10 +14,10 @@ use serde::Serialize;
 
 use crate::conversation::{ConversationId, Message, MessageId, MessagePart, ToolCall};
 use crate::llm::{ModelInfo, ModelName};
+use crate::local::InstallReport;
 use crate::operation::InspectionReport;
 use crate::perf::{DurationMetric, PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
-use crate::setup::InstallReport;
 use crate::store::ConversationInfo;
 use crate::tool::{ToolDefinition, ToolSchemaName};
 

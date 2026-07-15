@@ -8,18 +8,18 @@ mod api;
 mod cli;
 mod context;
 mod conversation;
+mod dev;
 mod error;
 mod gateway;
-mod image_input;
-mod inspector;
+mod input;
 mod llm;
+mod local;
 mod mcp;
 mod operation;
 mod output;
 mod perf;
 mod runtime;
 mod session;
-mod setup;
 mod store;
 mod tool;
 mod tool_provider;
@@ -166,9 +166,9 @@ fn open_inspector() -> Result<()> {
     let output = TerminalOutput;
     let api_token = match std::env::var("WINDIE_API_TOKEN") {
         Ok(token) => token,
-        Err(_) => setup::ensure_api_token()?,
+        Err(_) => local::ensure_api_token()?,
     };
-    let launch = inspector::open(&api_token)?;
+    let launch = dev::open(&api_token)?;
 
     output.inspector_opened(&launch.url, launch.started_server);
 
@@ -289,19 +289,19 @@ fn env_command(command: EnvCommand) -> Result<()> {
 
     match command {
         EnvCommand::Set(assignments) => {
-            let path = setup::set_env_values(&assignments)?;
+            let path = local::set_env_values(&assignments)?;
             output.env_updated(&path, assignments.len());
         }
         EnvCommand::List => {
-            let keys = setup::list_env_keys()?;
+            let keys = local::list_env_keys()?;
             output.env_keys(&keys);
         }
         EnvCommand::Unset(keys) => {
-            let path = setup::unset_env_values(&keys)?;
+            let path = local::unset_env_values(&keys)?;
             output.env_updated(&path, keys.len());
         }
         EnvCommand::Path => {
-            let path = setup::env_file_path()?;
+            let path = local::env_file_path()?;
             output.env_path(&path);
         }
     }
@@ -311,7 +311,7 @@ fn env_command(command: EnvCommand) -> Result<()> {
 
 /// Installs or verifies one approved Windie dependency.
 fn install_target(target: &str) -> Result<()> {
-    let report = setup::install_target(target)?;
+    let report = local::install_target(target)?;
     let output = TerminalOutput;
     output.install_report(&report);
 

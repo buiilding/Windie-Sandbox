@@ -20,7 +20,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::setup;
+use crate::local;
 
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -647,7 +647,7 @@ fn resolve_env_value(value: McpEnvValue) -> Result<String> {
             .to_string_lossy()
             .into_owned()),
         McpEnvValue::Literal(value) => Ok(value.to_string()),
-        McpEnvValue::UserEnv(name) => setup::env_value(name)?
+        McpEnvValue::UserEnv(name) => local::env_value(name)?
             .or_else(|| env::var(name).ok())
             .with_context(|| format!("missing required environment variable: {name}")),
     }

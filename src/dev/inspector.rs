@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::setup;
+use crate::local;
 
 const INSPECTOR_PORT: u16 = 3000;
 const INSPECTOR_START_TIMEOUT: Duration = Duration::from_secs(90);
@@ -109,7 +109,7 @@ fn ensure_node_dependencies(inspector_dir: &Path) -> Result<()> {
 
 /// Starts `npm run start` detached, with output redirected to `~/.windie`.
 fn start_inspector_server(inspector_dir: &Path) -> Result<()> {
-    let log_file = setup::inspector_log_file_path()?;
+    let log_file = local::inspector_log_file_path()?;
     let stdout = OpenOptions::new()
         .create(true)
         .append(true)

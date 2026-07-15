@@ -4,7 +4,7 @@ use super::*;
 
 /// One ordered message part accepted by client-facing insert operations.
 ///
-/// Text parts are stored directly. Path images are read through `image_input.rs`;
+/// Text parts are stored directly. Path images are read through `input::image`;
 /// byte images arrive from local clients such as clipboard paste. Both image
 /// forms are validated before storage copies bytes into SQLite.
 #[derive(Debug, Clone, PartialEq, Eq)]

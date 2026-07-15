@@ -31,12 +31,12 @@ use crate::conversation::{ConversationId, ImageAssetId, MessageId, Role, ToolCal
 use crate::error::{self as windie_error, WindieErrorKind};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
+use crate::local;
 use crate::operation::{self, InspectionReport, MessageInputPart};
 use crate::output::TerminalOutput;
 use crate::session::{
     Session, SessionEventRecord, SessionId, SessionManager, SessionStatus, SessionSubscription,
 };
-use crate::setup;
 use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
@@ -97,7 +97,7 @@ pub async fn serve(
 
     let api_token = match std::env::var("WINDIE_API_TOKEN") {
         Ok(token) => token,
-        Err(_) => setup::ensure_api_token()?,
+        Err(_) => local::ensure_api_token()?,
     };
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
     let session_manager = Arc::new(SessionManager::new(

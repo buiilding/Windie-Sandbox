@@ -44,7 +44,7 @@ use crate::conversation::{
 };
 use crate::error;
 use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
-use crate::image_input::{ImageInput, read_image_input, validate_image_input_bytes};
+use crate::input::{ImageInput, read_image_input, validate_image_input_bytes};
 use crate::llm::{
     self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName, ModelParameter,
     ModelParameterOption, PromptCacheRequest, ReasoningRequest,
