@@ -108,8 +108,7 @@ pub fn remove_system_prompt_at_head(
     store.remove_system_prompt_at_head(conversation_id, head_message_id)
 }
 
-/// Sets the conversation default for attached tool approval.
-
+/// Removes one message from the conversation tree.
 pub fn remove_message(
     store: &mut Store,
     conversation_id: &ConversationId,

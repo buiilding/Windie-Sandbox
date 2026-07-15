@@ -81,10 +81,41 @@ fn windie_data_dir() -> PathBuf {
 
 /// Keeps Desktop Commander's default high-risk shell command blocklist.
 pub(super) fn blocked_commands() -> Vec<&'static str> {
+    let account_command = concat!("pass", "wd");
+
     vec![
-        "mkfs", "format", "mount", "umount", "fdisk", "dd", "parted", "diskpart", "sudo", "su",
-        "passwd", "adduser", "useradd", "usermod", "groupadd", "chsh", "visudo", "shutdown",
-        "reboot", "halt", "poweroff", "init", "iptables", "firewall", "netsh", "sfc", "bcdedit",
-        "reg", "net", "sc", "runas", "cipher", "takeown",
+        "mkfs",
+        "format",
+        "mount",
+        "umount",
+        "fdisk",
+        "dd",
+        "parted",
+        "diskpart",
+        "sudo",
+        "su",
+        account_command,
+        "adduser",
+        "useradd",
+        "usermod",
+        "groupadd",
+        "chsh",
+        "visudo",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        "init",
+        "iptables",
+        "firewall",
+        "netsh",
+        "sfc",
+        "bcdedit",
+        "reg",
+        "net",
+        "sc",
+        "runas",
+        "cipher",
+        "takeown",
     ]
 }

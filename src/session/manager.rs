@@ -62,6 +62,17 @@ struct RunningSession {
     task: JoinHandle<()>,
 }
 
+/// Complete input needed by one spawned session task.
+struct SessionTaskInput {
+    session_id: SessionId,
+    conversation_id: ConversationId,
+    head_message_id: Option<MessageId>,
+    model_override: Option<ModelName>,
+    reasoning: Option<ReasoningRequest>,
+    command: SessionCommand,
+    sender: broadcast::Sender<SessionEventRecord>,
+}
+
 impl SessionManager {
     /// Builds a session manager for the API server runtime.
     pub fn new(
@@ -227,15 +238,15 @@ impl SessionManager {
 
         let task = tokio::spawn(async move {
             let result = manager
-                .run_task(
-                    run_id_for_task.clone(),
+                .run_task(SessionTaskInput {
+                    session_id: run_id_for_task.clone(),
                     conversation_id,
                     head_message_id,
                     model_override,
                     reasoning,
                     command,
-                    task_sender,
-                )
+                    sender: task_sender,
+                })
                 .await;
             if let Err(error) = result {
                 manager
@@ -262,16 +273,16 @@ impl SessionManager {
         }
     }
 
-    async fn run_task(
-        &self,
-        session_id: SessionId,
-        conversation_id: ConversationId,
-        head_message_id: Option<MessageId>,
-        model_override: Option<ModelName>,
-        reasoning: Option<ReasoningRequest>,
-        command: SessionCommand,
-        sender: broadcast::Sender<SessionEventRecord>,
-    ) -> Result<()> {
+    async fn run_task(&self, input: SessionTaskInput) -> Result<()> {
+        let SessionTaskInput {
+            session_id,
+            conversation_id,
+            head_message_id,
+            model_override,
+            reasoning,
+            command,
+            sender,
+        } = input;
         let mut store = self.open_store()?;
         store.update_session_status(&session_id, SessionStatus::Running, None)?;
         let output = SessionOutput {

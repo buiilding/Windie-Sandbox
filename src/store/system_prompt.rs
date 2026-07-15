@@ -35,11 +35,8 @@ impl Store {
         Ok(messages)
     }
 
-    /// Loads the root-scoped effective system prompt.
-    ///
-    /// System prompts are stored as normal `Role::System` messages. Call
-    /// `effective_system_prompt_for_head` to resolve a branch-local prompt for
-    /// a specific message path.
+    /// Loads the root-scoped effective system prompt for tests.
+    #[cfg(test)]
     pub fn system_prompt(&self, conversation_id: &ConversationId) -> Result<Option<String>> {
         self.effective_system_prompt_for_head(conversation_id, None)
     }

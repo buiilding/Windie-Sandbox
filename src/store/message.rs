@@ -1334,8 +1334,7 @@ fn read_message_part_row(row: &Row<'_>) -> rusqlite::Result<(String, MessagePart
     Ok((message_id, part))
 }
 
-/// Serializes typed message metadata for SQLite storage.
-
+/// Inserts ordered message parts for one new message row.
 fn insert_unsaved_message_parts_in_transaction(
     transaction: &Transaction<'_>,
     message_id: &MessageId,

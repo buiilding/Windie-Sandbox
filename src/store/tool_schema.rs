@@ -3,7 +3,8 @@
 use super::*;
 
 impl Store {
-    /// Loads all root-scoped effective provider tools.
+    /// Loads all root-scoped effective provider tools for tests.
+    #[cfg(test)]
     pub fn load_attached_tools(
         &self,
         conversation_id: &ConversationId,
@@ -141,7 +142,8 @@ impl Store {
             .collect())
     }
 
-    /// Loads the root-scoped effective model-facing schema subset.
+    /// Loads the root-scoped effective model-facing schema subset for tests.
+    #[cfg(test)]
     pub fn load_tool_schemas(&self, conversation_id: &ConversationId) -> Result<Vec<ToolSchema>> {
         Ok(self
             .load_attached_tools(conversation_id)?
