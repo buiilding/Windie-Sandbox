@@ -82,12 +82,12 @@ impl Store {
     pub fn set_system_prompt_at_head(
         &mut self,
         conversation_id: &ConversationId,
-        anchor_message_id: Option<&MessageId>,
+        parent_message_id: Option<&MessageId>,
         content: &str,
     ) -> Result<MessageId> {
         self.insert_message(
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             Role::System,
             content,
             None,
@@ -103,8 +103,8 @@ impl Store {
     pub fn remove_system_prompt_at_head(
         &mut self,
         conversation_id: &ConversationId,
-        anchor_message_id: Option<&MessageId>,
+        parent_message_id: Option<&MessageId>,
     ) -> Result<MessageId> {
-        self.set_system_prompt_at_head(conversation_id, anchor_message_id, "")
+        self.set_system_prompt_at_head(conversation_id, parent_message_id, "")
     }
 }

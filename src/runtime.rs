@@ -13,9 +13,11 @@ use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, To
 use crate::error;
 use crate::llm::{LlmStreamEvent, PromptCacheRequest, ReasoningRequest, RuntimeLlm};
 use crate::output::RuntimeOutput;
-use crate::policy::{PolicyDecision, ToolPolicy};
 use crate::store::Store;
-use crate::tool::{AttachedTool, ToolApprovalRequest, ToolExecutionResult, ToolSchemaName};
+use crate::tool::{
+    AttachedTool, PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy,
+    ToolSchemaName,
+};
 use crate::tool_provider::ToolProviderRegistry;
 
 /// Receives durable runtime state changes during run execution.

@@ -1,4 +1,4 @@
-//! Branch-scoped attached tool and model-facing tool schema persistence.
+//! Path-scoped tool capability persistence.
 
 use super::*;
 
@@ -12,6 +12,12 @@ impl Store {
     }
 
     /// Loads all effective provider tools for an explicit conversation path.
+    ///
+    /// Tool schemas are not messages, but they are attached to the same message
+    /// tree. A row with no parent is visible from every path. A row with a
+    /// parent is visible only when that message belongs to the selected path.
+    /// For each tool name, the latest visible row decides whether the tool is
+    /// present or removed.
     pub fn load_attached_tools_for_head(
         &self,
         conversation_id: &ConversationId,
@@ -24,7 +30,7 @@ impl Store {
             .prepare(
                 "
                 SELECT
-                    anchor_message_id,
+                    parent_message_id,
                     name,
                     description,
                     parameters_json,
@@ -33,7 +39,7 @@ impl Store {
                     provider_kind,
                     permissions_json,
                     annotations_json,
-                    action
+                    state
                 FROM tool_schemas
                 WHERE conversation_id = ?1
                 ORDER BY created_at, rowid
@@ -41,24 +47,21 @@ impl Store {
             )
             .context("failed to prepare attached tool load")?;
 
-        let changes = statement
-            .query_map(
-                params![conversation_id.as_str()],
-                read_attached_tool_change_row,
-            )
+        let rows = statement
+            .query_map(params![conversation_id.as_str()], read_attached_tool_row)
             .context("failed to load attached tools")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read attached tools")?;
         let mut effective = HashMap::<String, AttachedTool>::new();
         let mut order = Vec::<String>::new();
 
-        for change in changes {
-            if !anchor_applies(change.anchor_message_id.as_deref(), &path_set) {
+        for row in rows {
+            if !parent_applies(row.parent_message_id.as_deref(), &path_set) {
                 continue;
             }
-            match change.action.as_str() {
-                "attach" | "update" => {
-                    let attached_tool = change.attached_tool.ok_or_else(|| {
+            match row.state.as_str() {
+                "present" => {
+                    let attached_tool = row.attached_tool.ok_or_else(|| {
                         rusqlite::Error::InvalidColumnType(
                             0,
                             "attached_tool".to_string(),
@@ -71,11 +74,11 @@ impl Store {
                     }
                     effective.insert(name, attached_tool);
                 }
-                "remove" => {
-                    effective.remove(&change.name);
-                    order.retain(|name| name != &change.name);
+                "removed" => {
+                    effective.remove(&row.name);
+                    order.retain(|name| name != &row.name);
                 }
-                _ => return Err(anyhow!("unknown tool schema action: {}", change.action)),
+                _ => return Err(anyhow!("unknown tool schema state: {}", row.state)),
             }
         }
 
@@ -85,18 +88,18 @@ impl Store {
             .collect())
     }
 
-    /// Loads raw tool-schema changes whose anchors apply to one source path.
-    pub(super) fn tool_schema_changes_for_path(
+    /// Loads raw tool-schema rows whose parents are visible from one source path.
+    pub(super) fn tool_schema_rows_for_path(
         &self,
         conversation_id: &ConversationId,
         path_ids: &HashSet<String>,
-    ) -> Result<Vec<StoredToolSchemaChange>> {
+    ) -> Result<Vec<StoredToolSchemaRow>> {
         let mut statement = self
             .connection
             .prepare(
                 "
                 SELECT
-                    anchor_message_id,
+                    parent_message_id,
                     name,
                     description,
                     parameters_json,
@@ -105,19 +108,19 @@ impl Store {
                     provider_kind,
                     permissions_json,
                     annotations_json,
-                    action,
+                    state,
                     created_at
                 FROM tool_schemas
                 WHERE conversation_id = ?1
                 ORDER BY created_at, rowid
                 ",
             )
-            .context("failed to prepare tool schema change load")?;
+            .context("failed to prepare tool schema row load")?;
 
         Ok(statement
             .query_map(params![conversation_id.as_str()], |row| {
-                Ok(StoredToolSchemaChange {
-                    anchor_message_id: row.get(0)?,
+                Ok(StoredToolSchemaRow {
+                    parent_message_id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(2)?,
                     parameters_json: row.get(3)?,
@@ -126,15 +129,15 @@ impl Store {
                     provider_kind: row.get(6)?,
                     permissions_json: row.get(7)?,
                     annotations_json: row.get(8)?,
-                    action: row.get(9)?,
+                    state: row.get(9)?,
                     created_at: row.get(10)?,
                 })
             })
-            .context("failed to load tool schema changes")?
+            .context("failed to load tool schema rows")?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read tool schema changes")?
+            .context("failed to read tool schema rows")?
             .into_iter()
-            .filter(|change| anchor_applies(change.anchor_message_id.as_deref(), path_ids))
+            .filter(|row| parent_applies(row.parent_message_id.as_deref(), path_ids))
             .collect())
     }
 
@@ -195,11 +198,11 @@ impl Store {
     pub fn insert_attached_tool_at_head(
         &mut self,
         conversation_id: &ConversationId,
-        anchor_message_id: Option<&MessageId>,
+        parent_message_id: Option<&MessageId>,
         attached_tool: &AttachedTool,
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
-        if let Some(message_id) = anchor_message_id {
+        if let Some(message_id) = parent_message_id {
             self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
         }
         validate_attached_tool(attached_tool)?;
@@ -213,9 +216,9 @@ impl Store {
         insert_attached_tool_in_transaction(
             &transaction,
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             attached_tool,
-            "attach",
+            "present",
             now,
         )
         .context("failed to attach tool")?;
@@ -242,11 +245,11 @@ impl Store {
     pub fn insert_attached_tools_at_head(
         &mut self,
         conversation_id: &ConversationId,
-        anchor_message_id: Option<&MessageId>,
+        parent_message_id: Option<&MessageId>,
         attached_tools: &[AttachedTool],
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
-        if let Some(message_id) = anchor_message_id {
+        if let Some(message_id) = parent_message_id {
             self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
         }
         let mut names = HashSet::new();
@@ -274,9 +277,9 @@ impl Store {
             insert_attached_tool_in_transaction(
                 &transaction,
                 conversation_id,
-                anchor_message_id,
+                parent_message_id,
                 attached_tool,
-                "attach",
+                "present",
                 now,
             )
             .context("failed to attach tools")?;
@@ -303,12 +306,12 @@ impl Store {
     pub fn insert_tool_schema_at_head(
         &mut self,
         conversation_id: &ConversationId,
-        anchor_message_id: Option<&MessageId>,
+        parent_message_id: Option<&MessageId>,
         tool_schema: &ToolSchema,
     ) -> Result<()> {
         self.insert_attached_tool_at_head(
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             &AttachedTool::manual(tool_schema.clone()),
         )
     }
@@ -327,15 +330,15 @@ impl Store {
     pub fn update_tool_schema_at_head(
         &mut self,
         conversation_id: &ConversationId,
-        anchor_message_id: Option<&MessageId>,
+        parent_message_id: Option<&MessageId>,
         current_name: &ToolSchemaName,
         tool_schema: &ToolSchema,
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
-        if let Some(message_id) = anchor_message_id {
+        if let Some(message_id) = parent_message_id {
             self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
         }
-        self.ensure_tool_schema_exists_at_head(conversation_id, anchor_message_id, current_name)?;
+        self.ensure_tool_schema_exists_at_head(conversation_id, parent_message_id, current_name)?;
         let attached_tool = AttachedTool::manual(tool_schema.clone());
         validate_attached_tool(&attached_tool)?;
 
@@ -349,7 +352,7 @@ impl Store {
             insert_tool_remove_in_transaction(
                 &transaction,
                 conversation_id,
-                anchor_message_id,
+                parent_message_id,
                 current_name,
                 now,
             )
@@ -358,9 +361,9 @@ impl Store {
         insert_attached_tool_in_transaction(
             &transaction,
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             &attached_tool,
-            "update",
+            "present",
             now,
         )
         .context("failed to update attached tool")?;
@@ -386,14 +389,14 @@ impl Store {
     pub fn remove_tool_schema_at_head(
         &mut self,
         conversation_id: &ConversationId,
-        anchor_message_id: Option<&MessageId>,
+        parent_message_id: Option<&MessageId>,
         name: &ToolSchemaName,
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
-        if let Some(message_id) = anchor_message_id {
+        if let Some(message_id) = parent_message_id {
             self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
         }
-        self.ensure_tool_schema_exists_at_head(conversation_id, anchor_message_id, name)?;
+        self.ensure_tool_schema_exists_at_head(conversation_id, parent_message_id, name)?;
 
         let now = now_millis()?;
         let transaction = self
@@ -404,7 +407,7 @@ impl Store {
         insert_tool_remove_in_transaction(
             &transaction,
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             name,
             now,
         )
@@ -440,16 +443,16 @@ impl Store {
     }
 }
 
-struct AttachedToolChange {
-    anchor_message_id: Option<String>,
+struct StoredAttachedToolRow {
+    parent_message_id: Option<String>,
     name: String,
-    action: String,
+    state: String,
     attached_tool: Option<AttachedTool>,
 }
 
-/// Raw tool-schema history row used when copying one path into a fork.
-pub(super) struct StoredToolSchemaChange {
-    pub(super) anchor_message_id: Option<String>,
+/// Raw tool-schema row used when copying one path into a fork.
+pub(super) struct StoredToolSchemaRow {
+    pub(super) parent_message_id: Option<String>,
     pub(super) name: String,
     pub(super) description: Option<String>,
     pub(super) parameters_json: Option<String>,
@@ -458,20 +461,20 @@ pub(super) struct StoredToolSchemaChange {
     pub(super) provider_kind: Option<String>,
     pub(super) permissions_json: Option<String>,
     pub(super) annotations_json: Option<String>,
-    pub(super) action: String,
+    pub(super) state: String,
     pub(super) created_at: i64,
 }
 
-/// Converts one SQLite tool schema history row into a change.
-fn read_attached_tool_change_row(row: &Row<'_>) -> rusqlite::Result<AttachedToolChange> {
-    let anchor_message_id = row.get::<_, Option<String>>(0)?;
+/// Converts one SQLite tool schema row into an attached tool row.
+fn read_attached_tool_row(row: &Row<'_>) -> rusqlite::Result<StoredAttachedToolRow> {
+    let parent_message_id = row.get::<_, Option<String>>(0)?;
     let name = row.get::<_, String>(1)?;
-    let action = row.get::<_, String>(9)?;
-    if action == "remove" {
-        return Ok(AttachedToolChange {
-            anchor_message_id,
+    let state = row.get::<_, String>(9)?;
+    if state == "removed" {
+        return Ok(StoredAttachedToolRow {
+            parent_message_id,
             name,
-            action,
+            state,
             attached_tool: None,
         });
     }
@@ -507,10 +510,10 @@ fn read_attached_tool_change_row(row: &Row<'_>) -> rusqlite::Result<AttachedTool
             rusqlite::Error::FromSqlConversionFailure(8, Type::Text, Box::new(error))
         })?;
 
-    Ok(AttachedToolChange {
-        anchor_message_id,
+    Ok(StoredAttachedToolRow {
+        parent_message_id,
         name: name.clone(),
-        action,
+        state,
         attached_tool: Some(AttachedTool {
             schema_name: ToolSchemaName::new(name),
             description: row.get::<_, Option<String>>(2)?.ok_or_else(|| {
@@ -581,9 +584,9 @@ fn validate_attached_tool(attached_tool: &AttachedTool) -> Result<()> {
 fn insert_attached_tool_in_transaction(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
-    anchor_message_id: Option<&MessageId>,
+    parent_message_id: Option<&MessageId>,
     attached_tool: &AttachedTool,
-    action: &str,
+    state: &str,
     now: i64,
 ) -> Result<()> {
     let parameters_json = encode_tool_parameters(&attached_tool.parameters)?;
@@ -596,7 +599,7 @@ fn insert_attached_tool_in_transaction(
         INSERT INTO tool_schemas (
             id,
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             name,
             description,
             parameters_json,
@@ -605,7 +608,7 @@ fn insert_attached_tool_in_transaction(
             provider_kind,
             permissions_json,
             annotations_json,
-            action,
+            state,
             created_at
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
@@ -613,7 +616,7 @@ fn insert_attached_tool_in_transaction(
         params![
             id,
             conversation_id.as_str(),
-            anchor_message_id.map(MessageId::as_str),
+            parent_message_id.map(MessageId::as_str),
             attached_tool.schema_name.as_str(),
             attached_tool.description.as_str(),
             parameters_json.as_str(),
@@ -622,7 +625,7 @@ fn insert_attached_tool_in_transaction(
             attached_tool.provider.kind.as_storage(),
             permissions_json.as_str(),
             annotations_json.as_str(),
-            action,
+            state,
             now
         ],
     )?;
@@ -630,12 +633,12 @@ fn insert_attached_tool_in_transaction(
     Ok(())
 }
 
-/// Copies one raw tool-schema path change into a forked conversation.
-pub(super) fn insert_tool_schema_change_in_transaction(
+/// Copies one raw tool-schema path row into a forked conversation.
+pub(super) fn insert_tool_schema_row_in_transaction(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
-    anchor_message_id: Option<&MessageId>,
-    change: &StoredToolSchemaChange,
+    parent_message_id: Option<&MessageId>,
+    row: &StoredToolSchemaRow,
 ) -> Result<()> {
     let id = Uuid::new_v4().to_string();
 
@@ -644,7 +647,7 @@ pub(super) fn insert_tool_schema_change_in_transaction(
         INSERT INTO tool_schemas (
             id,
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             name,
             description,
             parameters_json,
@@ -653,7 +656,7 @@ pub(super) fn insert_tool_schema_change_in_transaction(
             provider_kind,
             permissions_json,
             annotations_json,
-            action,
+            state,
             created_at
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
@@ -661,17 +664,17 @@ pub(super) fn insert_tool_schema_change_in_transaction(
         params![
             id,
             conversation_id.as_str(),
-            anchor_message_id.map(MessageId::as_str),
-            change.name.as_str(),
-            change.description.as_deref(),
-            change.parameters_json.as_deref(),
-            change.provider_id.as_deref(),
-            change.provider_tool_name.as_deref(),
-            change.provider_kind.as_deref(),
-            change.permissions_json.as_deref(),
-            change.annotations_json.as_deref(),
-            change.action.as_str(),
-            change.created_at
+            parent_message_id.map(MessageId::as_str),
+            row.name.as_str(),
+            row.description.as_deref(),
+            row.parameters_json.as_deref(),
+            row.provider_id.as_deref(),
+            row.provider_tool_name.as_deref(),
+            row.provider_kind.as_deref(),
+            row.permissions_json.as_deref(),
+            row.annotations_json.as_deref(),
+            row.state.as_str(),
+            row.created_at
         ],
     )?;
 
@@ -682,7 +685,7 @@ pub(super) fn insert_tool_schema_change_in_transaction(
 fn insert_tool_remove_in_transaction(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
-    anchor_message_id: Option<&MessageId>,
+    parent_message_id: Option<&MessageId>,
     name: &ToolSchemaName,
     now: i64,
 ) -> Result<()> {
@@ -693,17 +696,17 @@ fn insert_tool_remove_in_transaction(
         INSERT INTO tool_schemas (
             id,
             conversation_id,
-            anchor_message_id,
+            parent_message_id,
             name,
-            action,
+            state,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, 'remove', ?5)
+        VALUES (?1, ?2, ?3, ?4, 'removed', ?5)
         ",
         params![
             id,
             conversation_id.as_str(),
-            anchor_message_id.map(MessageId::as_str),
+            parent_message_id.map(MessageId::as_str),
             name.as_str(),
             now
         ],
@@ -713,8 +716,8 @@ fn insert_tool_remove_in_transaction(
 }
 
 /// Returns whether a path-scoped context row applies to the current head path.
-fn anchor_applies(anchor_message_id: Option<&str>, path_ids: &HashSet<String>) -> bool {
-    match anchor_message_id {
+fn parent_applies(parent_message_id: Option<&str>, path_ids: &HashSet<String>) -> bool {
+    match parent_message_id {
         Some(message_id) => path_ids.contains(message_id),
         None => true,
     }

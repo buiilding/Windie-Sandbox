@@ -1,7 +1,7 @@
 //! Tool execution policy boundary.
 //!
 //! This module decides whether a model-requested tool call may execute. The
-//! first policy is intentionally small: detached tools are denied, attached
+//! first policy is intentionally small: unexposed tools are denied, exposed
 //! tools with no registered executor are denied, and executable local tools
 //! either ask for explicit user approval or run under a conversation-level
 //! auto-approval mode.
@@ -24,10 +24,11 @@ pub struct ToolPolicy;
 impl ToolPolicy {
     /// Decides whether Windie may execute a model-requested tool call.
     ///
-    /// The attached tool is the conversation-level permission boundary: Windie
-    /// may only consider executing tools explicitly attached to the current
-    /// conversation. Provider executability is passed in separately so policy
-    /// can reject raw/manual attachments or missing providers before approval.
+    /// The attached tool is the path-level permission boundary: Windie may
+    /// only consider executing tools explicitly exposed on the current
+    /// conversation path. Provider executability is passed in separately so
+    /// policy can reject raw/manual schemas or missing providers before
+    /// approval.
     pub fn decide(
         &self,
         tool_call: &ToolCall,
@@ -59,10 +60,10 @@ impl ToolPolicy {
     }
 }
 
-/// Applies conversation-level full access after attachment and executor checks.
+/// Applies conversation-level full access after path exposure and executor checks.
 ///
-/// Full access intentionally allows every attached executable tool. The earlier
-/// attachment and provider checks still deny tools the conversation did not opt
+/// Full access intentionally allows every exposed executable tool. The earlier
+/// exposure and provider checks still deny tools the selected path did not opt
 /// into, raw/manual schemas without executors, and unavailable providers.
 fn full_access_decision(_attached_tool: &AttachedTool) -> PolicyDecision {
     PolicyDecision::Allow

@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 14;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 15;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -121,7 +121,7 @@ impl Store {
                 CREATE TABLE IF NOT EXISTS tool_schemas (
                     id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
-                    anchor_message_id TEXT,
+                    parent_message_id TEXT,
                     name TEXT NOT NULL,
                     description TEXT,
                     parameters_json TEXT,
@@ -130,11 +130,11 @@ impl Store {
                     provider_kind TEXT,
                     permissions_json TEXT,
                     annotations_json TEXT,
-                    action TEXT NOT NULL,
+                    state TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
 
                     FOREIGN KEY (conversation_id) REFERENCES conversations(id),
-                    FOREIGN KEY (anchor_message_id) REFERENCES messages(id)
+                    FOREIGN KEY (parent_message_id) REFERENCES messages(id)
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
@@ -158,8 +158,8 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
                 ON tool_schemas(conversation_id, created_at);
 
-                CREATE INDEX IF NOT EXISTS tool_schemas_anchor_idx
-                ON tool_schemas(conversation_id, anchor_message_id);
+                CREATE INDEX IF NOT EXISTS tool_schemas_parent_idx
+                ON tool_schemas(conversation_id, parent_message_id);
                 ",
             )
             .context("failed to migrate database")?;

@@ -1,7 +1,7 @@
 //! Message tree, message part, image asset, and fork persistence.
 
 use super::compaction::delete_compactions_for_conversation;
-use super::tool_schema::insert_tool_schema_change_in_transaction;
+use super::tool_schema::insert_tool_schema_row_in_transaction;
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -884,8 +884,8 @@ impl Store {
             .filter_map(|message| message.id.as_ref())
             .map(|message_id| message_id.as_str().to_string())
             .collect::<HashSet<_>>();
-        let source_tool_schema_changes =
-            self.tool_schema_changes_for_path(conversation_id, &source_path_ids)?;
+        let source_tool_schema_rows =
+            self.tool_schema_rows_for_path(conversation_id, &source_path_ids)?;
         let source_model = self.conversation_model(conversation_id)?;
         let source_reasoning_effort = self.conversation_reasoning_effort(conversation_id)?;
         let source_tool_approval_mode = self.tool_approval_mode(conversation_id)?;
@@ -969,16 +969,16 @@ impl Store {
             message_id_map.insert(source_message_id.as_str().to_string(), forked_message_id);
         }
 
-        for change in source_tool_schema_changes {
-            let forked_anchor_message_id = change
-                .anchor_message_id
+        for row in source_tool_schema_rows {
+            let forked_parent_message_id = row
+                .parent_message_id
                 .as_ref()
                 .and_then(|message_id| message_id_map.get(message_id));
-            insert_tool_schema_change_in_transaction(
+            insert_tool_schema_row_in_transaction(
                 &transaction,
                 &forked_conversation_id,
-                forked_anchor_message_id,
-                &change,
+                forked_parent_message_id,
+                &row,
             )
             .context("failed to copy forked tool schema")?;
         }
@@ -1565,7 +1565,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-/// Deletes path-scoped context records anchored to messages being removed.
+/// Deletes path-scoped context records attached to messages being removed.
 fn delete_context_for_deleted_messages(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
@@ -1585,7 +1585,7 @@ fn delete_context_for_deleted_messages(
         "
         DELETE FROM tool_schemas
         WHERE conversation_id = ?
-          AND anchor_message_id IN ({placeholders})
+          AND parent_message_id IN ({placeholders})
         "
     );
     let mut tool_params = Vec::with_capacity(deleted_ids.len() + 1);

@@ -17,7 +17,6 @@ mod mcp;
 mod operation;
 mod output;
 mod perf;
-mod policy;
 mod runtime;
 mod session;
 mod session_manager;
