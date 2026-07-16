@@ -1,5 +1,5 @@
 import { useWindie } from "@/context/WindieContext";
-import { Sun, Moon, GitBranch, Columns2 } from "lucide-react";
+import { Sun, Moon, Columns2 } from "lucide-react";
 import ConversationPicker from "@/components/windie/ConversationPicker";
 
 function formatTokenCount(value) {
@@ -15,8 +15,6 @@ export default function TopBar() {
   const {
     theme,
     setTheme,
-    treeOverlayOpen,
-    setTreeOverlayOpen,
     inspectorPanelOpen,
     setInspectorPanelOpen,
     tokenMeter,
@@ -49,15 +47,6 @@ export default function TopBar() {
           {formatTokenCount(tokenMeter?.used)} / {formatTokenCount(tokenMeter?.max)}
         </span>
       </div>
-
-      <button
-        data-testid="topbar-toggle-tree"
-        onClick={() => setTreeOverlayOpen(!treeOverlayOpen)}
-        className={`flex items-center gap-1.5 px-2 py-1 border border-border hover:bg-surface-hover transition-colors ${treeOverlayOpen ? "bg-foreground text-background hover:bg-foreground" : ""}`}
-      >
-        <GitBranch className="size-3.5" strokeWidth={1.75} />
-        <span className="uppercase tracking-widest">tree</span>
-      </button>
 
       <button
         data-testid="topbar-toggle-inspector"
