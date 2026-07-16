@@ -6,7 +6,7 @@ import TreeOverlay from "@/components/windie/TreeOverlay";
 import { useWindie } from "@/context/WindieContext";
 
 export default function Windie() {
-  const { treeOverlayOpen } = useWindie();
+  const { treeOverlayOpen, inspectorPanelOpen } = useWindie();
 
   return (
     <div
@@ -17,11 +17,11 @@ export default function Windie() {
       <div className="flex-1 min-h-0 flex">
         <Sidebar />
         <div className="flex-1 min-w-0 relative flex">
-        <div className="flex-1 min-w-0 relative flex flex-col min-h-0">
-          <ChatPanel />
-          {treeOverlayOpen && <TreeOverlay />}
-        </div>
-          <InspectorPanel />
+          <div className="flex-1 min-w-0 relative flex flex-col min-h-0">
+            <ChatPanel />
+            {treeOverlayOpen && <TreeOverlay />}
+          </div>
+          {inspectorPanelOpen && <InspectorPanel />}
         </div>
       </div>
     </div>

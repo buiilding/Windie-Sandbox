@@ -167,6 +167,7 @@ export function WindieProvider({ children }) {
   const [theme, setTheme] = useState("dark");
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
+  const [inspectorPanelOpen, setInspectorPanelOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
   const [gatewayRunning, setGatewayRunning] = useState(false);
@@ -1063,6 +1064,8 @@ export function WindieProvider({ children }) {
     setSearchQuery,
     refreshModels,
     loadModelParameters,
+    inspectorPanelOpen,
+    setInspectorPanelOpen,
     createConversation,
     selectConversation,
     renameConversation,
