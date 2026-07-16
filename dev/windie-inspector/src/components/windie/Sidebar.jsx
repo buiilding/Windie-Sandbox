@@ -6,7 +6,7 @@ export default function Sidebar() {
   return (
     <aside
       data-testid="windie-sidebar"
-      className="w-64 shrink-0 border-r border-border flex flex-col bg-background"
+      className="w-[24.5rem] shrink-0 border-r border-border flex flex-col bg-background"
     >
       <div className="flex-1 min-h-0" data-testid="windie-sidebar-content">
         {activeConv ? (
