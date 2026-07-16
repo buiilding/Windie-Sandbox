@@ -287,7 +287,9 @@ export function WindieProvider({ children }) {
   const loadConversation = useCallback(
     async (convId, options = {}) => {
       if (!convId) return null;
-      const headMessageId = options.headMessageId ?? selectedNodeId;
+      const headMessageId = Object.prototype.hasOwnProperty.call(options, "headMessageId")
+        ? options.headMessageId
+        : selectedNodeId;
       const inspectQuery = headMessageId
         ? `?head_message_id=${encodeURIComponent(headMessageId)}`
         : "";
@@ -520,16 +522,20 @@ export function WindieProvider({ children }) {
     [runMutation]
   );
 
+  const selectConversation = useCallback((conversationId) => {
+    setSelectedNodeId(null);
+    setActiveConvId(conversationId);
+  }, []);
+
   const createConversation = useCallback(async () => {
     const body = await runMutation(
       () => apiRequest("/api/conversations", { method: "POST" }),
       { reload: false, refreshList: true }
     );
-    setActiveConvId(body.conversation_id);
-    setSelectedNodeId(null);
-    await loadConversation(body.conversation_id);
+    selectConversation(body.conversation_id);
+    await loadConversation(body.conversation_id, { headMessageId: null });
     return body.conversation_id;
-  }, [loadConversation, runMutation]);
+  }, [loadConversation, runMutation, selectConversation]);
 
   const renameConversation = useCallback(() => {
     toast.message("rename is not a Windie primitive yet");
@@ -543,11 +549,10 @@ export function WindieProvider({ children }) {
       );
       const summaries = await refreshConversations();
       const nextId = summaries.find((conv) => conv.id !== convId)?.id || null;
-      setActiveConvId(nextId);
-      setSelectedNodeId(null);
-      if (nextId) await loadConversation(nextId);
+      selectConversation(nextId);
+      if (nextId) await loadConversation(nextId, { headMessageId: null });
     },
-    [loadConversation, refreshConversations, runMutation]
+    [loadConversation, refreshConversations, runMutation, selectConversation]
   );
 
   const setSystemPrompt = useCallback(
@@ -1051,7 +1056,6 @@ export function WindieProvider({ children }) {
     apiError,
     gatewayRunning,
     approvals,
-    setActiveConvId,
     setSelectedNodeId,
     setTheme,
     setTreeOverlayOpen,
@@ -1060,6 +1064,7 @@ export function WindieProvider({ children }) {
     refreshModels,
     loadModelParameters,
     createConversation,
+    selectConversation,
     renameConversation,
     deleteConversation,
     setSystemPrompt,

@@ -83,7 +83,7 @@ export default function Sidebar() {
   const {
     conversations,
     activeConvId,
-    setActiveConvId,
+    selectConversation,
     createConversation,
     deleteConversation,
     searchQuery,
@@ -143,7 +143,7 @@ export default function Sidebar() {
               key={c.id}
               conv={c}
               active={c.id === activeConvId}
-              onSelect={setActiveConvId}
+              onSelect={selectConversation}
               onDelete={deleteConversation}
             />
           ))
