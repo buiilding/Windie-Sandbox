@@ -1,5 +1,6 @@
 import { useWindie } from "@/context/WindieContext";
-import { Sun, Moon, GitBranch } from "lucide-react";
+import { Sun, Moon, GitBranch, Columns2 } from "lucide-react";
+import ConversationPicker from "@/components/windie/ConversationPicker";
 
 function formatTokenCount(value) {
   if (value == null) return "--";
@@ -16,7 +17,8 @@ export default function TopBar() {
     setTheme,
     treeOverlayOpen,
     setTreeOverlayOpen,
-    activeConv,
+    inspectorPanelOpen,
+    setInspectorPanelOpen,
     tokenMeter,
   } =
     useWindie();
@@ -34,16 +36,7 @@ export default function TopBar() {
 
       <div className="h-4 w-px bg-border" />
 
-      <div className="flex items-center gap-2 text-muted-foreground min-w-0">
-        <span className="uppercase tracking-widest">conv</span>
-        <span
-          data-testid="topbar-active-conv-name"
-          className="truncate text-foreground max-w-[420px]"
-          title={activeConv?.name}
-        >
-          {activeConv?.name}
-        </span>
-      </div>
+      <ConversationPicker />
 
       <div className="flex-1" />
 
@@ -64,6 +57,16 @@ export default function TopBar() {
       >
         <GitBranch className="size-3.5" strokeWidth={1.75} />
         <span className="uppercase tracking-widest">tree</span>
+      </button>
+
+      <button
+        data-testid="topbar-toggle-inspector"
+        onClick={() => setInspectorPanelOpen(!inspectorPanelOpen)}
+        title={inspectorPanelOpen ? "hide inspector panel" : "show inspector panel"}
+        aria-label={inspectorPanelOpen ? "hide inspector panel" : "show inspector panel"}
+        className={`flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors ${inspectorPanelOpen ? "bg-foreground text-background hover:bg-foreground" : ""}`}
+      >
+        <Columns2 className="size-3.5" strokeWidth={1.75} />
       </button>
 
       <button
