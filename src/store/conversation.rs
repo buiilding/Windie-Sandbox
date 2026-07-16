@@ -271,6 +271,24 @@ impl Store {
 
         transaction
             .execute(
+                "
+                DELETE FROM session_events
+                WHERE session_id IN (
+                    SELECT id FROM sessions WHERE conversation_id = ?1
+                )
+                ",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to delete conversation session events")?;
+        transaction
+            .execute(
+                "DELETE FROM sessions WHERE conversation_id = ?1",
+                params![conversation_id.as_str()],
+            )
+            .context("failed to delete conversation sessions")?;
+
+        transaction
+            .execute(
                 "DELETE FROM compactions WHERE conversation_id = ?1",
                 params![conversation_id.as_str()],
             )
