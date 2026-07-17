@@ -50,7 +50,6 @@ async function messagePartsForSend(text, attachments = []) {
   if (text.trim()) {
     parts.push({ type: "text", text });
   }
-
   for (const attachment of attachments) {
     if (attachment.source === "path" && attachment.path) {
       parts.push({ type: "image", path: attachment.path });
@@ -63,7 +62,6 @@ async function messagePartsForSend(text, attachments = []) {
       });
     }
   }
-
   return parts;
 }
 
@@ -79,6 +77,23 @@ function isLiveSession(session) {
   return session?.status === "running" || session?.status === "waiting_for_approval";
 }
 
+function isRunningSession(session) {
+  return session?.status === "running";
+}
+
+function isAncestor(ancestorId, leafId, nodes) {
+  if (!ancestorId || !leafId || !nodes) return false;
+  if (ancestorId === leafId) return true;
+  let cur = nodes[leafId];
+  const seen = new Set();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    if (cur.parentId === ancestorId) return true;
+    cur = cur.parentId ? nodes[cur.parentId] : null;
+  }
+  return false;
+}
+
 function pathNodesForConversation(conversation) {
   if (!conversation) return [];
   return (conversation.selectedPath || []).map((id) => conversation.nodes[id]).filter(Boolean);
@@ -88,17 +103,14 @@ function pathNodesToNode(conversation, nodeId) {
   if (!conversation || !nodeId || !conversation.nodes[nodeId]) {
     return pathNodesForConversation(conversation);
   }
-
   const reversed = [];
   const seen = new Set();
   let current = conversation.nodes[nodeId];
-
   while (current && !seen.has(current.id)) {
     reversed.push(current);
     seen.add(current.id);
     current = current.parentId ? conversation.nodes[current.parentId] : null;
   }
-
   return reversed.reverse();
 }
 
@@ -106,11 +118,9 @@ function latestAssistantTotalTokens(pathNodes) {
   for (let index = pathNodes.length - 1; index >= 0; index -= 1) {
     const node = pathNodes[index];
     if (node.message.role !== "assistant") continue;
-
     const totalTokens = node.message.metadata?.usage?.totalTokens;
     if (totalTokens != null) return totalTokens;
   }
-
   return null;
 }
 
@@ -120,13 +130,8 @@ function stableJson(value) {
 
 function contextSignatureParts(conversation, modelId, pathNodesOverride = null) {
   if (!conversation) {
-    return {
-      pathSignature: "",
-      setupSignature: "",
-      fullSignature: "",
-    };
+    return { pathSignature: "", setupSignature: "", fullSignature: "" };
   }
-
   const pathNodes = pathNodesOverride || pathNodesForConversation(conversation);
   const path = pathNodes.map((node) => ({
     id: node.id,
@@ -150,14 +155,27 @@ function contextSignatureParts(conversation, modelId, pathNodesOverride = null) 
     })),
     latestCompaction: conversation.latestCompaction || null,
   };
-  const pathSignature = stableJson(path);
-  const setupSignature = stableJson(setup);
-
   return {
-    pathSignature,
-    setupSignature,
+    pathSignature: stableJson(path),
+    setupSignature: stableJson(setup),
     fullSignature: stableJson({ setup, path }),
   };
+}
+
+function findLiveForLeaf(leafId, sessionsById, nodes, liveHeads) {
+  if (!leafId || !nodes) return [];
+  const out = [];
+  for (const s of Object.values(sessionsById || {})) {
+    if (!isRunningSession(s)) continue;
+    const live = liveHeads?.[s.id] || s.currentHeadMessageId || s.startHeadMessageId;
+    if (!live) continue;
+    // session on path if its start is ancestor of leaf or live is descendant of leaf
+    if (isAncestor(s.startHeadMessageId, leafId, nodes) || s.startHeadMessageId === leafId || isAncestor(leafId, live, nodes) || live === leafId) {
+      out.push(s);
+    }
+  }
+  out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return out;
 }
 
 export function WindieProvider({ children }) {
@@ -183,16 +201,32 @@ export function WindieProvider({ children }) {
   const [visibleSessionId, setVisibleSessionId] = useState(null);
   const [sessionEventsBySessionId, setSessionEventsBySessionId] = useState({});
   const [pendingAssistantBySessionId, setPendingAssistantBySessionId] = useState({});
-  const subscriptionAbortRef = useRef(null);
-  const subscribedSessionIdRef = useRef(null);
-  const visibleSessionIdRef = useRef(null);
-  const lastSessionEventIdRef = useRef({});
+
+  // path-centric model
+  const subscriptionsRef = useRef(new Map()); // sessionId -> AbortController
+  const followedSessionIdRef = useRef(null);
+  const liveHeadBySessionRef = useRef({});
+  const lastEventIdRef = useRef({});
+  const activeConvRef = useRef(null);
+  const sessionsRef = useRef({});
+  const selectedNodeRef = useRef(null);
+
+  useEffect(() => {
+    activeConvRef.current = conversations.find((c) => c.id === activeConvId) || null;
+  }, [conversations, activeConvId]);
+
+  useEffect(() => {
+    sessionsRef.current = sessionsById;
+  }, [sessionsById]);
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNodeId;
+  }, [selectedNodeId]);
 
   useEffect(
     () => () => {
-      subscriptionAbortRef.current?.abort();
-      subscribedSessionIdRef.current = null;
-      visibleSessionIdRef.current = null;
+      for (const c of subscriptionsRef.current.values()) c.abort();
+      subscriptionsRef.current.clear();
     },
     []
   );
@@ -206,21 +240,12 @@ export function WindieProvider({ children }) {
   const refreshConversations = useCallback(async () => {
     const body = await apiRequest("/api/conversations");
     const summaries = body.conversations.map(conversationSummaryFromApi);
-
     setConversations((prev) =>
       summaries.map((summary) => {
         const existing = prev.find((conv) => conv.id === summary.id);
-        return existing
-          ? {
-              ...summary,
-              ...existing,
-              model: summary.model,
-              messageCount: summary.messageCount,
-            }
-          : summary;
+        return existing ? { ...summary, ...existing, model: summary.model, messageCount: summary.messageCount } : summary;
       })
     );
-
     return summaries;
   }, []);
 
@@ -246,142 +271,94 @@ export function WindieProvider({ children }) {
     }
   }, []);
 
-  const loadModelParameters = useCallback(async (modelId) => {
-    if (!modelId) return null;
-    if (!gatewayRunning || modelsLoading || modelsError) return null;
-    if (!models.some((model) => model.id === modelId)) return null;
-
-    const existing = modelParametersById[modelId];
-    if (existing?.status === "ready") return existing.data;
-    if (existing?.status === "loading" || existing?.status === "error") return null;
-
-    setModelParametersById((prev) => ({
-      ...prev,
-      [modelId]: { status: "loading", data: prev[modelId]?.data || null, error: null },
-    }));
-
-    try {
-      const data = await fetchModelParameters(modelId);
+  const loadModelParameters = useCallback(
+    async (modelId) => {
+      if (!modelId) return null;
+      if (!gatewayRunning || modelsLoading || modelsError) return null;
+      if (!models.some((model) => model.id === modelId)) return null;
+      const existing = modelParametersById[modelId];
+      if (existing?.status === "ready") return existing.data;
+      if (existing?.status === "loading" || existing?.status === "error") return null;
       setModelParametersById((prev) => ({
         ...prev,
-        [modelId]: { status: "ready", data, error: null },
+        [modelId]: { status: "loading", data: prev[modelId]?.data || null, error: null },
       }));
-      return data;
-    } catch (error) {
-      setModelParametersById((prev) => ({
-        ...prev,
-        [modelId]: { status: "error", data: null, error: error.message },
-      }));
-      return null;
-    }
-  }, [gatewayRunning, modelParametersById, models, modelsError, modelsLoading]);
+      try {
+        const data = await fetchModelParameters(modelId);
+        setModelParametersById((prev) => ({ ...prev, [modelId]: { status: "ready", data, error: null } }));
+        return data;
+      } catch (error) {
+        setModelParametersById((prev) => ({ ...prev, [modelId]: { status: "error", data: null, error: error.message } }));
+        return null;
+      }
+    },
+    [gatewayRunning, modelParametersById, models, modelsError, modelsLoading]
+  );
 
   const refreshAvailableTools = useCallback(async () => {
     const body = await apiRequest("/api/tools");
-    const tools = toolCatalogFromApi(body);
-    const providers = toolProviderStatusesFromApi(body);
-    setAvailableToolSchemas(tools);
-    setToolProviderStatuses(providers);
-    return tools;
+    setAvailableToolSchemas(toolCatalogFromApi(body));
+    setToolProviderStatuses(toolProviderStatusesFromApi(body));
+    return toolCatalogFromApi(body);
   }, []);
 
   const loadConversation = useCallback(
     async (convId, options = {}) => {
       if (!convId) return null;
-      const headMessageId = Object.prototype.hasOwnProperty.call(options, "headMessageId")
-        ? options.headMessageId
-        : selectedNodeId;
-      const inspectQuery = headMessageId
-        ? `?head_message_id=${encodeURIComponent(headMessageId)}`
-        : "";
+      const hasHead = Object.prototype.hasOwnProperty.call(options, "headMessageId");
+      const headMessageId = hasHead ? options.headMessageId : selectedNodeRef.current;
+      const q = headMessageId ? `?head_message_id=${encodeURIComponent(headMessageId)}` : "";
       const [report, approvalBody] = await Promise.all([
-        apiRequest(`/api/conversations/${convId}${inspectQuery}`),
+        apiRequest(`/api/conversations/${convId}${q}`),
         apiRequest(`/api/conversations/${convId}/run-approvals`),
       ]);
       const loaded = conversationFromInspection(report, null);
-
       setConversations((prev) => {
         const fallback = prev.find((conv) => conv.id === convId);
-        const loadedWithFallback = conversationFromInspection(report, fallback);
-        const exists = prev.some((conv) => conv.id === convId);
-        if (!exists) return [loadedWithFallback, ...prev];
-        return prev.map((conv) => (conv.id === convId ? loadedWithFallback : conv));
+        const withFallback = conversationFromInspection(report, fallback);
+        return prev.some((c) => c.id === convId) ? prev.map((c) => (c.id === convId ? withFallback : c)) : [withFallback, ...prev];
       });
-
       if (options.selectLast !== false) {
         const last = loaded?.selectedPath?.[loaded.selectedPath.length - 1] || loaded?.rootId || null;
-        setSelectedNodeId((current) => (current && loaded?.nodes[current] ? current : last));
+        setSelectedNodeId((cur) => (cur && loaded?.nodes?.[cur] ? cur : last));
       }
       setApprovals(approvalBody.approvals || []);
 
       if (options.countTokens !== false && loaded?.id) {
-        const loadedModelId = loaded?.model || null;
-        const signature = contextSignatureParts(loaded, loadedModelId).fullSignature;
-        const countKey = tokenCountKey(loaded?.id, loadedModelId);
-        const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-        setInputTokenCounts((prev) => ({
-          ...prev,
-          [countKey]: {
-            ...(prev[countKey] || {}),
-            latestRequestId: requestId,
-          },
-        }));
-
+        const mid = loaded?.model || null;
+        const sig = contextSignatureParts(loaded, mid).fullSignature;
+        const key = tokenCountKey(loaded?.id, mid);
+        const rid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        setInputTokenCounts((p) => ({ ...p, [key]: { ...(p[key] || {}), latestRequestId: rid } }));
         countConversationInputTokens(loaded.id, null, headMessageId || null)
           .then((count) => {
-            setInputTokenCounts((prev) => {
-              if (prev[countKey]?.latestRequestId !== requestId) return prev;
-
-              return {
-                ...prev,
-                [countKey]: {
-                  ...count,
-                  source: count.source || "prequery_input",
-                  signature,
-                  latestRequestId: requestId,
-                  measuredAt: Date.now(),
-                },
-              };
+            setInputTokenCounts((p) => {
+              if (p[key]?.latestRequestId !== rid) return p;
+              return { ...p, [key]: { ...count, source: count.source || "prequery_input", signature: sig, latestRequestId: rid, measuredAt: Date.now() } };
             });
           })
-          .catch((error) => {
-            setApiError(error.message);
-            setInputTokenCounts((prev) => {
-              if (prev[countKey]?.latestRequestId !== requestId) return prev;
-
-              return {
-                ...prev,
-                [countKey]: {
-                  inputTokens: null,
-                  totalTokens: null,
-                  model: loadedModelId,
-                  raw: null,
-                  source: "prequery_input",
-                  signature,
-                  latestRequestId: requestId,
-                  measuredAt: Date.now(),
-                },
-              };
+          .catch(() => {
+            setInputTokenCounts((p) => {
+              if (p[key]?.latestRequestId !== rid) return p;
+              return { ...p, [key]: { inputTokens: null, totalTokens: null, model: mid, raw: null, source: "prequery_input", signature: sig, latestRequestId: rid, measuredAt: Date.now() } };
             });
           });
       }
-
       return loaded;
     },
-    [selectedNodeId]
+    []
   );
 
   useEffect(() => {
     let cancelled = false;
     refreshConversations()
-      .then((summaries) => {
+      .then((s) => {
         if (cancelled) return;
         setApiError(null);
-        setActiveConvId((current) => current || summaries[0]?.id || null);
+        setActiveConvId((c) => c || s[0]?.id || null);
       })
-      .catch((error) => {
-        if (!cancelled) setApiError(error.message);
+      .catch((e) => {
+        if (!cancelled) setApiError(e.message);
       });
     return () => {
       cancelled = true;
@@ -389,7 +366,7 @@ export function WindieProvider({ children }) {
   }, [refreshConversations]);
 
   useEffect(() => {
-    refreshGateway().catch((error) => setApiError(error.message));
+    refreshGateway().catch((e) => setApiError(e.message));
   }, [refreshGateway]);
 
   useEffect(() => {
@@ -397,7 +374,7 @@ export function WindieProvider({ children }) {
   }, [refreshModels]);
 
   useEffect(() => {
-    refreshAvailableTools().catch((error) => setApiError(error.message));
+    refreshAvailableTools().catch((e) => setApiError(e.message));
   }, [refreshAvailableTools]);
 
   useEffect(() => {
@@ -407,96 +384,61 @@ export function WindieProvider({ children }) {
       .then(() => {
         if (!cancelled) setApiError(null);
       })
-      .catch((error) => {
-        if (!cancelled) setApiError(error.message);
+      .catch((e) => {
+        if (!cancelled) setApiError(e.message);
       });
     return () => {
       cancelled = true;
     };
   }, [activeConvId, loadConversation]);
 
-  const activeConv = useMemo(
-    () => conversations.find((c) => c.id === activeConvId) || null,
-    [conversations, activeConvId]
-  );
-
-  const selectedPathNodes = useMemo(() => {
-    return pathNodesToNode(activeConv, selectedNodeId);
-  }, [activeConv, selectedNodeId]);
-
-  const activeModelId = useMemo(
-    () => activeConv?.model || null,
-    [activeConv?.model]
-  );
-
+  const activeConv = useMemo(() => conversations.find((c) => c.id === activeConvId) || null, [conversations, activeConvId]);
+  const selectedPathNodes = useMemo(() => pathNodesToNode(activeConv, selectedNodeId), [activeConv, selectedNodeId]);
+  const activeModelId = useMemo(() => activeConv?.model || null, [activeConv?.model]);
   const activeContextSignatures = useMemo(
     () => contextSignatureParts(activeConv, activeModelId, selectedPathNodes),
     [activeConv, activeModelId, selectedPathNodes]
   );
-
-  const activeCatalogModel = useMemo(
-    () => models.find((model) => model.id === activeModelId) || null,
-    [activeModelId, models]
-  );
-
+  const activeCatalogModel = useMemo(() => models.find((m) => m.id === activeModelId) || null, [activeModelId, models]);
   const tokenMeter = useMemo(() => {
-    const maxTokens =
-      activeCatalogModel?.contextLength ?? activeCatalogModel?.maxInputTokens ?? null;
-    const inputCount = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
-    const currentInputCount =
-      inputCount?.signature === activeContextSignatures.fullSignature ? inputCount : null;
-    const postQueryTotalTokens = latestAssistantTotalTokens(selectedPathNodes);
-    const used = currentInputCount?.inputTokens ?? postQueryTotalTokens;
-
+    const max = activeCatalogModel?.contextLength ?? activeCatalogModel?.maxInputTokens ?? null;
+    const ic = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
+    const cur = ic?.signature === activeContextSignatures.fullSignature ? ic : null;
+    const post = latestAssistantTotalTokens(selectedPathNodes);
+    const used = cur?.inputTokens ?? post;
     return {
       used,
-      max: maxTokens,
+      max,
       model: activeModelId,
-      measuredModel: currentInputCount?.model || null,
-      source:
-        currentInputCount?.inputTokens != null
-          ? currentInputCount?.source || null
-          : used != null
-            ? "postquery_total"
-            : null,
+      measuredModel: cur?.model || null,
+      source: cur?.inputTokens != null ? cur?.source || null : used != null ? "postquery_total" : null,
     };
-  }, [
-    activeConv?.id,
-    selectedPathNodes,
-    activeContextSignatures.fullSignature,
-    activeCatalogModel,
-    activeModelId,
-    inputTokenCounts,
-  ]);
+  }, [activeConv?.id, selectedPathNodes, activeContextSignatures.fullSignature, activeCatalogModel, activeModelId, inputTokenCounts]);
 
   useEffect(() => {
     if (!activeCatalogModel) return;
     loadModelParameters(activeModelId);
   }, [activeCatalogModel, activeModelId, loadModelParameters]);
 
-  const activeModelParameters = useMemo(
-    () => modelParametersById[activeModelId] || null,
-    [activeModelId, modelParametersById]
-  );
-
+  const activeModelParameters = useMemo(() => modelParametersById[activeModelId] || null, [activeModelId, modelParametersById]);
   const activeReasoning = activeConv?.reasoning || null;
 
   const runMutation = useCallback(
-    async (operation, options = {}) => {
+    async (op, options = {}) => {
       try {
-        const result = await operation();
+        const res = await op();
         setApiError(null);
         if (options.refreshList) await refreshConversations();
         if (options.reload !== false && activeConvId) await loadConversation(options.convId || activeConvId);
-        return result;
-      } catch (error) {
-        if (isAbortError(error)) {
+        return res;
+      } catch (e) {
+        if (isAbortError(e)) {
           setApiError(null);
           return null;
         }
-        setApiError(error.message);
-        toast.error(error.message);
-        throw error;
+        setApiError(e.message);
+        toast.error(e.message);
+        throw e;
       }
     },
     [activeConvId, loadConversation, refreshConversations]
@@ -505,34 +447,29 @@ export function WindieProvider({ children }) {
   const setConversationReasoningEffort = useCallback(
     (convId, effort) => {
       if (!convId) return Promise.resolve(null);
-
-      return runMutation(async () => {
-        const result = await setConversationReasoningApi(convId, effort || null);
-        setConversations((prev) =>
-          prev.map((conv) =>
-            conv.id === convId ? { ...conv, reasoning: result.reasoning || null } : conv
-          )
-        );
-        return result;
-      }, {
-        convId,
-        reload: false,
-        refreshList: false,
-      });
+      return runMutation(
+        async () => {
+          const result = await setConversationReasoningApi(convId, effort || null);
+          setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, reasoning: result.reasoning || null } : c)));
+          return result;
+        },
+        { convId, reload: false, refreshList: false }
+      );
     },
     [runMutation]
   );
 
-  const selectConversation = useCallback((conversationId) => {
+  const selectConversation = useCallback((convId) => {
+    for (const c of subscriptionsRef.current.values()) c.abort();
+    subscriptionsRef.current.clear();
+    followedSessionIdRef.current = null;
+    setVisibleSessionId(null);
     setSelectedNodeId(null);
-    setActiveConvId(conversationId);
+    setActiveConvId(convId);
   }, []);
 
   const createConversation = useCallback(async () => {
-    const body = await runMutation(
-      () => apiRequest("/api/conversations", { method: "POST" }),
-      { reload: false, refreshList: true }
-    );
+    const body = await runMutation(() => apiRequest("/api/conversations", { method: "POST" }), { reload: false, refreshList: true });
     selectConversation(body.conversation_id);
     await loadConversation(body.conversation_id, { headMessageId: null });
     return body.conversation_id;
@@ -544,251 +481,116 @@ export function WindieProvider({ children }) {
 
   const deleteConversation = useCallback(
     async (convId) => {
-      await runMutation(
-        () => apiRequest(`/api/conversations/${convId}`, { method: "DELETE" }),
-        { reload: false, refreshList: false }
-      );
+      await runMutation(() => apiRequest(`/api/conversations/${convId}`, { method: "DELETE" }), {
+        reload: false,
+        refreshList: false,
+      });
       const summaries = await refreshConversations();
-      const nextId = summaries.find((conv) => conv.id !== convId)?.id || null;
-      selectConversation(nextId);
-      if (nextId) await loadConversation(nextId, { headMessageId: null });
+      selectConversation(summaries.find((c) => c.id !== convId)?.id || null);
     },
-    [loadConversation, refreshConversations, runMutation, selectConversation]
+    [refreshConversations, runMutation, selectConversation]
   );
 
   const setSystemPrompt = useCallback(
-    (convId, text) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/system-prompt`, {
-          method: "PATCH",
-          body: JSON.stringify({ text }),
-        })
-      ),
+    (convId, text) => runMutation(() => apiRequest(`/api/conversations/${convId}/system-prompt`, { method: "PATCH", body: JSON.stringify({ text }) })),
     [runMutation]
   );
 
   const setConversationModel = useCallback(
     (convId, model) =>
-      runMutation(async () => {
-        const result = await setConversationModelApi(convId, model);
-        loadModelParameters(model);
-        return result;
-      }, {
-        convId,
-        refreshList: true,
-      }),
+      runMutation(
+        async () => {
+          const r = await setConversationModelApi(convId, model);
+          loadModelParameters(model);
+          return r;
+        },
+        { convId, refreshList: true }
+      ),
     [loadModelParameters, runMutation]
   );
 
   const setToolApprovalMode = useCallback(
     (convId, mode) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/tool-approval-mode`, {
-          method: "PATCH",
-          body: JSON.stringify({ mode }),
-        })
-      ),
+      runMutation(() => apiRequest(`/api/conversations/${convId}/tool-approval-mode`, { method: "PATCH", body: JSON.stringify({ mode }) })),
     [runMutation]
   );
 
-  const addToolSchema = useCallback(
-    (convId, toolSchema) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/tools`, {
-          method: "POST",
-          body: JSON.stringify({
-            provider_id: toolSchema.providerId,
-            tool_name: toolSchema.providerToolName,
-          }),
-        })
-      ),
-    [runMutation]
-  );
-
+  const addToolSchema = useCallback((convId, s) => runMutation(() => apiRequest(`/api/conversations/${convId}/tools`, { method: "POST", body: JSON.stringify({ provider_id: s.providerId, tool_name: s.providerToolName }) })), [runMutation]);
   const addToolSchemas = useCallback(
-    (convId, toolSchemas) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/tools/batch`, {
-          method: "POST",
-          body: JSON.stringify({
-            tools: toolSchemas.map((toolSchema) => ({
-              provider_id: toolSchema.providerId,
-              tool_name: toolSchema.providerToolName,
-            })),
-          }),
-        })
-      ),
+    (convId, arr) =>
+      runMutation(() => apiRequest(`/api/conversations/${convId}/tools/batch`, { method: "POST", body: JSON.stringify({ tools: arr.map((t) => ({ provider_id: t.providerId, tool_name: t.providerToolName })) }) })),
     [runMutation]
   );
-
-  const removeToolSchema = useCallback(
-    (convId, name) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(name)}`, {
-          method: "DELETE",
-        })
-      ),
-    [runMutation]
-  );
-
+  const removeToolSchema = useCallback((convId, name) => runMutation(() => apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(name)}`, { method: "DELETE" })), [runMutation]);
   const removeToolSchemas = useCallback(
     (convId, names) =>
       runMutation(async () => {
-        for (const name of names) {
-          await apiRequest(
-            `/api/conversations/${convId}/tools/${encodeURIComponent(name)}`,
-            { method: "DELETE" }
-          );
-        }
+        for (const n of names) await apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(n)}`, { method: "DELETE" });
       }),
     [runMutation]
   );
 
-  const selectPathHead = useCallback(
-    (_convId, leafId) => {
-      setSelectedNodeId(leafId);
-      return Promise.resolve();
-    },
-    []
-  );
-
-  const selectPath = useCallback(
-    (convId, path) => {
-      const leafId = path[path.length - 1];
-      if (!leafId) return Promise.resolve();
-      return selectPathHead(convId, leafId);
-    },
-    [selectPathHead]
-  );
-
-  const truncateAfter = useCallback(
-    (convId, nodeId) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/truncate`, {
-          method: "POST",
-          body: JSON.stringify({ message_id: nodeId }),
-        })
-      ),
-    [runMutation]
-  );
-
-  const removeMessage = useCallback(
-    (convId, nodeId) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/messages/${nodeId}`, {
-          method: "DELETE",
-        })
-      ),
-    [runMutation]
-  );
-
-  const editMessage = useCallback(
-    (convId, nodeId, newText) =>
-      runMutation(() =>
-        apiRequest(`/api/conversations/${convId}/messages/${nodeId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ text: newText }),
-        })
-      ),
-    [runMutation]
-  );
-
-  const forkFromMessage = useCallback(
-    async (convId, nodeId) => {
-      const body = await runMutation(
-        () =>
-          apiRequest(`/api/conversations/${convId}/fork`, {
-            method: "POST",
-            body: JSON.stringify({ message_id: nodeId }),
-          }),
-        { reload: false, refreshList: true }
-      );
-      setActiveConvId(body.conversation_id);
-      setSelectedNodeId(null);
-      await loadConversation(body.conversation_id);
-      return body.conversation_id;
-    },
-    [loadConversation, runMutation]
-  );
-
   const rememberSession = useCallback((session) => {
-    const normalized = sessionFromApi(session);
-    if (!normalized) return null;
-    setSessionsById((prev) => ({ ...prev, [normalized.id]: normalized }));
-    return normalized;
+    const norm = sessionFromApi(session);
+    if (!norm) return null;
+    setSessionsById((p) => ({ ...p, [norm.id]: norm }));
+    sessionsRef.current = { ...sessionsRef.current, [norm.id]: norm };
+    return norm;
   }, []);
 
-  const handleSessionEvent = useCallback(
+  const abortAll = useCallback(() => {
+    for (const c of subscriptionsRef.current.values()) c.abort();
+    subscriptionsRef.current.clear();
+    followedSessionIdRef.current = null;
+    setVisibleSessionId(null);
+  }, []);
+
+  const inspectNode = useCallback(
+    (nodeId) => {
+      // left tree = inspect only, unsubscribe
+      if (followedSessionIdRef.current) {
+        for (const c of subscriptionsRef.current.values()) c.abort();
+        subscriptionsRef.current.clear();
+        followedSessionIdRef.current = null;
+        setVisibleSessionId(null);
+        toast.message("unfollowed · inspecting message");
+      } else {
+        abortAll();
+      }
+      setSelectedNodeId(nodeId);
+    },
+    [abortAll]
+  );
+
+  const handleEvent = useCallback(
     async (session, data) => {
       if (!data?.type) return;
-
-      setSessionEventsBySessionId((prev) => ({
-        ...prev,
-        [session.id]: [...(prev[session.id] || []), data],
-      }));
+      setSessionEventsBySessionId((p) => ({ ...p, [session.id]: [...(p[session.id] || []), data] }));
 
       if (data.type === "assistant_delta") {
-        setPendingAssistantBySessionId((prev) => {
-          const current = prev[session.id] || {
-            convId: session.conversationId,
-            text: "",
-            reasoning: "",
-            toolCalls: {},
-          };
-          return {
-            ...prev,
-            [session.id]: { ...current, text: current.text + (data.text || "") },
-          };
+        setPendingAssistantBySessionId((p) => {
+          const cur = p[session.id] || { convId: session.conversationId, text: "", reasoning: "", toolCalls: {} };
+          return { ...p, [session.id]: { ...cur, text: cur.text + (data.text || "") } };
         });
         return;
       }
-
       if (data.type === "reasoning_delta") {
-        setPendingAssistantBySessionId((prev) => {
-          const current = prev[session.id] || {
-            convId: session.conversationId,
-            text: "",
-            reasoning: "",
-            toolCalls: {},
-          };
-          return {
-            ...prev,
-            [session.id]: {
-              ...current,
-              reasoning: (current.reasoning || "") + (data.text || ""),
-            },
-          };
+        setPendingAssistantBySessionId((p) => {
+          const cur = p[session.id] || { convId: session.conversationId, text: "", reasoning: "", toolCalls: {} };
+          return { ...p, [session.id]: { ...cur, reasoning: (cur.reasoning || "") + (data.text || "") } };
         });
         return;
       }
-
       if (data.type === "tool_call_delta") {
-        setPendingAssistantBySessionId((prev) => {
-          const current = prev[session.id] || {
-            convId: session.conversationId,
-            text: "",
-            reasoning: "",
-            toolCalls: {},
-          };
-          const index = String(data.index ?? 0);
-          const existing = current.toolCalls?.[index] || {
-            id: null,
-            name: null,
-            argumentsText: "",
-          };
+        setPendingAssistantBySessionId((p) => {
+          const cur = p[session.id] || { convId: session.conversationId, text: "", reasoning: "", toolCalls: {} };
+          const idx = String(data.index ?? 0);
+          const ex = cur.toolCalls?.[idx] || { id: null, name: null, argumentsText: "" };
           return {
-            ...prev,
+            ...p,
             [session.id]: {
-              ...current,
-              toolCalls: {
-                ...(current.toolCalls || {}),
-                [index]: {
-                  id: data.id || existing.id,
-                  name: data.name || existing.name,
-                  argumentsText:
-                    existing.argumentsText + (data.arguments_delta || ""),
-                },
-              },
+              ...cur,
+              toolCalls: { ...(cur.toolCalls || {}), [idx]: { id: data.id || ex.id, name: data.name || ex.name, argumentsText: ex.argumentsText + (data.arguments_delta || "") } },
             },
           };
         });
@@ -796,38 +598,36 @@ export function WindieProvider({ children }) {
       }
 
       if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
-        await loadConversation(session.conversationId, {
-          countTokens: false,
-          selectLast: false,
-          headMessageId: data.message_id || null,
-        });
-        if (visibleSessionIdRef.current === session.id && data.message_id) {
-          setSelectedNodeId(data.message_id);
+        if (data.message_id) liveHeadBySessionRef.current[session.id] = data.message_id;
+        const followed = followedSessionIdRef.current === session.id;
+        if (followed) {
+          // follow this path: move viewport to new leaf
+          await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: data.message_id || null }).catch(() => {});
+          if (data.message_id) setSelectedNodeId(data.message_id);
+          setPendingAssistantBySessionId((p) => ({ ...p, [session.id]: null }));
+        } else {
+          // background: silent refresh without pulling viewport
+          await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: undefined }).catch(() => {});
         }
-        setPendingAssistantBySessionId((prev) => ({ ...prev, [session.id]: null }));
         return;
       }
 
-      if (
-        data.type === "completed" ||
-        data.type === "failed" ||
-        data.type === "cancelled" ||
-        data.type === "waiting_for_approval"
-      ) {
+      if (data.type === "completed" || data.type === "failed" || data.type === "cancelled" || data.type === "waiting_for_approval") {
         const latest = await getSession(session.id).catch(() => null);
         if (latest) rememberSession(latest);
-        const finalMessageId = data.type === "completed" ? data.message_id || null : null;
-        await loadConversation(session.conversationId, {
-          countTokens: false,
-          selectLast: false,
-          headMessageId: finalMessageId,
-        }).catch(() => {});
-        if (visibleSessionIdRef.current === session.id && finalMessageId) {
-          setSelectedNodeId(finalMessageId);
+        if (data.type === "completed" && data.message_id) liveHeadBySessionRef.current[session.id] = data.message_id;
+        const followed = followedSessionIdRef.current === session.id;
+        if (followed) {
+          if (data.type === "completed" && data.message_id) {
+            await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: data.message_id }).catch(() => {});
+            setSelectedNodeId(data.message_id);
+          } else {
+            await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: undefined }).catch(() => {});
+          }
+        } else {
+          await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: undefined }).catch(() => {});
         }
-        if (data.type !== "waiting_for_approval") {
-          setPendingAssistantBySessionId((prev) => ({ ...prev, [session.id]: null }));
-        }
+        if (data.type !== "waiting_for_approval") setPendingAssistantBySessionId((p) => ({ ...p, [session.id]: null }));
       }
     },
     [loadConversation, rememberSession]
@@ -835,174 +635,191 @@ export function WindieProvider({ children }) {
 
   const subscribeToSession = useCallback(
     (session) => {
-      const normalized = rememberSession(session);
-      if (!normalized) return;
-
-      visibleSessionIdRef.current = normalized.id;
-      setVisibleSessionId(normalized.id);
-      if (subscribedSessionIdRef.current === normalized.id) return;
-
-      subscriptionAbortRef.current?.abort();
+      const norm = rememberSession(session);
+      if (!norm) return null;
+      for (const c of subscriptionsRef.current.values()) c.abort();
+      subscriptionsRef.current.clear();
+      followedSessionIdRef.current = norm.id;
+      setVisibleSessionId(norm.id);
       const controller = new AbortController();
-      subscriptionAbortRef.current = controller;
-      subscribedSessionIdRef.current = normalized.id;
-
+      subscriptionsRef.current.set(norm.id, controller);
       streamSessionEvents(
-        normalized.id,
-        lastSessionEventIdRef.current[normalized.id] ?? null,
+        norm.id,
+        lastEventIdRef.current[norm.id] ?? null,
         async ({ id, data }) => {
-          await handleSessionEvent(normalized, data);
-          const eventId = id ?? data?.event_id ?? null;
-          if (eventId != null) {
-            lastSessionEventIdRef.current[normalized.id] = eventId;
-          }
+          await handleEvent(norm, data);
+          const eid = id ?? data?.event_id ?? null;
+          if (eid != null) lastEventIdRef.current[norm.id] = eid;
         },
         { signal: controller.signal }
-      ).catch((error) => {
-        if (!isAbortError(error)) {
-          setApiError(error.message);
-          toast.error(error.message);
-        }
-      }).finally(() => {
-        if (subscriptionAbortRef.current === controller) {
-          subscriptionAbortRef.current = null;
-          subscribedSessionIdRef.current = null;
-        }
-      });
+      )
+        .catch((e) => {
+          if (!isAbortError(e)) {
+            setApiError(e.message);
+            toast.error(e.message);
+          }
+        })
+        .finally(() => {
+          if (subscriptionsRef.current.get(norm.id) === controller) subscriptionsRef.current.delete(norm.id);
+        });
+      return norm;
     },
-    [handleSessionEvent, rememberSession]
+    [handleEvent, rememberSession]
+  );
+
+  const subscribeToPathLeaf = useCallback(
+    async (leafId, convIdOverride) => {
+      if (!leafId) return null;
+      const convId = convIdOverride || activeConvRef.current?.id;
+      if (!convId) return null;
+      const conv = activeConvRef.current;
+      const cand = findLiveForLeaf(leafId, sessionsRef.current, conv?.nodes, liveHeadBySessionRef.current);
+      const sess = cand[0] || null;
+      // unsubscribe old
+      for (const c of subscriptionsRef.current.values()) c.abort();
+      subscriptionsRef.current.clear();
+      followedSessionIdRef.current = sess ? sess.id : null;
+      setVisibleSessionId(sess ? sess.id : null);
+      setSelectedNodeId(leafId);
+      await loadConversation(convId, { headMessageId: leafId, selectLast: false, countTokens: false }).catch(() => {});
+      if (sess) {
+        subscribeToSession(sess);
+        return sess;
+      }
+      return null;
+    },
+    [loadConversation, subscribeToSession]
+  );
+
+  const selectPathHead = useCallback(async (_convId, leafId) => subscribeToPathLeaf(leafId, _convId), [subscribeToPathLeaf]);
+  const selectPath = useCallback((convId, path) => selectPathHead(convId, path[path.length - 1]), [selectPathHead]);
+
+  const truncateAfter = useCallback((convId, nodeId) => runMutation(() => apiRequest(`/api/conversations/${convId}/truncate`, { method: "POST", body: JSON.stringify({ message_id: nodeId }) })), [runMutation]);
+  const removeMessage = useCallback((convId, nodeId) => runMutation(() => apiRequest(`/api/conversations/${convId}/messages/${nodeId}`, { method: "DELETE" })), [runMutation]);
+  const editMessage = useCallback((convId, nodeId, text) => runMutation(() => apiRequest(`/api/conversations/${convId}/messages/${nodeId}`, { method: "PATCH", body: JSON.stringify({ text }) })), [runMutation]);
+  const forkFromMessage = useCallback(
+    async (convId, nodeId) => {
+      const body = await runMutation(() => apiRequest(`/api/conversations/${convId}/fork`, { method: "POST", body: JSON.stringify({ message_id: nodeId }) }), {
+        reload: false,
+        refreshList: true,
+      });
+      abortAll();
+      setSelectedNodeId(null);
+      setActiveConvId(body.conversation_id);
+      await loadConversation(body.conversation_id);
+      return body.conversation_id;
+    },
+    [loadConversation, runMutation, abortAll]
   );
 
   const refreshSessions = useCallback(async () => {
     const sessions = (await listSessions()).map(sessionFromApi).filter(Boolean);
-    setSessionsById(Object.fromEntries(sessions.map((session) => [session.id, session])));
-    const visibleLiveSession =
-      sessions.find((session) => session.conversationId === activeConvId && isLiveSession(session)) ||
-      sessions.find(isLiveSession) ||
-      null;
-    if (visibleLiveSession) {
-      subscribeToSession(visibleLiveSession);
-    }
+    setSessionsById(Object.fromEntries(sessions.map((s) => [s.id, s])));
+    sessionsRef.current = Object.fromEntries(sessions.map((s) => [s.id, s]));
     return sessions;
-  }, [activeConvId, subscribeToSession]);
+  }, []);
 
   useEffect(() => {
-    refreshSessions().catch((error) => setApiError(error.message));
+    refreshSessions().catch((e) => setApiError(e.message));
   }, [refreshSessions]);
 
   const stopStreaming = useCallback(async () => {
     if (!visibleSessionId) return;
     try {
-      const session = await stopSessionApi(visibleSessionId);
-      rememberSession(session);
-      setPendingAssistantBySessionId((prev) => ({ ...prev, [visibleSessionId]: null }));
-    } catch (error) {
-      setApiError(error.message);
-      toast.error(error.message);
+      const s = await stopSessionApi(visibleSessionId);
+      rememberSession(s);
+      setPendingAssistantBySessionId((p) => ({ ...p, [visibleSessionId]: null }));
+      abortAll();
+    } catch (e) {
+      setApiError(e.message);
+      toast.error(e.message);
     }
-  }, [rememberSession, visibleSessionId]);
+  }, [rememberSession, visibleSessionId, abortAll]);
 
   const sendMessage = useCallback(
     async (convId, text, options = {}) => {
-      const attachments = options.attachments || [];
-      if (!text.trim() && attachments.length === 0) return;
+      const att = options.attachments || [];
+      if (!text.trim() && att.length === 0) return;
+      const conv = activeConvRef.current;
+      const leaf = conv?.selectedPath?.[conv?.selectedPath.length - 1] || selectedNodeRef.current || null;
+      if (leaf) {
+        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes, liveHeadBySessionRef.current);
+        if (busy.length > 0) {
+          toast.message("path busy", { description: "wait for running agent on this path" });
+          return;
+        }
+      }
       try {
-        const parts = await messagePartsForSend(text, attachments);
-        const inserted = await apiRequest(`/api/conversations/${convId}/messages`, {
+        const parts = await messagePartsForSend(text, att);
+        const parentId = selectedNodeRef.current || null;
+        const ins = await apiRequest(`/api/conversations/${convId}/messages`, {
           method: "POST",
-          body: JSON.stringify({
-            head_message_id: selectedNodeId || null,
-            role: "user",
-            parts,
-          }),
+          body: JSON.stringify({ head_message_id: parentId, role: "user", parts }),
         });
-        setSelectedNodeId(inserted.message_id);
-        await loadConversation(convId, { headMessageId: inserted.message_id });
-        const session = await createSessionApi(convId, {
-          headMessageId: inserted.message_id,
-          model: activeConv?.model || null,
-          reasoning: activeReasoning,
-        });
+        // Fix flash: stay on parent path until new branch exists locally.
+        // Previously we setSelectedNodeId(ins.message_id) BEFORE load, which made
+        // pathNodesToNode fall back to conv.selectedPath (old unrelated path) for a frame.
+        await loadConversation(convId, { headMessageId: ins.message_id, selectLast: false, countTokens: false });
+        setSelectedNodeId(ins.message_id);
+        const session = await createSessionApi(convId, { headMessageId: ins.message_id, model: activeConv?.model || null, reasoning: activeReasoning });
         subscribeToSession(session);
         setApiError(null);
-      } catch (error) {
-        setApiError(error.message);
-        toast.error(error.message);
+      } catch (e) {
+        setApiError(e.message);
+        toast.error(e.message);
       }
     },
-    [activeConv?.model, activeReasoning, loadConversation, selectedNodeId, subscribeToSession]
+    [activeConv?.model, activeReasoning, loadConversation, subscribeToSession]
   );
 
   const continueConversation = useCallback(
     async (convId) => {
       if (!convId) return;
+      const conv = activeConvRef.current;
+      const leaf = conv?.selectedPath?.[conv?.selectedPath.length - 1] || selectedNodeRef.current || null;
+      if (leaf) {
+        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes, liveHeadBySessionRef.current);
+        if (busy.length > 0) {
+          toast.message("path busy", { description: "wait for running agent on this path" });
+          return;
+        }
+      }
       try {
-        const session = await createSessionApi(convId, {
-          headMessageId: selectedNodeId,
-          model: activeConv?.model || null,
-          reasoning: activeReasoning,
-        });
+        const session = await createSessionApi(convId, { headMessageId: selectedNodeRef.current, model: activeConv?.model || null, reasoning: activeReasoning });
         subscribeToSession(session);
         setApiError(null);
-      } catch (error) {
-        setApiError(error.message);
-        toast.error(error.message);
+      } catch (e) {
+        setApiError(e.message);
+        toast.error(e.message);
       }
     },
-    [activeConv?.model, activeReasoning, selectedNodeId, subscribeToSession]
+    [activeConv?.model, activeReasoning, subscribeToSession]
   );
 
-  const startGateway = useCallback(
-    () =>
-      runMutation(
-        async () => {
-          const result = await apiRequest("/api/gateway/start", { method: "POST" });
-          await refreshGateway();
-          await refreshModels().catch(() => {});
-          return result;
-        },
-        { reload: false }
-      ),
-    [refreshGateway, refreshModels, runMutation]
-  );
-
-  const stopGateway = useCallback(
-    () =>
-      runMutation(
-        async () => {
-          const result = await apiRequest("/api/gateway/stop", { method: "POST" });
-          await refreshGateway();
-          await refreshModels().catch(() => {});
-          return result;
-        },
-        { reload: false }
-      ),
-    [refreshGateway, refreshModels, runMutation]
-  );
-
+  const startGateway = useCallback(() => runMutation(async () => { const r = await apiRequest("/api/gateway/start", { method: "POST" }); await refreshGateway(); await refreshModels().catch(() => {}); return r; }, { reload: false }), [refreshGateway, refreshModels, runMutation]);
+  const stopGateway = useCallback(() => runMutation(async () => { const r = await apiRequest("/api/gateway/stop", { method: "POST" }); await refreshGateway(); await refreshModels().catch(() => {}); return r; }, { reload: false }), [refreshGateway, refreshModels, runMutation]);
   const approveToolCall = useCallback(
-    async (sessionId, toolCallId) => {
-      if (!sessionId) return;
+    async (sid, tcid) => {
+      if (!sid) return;
       try {
-        const session = await approveSessionToolApi(sessionId, toolCallId);
-        subscribeToSession(session);
-      } catch (error) {
-        setApiError(error.message);
-        toast.error(error.message);
+        const s = await approveSessionToolApi(sid, tcid);
+        subscribeToSession(s);
+      } catch (e) {
+        setApiError(e.message);
+        toast.error(e.message);
       }
     },
     [subscribeToSession]
   );
-
   const denyToolCall = useCallback(
-    async (sessionId, toolCallId) => {
-      if (!sessionId) return;
+    async (sid, tcid) => {
+      if (!sid) return;
       try {
-        const session = await denySessionToolApi(sessionId, toolCallId);
-        subscribeToSession(session);
-      } catch (error) {
-        setApiError(error.message);
-        toast.error(error.message);
+        const s = await denySessionToolApi(sid, tcid);
+        subscribeToSession(s);
+      } catch (e) {
+        setApiError(e.message);
+        toast.error(e.message);
       }
     },
     [subscribeToSession]
@@ -1010,9 +827,7 @@ export function WindieProvider({ children }) {
 
   const visibleSession = visibleSessionId ? sessionsById[visibleSessionId] || null : null;
   const streaming = isLiveSession(visibleSession);
-  const pendingAssistant = visibleSessionId
-    ? pendingAssistantBySessionId[visibleSessionId] || null
-    : null;
+  const pendingAssistant = visibleSessionId ? pendingAssistantBySessionId[visibleSessionId] || null : null;
 
   const value = {
     conversations,
@@ -1043,6 +858,10 @@ export function WindieProvider({ children }) {
     apiError,
     gatewayRunning,
     approvals,
+    isAncestor,
+    subscribeToPathLeaf,
+    inspectNode,
+    abortAllSubscriptions: abortAll,
     setSelectedNodeId,
     setTheme,
     setTreeOverlayOpen,

@@ -421,15 +421,30 @@ struct SessionEvents {
 }
 
 impl SessionEvents {
-    fn record(&self, event: SessionEvent) -> Result<SessionEventRecord> {
-        let mut store = match self.store_path.as_ref() {
+    fn open_store(&self) -> Result<Store> {
+        match self.store_path.as_ref() {
             Some(path) => Store::open_at(path),
             None => Store::open(),
-        }?;
+        }
+    }
+
+    fn record(&self, event: SessionEvent) -> Result<SessionEventRecord> {
+        let mut store = self.open_store()?;
         let record = store.append_session_event(&self.session_id, event)?;
         let _ = self.sender.send(record.clone());
 
         Ok(record)
+    }
+
+    fn update_head(&self, message_id: &MessageId) {
+        let result: Result<()> = (|| {
+            let mut store = self.open_store()?;
+            store.update_session_head(&self.session_id, Some(message_id))?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("failed to update session head: {error}");
+        }
     }
 }
 
@@ -440,6 +455,7 @@ impl RuntimeEventSink for SessionEvents {
         }) {
             eprintln!("failed to append runtime event: {error}");
         }
+        self.update_head(message_id);
     }
 
     fn tool_result_saved(&self, message_id: &MessageId) {
@@ -448,6 +464,7 @@ impl RuntimeEventSink for SessionEvents {
         }) {
             eprintln!("failed to append runtime event: {error}");
         }
+        self.update_head(message_id);
     }
 }
 

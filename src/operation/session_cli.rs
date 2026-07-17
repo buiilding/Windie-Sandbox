@@ -222,16 +222,31 @@ impl CliSessionEvents {
     }
 }
 
+impl CliSessionEvents {
+    fn update_head(&self, message_id: &MessageId) {
+        let result: anyhow::Result<()> = (|| {
+            let mut store = Store::open()?;
+            store.update_session_head(&self.session_id, Some(message_id))?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("failed to update cli session head: {error}");
+        }
+    }
+}
+
 impl RuntimeEventSink for CliSessionEvents {
     fn assistant_message_saved(&self, message_id: &MessageId) {
         self.record(SessionEvent::AssistantMessageSaved {
             message_id: message_id.as_str().to_string(),
         });
+        self.update_head(message_id);
     }
 
     fn tool_result_saved(&self, message_id: &MessageId) {
         self.record(SessionEvent::ToolResultSaved {
             message_id: message_id.as_str().to_string(),
         });
+        self.update_head(message_id);
     }
 }

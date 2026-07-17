@@ -4,256 +4,85 @@ import { ROLE_TOKENS } from "@/lib/mockData";
 import { GitBranch, Route, Scissors, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-/**
- * Layout the tree by depth. For each depth level we place nodes horizontally.
- * Returns: {positions: {nodeId: {x, y, depth}}, width, height, edges: [{from,to}]}
- */
 function layoutTree(conv) {
   const nodes = conv.nodes;
-  const rootIds =
-    conv.rootIds?.length
-      ? conv.rootIds
-      : Object.values(nodes)
-          .filter((node) => node.parentId === null)
-          .map((node) => node.id);
-  if (!rootIds.length) {
-    return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 200, NODE_H: 62 };
-  }
-
-  // BFS depths across every root in the conversation forest.
+  const rootIds = conv.rootIds?.length ? conv.rootIds : Object.values(nodes).filter((n) => n.parentId === null).map((n) => n.id);
+  if (!rootIds.length) return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 200, NODE_H: 62 };
   const depthOf = {};
   const order = [];
   const queue = [...rootIds];
-  rootIds.forEach((rootId) => {
-    depthOf[rootId] = 0;
-  });
+  rootIds.forEach((r) => { depthOf[r] = 0; });
   while (queue.length) {
     const id = queue.shift();
     order.push(id);
     (nodes[id]?.childrenIds || []).forEach((cid) => {
-      if (depthOf[cid] === undefined) {
-        depthOf[cid] = depthOf[id] + 1;
-        queue.push(cid);
-      }
+      if (depthOf[cid] === undefined) { depthOf[cid] = depthOf[id] + 1; queue.push(cid); }
     });
   }
-  // group by depth
   const byDepth = {};
-  order.forEach((id) => {
-    const d = depthOf[id];
-    if (!byDepth[d]) byDepth[d] = [];
-    byDepth[d].push(id);
-  });
-  const NODE_W = 200;
-  const NODE_H = 62;
-  const H_GAP = 40;
-  const V_GAP = 28;
+  order.forEach((id) => { const d = depthOf[id]; if (!byDepth[d]) byDepth[d] = []; byDepth[d].push(id); });
+  const NODE_W = 200, NODE_H = 62, H_GAP = 40, V_GAP = 28;
   const positions = {};
   const maxRow = Math.max(...Object.values(byDepth).map((r) => r.length), 1);
-  Object.entries(byDepth).forEach(([d, ids]) => {
-    ids.forEach((id, i) => {
-      positions[id] = {
-        x: 40 + i * (NODE_W + H_GAP),
-        y: 40 + parseInt(d, 10) * (NODE_H + V_GAP),
-        depth: parseInt(d, 10),
-      };
-    });
-  });
+  Object.entries(byDepth).forEach(([d, ids]) => { ids.forEach((id, i) => { positions[id] = { x: 40 + i * (NODE_W + H_GAP), y: 40 + parseInt(d, 10) * (NODE_H + V_GAP), depth: parseInt(d, 10) }; }); });
   const edges = [];
-  Object.values(nodes).forEach((n) => {
-    if (n.parentId && nodes[n.parentId]) edges.push({ from: n.parentId, to: n.id });
-  });
-  const width = Math.max(
-    900,
-    40 + maxRow * (NODE_W + H_GAP)
-  );
-  const height =
-    Math.max(...Object.values(positions).map((p) => p.y)) + NODE_H + 40;
+  Object.values(nodes).forEach((n) => { if (n.parentId && nodes[n.parentId]) edges.push({ from: n.parentId, to: n.id }); });
+  const width = Math.max(900, 40 + maxRow * (NODE_W + H_GAP));
+  const height = Math.max(...Object.values(positions).map((p) => p.y), 0) + NODE_H + 40;
   return { positions, edges, width, height, NODE_W, NODE_H };
 }
 
 export default function TreePanel() {
-  const {
-    activeConv,
-    selectedPathNodes,
-    selectedNodeId,
-    setSelectedNodeId,
-    selectPathHead,
-    forkFromMessage,
-    truncateAfter,
-    removeMessage,
-  } = useWindie();
-
-  const layout = useMemo(
-    () => (activeConv ? layoutTree(activeConv) : null),
-    [activeConv]
-  );
-  const pathSet = useMemo(
-    () => new Set(selectedPathNodes.map((node) => node.id)),
-    [selectedPathNodes]
-  );
+  const { activeConv, selectedPathNodes, selectedNodeId, subscribeToPathLeaf, inspectNode, forkFromMessage, truncateAfter, removeMessage } = useWindie();
+  const layout = useMemo(() => (activeConv ? layoutTree(activeConv) : null), [activeConv]);
+  const pathSet = useMemo(() => new Set(selectedPathNodes.map((n) => n.id)), [selectedPathNodes]);
 
   if (!activeConv || !layout) {
-    return (
-      <div className="h-full w-full flex items-center justify-center font-mono text-[11px] text-muted-foreground">
-        no conversation
-      </div>
-    );
+    return <div className="h-full w-full flex items-center justify-center font-mono text-[11px] text-muted-foreground">no conversation</div>;
   }
 
   return (
     <div className="h-full w-full flex flex-col bg-background">
       <div className="h-9 shrink-0 border-b border-border px-4 flex items-center justify-between font-mono text-[11px]">
         <div className="flex items-center gap-3 min-w-0">
-          <GitBranch className="size-3.5" strokeWidth={1.75} />
+          <GitBranch className="size-3.5" />
           <span className="uppercase tracking-widest">conversation tree</span>
-          <span className="text-muted-foreground truncate">
-            {Object.keys(activeConv.nodes).length} nodes ·{" "}
-            {Object.values(activeConv.nodes).filter((n) => n.childrenIds.length > 1).length} branch
-            points · selected path {selectedPathNodes.length}
-          </span>
+          <span className="text-muted-foreground truncate">{Object.keys(activeConv.nodes).length} nodes · {Object.values(activeConv.nodes).filter((n) => n.childrenIds.length > 1).length} branches · path {selectedPathNodes.length}</span>
         </div>
       </div>
-
       <div className="flex-1 min-h-0 overflow-auto windie-scroll windie-grid-bg">
         <div className="relative" style={{ width: layout.width, height: layout.height }}>
-          <svg
-            className="absolute inset-0 pointer-events-none"
-            width={layout.width}
-            height={layout.height}
-          >
+          <svg className="absolute inset-0 pointer-events-none" width={layout.width} height={layout.height}>
             {layout.edges.map(({ from, to }, i) => {
-              const p1 = layout.positions[from];
-              const p2 = layout.positions[to];
+              const p1 = layout.positions[from], p2 = layout.positions[to];
               if (!p1 || !p2) return null;
-              const x1 = p1.x + layout.NODE_W / 2;
-              const y1 = p1.y + layout.NODE_H;
-              const x2 = p2.x + layout.NODE_W / 2;
-              const y2 = p2.y;
-              const active = pathSet.has(from) && pathSet.has(to);
-              return (
-                <path
-                  key={i}
-                  d={`M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`}
-                  stroke={active ? "hsl(var(--accent))" : "hsl(var(--border))"}
-                  strokeWidth={active ? 1.5 : 1}
-                  fill="none"
-                  strokeDasharray={active ? "0" : "3 3"}
-                />
-              );
+              return <path key={i} d={`M ${p1.x + layout.NODE_W / 2} ${p1.y + layout.NODE_H} C ${p1.x + layout.NODE_W / 2} ${(p1.y + layout.NODE_H + p2.y) / 2}, ${p2.x + layout.NODE_W / 2} ${(p1.y + layout.NODE_H + p2.y) / 2}, ${p2.x + layout.NODE_W / 2} ${p2.y}`} stroke={pathSet.has(from) && pathSet.has(to) ? "hsl(var(--accent))" : "hsl(var(--border))"} strokeWidth={pathSet.has(from) && pathSet.has(to) ? 1.5 : 1} fill="none" strokeDasharray={pathSet.has(from) && pathSet.has(to) ? "0" : "3 3"} />;
             })}
           </svg>
-
           {Object.entries(layout.positions).map(([id, pos]) => {
             const n = activeConv.nodes[id];
             if (!n) return null;
-            const role = n.message.role;
-            const token = ROLE_TOKENS[role];
+            const token = ROLE_TOKENS[n.message.role];
             const onPath = pathSet.has(id);
             const isSel = id === selectedNodeId;
             const text = n.message.parts.find((p) => p.type === "text")?.text || "";
             return (
-              <button
-                key={id}
-                data-testid={`tree-node-${id}`}
-                onClick={() => setSelectedNodeId(id)}
-                className={`absolute text-left border transition-all ${
-                  isSel
-                    ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]"
-                    : onPath
-                      ? "border-[hsl(var(--accent))] bg-background"
-                      : "border-border bg-background hover:border-foreground/60"
-                }`}
-                style={{
-                  left: pos.x,
-                  top: pos.y,
-                  width: layout.NODE_W,
-                  height: layout.NODE_H,
-                }}
-              >
+              <button key={id} data-testid={`tree-node-${id}`} onClick={() => inspectNode(id)} className={`absolute text-left border transition-all ${isSel ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]" : onPath ? "border-[hsl(var(--accent))] bg-background" : "border-border bg-background hover:border-foreground/60"}`} style={{ left: pos.x, top: pos.y, width: layout.NODE_W, height: layout.NODE_H }}>
                 <div className="h-full flex flex-col p-2 gap-0.5">
-                  <div className="flex items-center justify-between">
-                    <span
-                      className={`font-mono text-[10px] font-bold tracking-widest ${token.color}`}
-                    >
-                      [{token.label}]
-                    </span>
-                    <span className="font-mono text-[9px] text-muted-foreground">
-                      {id.slice(0, 6)}
-                    </span>
-                  </div>
-                  <div className="font-mono text-[10px] text-muted-foreground truncate">
-                    {n.message.model || " "}
-                  </div>
-                  <div className="text-[11px] leading-tight truncate">
-                    {text.slice(0, 42) || (
-                      <span className="italic text-muted-foreground">(empty)</span>
-                    )}
-                  </div>
-                  <div className="mt-auto flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                    {onPath && <span className="text-[hsl(var(--accent))]">on path</span>}
-                    {n.childrenIds.length > 1 && (
-                      <span className="text-foreground/80">
-                        {n.childrenIds.length} branches
-                      </span>
-                    )}
-                  </div>
+                  <div className="flex items-center justify-between"><span className={`font-mono text-[10px] font-bold tracking-widest ${token.color}`}>[{token.label}]</span><span className="font-mono text-[9px] text-muted-foreground">{id.slice(0, 6)}</span></div>
+                  <div className="text-[11px] leading-tight truncate">{text.slice(0, 42) || <span className="italic text-muted-foreground">(empty)</span>}</div>
+                  <div className="mt-auto flex gap-2 font-mono text-[9px] uppercase tracking-widest text-muted-foreground">{onPath && <span className="text-[hsl(var(--accent))]">on path</span>}{n.childrenIds.length > 1 && <span>{n.childrenIds.length} branches</span>}</div>
                 </div>
               </button>
             );
           })}
         </div>
       </div>
-
-      <div className="h-8 shrink-0 border-t border-border px-3 flex items-center gap-1 overflow-x-auto windie-scroll">
-        <button
-          data-testid="tree-detail-action-set-path"
-          onClick={() => {
-            if (!selectedNodeId) return;
-            selectPathHead(activeConv.id, selectedNodeId);
-            toast.message("selected path set");
-          }}
-          className="h-6 px-2 flex items-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest disabled:opacity-50"
-          disabled={!selectedNodeId}
-        >
-          <Route className="size-3" strokeWidth={1.75} /> set path
-        </button>
-        <button
-          data-testid="tree-detail-action-fork"
-          onClick={() => {
-            if (!selectedNodeId) return;
-            forkFromMessage(activeConv.id, selectedNodeId);
-            toast.message("forked", { description: "new conversation created" });
-          }}
-          className="h-6 px-2 flex items-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest disabled:opacity-50"
-          disabled={!selectedNodeId}
-        >
-          <GitBranch className="size-3" strokeWidth={1.75} /> fork
-        </button>
-        <button
-          data-testid="tree-detail-action-truncate"
-          onClick={() => {
-            if (!selectedNodeId) return;
-            truncateAfter(activeConv.id, selectedNodeId);
-            toast.message("truncated", { description: "descendants deleted" });
-          }}
-          className="h-6 px-2 flex items-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest disabled:opacity-50"
-          disabled={!selectedNodeId}
-        >
-          <Scissors className="size-3" strokeWidth={1.75} /> truncate
-        </button>
-        <button
-          data-testid="tree-detail-action-remove"
-          onClick={() => {
-            if (!selectedNodeId) return;
-            removeMessage(activeConv.id, selectedNodeId);
-            toast.message("removed");
-          }}
-          className="h-6 px-2 flex items-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))] disabled:opacity-50"
-          disabled={!selectedNodeId}
-        >
-          <Trash2 className="size-3" strokeWidth={1.75} /> remove
-        </button>
+      <div className="h-8 shrink-0 border-t border-border px-3 flex items-center gap-1">
+        <button data-testid="tree-detail-action-set-path" onClick={() => { if (!selectedNodeId) return; subscribeToPathLeaf(selectedNodeId, activeConv.id); toast.message("path subscribed"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest" disabled={!selectedNodeId}><Route className="size-3" /> subscribe path</button>
+        <button data-testid="tree-detail-action-fork" onClick={() => { if (!selectedNodeId) return; forkFromMessage(activeConv.id, selectedNodeId); toast.message("forked"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest" disabled={!selectedNodeId}><GitBranch className="size-3" /> fork</button>
+        <button data-testid="tree-detail-action-truncate" onClick={() => { if (!selectedNodeId) return; truncateAfter(activeConv.id, selectedNodeId); toast.message("truncated"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest" disabled={!selectedNodeId}><Scissors className="size-3" /> truncate</button>
+        <button data-testid="tree-detail-action-remove" onClick={() => { if (!selectedNodeId) return; removeMessage(activeConv.id, selectedNodeId); toast.message("removed"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]" disabled={!selectedNodeId}><Trash2 className="size-3" /> remove</button>
       </div>
     </div>
   );
