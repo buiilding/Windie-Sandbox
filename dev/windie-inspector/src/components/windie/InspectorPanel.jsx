@@ -43,19 +43,6 @@ function KV({ k, v, mono = true }) {
   );
 }
 
-function isAncestor(ancestorId, leafId, nodes) {
-  if (!ancestorId || !leafId || !nodes) return false;
-  if (ancestorId === leafId) return true;
-  let cur = nodes[leafId];
-  const seen = new Set();
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id);
-    if (cur.parentId === ancestorId) return true;
-    cur = cur.parentId ? nodes[cur.parentId] : null;
-  }
-  return false;
-}
-
 export default function InspectorPanel() {
   const {
     activeConv,
@@ -79,6 +66,8 @@ export default function InspectorPanel() {
     sessionsById,
     subscribeToPathLeaf,
     inspectNode,
+    isAncestor,
+    findLiveForLeaf,
   } = useWindie();
 
   const [editingSys, setEditingSys] = useState(false);
@@ -171,22 +160,16 @@ export default function InspectorPanel() {
                 const leafId = path.leafMessageId;
                 if (!leafId) return null;
                 const isCurrent = activeConv.selectedPath?.includes(leafId);
-                let running = false;
-                if (activeConv.nodes && sessionsById) {
-                  for (const s of Object.values(sessionsById)) {
-                    if (s.status !== "running") continue;
-                    if (s.conversationId !== activeConv.id) continue;
-                    if (isAncestor(s.startHeadMessageId, leafId, activeConv.nodes) || s.startHeadMessageId === leafId) {
-                      running = true;
-                      break;
-                    }
-                  }
-                }
+                // Single source of truth: sessions table via findLiveForLeaf (uses current_head, handles waiting_for_approval)
+                const live = findLiveForLeaf ? findLiveForLeaf(leafId, sessionsById, activeConv.nodes) : [];
+                const liveForConv = live.filter((s) => s.conversationId === activeConv.id);
+                const running = liveForConv.some((s) => s.status === "running");
+                const waiting = liveForConv.some((s) => s.status === "waiting_for_approval");
                 return (
-                  <button key={leafId} data-testid={`inspector-path-leaf-${leafId}`} onClick={() => { subscribeToPathLeaf(leafId, activeConv.id); toast.message("path subscribed", { description: `${path.leafPreview?.slice(0, 40) || ""}${running ? " · running" : ""}` }); }} className={`w-full text-left flex items-center gap-2 px-1.5 py-1 border-l-2 font-mono text-[11px] ${isCurrent ? "bg-surface border-[hsl(var(--accent))]" : "border-transparent hover:bg-surface/60"}`}>
+                  <button key={leafId} data-testid={`inspector-path-leaf-${leafId}`} onClick={() => { subscribeToPathLeaf(leafId, activeConv.id); toast.message("path subscribed", { description: `${path.leafPreview?.slice(0, 40) || ""}${running ? " · running" : waiting ? " · needs approval" : ""}` }); }} className={`w-full text-left flex items-center gap-2 px-1.5 py-1 border-l-2 font-mono text-[11px] ${isCurrent ? "bg-surface border-[hsl(var(--accent))]" : "border-transparent hover:bg-surface/60"}`}>
                     <span className="text-muted-foreground w-5 text-right">{String(idx).padStart(2, "0")}</span>
                     <span className="text-muted-foreground w-10">d{path.depth}</span>
-                    {running && <span className="size-1.5 bg-green-500 rounded-full shrink-0" />}
+                    {(running || waiting) && <span className={`size-1.5 rounded-full shrink-0 ${running ? "bg-green-500" : "bg-amber-500"}`} />}
                     <span className="truncate flex-1 text-muted-foreground">{path.leafPreview || "(empty)"}</span>
                   </button>
                 );

@@ -74,11 +74,9 @@ function isAbortError(error) {
 }
 
 function isLiveSession(session) {
+  // Single source of truth: sessions.status row in SQLite
+  // running = agent loop active, waiting_for_approval = still live, needs human
   return session?.status === "running" || session?.status === "waiting_for_approval";
-}
-
-function isRunningSession(session) {
-  return session?.status === "running";
 }
 
 function isAncestor(ancestorId, leafId, nodes) {
@@ -162,14 +160,15 @@ function contextSignatureParts(conversation, modelId, pathNodesOverride = null) 
   };
 }
 
-function findLiveForLeaf(leafId, sessionsById, nodes, liveHeads) {
+function findLiveForLeaf(leafId, sessionsById, nodes) {
+  // Single source of truth: sessions row
+  // Use durable current_head from DB, not local ref. Live = running OR waiting_for_approval.
   if (!leafId || !nodes) return [];
   const out = [];
   for (const s of Object.values(sessionsById || {})) {
-    if (!isRunningSession(s)) continue;
-    const live = liveHeads?.[s.id] || s.currentHeadMessageId || s.startHeadMessageId;
+    if (!isLiveSession(s)) continue;
+    const live = s.currentHeadMessageId || s.startHeadMessageId;
     if (!live) continue;
-    // session on path if its start is ancestor of leaf or live is descendant of leaf
     if (isAncestor(s.startHeadMessageId, leafId, nodes) || s.startHeadMessageId === leafId || isAncestor(leafId, live, nodes) || live === leafId) {
       out.push(s);
     }
@@ -202,10 +201,9 @@ export function WindieProvider({ children }) {
   const [sessionEventsBySessionId, setSessionEventsBySessionId] = useState({});
   const [pendingAssistantBySessionId, setPendingAssistantBySessionId] = useState({});
 
-  // path-centric model
+  // path-centric model - single source of truth is sessions table (store/sessions)
   const subscriptionsRef = useRef(new Map()); // sessionId -> AbortController
   const followedSessionIdRef = useRef(null);
-  const liveHeadBySessionRef = useRef({});
   const lastEventIdRef = useRef({});
   const activeConvRef = useRef(null);
   const sessionsRef = useRef({});
@@ -598,24 +596,33 @@ export function WindieProvider({ children }) {
       }
 
       if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
-        if (data.message_id) liveHeadBySessionRef.current[session.id] = data.message_id;
+        // Single source of truth is sessions.current_head in DB (updated in manager.rs on every save)
+        // Optimistically update sessionsById so dot stays stable even before poll
+        if (data.message_id) {
+          setSessionsById((p) => {
+            const s = p[session.id];
+            if (!s) return p;
+            const next = { ...s, currentHeadMessageId: data.message_id };
+            sessionsRef.current = { ...sessionsRef.current, [session.id]: next };
+            return { ...p, [session.id]: next };
+          });
+        }
         const followed = followedSessionIdRef.current === session.id;
         if (followed) {
-          // follow this path: move viewport to new leaf
           await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: data.message_id || null }).catch(() => {});
           if (data.message_id) setSelectedNodeId(data.message_id);
           setPendingAssistantBySessionId((p) => ({ ...p, [session.id]: null }));
         } else {
-          // background: silent refresh without pulling viewport
           await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: undefined }).catch(() => {});
         }
+        // Refresh durable status in background
+        getSession(session.id).then((latest) => { if (latest) rememberSession(latest); }).catch(() => {});
         return;
       }
 
       if (data.type === "completed" || data.type === "failed" || data.type === "cancelled" || data.type === "waiting_for_approval") {
         const latest = await getSession(session.id).catch(() => null);
         if (latest) rememberSession(latest);
-        if (data.type === "completed" && data.message_id) liveHeadBySessionRef.current[session.id] = data.message_id;
         const followed = followedSessionIdRef.current === session.id;
         if (followed) {
           if (data.type === "completed" && data.message_id) {
@@ -673,7 +680,7 @@ export function WindieProvider({ children }) {
       const convId = convIdOverride || activeConvRef.current?.id;
       if (!convId) return null;
       const conv = activeConvRef.current;
-      const cand = findLiveForLeaf(leafId, sessionsRef.current, conv?.nodes, liveHeadBySessionRef.current);
+      const cand = findLiveForLeaf(leafId, sessionsRef.current, conv?.nodes);
       const sess = cand[0] || null;
       // unsubscribe old
       for (const c of subscriptionsRef.current.values()) c.abort();
@@ -723,6 +730,14 @@ export function WindieProvider({ children }) {
     refreshSessions().catch((e) => setApiError(e.message));
   }, [refreshSessions]);
 
+  // Poll sessions as single source of truth for long runs - SSE can drop, table is durable
+  useEffect(() => {
+    const id = setInterval(() => {
+      refreshSessions().catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, [refreshSessions]);
+
   const stopStreaming = useCallback(async () => {
     if (!visibleSessionId) return;
     try {
@@ -743,7 +758,7 @@ export function WindieProvider({ children }) {
       const conv = activeConvRef.current;
       const leaf = conv?.selectedPath?.[conv?.selectedPath.length - 1] || selectedNodeRef.current || null;
       if (leaf) {
-        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes, liveHeadBySessionRef.current);
+        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes);
         if (busy.length > 0) {
           toast.message("path busy", { description: "wait for running agent on this path" });
           return;
@@ -757,8 +772,6 @@ export function WindieProvider({ children }) {
           body: JSON.stringify({ head_message_id: parentId, role: "user", parts }),
         });
         // Fix flash: stay on parent path until new branch exists locally.
-        // Previously we setSelectedNodeId(ins.message_id) BEFORE load, which made
-        // pathNodesToNode fall back to conv.selectedPath (old unrelated path) for a frame.
         await loadConversation(convId, { headMessageId: ins.message_id, selectLast: false, countTokens: false });
         setSelectedNodeId(ins.message_id);
         const session = await createSessionApi(convId, { headMessageId: ins.message_id, model: activeConv?.model || null, reasoning: activeReasoning });
@@ -778,7 +791,7 @@ export function WindieProvider({ children }) {
       const conv = activeConvRef.current;
       const leaf = conv?.selectedPath?.[conv?.selectedPath.length - 1] || selectedNodeRef.current || null;
       if (leaf) {
-        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes, liveHeadBySessionRef.current);
+        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes);
         if (busy.length > 0) {
           toast.message("path busy", { description: "wait for running agent on this path" });
           return;
@@ -859,6 +872,7 @@ export function WindieProvider({ children }) {
     gatewayRunning,
     approvals,
     isAncestor,
+    findLiveForLeaf,
     subscribeToPathLeaf,
     inspectNode,
     abortAllSubscriptions: abortAll,
