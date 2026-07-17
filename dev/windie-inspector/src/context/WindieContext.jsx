@@ -561,13 +561,10 @@ export function WindieProvider({ children }) {
       runMutation(() =>
         apiRequest(`/api/conversations/${convId}/system-prompt`, {
           method: "PATCH",
-          body: JSON.stringify({
-            text,
-            head_message_id: selectedNodeId || null,
-          }),
+          body: JSON.stringify({ text }),
         })
       ),
-    [runMutation, selectedNodeId]
+    [runMutation]
   );
 
   const setConversationModel = useCallback(
@@ -602,11 +599,10 @@ export function WindieProvider({ children }) {
           body: JSON.stringify({
             provider_id: toolSchema.providerId,
             tool_name: toolSchema.providerToolName,
-            head_message_id: selectedNodeId || null,
           }),
         })
       ),
-    [runMutation, selectedNodeId]
+    [runMutation]
   );
 
   const addToolSchemas = useCallback(
@@ -615,7 +611,6 @@ export function WindieProvider({ children }) {
         apiRequest(`/api/conversations/${convId}/tools/batch`, {
           method: "POST",
           body: JSON.stringify({
-            head_message_id: selectedNodeId || null,
             tools: toolSchemas.map((toolSchema) => ({
               provider_id: toolSchema.providerId,
               tool_name: toolSchema.providerToolName,
@@ -623,22 +618,17 @@ export function WindieProvider({ children }) {
           }),
         })
       ),
-    [runMutation, selectedNodeId]
+    [runMutation]
   );
 
   const removeToolSchema = useCallback(
     (convId, name) =>
       runMutation(() =>
-        apiRequest(
-          `/api/conversations/${convId}/tools/${encodeURIComponent(name)}${
-            selectedNodeId ? `?head_message_id=${encodeURIComponent(selectedNodeId)}` : ""
-          }`,
-          {
-            method: "DELETE",
-          }
-        )
+        apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(name)}`, {
+          method: "DELETE",
+        })
       ),
-    [runMutation, selectedNodeId]
+    [runMutation]
   );
 
   const removeToolSchemas = useCallback(
@@ -646,16 +636,12 @@ export function WindieProvider({ children }) {
       runMutation(async () => {
         for (const name of names) {
           await apiRequest(
-            `/api/conversations/${convId}/tools/${encodeURIComponent(name)}${
-              selectedNodeId ? `?head_message_id=${encodeURIComponent(selectedNodeId)}` : ""
-            }`,
-            {
-              method: "DELETE",
-            }
+            `/api/conversations/${convId}/tools/${encodeURIComponent(name)}`,
+            { method: "DELETE" }
           );
         }
       }),
-    [runMutation, selectedNodeId]
+    [runMutation]
   );
 
   const selectPathHead = useCallback(

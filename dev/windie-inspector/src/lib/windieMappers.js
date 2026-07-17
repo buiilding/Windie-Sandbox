@@ -92,6 +92,12 @@ export function conversationFromInspection(report, fallback) {
     toolSchemas: (report.tool_schemas || []).map(toolSchemaFromApi),
     modelContext: report.model_context || [],
     latestCompaction: report.latest_compaction || null,
+    paths: (report.paths || []).map((path) => ({
+      messageIds: Array.isArray(path.message_ids) ? path.message_ids : [],
+      leafMessageId: path.leaf_message_id || null,
+      depth: typeof path.depth === "number" ? path.depth : 0,
+      leafPreview: path.leaf_preview || "",
+    })),
   };
 }
 

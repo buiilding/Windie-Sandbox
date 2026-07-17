@@ -72,40 +72,18 @@ pub fn update_message(
     store.replace_message(conversation_id, message_id, text)
 }
 
-/// Inserts a system prompt message at the active conversation path.
+/// Sets the conversation-wide system prompt (tree-wide, same for any head).
 pub fn set_system_prompt(
     store: &mut Store,
     conversation_id: &ConversationId,
     text: &str,
-) -> Result<MessageId> {
+) -> Result<()> {
     store.set_system_prompt(conversation_id, text)
 }
 
-/// Inserts a system prompt message at an explicit conversation path head.
-pub fn set_system_prompt_at_head(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    head_message_id: Option<&MessageId>,
-    text: &str,
-) -> Result<MessageId> {
-    store.set_system_prompt_at_head(conversation_id, head_message_id, text)
-}
-
-/// Removes the system prompt at the active conversation path.
-pub fn remove_system_prompt(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-) -> Result<MessageId> {
+/// Removes the conversation-wide system prompt (tree-wide).
+pub fn remove_system_prompt(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
     store.remove_system_prompt(conversation_id)
-}
-
-/// Removes the system prompt at an explicit conversation path head.
-pub fn remove_system_prompt_at_head(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    head_message_id: Option<&MessageId>,
-) -> Result<MessageId> {
-    store.remove_system_prompt_at_head(conversation_id, head_message_id)
 }
 
 /// Removes one message from the conversation tree.

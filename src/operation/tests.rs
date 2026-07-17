@@ -274,10 +274,16 @@ fn inspection_snapshot_includes_runtime_state() {
     assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
-    assert_eq!(value["messages"][0]["role"], "system");
-    assert_eq!(value["messages"][1]["id"], user_id.as_str());
+    // Tree-wide: system prompt is stored in conversations table, not as a message in the tree.
+    assert_eq!(value["messages"][0]["id"], user_id.as_str());
     assert_eq!(value["path"][0]["id"], user_id.as_str());
+    // model_context = [system_prompt, compaction] when compaction is through the head
     assert_eq!(value["model_context"][0]["role"], "system");
+    assert_eq!(value["model_context"][0]["content"], "You are concise.");
+    assert_eq!(
+        value["model_context"][1]["content"],
+        "Previous conversation summary:\nhello happened"
+    );
     assert_eq!(value["latest_compaction"]["content"], "hello happened");
 }
 

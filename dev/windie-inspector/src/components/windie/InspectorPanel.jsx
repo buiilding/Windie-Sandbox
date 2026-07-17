@@ -79,6 +79,7 @@ export default function InspectorPanel() {
     removeToolSchema,
     removeToolSchemas,
     toolProviderStatuses,
+    loadConversation,
   } = useWindie();
   const [editingSys, setEditingSys] = useState(false);
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
@@ -225,6 +226,55 @@ export default function InspectorPanel() {
               </span>
             ))}
           </div>
+        </Section>
+
+        {/* Paths */}
+        <Section
+          title={`paths · ${(activeConv?.paths || []).length}`}
+          testId="inspector-section-paths"
+          defaultOpen={false}
+        >
+          {(activeConv?.paths || []).length === 0 ? (
+            <div className="font-mono text-[11px] text-muted-foreground">
+              no paths
+            </div>
+          ) : (
+            <div className="space-y-0.5">
+              {(activeConv.paths || []).map((path, index) => {
+                const leafId = path.leafMessageId;
+                const isCurrent = leafId && leafId === selectedNodeId;
+                return (
+                  <button
+                    key={leafId || `path-${index}`}
+                    data-testid={`inspector-path-leaf-${leafId || index}`}
+                    onClick={() => {
+                      if (!leafId) return;
+                      setSelectedNodeId(leafId);
+                      loadConversation(activeConv.id, { headMessageId: leafId });
+                      toast.message("path selected", {
+                        description: path.leafPreview || `depth ${path.depth}`,
+                      });
+                    }}
+                    className={`w-full text-left flex items-center gap-2 px-1.5 py-1 border-l-2 font-mono text-[11px] ${
+                      isCurrent
+                        ? "bg-surface border-[hsl(var(--accent))]"
+                        : "border-transparent hover:bg-surface/60"
+                    }`}
+                  >
+                    <span className="text-muted-foreground w-5 text-right">
+                      {String(index).padStart(2, "0")}
+                    </span>
+                    <span className="text-muted-foreground w-10">
+                      d{path.depth}
+                    </span>
+                    <span className="truncate flex-1 text-muted-foreground">
+                      {path.leafPreview || "(empty)"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </Section>
 
         {/* Selected Path */}

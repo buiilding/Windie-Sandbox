@@ -364,55 +364,35 @@ fn clears_system_prompt_with_empty_text() {
 }
 
 #[test]
-fn system_prompt_is_resolved_from_requested_message_path() {
+fn system_prompt_is_tree_wide_same_for_any_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let root_id = store
         .insert_message(&conversation_id, None, Role::User, "root", None)
         .unwrap();
-    let shared_id = store
-        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
-        .unwrap();
-    let shared_prompt_id = store
-        .set_system_prompt_at_head(&conversation_id, Some(&shared_id), "shared prompt")
-        .unwrap();
-
     let branch_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&shared_prompt_id),
-            Role::User,
-            "branch",
-            None,
-        )
-        .unwrap();
-    let branch_prompt_id = store
-        .set_system_prompt_at_head(&conversation_id, Some(&branch_id), "branch prompt")
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "branch", None)
         .unwrap();
     let sibling_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&shared_prompt_id),
-            Role::User,
-            "sibling",
-            None,
-        )
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "sibling", None)
+        .unwrap();
+
+    store
+        .set_system_prompt(&conversation_id, "global prompt")
         .unwrap();
 
     assert_eq!(
-        store
-            .effective_system_prompt_for_head(&conversation_id, Some(&branch_prompt_id))
-            .unwrap()
-            .as_deref(),
-        Some("branch prompt")
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
+        Some("global prompt")
     );
+    // Both heads should see same prompt via ContextBuilder (tree-wide)
     assert_eq!(
-        store
-            .effective_system_prompt_for_head(&conversation_id, Some(&sibling_id))
-            .unwrap()
-            .as_deref(),
-        Some("shared prompt")
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
+        Some("global prompt")
     );
+    // Ensure branch ids exist still
+    assert!(store.load_path_to_message(&conversation_id, &branch_id).is_ok());
+    assert!(store.load_path_to_message(&conversation_id, &sibling_id).is_ok());
 }
 
 #[test]
@@ -701,7 +681,7 @@ fn saves_updates_and_removes_tool_schemas() {
 }
 
 #[test]
-fn tool_schemas_are_resolved_from_selected_message_path() {
+fn tool_schemas_are_tree_wide_same_for_any_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let shared_tool = ToolSchema {
@@ -709,53 +689,28 @@ fn tool_schemas_are_resolved_from_selected_message_path() {
         description: "Shared tool".to_string(),
         parameters: serde_json::json!({"type":"object"}),
     };
-    let branch_tool = ToolSchema {
-        name: ToolSchemaName::new("branch_tool"),
-        description: "Branch tool".to_string(),
-        parameters: serde_json::json!({"type":"object"}),
-    };
     let root_id = store
         .insert_message(&conversation_id, None, Role::User, "root", None)
         .unwrap();
-    let shared_id = store
-        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
-        .unwrap();
-    store
-        .insert_tool_schema_at_head(&conversation_id, Some(&shared_id), &shared_tool)
-        .unwrap();
-
     let branch_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&shared_id),
-            Role::User,
-            "branch",
-            None,
-        )
-        .unwrap();
-    store
-        .insert_tool_schema_at_head(&conversation_id, Some(&branch_id), &branch_tool)
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "branch", None)
         .unwrap();
     let sibling_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&shared_id),
-            Role::User,
-            "sibling",
-            None,
-        )
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "sibling", None)
+        .unwrap();
+    store
+        .insert_tool_schema(&conversation_id, &shared_tool)
         .unwrap();
 
     assert_eq!(
-        store
-            .load_tool_schemas_for_head(&conversation_id, Some(&branch_id))
-            .unwrap(),
-        vec![shared_tool.clone(), branch_tool]
+        store.load_tool_schemas(&conversation_id).unwrap(),
+        vec![shared_tool.clone()]
     );
+    // Both branches see same tools tree-wide
+    assert!(store.load_path_to_message(&conversation_id, &branch_id).is_ok());
+    assert!(store.load_path_to_message(&conversation_id, &sibling_id).is_ok());
     assert_eq!(
-        store
-            .load_tool_schemas_for_head(&conversation_id, Some(&sibling_id))
-            .unwrap(),
+        store.load_tool_schemas(&conversation_id).unwrap(),
         vec![shared_tool]
     );
 }
@@ -2349,11 +2304,11 @@ fn forks_conversation_at_message() {
             Some(&metadata),
         )
         .unwrap();
-    let prompt_id = store
-        .set_system_prompt_at_head(&conversation_id, Some(&second_id), "fork prompt")
+    store
+        .set_system_prompt(&conversation_id, "fork prompt")
         .unwrap();
     store
-        .insert_tool_schema_at_head(&conversation_id, Some(&prompt_id), &fork_tool)
+        .insert_tool_schema(&conversation_id, &fork_tool)
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     store
@@ -2367,24 +2322,20 @@ fn forks_conversation_at_message() {
         .unwrap();
 
     let forked_conversation_id = store
-        .fork_conversation_at_message(&conversation_id, &prompt_id)
+        .fork_conversation_at_message(&conversation_id, &second_id)
         .unwrap();
 
     let source_messages = store.load_messages(&conversation_id).unwrap();
     let forked_messages = store.load_messages(&forked_conversation_id).unwrap();
-    let forked_head_message_id = forked_messages
-        .last()
-        .and_then(|message| message.id.as_ref())
-        .expect("forked path should have a head");
     let forked_model = store.conversation_model(&forked_conversation_id).unwrap();
     let forked_reasoning_effort = store
         .conversation_reasoning_effort(&forked_conversation_id)
         .unwrap();
     let forked_system_prompt = store
-        .effective_system_prompt_for_head(&forked_conversation_id, Some(forked_head_message_id))
+        .system_prompt(&forked_conversation_id)
         .unwrap();
     let forked_tool_schemas = store
-        .load_tool_schemas_for_head(&forked_conversation_id, Some(forked_head_message_id))
+        .load_tool_schemas(&forked_conversation_id)
         .unwrap();
 
     assert_ne!(forked_conversation_id, conversation_id);
@@ -2392,23 +2343,17 @@ fn forks_conversation_at_message() {
     assert_eq!(forked_reasoning_effort.as_deref(), Some("high"));
     assert_eq!(forked_system_prompt.as_deref(), Some("fork prompt"));
     assert_eq!(forked_tool_schemas, vec![fork_tool]);
-    assert_eq!(source_messages.len(), 4);
-    assert_eq!(forked_messages.len(), 3);
+    assert_eq!(source_messages.len(), 3);
+    assert_eq!(forked_messages.len(), 2);
     assert_eq!(forked_messages[0].role, Role::User);
     assert_eq!(forked_messages[0].content, "one");
     assert_eq!(forked_messages[1].role, Role::Assistant);
     assert_eq!(forked_messages[1].content, "two");
     assert_eq!(forked_messages[1].metadata.as_ref(), Some(&metadata));
-    assert_eq!(forked_messages[2].role, Role::System);
-    assert_eq!(forked_messages[2].content, "fork prompt");
     assert_ne!(forked_messages[0].id.as_deref(), Some(first_id.as_str()));
     assert_eq!(
         forked_messages[1].parent_message_id.as_deref(),
         forked_messages[0].id.as_deref()
-    );
-    assert_eq!(
-        forked_messages[2].parent_message_id.as_deref(),
-        forked_messages[1].id.as_deref()
     );
 }
 
@@ -2535,4 +2480,113 @@ fn rejects_saving_compaction_to_missing_conversation() {
         .unwrap_err();
 
     assert!(error.to_string().contains("conversation does not exist"));
+}
+
+#[test]
+fn enumerates_root_to_leaf_paths() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+
+    let root = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let left = store
+        .insert_message(&conversation_id, Some(&root), Role::User, "left", None)
+        .unwrap();
+    let right = store
+        .insert_message(&conversation_id, Some(&root), Role::User, "right", None)
+        .unwrap();
+    let ll = store
+        .insert_message(&conversation_id, Some(&left), Role::User, "ll", None)
+        .unwrap();
+    let lr = store
+        .insert_message(&conversation_id, Some(&left), Role::User, "lr", None)
+        .unwrap();
+    let rl = store
+        .insert_message(&conversation_id, Some(&right), Role::User, "rl", None)
+        .unwrap();
+    let lll = store
+        .insert_message(&conversation_id, Some(&ll), Role::User, "lll", None)
+        .unwrap();
+    let llr = store
+        .insert_message(&conversation_id, Some(&ll), Role::User, "llr", None)
+        .unwrap();
+    let lrl = store
+        .insert_message(&conversation_id, Some(&lr), Role::User, "lrl", None)
+        .unwrap();
+    let lrr = store
+        .insert_message(&conversation_id, Some(&lr), Role::User, "lrr", None)
+        .unwrap();
+    let rll = store
+        .insert_message(&conversation_id, Some(&rl), Role::User, "rll", None)
+        .unwrap();
+    let rlr = store
+        .insert_message(&conversation_id, Some(&rl), Role::User, "rlr", None)
+        .unwrap();
+
+    let paths = store.root_to_leaf_paths(&conversation_id).unwrap();
+
+    let path_keys: Vec<Vec<String>> = paths
+        .iter()
+        .map(|path| path.iter().map(|id| id.as_str().to_string()).collect())
+        .collect();
+    let expected: Vec<Vec<String>> = vec![
+        vec![
+            root.as_str().to_string(),
+            left.as_str().to_string(),
+            ll.as_str().to_string(),
+            lll.as_str().to_string(),
+        ],
+        vec![
+            root.as_str().to_string(),
+            left.as_str().to_string(),
+            ll.as_str().to_string(),
+            llr.as_str().to_string(),
+        ],
+        vec![
+            root.as_str().to_string(),
+            left.as_str().to_string(),
+            lr.as_str().to_string(),
+            lrl.as_str().to_string(),
+        ],
+        vec![
+            root.as_str().to_string(),
+            left.as_str().to_string(),
+            lr.as_str().to_string(),
+            lrr.as_str().to_string(),
+        ],
+        vec![
+            root.as_str().to_string(),
+            right.as_str().to_string(),
+            rl.as_str().to_string(),
+            rll.as_str().to_string(),
+        ],
+        vec![
+            root.as_str().to_string(),
+            right.as_str().to_string(),
+            rl.as_str().to_string(),
+            rlr.as_str().to_string(),
+        ],
+    ];
+    let mut actual_sorted = path_keys.clone();
+    let mut expected_sorted = expected.clone();
+    actual_sorted.sort_by_key(|a| a.join("/"));
+    expected_sorted.sort_by_key(|a| a.join("/"));
+
+    assert_eq!(actual_sorted, expected_sorted);
+
+    for path in &path_keys {
+        assert_eq!(path.first().unwrap(), root.as_str());
+    }
+
+    let isolated = store.create_conversation("openai/test").unwrap();
+    store
+        .insert_message(&isolated, None, Role::User, "only", None)
+        .unwrap();
+    let only_paths = store.root_to_leaf_paths(&isolated).unwrap();
+    assert_eq!(only_paths.len(), 1);
+    assert_eq!(only_paths[0].len(), 1);
+
+    let empty = store.create_conversation("openai/test").unwrap();
+    assert!(store.root_to_leaf_paths(&empty).unwrap().is_empty());
 }

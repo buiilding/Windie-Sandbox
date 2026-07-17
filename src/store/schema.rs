@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 15;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 16;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -37,6 +37,7 @@ impl Store {
                     model TEXT NOT NULL,
                     reasoning_effort TEXT,
                     tool_approval_mode TEXT NOT NULL,
+                    system_prompt TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -119,22 +120,20 @@ impl Store {
                 );
 
                 CREATE TABLE IF NOT EXISTS tool_schemas (
-                    id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
-                    parent_message_id TEXT,
                     name TEXT NOT NULL,
-                    description TEXT,
-                    parameters_json TEXT,
-                    provider_id TEXT,
-                    provider_tool_name TEXT,
-                    provider_kind TEXT,
-                    permissions_json TEXT,
-                    annotations_json TEXT,
-                    state TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    provider_tool_name TEXT NOT NULL,
+                    provider_kind TEXT NOT NULL,
+                    permissions_json TEXT NOT NULL,
+                    annotations_json TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
 
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
-                    FOREIGN KEY (parent_message_id) REFERENCES messages(id)
+                    PRIMARY KEY (conversation_id, name),
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
@@ -157,9 +156,6 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
                 ON tool_schemas(conversation_id, created_at);
-
-                CREATE INDEX IF NOT EXISTS tool_schemas_parent_idx
-                ON tool_schemas(conversation_id, parent_message_id);
                 ",
             )
             .context("failed to migrate database")?;

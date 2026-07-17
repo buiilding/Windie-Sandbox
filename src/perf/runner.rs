@@ -120,7 +120,7 @@ pub async fn run(
             let tree_load = tree_started.elapsed();
 
             let tool_schema_started = Instant::now();
-            let _ = store.load_tool_schemas_for_head(conversation_id, head_message_id.as_ref())?;
+            let _ = store.load_tool_schemas(conversation_id)?;
             let tool_schema_load = tool_schema_started.elapsed();
 
             let context_started = Instant::now();
@@ -134,8 +134,7 @@ pub async fn run(
             let context_path_load = context_path_started.elapsed();
 
             let context_system_prompt_started = Instant::now();
-            let _context_system_prompt = store
-                .effective_system_prompt_for_head(conversation_id, head_message_id.as_ref())?;
+            let _context_system_prompt = store.system_prompt(conversation_id)?;
             let context_system_prompt_load = context_system_prompt_started.elapsed();
 
             let context_compaction_started = Instant::now();
@@ -145,6 +144,7 @@ pub async fn run(
             let context_flatten_started = Instant::now();
             let _ = ContextBuilder::flatten(ContextParts {
                 path: context_path,
+                system_prompt: None,
                 compaction: context_compaction,
             });
             let context_flatten = context_flatten_started.elapsed();

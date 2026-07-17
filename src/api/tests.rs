@@ -586,7 +586,7 @@ async fn update_remove_and_schema_routes_share_operations() {
 }
 
 #[tokio::test]
-async fn context_mutation_routes_can_target_explicit_heads() {
+async fn system_prompt_and_tools_are_tree_wide() {
     let db_path = temp_database_path();
     let app = test_app(db_path.clone());
     let mut store = Store::open_at(&db_path).unwrap();
@@ -594,13 +594,10 @@ async fn context_mutation_routes_can_target_explicit_heads() {
     let root_id = store
         .insert_message(&conversation_id, None, Role::User, "root", None)
         .unwrap();
-    let shared_id = store
-        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
-        .unwrap();
     let branch_id = store
         .insert_message(
             &conversation_id,
-            Some(&shared_id),
+            Some(&root_id),
             Role::User,
             "branch",
             None,
@@ -609,13 +606,12 @@ async fn context_mutation_routes_can_target_explicit_heads() {
     let sibling_id = store
         .insert_message(
             &conversation_id,
-            Some(&shared_id),
+            Some(&root_id),
             Role::User,
             "sibling",
             None,
         )
         .unwrap();
-    let _ = sibling_id;
     drop(store);
 
     let prompt_response = response_json(
@@ -624,8 +620,7 @@ async fn context_mutation_routes_can_target_explicit_heads() {
                 Method::PATCH,
                 &format!("/api/conversations/{conversation_id}/system-prompt"),
                 Some(json!({
-                    "text": "branch prompt",
-                    "head_message_id": branch_id.as_str()
+                    "text": "global prompt"
                 })),
             ))
             .await
@@ -633,54 +628,43 @@ async fn context_mutation_routes_can_target_explicit_heads() {
     )
     .await;
     let tool_response = response_json(
-        app.oneshot(authed_request(
-            Method::POST,
-            &format!("/api/conversations/{conversation_id}/tool-schemas"),
-            Some(json!({
-                "name": "branch_tool",
-                "description": "Branch tool",
-                "parameters": {"type": "object"},
-                "head_message_id": branch_id.as_str()
-            })),
-        ))
-        .await
-        .unwrap(),
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/tool-schemas"),
+                Some(json!({
+                    "name": "global_tool",
+                    "description": "Global tool",
+                    "parameters": {"type": "object"}
+                })),
+            ))
+            .await
+            .unwrap(),
     )
     .await;
 
-    assert_eq!(prompt_response["system_prompt"], "branch prompt");
-    assert_eq!(tool_response["name"], "branch_tool");
+    assert_eq!(prompt_response["system_prompt"], "global prompt");
+    assert_eq!(tool_response["name"], "global_tool");
 
     let store = Store::open_at(&db_path).unwrap();
-    let prompt_message_id = MessageId::new(prompt_response["message_id"].as_str().unwrap());
 
     assert_eq!(
         store
-            .effective_system_prompt_for_head(&conversation_id, Some(&prompt_message_id))
+            .system_prompt(&conversation_id)
             .unwrap()
             .as_deref(),
-        Some("branch prompt")
-    );
-    assert!(
-        store
-            .effective_system_prompt_for_head(&conversation_id, Some(&sibling_id))
-            .unwrap()
-            .is_none()
+        Some("global prompt")
     );
     assert_eq!(
-        store
-            .load_tool_schemas_for_head(&conversation_id, Some(&prompt_message_id))
-            .unwrap()[0]
+        store.load_tool_schemas(&conversation_id).unwrap()[0]
             .name
             .as_str(),
-        "branch_tool"
+        "global_tool"
     );
-    assert!(
-        store
-            .load_tool_schemas_for_head(&conversation_id, Some(&sibling_id))
-            .unwrap()
-            .is_empty()
-    );
+    // Tree-wide: both branches see same
+    assert!(store.load_path_to_message(&conversation_id, &branch_id).is_ok());
+    assert!(store.load_path_to_message(&conversation_id, &sibling_id).is_ok());
+    assert_eq!(store.system_prompt(&conversation_id).unwrap().as_deref(), Some("global prompt"));
     let _ = fs::remove_file(db_path);
 }
 

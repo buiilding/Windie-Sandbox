@@ -603,14 +603,13 @@ pub(super) fn benchmark_context_with_system_prompt() -> Result<Duration> {
         let conversation_id = store.create_conversation("openai/test")?;
         let head_message_id = create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?
             .expect("message chain fixture should have a head");
-        let prompt_id = store.set_system_prompt_at_head(
+        store.set_system_prompt(
             &conversation_id,
-            Some(&head_message_id),
             "You are a concise local runtime.",
         )?;
 
         let started = Instant::now();
-        let _ = ContextBuilder::build_messages(store, &conversation_id, Some(&prompt_id))?;
+        let _ = ContextBuilder::build_messages(store, &conversation_id, Some(&head_message_id))?;
         Ok(started.elapsed())
     })
 }
