@@ -49,7 +49,7 @@ export default function InspectorPanel({ mode, onClose }) {
 
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
   const [pendingToolActionKeys, setPendingToolActionKeys] = useState([]);
-  const [collapsedToolProviderIds, setCollapsedToolProviderIds] = useState([]);
+  const [collapsedToolProviderIds, setCollapsedToolProviderIds] = useState(null);
   const pendingRef = useRef(new Set());
   const initRef = useRef(new Set());
 
@@ -57,9 +57,7 @@ export default function InspectorPanel({ mode, onClose }) {
 
   const attachedNames = useMemo(() => new Set(toolSchemas.map((s) => s.name)), [toolSchemas]);
   const pendingSet = useMemo(() => new Set(pendingToolActionKeys), [pendingToolActionKeys]);
-  const collapsedSet = useMemo(() => new Set(collapsedToolProviderIds), [collapsedToolProviderIds]);
 
-  const toggle = (id) => setCollapsedToolProviderIds((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
   const setPending = (k, v) => {
     const n = new Set(pendingRef.current);
     if (v) n.add(k);
@@ -96,11 +94,25 @@ export default function InspectorPanel({ mode, onClose }) {
 
   const unavailable = useMemo(() => (toolProviderStatuses || []).filter((p) => !p.available), [toolProviderStatuses]);
 
+  // Provider groups start collapsed during the first render so opening the
+  // tools overlay never briefly paints their expanded contents.
+  const collapsedSet = useMemo(
+    () => new Set(collapsedToolProviderIds ?? grouped.map((g) => g.providerId)),
+    [collapsedToolProviderIds, grouped]
+  );
+
+  const toggle = (id) => setCollapsedToolProviderIds((c) => {
+    const current = c ?? grouped.map((g) => g.providerId);
+    return current.includes(id)
+      ? current.filter((x) => x !== id)
+      : [...current, id];
+  });
+
   useEffect(() => {
     const unseen = grouped.map((g) => g.providerId).filter((id) => !initRef.current.has(id));
     if (!unseen.length) return;
     unseen.forEach((id) => initRef.current.add(id));
-    setCollapsedToolProviderIds((c) => [...new Set([...c, ...unseen])]);
+    setCollapsedToolProviderIds((c) => [...new Set([...(c || []), ...unseen])]);
   }, [grouped]);
 
   useEffect(() => {
@@ -114,7 +126,7 @@ export default function InspectorPanel({ mode, onClose }) {
   if (!activeConv || !mode) return null;
 
   return (
-    <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center p-6 overflow-y-auto windie-scroll">
+    <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center px-6 pt-12 pb-6 overflow-y-auto windie-scroll">
       <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl min-h-[70vh]" : "max-w-2xl max-h-full"}`}>
         <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system prompt" : "tools"}</span>

@@ -7,7 +7,6 @@ import {
   ChevronDown,
   Square,
   Play,
-  RefreshCw,
   Image as ImageIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -33,7 +32,6 @@ export default function Composer() {
     models,
     modelsLoading,
     modelsError,
-    refreshModels,
     loadModelParameters,
     activeModelParameters,
     activeReasoning,
@@ -162,10 +160,6 @@ export default function Composer() {
     continueConversation();
   };
 
-  const refreshModelList = () => {
-    refreshModels().catch((error) => toast.error(error.message));
-  };
-
   return (
     <div className="border-t border-border bg-background" data-testid="composer">
       <div className="px-6 py-3 flex items-start gap-3">
@@ -270,28 +264,13 @@ export default function Composer() {
                     onClick={() => setModelMenuOpen(false)}
                   />
                   <div className="absolute bottom-full mb-1 left-0 z-20 w-[420px] max-w-[calc(100vw-3rem)] bg-popover border border-border shadow-md">
-                    <div className="px-2.5 py-1.5 border-b border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground flex items-center justify-between gap-2">
-                      <span>model</span>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          refreshModelList();
-                        }}
-                        className="size-6 inline-flex items-center justify-center border border-transparent hover:border-border hover:bg-surface-hover text-muted-foreground"
-                        title="refresh models"
-                        aria-label="refresh models"
-                      >
-                        <RefreshCw className={`size-3.5 ${modelsLoading ? "animate-spin" : ""}`} strokeWidth={1.75} />
-                      </button>
-                    </div>
                     <div className="p-2 border-b border-border">
                       <input
                         ref={modelFilterRef}
                         data-testid="composer-model-filter"
                         value={modelSearch}
                         onChange={(event) => setModelSearch(event.target.value)}
-                        placeholder="search"
+                        placeholder="search model"
                         className="h-8 w-full bg-background border border-border px-2 font-mono text-xs outline-none placeholder:text-muted-foreground/60 focus:border-[hsl(var(--accent))]"
                       />
                     </div>
