@@ -65,7 +65,7 @@ code,
 
     .dark {
         --background: 0 0% 9.4%;
-        --foreground: 0 0% 98%;
+        --foreground: 0 0% 100%;
         --surface: 240 6% 8%;
         --surface-hover: 240 5% 12%;
         --card: 240 10% 4%;
