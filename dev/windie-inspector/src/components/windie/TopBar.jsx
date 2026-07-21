@@ -1,6 +1,5 @@
 import { useWindie } from "@/context/WindieContext";
 import { Sun, Moon, Columns2, GitBranch } from "lucide-react";
-import ConversationPicker from "@/components/windie/ConversationPicker";
 import SessionsChip from "@/components/windie/SessionsChip";
 
 function formatTokenCount(value) {
@@ -45,8 +44,6 @@ export default function TopBar({ treeCollapsed, onTreeToggle }) {
       >
         <GitBranch className="size-3.5" strokeWidth={1.75} />
       </button>
-
-      <ConversationPicker />
 
       <SessionsChip />
 

@@ -1,4 +1,4 @@
-//! Compact topbar conversation picker with a search field and a new-conversation action.
+//! Conversation picker with search, selection, and conversation actions.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
@@ -16,7 +16,8 @@ function conversationLabel(conv) {
   return conv.name || `conversation ${shortId(conv.id)}`;
 }
 
-export default function ConversationPicker() {
+export default function ConversationPicker({ variant = "topbar" }) {
+  const inSidebar = variant === "sidebar";
   const {
     conversations,
     activeConv,
@@ -105,12 +106,12 @@ export default function ConversationPicker() {
   };
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className={inSidebar ? "relative w-full" : "relative"}>
       <button
         type="button"
-        data-testid="topbar-conv-picker"
+        data-testid={inSidebar ? "sidebar-conv-picker" : "topbar-conv-picker"}
         onClick={() => setOpen((current) => !current)}
-        className={`flex items-center gap-1.5 h-7 px-2 border border-border hover:bg-surface-hover transition-colors min-w-[160px] ${
+        className={`${inSidebar ? "w-full h-10 px-3 border-0 border-b" : "flex min-w-[160px] h-7 px-2 border"} flex items-center gap-1.5 border-border hover:bg-surface-hover transition-colors ${
           open ? "bg-surface-hover" : ""
         }`}
         title={activeConv ? activeConv.id : "no conversation selected"}
@@ -121,13 +122,13 @@ export default function ConversationPicker() {
 
       {open && (
         <div
-          data-testid="topbar-conv-picker-menu"
-          className="absolute right-0 top-full mt-1 z-30 w-72 bg-popover border border-border shadow-md"
+          data-testid={inSidebar ? "sidebar-conv-picker-menu" : "topbar-conv-picker-menu"}
+          className={`absolute top-full z-30 bg-popover border border-border shadow-md ${inSidebar ? "left-0 mt-0 w-full" : "right-0 mt-1 w-72"}`}
         >
           <div className="flex items-center gap-1.5 px-2 h-8 border-b border-border">
             <input
               ref={inputRef}
-              data-testid="topbar-conv-picker-search"
+              data-testid={inSidebar ? "sidebar-conv-picker-search" : "topbar-conv-picker-search"}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="filter by id"
@@ -148,7 +149,7 @@ export default function ConversationPicker() {
             )}
           </div>
 
-          <div className="max-h-64 overflow-y-auto windie-scroll" data-testid="topbar-conv-picker-list">
+            <div className="max-h-64 overflow-y-auto windie-scroll" data-testid={inSidebar ? "sidebar-conv-picker-list" : "topbar-conv-picker-list"}>
             {sorted.length === 0 ? (
               <div className="px-3 py-3 font-mono text-[11px] text-muted-foreground">
                 {query ? "no matches" : "no conversations"}
@@ -204,7 +205,7 @@ export default function ConversationPicker() {
           <div className="border-t border-border">
             <button
               type="button"
-              data-testid="topbar-conv-picker-new"
+              data-testid={inSidebar ? "sidebar-conv-picker-new" : "topbar-conv-picker-new"}
               onClick={handleCreate}
               className="w-full text-left px-3 py-2 font-mono text-[11px] flex items-center gap-2 hover:bg-surface-hover"
             >

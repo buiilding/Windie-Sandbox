@@ -1,4 +1,5 @@
 import { useWindie } from "@/context/WindieContext";
+import ConversationPicker from "@/components/windie/ConversationPicker";
 import TreePanel from "@/components/windie/TreePanel";
 
 export default function Sidebar({ treeCollapsed }) {
@@ -7,10 +8,13 @@ export default function Sidebar({ treeCollapsed }) {
   return (
     <aside
       data-testid="windie-sidebar"
-      className={`shrink-0 border-r border-border flex flex-col bg-background overflow-hidden transition-[width] duration-300 ease-out ${treeCollapsed ? "w-10" : "w-[24.5rem]"}`}
+      className={`shrink-0 border-r border-border flex flex-col bg-background transition-[width] duration-300 ease-out ${treeCollapsed ? "w-10 overflow-hidden" : "w-[24.5rem] overflow-visible"}`}
     >
       {!treeCollapsed && (
         <>
+          <div className="relative z-40 shrink-0">
+            <ConversationPicker variant="sidebar" />
+          </div>
           <div className="flex-1 min-h-0" data-testid="windie-sidebar-content">
             {activeConv ? <TreePanel /> : null}
           </div>
