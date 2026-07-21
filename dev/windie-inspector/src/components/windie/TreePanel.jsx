@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
 import { ROLE_TOKENS } from "@/lib/mockData";
-import { GitBranch, MoreHorizontal } from "lucide-react";
-import ConversationTreeMenu from "@/components/windie/ConversationTreeMenu";
+import { MoreHorizontal } from "lucide-react";
 import TreeNodeContextMenu, { treeContextMenuPosition } from "@/components/windie/TreeNodeContextMenu";
 import { isExecutionGroup, isExecutionNode, projectTree } from "@/lib/treeProjection";
 
@@ -92,14 +91,6 @@ export default function TreePanel() {
 
   return (
     <div className="h-full w-full flex flex-col bg-background">
-      <div className="h-9 shrink-0 border-b border-border px-4 flex items-center justify-between font-mono text-[11px]">
-        <div className="flex items-center gap-3 min-w-0">
-          <GitBranch className="size-3.5" />
-          <span className="uppercase tracking-widest">conversation tree</span>
-          <span className="text-muted-foreground truncate">{Object.keys(activeConv.nodes).length} nodes · {Object.values(activeConv.nodes).filter((node) => node.childrenIds.length > 1).length} branches · path {selectedPathNodes.length}</span>
-        </div>
-        <ConversationTreeMenu />
-      </div>
       <div className="flex-1 min-h-0 overflow-auto windie-scroll windie-grid-bg">
         <div className="relative" style={{ width: layout.width, height: layout.height }}>
           <svg className="absolute inset-0 pointer-events-none" width={layout.width} height={layout.height}>
