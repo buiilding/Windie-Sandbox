@@ -11,6 +11,8 @@ pub(super) fn router(state: ApiState) -> Router {
         .allow_origin([
             HeaderValue::from_static("http://localhost:3000"),
             HeaderValue::from_static("http://127.0.0.1:3000"),
+            HeaderValue::from_static("http://localhost:5173"),
+            HeaderValue::from_static("http://127.0.0.1:5173"),
         ])
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers([CONTENT_TYPE, HeaderName::from_static(API_TOKEN_HEADER)]);
@@ -70,7 +72,7 @@ pub(super) fn router(state: ApiState) -> Router {
         )
         .route(
             "/api/conversations/{conversation_id}/tools",
-            post(attach_tool),
+            get(list_attached_tools).post(attach_tool),
         )
         .route(
             "/api/conversations/{conversation_id}/tools/batch",

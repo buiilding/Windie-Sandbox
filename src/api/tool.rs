@@ -119,6 +119,24 @@ pub(super) struct ToolSchemasResponse {
     pub(super) names: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+/// Read-only list of one conversation's attached tools (model-facing schemas).
+pub(super) struct AttachedToolsResponse {
+    pub(super) tools: Vec<ToolSchema>,
+}
+
+/// Loads one conversation's attached tools without the full inspection report.
+pub(super) async fn list_attached_tools(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+) -> ApiResult<AttachedToolsResponse> {
+    let conversation_id = ConversationId::new(conversation_id);
+    let store = open_store(&state)?;
+    let tools = store.load_tool_schemas(&conversation_id)?;
+
+    Ok(Json(AttachedToolsResponse { tools }))
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct AttachToolRequest {
     pub(super) provider_id: String,

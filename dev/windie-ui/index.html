@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Windie</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
+    #app { max-width: 720px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+    #status { font-size: 13px; color: #888; margin-bottom: 12px; }
+    #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
+    .msg { padding: 8px 12px; border-radius: 8px; white-space: pre-wrap; max-width: 85%; }
+    .user { align-self: flex-end; background: #2b5cb8; }
+    .assistant { align-self: flex-start; background: #222; border: 1px solid #333; }
+    .meta { font-size: 11px; color: #999; margin-bottom: 4px; }
+    /* reasoning (thinking) block */
+    .reasoning { background: #191922; border: 1px solid #2a2a3a; }
+    .reasoning summary { cursor: pointer; font-size: 12px; color: #99a; }
+    .reasoning-body { font-size: 12px; color: #aab; white-space: pre-wrap; margin-top: 6px; }
+    /* tool call chip */
+    .toolcall { background: #1d2415; border: 1px solid #33501f; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+    /* tool result block */
+    .tool { background: #241d15; border: 1px solid #50401f; font-size: 12px; color: #cb8; }
+    /* approval card */
+    .approval { background: #2a1a1a; border: 1px solid #5a2a2a; align-self: stretch; }
+    .approval .args { background: #1a1a1a; padding: 8px; border-radius: 6px; font-size: 12px; overflow-x: auto; margin: 6px 0; }
+    .approval button { margin-right: 8px; padding: 6px 12px; font-size: 12px; }
+    .approval button.deny { background: #6a2a2a; }
+    #composer { display: flex; gap: 8px; align-items: center; }
+    #input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #333; background: #1a1a1a; color: #eee; }
+    button { padding: 10px 16px; border-radius: 8px; border: 0; background: #2b5cb8; color: #fff; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+
+    /* model button in the composer bar */
+    #model-btn { display: flex; align-items: center; gap: 8px; background: #1a1a1a; border: 1px solid #333; color: #eee; padding: 10px 12px; border-radius: 8px; max-width: 45%; }
+    #model-btn .tag { font-size: 10px; color: #888; letter-spacing: 1px; }
+    #model-btn .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #model-btn .caret { color: #888; }
+
+    /* overlay panel behind the model picker */
+    #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; z-index: 20; }
+    #overlay.open { display: block; }
+
+    /* the model picker panel */
+    #picker { position: fixed; left: 50%; top: 12%; transform: translateX(-50%); width: 520px; max-width: 92vw; max-height: 70vh; background: #0d0d0d; border: 1px solid #333; border-radius: 10px; display: none; flex-direction: column; z-index: 30; overflow: hidden; }
+    #picker.open { display: flex; }
+    #picker-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #222; }
+    #picker-head .title { font-size: 11px; color: #888; letter-spacing: 1.5px; }
+    #picker-refresh { background: none; border: 0; color: #888; cursor: pointer; font-size: 16px; padding: 2px 6px; }
+    #picker-refresh:hover { color: #eee; }
+    #picker-filter { margin: 12px 14px; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #eee; }
+    #picker-list { flex: 1; overflow-y: auto; padding: 0 6px 8px; }
+    .prow { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; border-radius: 6px; cursor: pointer; }
+    .prow:hover { background: #1c1c1c; }
+    .prow.sel { background: #18243a; }
+    .prow .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .prow .provider { font-size: 10px; color: #777; letter-spacing: 1px; margin-left: 12px; flex-shrink: 0; }
+
+    /* tools button + panel (mirrors the model picker pattern) */
+    #tools-btn { display: flex; align-items: center; gap: 8px; background: #1a1a1a; border: 1px solid #333; color: #eee; padding: 10px 12px; border-radius: 8px; }
+    #tools-btn .tag { font-size: 10px; color: #888; letter-spacing: 1px; }
+    #tools-btn .count { font-size: 13px; }
+    #tools { position: fixed; left: 50%; top: 8%; transform: translateX(-50%); width: 560px; max-width: 94vw; max-height: 80vh; background: #0d0d0d; border: 1px solid #333; border-radius: 10px; display: none; flex-direction: column; z-index: 30; overflow: hidden; }
+    #tools.open { display: flex; }
+    #tools-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #222; }
+    #tools-head .title { font-size: 11px; color: #888; letter-spacing: 1.5px; }
+    #approval-mode { display: flex; border: 1px solid #333; border-radius: 6px; overflow: hidden; }
+    #approval-mode button { background: none; border: 0; color: #888; font-size: 10px; letter-spacing: 1px; padding: 6px 10px; cursor: pointer; }
+    #approval-mode button.on { background: #eee; color: #111; }
+    #tools-list { flex: 1; overflow-y: auto; padding: 10px; }
+    .pcard { border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+    .phead { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: #141414; cursor: pointer; }
+    .phead .pname { font-size: 11px; color: #eee; letter-spacing: 1px; }
+    .phead .pcount { font-size: 11px; color: #777; margin-top: 2px; }
+    .phead .acts { display: flex; gap: 6px; }
+    .iconbtn { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid #333; background: none; border-radius: 6px; color: #999; cursor: pointer; font-size: 15px; }
+    .iconbtn:hover { background: #1c1c1c; }
+    .iconbtn.danger { color: #c66; }
+    .iconbtn:disabled { opacity: 0.4; cursor: wait; }
+    .prow2 { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 12px 10px 20px; border-top: 1px solid #1e1e1e; }
+    .prow2 .tname { font-size: 12px; color: #6ab0ff; font-family: monospace; }
+    .prow2 .tdesc { font-size: 11px; color: #888; margin-top: 3px; line-height: 1.4; }
+    .prow2 .acts { flex-shrink: 0; }
+    .unavail { border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 10px; padding: 10px 12px; background: #121212; }
+    .unavail .u { font-size: 10px; color: #c66; letter-spacing: 1px; margin-top: 4px; }
+    .unavail .e { font-size: 11px; color: #777; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="status">starting…</div>
+    <div id="messages"></div>
+    <div id="composer">
+      <button id="model-btn" title="choose model">
+        <span class="tag">MODEL</span>
+        <span class="name" id="model-btn-name">…</span>
+        <span class="caret">▾</span>
+      </button>
+      <button id="tools-btn" title="choose tools">
+        <span class="tag">TOOLS</span>
+        <span class="count" id="tools-btn-count">0</span>
+      </button>
+      <input id="input" placeholder="type a message…" autocomplete="off" />
+      <button id="send">send</button>
+    </div>
+  </div>
+
+  <!-- model picker overlay + panel -->
+  <div id="overlay"></div>
+  <div id="picker">
+    <div id="picker-head">
+      <span class="title">MODEL</span>
+      <button id="picker-refresh" title="refresh models">⟳</button>
+    </div>
+    <input id="picker-filter" placeholder="filter models" autocomplete="off" />
+    <div id="picker-list"></div>
+  </div>
+
+  <!-- tools panel (shares #overlay backdrop with the model picker) -->
+  <div id="tools">
+    <div id="tools-head">
+      <span class="title">TOOL SCHEMAS</span>
+      <div id="approval-mode">
+        <button id="mode-manual" type="button">manual</button>
+        <button id="mode-auto" type="button">full access</button>
+      </div>
+    </div>
+    <div id="tools-list"></div>
+  </div>
+
+  <!-- module so we can `import` from api.js and stream.js -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

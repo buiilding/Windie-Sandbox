@@ -54,12 +54,13 @@ pub struct SessionManager {
     gateway_url: String,
     base_url: String,
     tools: Arc<ToolProviderRegistry>,
-    active: Arc<Mutex<HashMap<String, RunningSession>>>,
-}
-
-struct RunningSession {
-    sender: broadcast::Sender<SessionEventRecord>,
-    task: JoinHandle<()>,
+    /// Live running tasks, keyed by session. A task is removed when it finishes,
+    /// including when the session pauses for approval.
+    active: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    /// Durable broadcast channel per session, keyed by session. This outlives
+    /// any one task so a single subscription survives pause/resume across
+    /// approval waits. Removed only on terminal completion.
+    channels: Arc<Mutex<HashMap<String, broadcast::Sender<SessionEventRecord>>>>,
 }
 
 /// Complete input needed by one spawned session task.
@@ -87,6 +88,7 @@ impl SessionManager {
             base_url,
             tools,
             active: Arc::new(Mutex::new(HashMap::new())),
+            channels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -127,34 +129,46 @@ impl SessionManager {
         };
         drop(store);
 
-        let running = self
+        let session_key = resume.session.id.as_str().to_string();
+        let running_task = self
             .active
             .lock()
             .expect("run manager lock poisoned")
-            .remove(resume.session.id.as_str());
+            .remove(&session_key);
 
-        if let Some(running) = &running {
-            running.task.abort();
+        if let Some(task) = &running_task {
+            task.abort();
         }
 
         let mut store = self.open_store()?;
         store.update_session_status(&resume.session.id, SessionStatus::Cancelled, None)?;
         let record = store.append_session_event(&resume.session.id, SessionEvent::Cancelled)?;
-        if let Some(running) = running {
-            let _ = running.sender.send(record);
+
+        // Send the terminal event on the durable channel, then remove it so the
+        // stream closes after delivering the cancellation.
+        let sender = self
+            .channels
+            .lock()
+            .expect("run manager lock poisoned")
+            .remove(&session_key);
+        if let Some(sender) = sender {
+            let _ = sender.send(record);
         }
 
         Ok(())
     }
 
     /// Subscribes to future live events from a run.
+    ///
+    /// The receiver is bound to the session's durable channel, so it stays
+    /// valid across approval pauses and resumes on the same session.
     pub fn subscribe(&self, session_id: &SessionId) -> Option<SessionSubscription> {
-        self.active
+        self.channels
             .lock()
             .expect("run manager lock poisoned")
             .get(session_id.as_str())
-            .map(|running| SessionSubscription {
-                receiver: running.sender.subscribe(),
+            .map(|sender| SessionSubscription {
+                receiver: sender.subscribe(),
             })
     }
 
@@ -231,10 +245,21 @@ impl SessionManager {
         reasoning: Option<ReasoningRequest>,
         command: SessionCommand,
     ) {
-        let (sender, _) = broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY);
-        let task_sender = sender.clone();
+        let session_key = session_id.as_str().to_string();
+
+        // Reuse the session's durable channel, creating it only on first spawn.
+        // This is what lets one subscription survive approval pauses and resumes.
+        let sender = {
+            let mut channels = self.channels.lock().expect("run manager lock poisoned");
+            channels
+                .entry(session_key.clone())
+                .or_insert_with(|| broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY).0)
+                .clone()
+        };
+
         let manager = self.clone();
         let run_id_for_task = session_id.clone();
+        let task_key = session_key.clone();
 
         let task = tokio::spawn(async move {
             let result = manager
@@ -245,7 +270,7 @@ impl SessionManager {
                     model_override,
                     reasoning,
                     command,
-                    sender: task_sender,
+                    sender: sender.clone(),
                 })
                 .await;
             if let Err(error) = result {
@@ -255,21 +280,44 @@ impl SessionManager {
                         eprintln!("failed to persist run failure: {failure_error}");
                     });
             }
+
+            // The task is done for now (completed, failed, or waiting for
+            // approval). Remove just the task; the durable channel stays so a
+            // later resume keeps publishing to existing subscribers.
             manager
                 .active
                 .lock()
                 .expect("run manager lock poisoned")
-                .remove(run_id_for_task.as_str());
+                .remove(task_key.as_str());
+
+            // Only drop the durable channel once the session reached a terminal
+            // state, so waiting-for-approval keeps the subscription alive.
+            let terminal = manager
+                .open_store()
+                .and_then(|store| store.load_session(&run_id_for_task))
+                .map(|session| {
+                    matches!(
+                        session.status,
+                        SessionStatus::Completed | SessionStatus::Failed | SessionStatus::Cancelled
+                    )
+                })
+                .unwrap_or(false);
+            if terminal {
+                manager
+                    .channels
+                    .lock()
+                    .expect("run manager lock poisoned")
+                    .remove(task_key.as_str());
+            }
         });
 
-        let run_key = session_id.as_str().to_string();
         let mut active = self.active.lock().expect("run manager lock poisoned");
-        active.insert(run_key.clone(), RunningSession { sender, task });
+        active.insert(session_key.clone(), task);
         if active
-            .get(&run_key)
-            .is_some_and(|running| running.task.is_finished())
+            .get(&session_key)
+            .is_some_and(|running| running.is_finished())
         {
-            active.remove(&run_key);
+            active.remove(&session_key);
         }
     }
 
@@ -350,13 +398,13 @@ impl SessionManager {
     fn record_failure(&self, session_id: &SessionId, error: &anyhow::Error) -> Result<()> {
         let mut store = self.open_store()?;
         let record = operation::record_session_failure(&mut store, session_id, error)?;
-        if let Some(running) = self
-            .active
+        if let Some(sender) = self
+            .channels
             .lock()
             .expect("run manager lock poisoned")
             .get(session_id.as_str())
         {
-            let _ = running.sender.send(record);
+            let _ = sender.send(record);
         }
 
         Ok(())
