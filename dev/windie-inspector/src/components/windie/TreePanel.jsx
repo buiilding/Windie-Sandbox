@@ -8,7 +8,7 @@ import { isExecutionGroup, isExecutionNode, projectTree } from "@/lib/treeProjec
 function layoutTree(tree) {
   const nodes = tree.nodes;
   const rootIds = tree.rootIds;
-  if (!rootIds.length) return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 200, NODE_H: 62 };
+  if (!rootIds.length) return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 180, NODE_H: 78 };
 
   const depthOf = {};
   const order = [];
@@ -32,8 +32,8 @@ function layoutTree(tree) {
     byDepth[depth].push(id);
   });
 
-  const NODE_W = 200;
-  const NODE_H = 62;
+  const NODE_W = 180;
+  const NODE_H = 78;
   const GROUP_H = 30;
   const H_GAP = 40;
   const V_GAP = 28;
@@ -145,7 +145,7 @@ export default function TreePanel() {
               >
                 <div className="h-full flex flex-col p-2 gap-0.5">
                   <div className="flex items-center"><span className={`font-mono text-[10px] font-bold tracking-widest ${token.color}`}>[{token.label}]</span></div>
-                  <div className="text-[11px] leading-tight truncate">{text.slice(0, 42) || <span className="italic text-muted-foreground">(empty)</span>}</div>
+                  <div className="windie-tree-preview text-[11px] leading-tight">{text.slice(0, 180) || <span className="italic text-muted-foreground">(empty)</span>}</div>
                 </div>
               </button>
             );
