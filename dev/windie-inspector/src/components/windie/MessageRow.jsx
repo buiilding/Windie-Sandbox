@@ -9,6 +9,7 @@ import {
   Scissors,
   Trash2,
   Pencil,
+  Copy,
   MoreHorizontal,
   Wrench,
   Check,
@@ -19,6 +20,8 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
+
+const USER_MESSAGE_PREVIEW_LENGTH = 500;
 
 function RoleBadge({ role }) {
   const token = ROLE_TOKENS[role] || ROLE_TOKENS.user;
@@ -282,7 +285,7 @@ export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop
         <div className="w-16 shrink-0 pt-0.5">
           <RoleBadge role="assistant" />
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 pt-2">
           <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             <span className="text-foreground/70">streaming</span>
             {sessionId && <span className="text-muted-foreground/70">· session {sessionId.slice(0, 8)}</span>}
@@ -319,11 +322,13 @@ export default function MessageRow({ node, index, isLast }) {
     editMessage,
   } = useWindie();
   const [editing, setEditing] = useState(false);
+  const [userMessageExpanded, setUserMessageExpanded] = useState(false);
   const [draft, setDraft] = useState(() => node.message.parts.find((p) => p.type === "text")?.text || "");
 
   const isSelected = selectedNodeId === node.id;
   const role = node.message.role;
   const isSystem = role === "system";
+  const isUserMessage = role === "user";
   const messageTint = role === "user"
     ? "windie-message-user"
     : role === "assistant"
@@ -341,11 +346,25 @@ export default function MessageRow({ node, index, isLast }) {
     ? activeConv.nodes[node.parentId]?.childrenIds || []
     : [node.id];
   const hasSiblings = siblings.length > 1;
+  const userText = textPart?.text || "";
+  const isLongUserMessage = isUserMessage && userText.length > USER_MESSAGE_PREVIEW_LENGTH;
+  const visibleText = isLongUserMessage && !userMessageExpanded
+    ? `${userText.slice(0, USER_MESSAGE_PREVIEW_LENGTH).trimEnd()}…`
+    : userText;
 
   const commitEdit = () => {
     editMessage(activeConv.id, node.id, draft);
     setEditing(false);
     toast.message("message edited", { description: "created sibling on new path" });
+  };
+
+  const copyMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(textPart?.text || "");
+      toast.message("message copied");
+    } catch {
+      toast.error("could not copy message");
+    }
   };
 
   return (
@@ -362,7 +381,6 @@ export default function MessageRow({ node, index, isLast }) {
           {new Date(node.message.timestamp).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
-            second: "2-digit",
           })}
         </span>
       )}
@@ -376,7 +394,7 @@ export default function MessageRow({ node, index, isLast }) {
           )}
         </div>
 
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 pt-2">
           {(node.message.tokens || node.message.metadata?.toolCallId) && (
             <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             {node.message.tokens && <span>· {node.message.tokens}tok</span>}
@@ -397,7 +415,7 @@ export default function MessageRow({ node, index, isLast }) {
                 onClick={(e) => e.stopPropagation()}
                 autoFocus
                 rows={Math.min(12, Math.max(3, draft.split("\n").length + 1))}
-                className="w-full bg-transparent border border-foreground/60 p-2 font-mono text-xs leading-relaxed outline-none resize-none"
+                className="w-full min-h-[50vh] max-h-[70vh] overflow-y-auto bg-transparent border border-foreground/60 p-3 font-mono text-xs leading-relaxed outline-none resize-y"
               />
               <div className="flex items-center gap-2">
                 <button
@@ -437,7 +455,21 @@ export default function MessageRow({ node, index, isLast }) {
                   {textPart?.text}
                 </div>
               ) : (
-                <MessageMarkdown text={textPart?.text} isStreaming={isStreaming} />
+                <MessageMarkdown text={visibleText} isStreaming={isStreaming} />
+              )}
+
+              {isLongUserMessage && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setUserMessageExpanded((current) => !current);
+                  }}
+                  className="mt-2 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {userMessageExpanded ? "show less" : "show more"}
+                  <ChevronDown className={`size-3 transition-transform duration-300 ${userMessageExpanded ? "rotate-180" : ""}`} strokeWidth={1.75} />
+                </button>
               )}
 
               {imageParts.length > 0 && (
@@ -508,12 +540,24 @@ export default function MessageRow({ node, index, isLast }) {
             >
               <Pencil className="size-3.5" strokeWidth={1.75} />
             </button>
+            <button
+              data-testid={`msg-action-copy-${node.id}`}
+              title="copy message"
+              onClick={(e) => {
+                e.stopPropagation();
+                void copyMessage();
+              }}
+              className="p-1 border border-transparent hover:border-border hover:bg-surface-hover"
+            >
+              <Copy className="size-3.5" strokeWidth={1.75} />
+            </button>
             {!isSystem && (
               <button
                 data-testid={`msg-action-remove-${node.id}`}
                 title="remove message"
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (!window.confirm("Are you sure you want to remove this message?")) return;
                   void removeMessage(activeConv.id, node.id).catch(() => {});
                   toast.message("message removed");
                 }}
