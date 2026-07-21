@@ -45,6 +45,7 @@ export default function Composer() {
   const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   const taRef = useRef(null);
+  const modelFilterRef = useRef(null);
   const attachmentsRef = useRef([]);
 
   useEffect(() => {
@@ -57,6 +58,14 @@ export default function Composer() {
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return undefined;
+    const frame = requestAnimationFrame(() => {
+      modelFilterRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [modelMenuOpen]);
 
   useEffect(
     () => () => {
@@ -278,10 +287,11 @@ export default function Composer() {
                     </div>
                     <div className="p-2 border-b border-border">
                       <input
+                        ref={modelFilterRef}
                         data-testid="composer-model-filter"
                         value={modelSearch}
                         onChange={(event) => setModelSearch(event.target.value)}
-                        placeholder="filter models"
+                        placeholder="search"
                         className="h-8 w-full bg-background border border-border px-2 font-mono text-xs outline-none placeholder:text-muted-foreground/60 focus:border-[hsl(var(--accent))]"
                       />
                     </div>
