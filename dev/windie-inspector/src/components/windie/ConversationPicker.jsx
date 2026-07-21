@@ -94,7 +94,6 @@ export default function ConversationPicker() {
 
   const handleDelete = async (event, conversationId) => {
     event.stopPropagation();
-    if (!window.confirm("Delete this conversation and its tree?")) return;
     try {
       await deleteConversation(conversationId);
       setMenuConversation(null);

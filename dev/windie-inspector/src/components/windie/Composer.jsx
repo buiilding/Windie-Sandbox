@@ -405,7 +405,7 @@ export default function Composer() {
 
           <button
             data-testid="composer-send"
-            onClick={streaming && !hasSendContent ? stopStreaming : submit}
+          onClick={streaming && !hasSendContent ? () => stopStreaming() : submit}
             disabled={!streaming && !hasSendContent}
             className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
               streaming && !hasSendContent

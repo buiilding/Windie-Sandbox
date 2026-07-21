@@ -140,7 +140,7 @@ impl InputTokensResponse {
                 input_tokens: None,
                 total_tokens: None,
                 model: None,
-                source: None,
+                source,
                 raw: None,
             },
         }
@@ -166,6 +166,7 @@ pub(super) async fn count_input_tokens(
         &conversation_id,
         head_message_id.as_ref(),
     )?;
+    let had_context = context.is_some();
     let source = context
         .as_ref()
         .map(|context| context.source().as_str().to_string());
@@ -177,6 +178,12 @@ pub(super) async fn count_input_tokens(
         context,
     )
     .await?;
+
+    let source = if count.is_none() && had_context {
+        Some("unsupported".to_string())
+    } else {
+        source
+    };
 
     Ok(Json(InputTokensResponse::from_count(count, source)))
 }

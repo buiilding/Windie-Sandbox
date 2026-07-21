@@ -1,7 +1,7 @@
 //! Bifrost model identity, model listing, and model-parameter metadata.
 
 use anyhow::{Context, Result, anyhow};
-use reqwest::{Client, Url};
+use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +80,15 @@ pub struct ModelParameterInfo {
     pub raw: serde_json::Value,
 }
 
+impl ModelParameterInfo {
+    /// Returns whether Bifrost supplied any useful capability metadata.
+    fn has_usable_parameters(&self) -> bool {
+        !self.model_parameters.is_empty()
+            || self.supports_reasoning == Some(true)
+            || self.supports_reasoning_with_tool_calls == Some(true)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 /// One Bifrost model parameter description.
 pub struct ModelParameter {
@@ -134,11 +143,13 @@ pub async fn list_models(base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
 ///
 /// Bifrost's management datasheet can store model rows under different names:
 /// a full Windie model ID, a provider-local ID, or sometimes only the final
-/// model segment. Windie tries every slash suffix from most-specific to
-/// least-specific and uses the first successful metadata row.
+/// model segment. Windie tries every slash suffix from least-specific to
+/// most-specific and uses the first metadata row that contains useful data.
 pub async fn model_parameters(base_url: BaseUrl, model: &ModelName) -> Result<ModelParameterInfo> {
     let http = Client::new();
     let mut last_error = None;
+    let mut first_empty_response = None;
+    let mut has_unexpected_error = false;
 
     for candidate in model_parameter_candidates(model.as_str()) {
         let endpoint = model_parameters_endpoint(&base_url, candidate)?;
@@ -150,6 +161,9 @@ pub async fn model_parameters(base_url: BaseUrl, model: &ModelName) -> Result<Mo
 
         let status = response.status();
         if !status.is_success() {
+            if status != StatusCode::NOT_FOUND {
+                has_unexpected_error = true;
+            }
             let body = response.text().await.unwrap_or_default();
             last_error = Some(anyhow!(
                 "model parameter request failed with {status}: {body}"
@@ -157,15 +171,53 @@ pub async fn model_parameters(base_url: BaseUrl, model: &ModelName) -> Result<Mo
             continue;
         }
 
-        let raw = response
-            .json::<serde_json::Value>()
-            .await
-            .context("failed to parse model parameter response")?;
-        let mut parameters = serde_json::from_value::<ModelParameterInfo>(raw.clone())
-            .context("failed to decode model parameter response")?;
+        let raw = match response.json::<serde_json::Value>().await {
+            Ok(raw) => raw,
+            Err(error) => {
+                has_unexpected_error = true;
+                last_error = Some(anyhow!(
+                    "failed to parse model parameter response: {error}"
+                ));
+                continue;
+            }
+        };
+        let mut parameters = match serde_json::from_value::<ModelParameterInfo>(raw.clone()) {
+            Ok(parameters) => parameters,
+            Err(error) => {
+                has_unexpected_error = true;
+                last_error = Some(anyhow!(
+                    "failed to decode model parameter response: {error}"
+                ));
+                continue;
+            }
+        };
         parameters.raw = raw;
 
-        return Ok(parameters);
+        if parameters.has_usable_parameters() {
+            return Ok(parameters);
+        }
+        if first_empty_response.is_none() {
+            first_empty_response = Some(parameters);
+        }
+    }
+
+    if !has_unexpected_error {
+        if let Some(parameters) = first_empty_response {
+            return Ok(parameters);
+        }
+        return Ok(ModelParameterInfo {
+            model_parameters: Vec::new(),
+            supports_reasoning: Some(false),
+            supports_reasoning_with_tool_calls: Some(false),
+            supports_prompt_caching: Some(false),
+            raw: serde_json::json!({
+                "model": model.as_str(),
+                "model_parameters": [],
+                "supports_reasoning": false,
+                "supports_reasoning_with_tool_calls": false,
+                "supports_prompt_caching": false,
+            }),
+        });
     }
 
     Err(last_error.unwrap_or_else(|| anyhow!("model parameter request had no candidates")))
@@ -184,19 +236,19 @@ pub(super) fn model_parameters_endpoint(base_url: &BaseUrl, model: &str) -> Resu
     Ok(url)
 }
 
-/// Returns model-parameter lookup candidates from most-specific to
-/// least-specific.
+/// Returns model-parameter lookup candidates from least-specific to
+/// most-specific.
 pub(super) fn model_parameter_candidates(model: &str) -> Vec<&str> {
-    let mut candidates = vec![model];
-    candidates.extend(
-        model
-            .char_indices()
-            .filter(|(_, character)| *character == '/')
-            .filter_map(|(index, _)| {
-                let suffix = &model[index + 1..];
-                (!suffix.is_empty()).then_some(suffix)
-            }),
-    );
+    let mut candidates = model
+        .char_indices()
+        .filter(|(_, character)| *character == '/')
+        .rev()
+        .filter_map(|(index, _)| {
+            let suffix = &model[index + 1..];
+            (!suffix.is_empty()).then_some(suffix)
+        })
+        .collect::<Vec<_>>();
+    candidates.push(model);
     candidates.dedup();
     candidates
 }

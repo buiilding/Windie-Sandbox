@@ -49,11 +49,13 @@ impl BifrostClient {
     /// The request uses the same message and tool serializers as streaming
     /// inference. This keeps the count endpoint aligned with the payload Windie
     /// would send to Bifrost for a real model turn.
+    ///
+    /// Returns `None` when the provider does not support token counting.
     pub async fn count_input_tokens(
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-    ) -> Result<InputTokenCount> {
+    ) -> Result<Option<InputTokenCount>> {
         let request = ResponsesInputTokensRequest {
             model: self.model.as_str(),
             input: responses_input(messages, image_input_detail_for_model(self.model.as_str())),
@@ -71,6 +73,22 @@ impl BifrostClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+
+            // Bifrost reports provider capability through this stable error.
+            if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
+                let unsupported = error_json.get("error").is_some_and(|error| {
+                    error.get("code").and_then(serde_json::Value::as_str)
+                        == Some("unsupported_operation")
+                        && error
+                            .get("message")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|message| message.contains("count_tokens is not supported"))
+                });
+                if unsupported {
+                    return Ok(None);
+                }
+            }
+
             return Err(anyhow!(
                 "responses input token request failed with {status}: {body}"
             ));
@@ -81,7 +99,7 @@ impl BifrostClient {
             .await
             .context("failed to parse responses input token response")?;
 
-        input_token_count_from_raw(raw)
+        input_token_count_from_raw(raw).map(Some)
     }
 
     /// Sends the Responses request, streams assistant text deltas to the

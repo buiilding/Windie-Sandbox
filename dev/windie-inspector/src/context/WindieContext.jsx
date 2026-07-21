@@ -127,6 +127,7 @@ export function WindieProvider({ children }) {
   // remains selectedNodeId; the session runtime owns session selection.
   const selectedNodeRef = useRef(null);
   const loadSeqRef = useRef({});
+  const inputTokenSupportRef = useRef({});
 
   useEffect(() => {
     selectedNodeRef.current = selectedNodeId;
@@ -237,10 +238,30 @@ export function WindieProvider({ children }) {
         const mid = loaded?.model || null;
         const sig = contextSignatureParts(loaded, mid).fullSignature;
         const key = tokenCountKey(loaded?.id, mid);
+        if (mid && inputTokenSupportRef.current[mid] === "unsupported") {
+          setInputTokenCounts((p) => ({
+            ...p,
+            [key]: {
+              inputTokens: null,
+              totalTokens: null,
+              model: mid,
+              raw: null,
+              source: "unsupported",
+              signature: sig,
+              measuredAt: Date.now(),
+            },
+          }));
+          return loaded;
+        }
         const rid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         setInputTokenCounts((p) => ({ ...p, [key]: { ...(p[key] || {}), latestRequestId: rid } }));
         countConversationInputTokens(loaded.id, null, headMessageId || null)
           .then((count) => {
+            if (mid && count.source === "unsupported") {
+              inputTokenSupportRef.current[mid] = "unsupported";
+            } else if (mid && count.inputTokens != null) {
+              inputTokenSupportRef.current[mid] = "supported";
+            }
             setInputTokenCounts((p) => {
               if (p[key]?.latestRequestId !== rid) return p;
               return { ...p, [key]: { ...count, source: count.source || "prequery_input", signature: sig, latestRequestId: rid, measuredAt: Date.now() } };
@@ -249,7 +270,7 @@ export function WindieProvider({ children }) {
           .catch(() => {
             setInputTokenCounts((p) => {
               if (p[key]?.latestRequestId !== rid) return p;
-              return { ...p, [key]: { inputTokens: null, totalTokens: null, model: mid, raw: null, source: "prequery_input", signature: sig, latestRequestId: rid, measuredAt: Date.now() } };
+              return { ...p, [key]: { inputTokens: null, totalTokens: null, model: mid, raw: null, source: "unavailable", signature: sig, latestRequestId: rid, measuredAt: Date.now() } };
             });
           });
       }
@@ -343,13 +364,14 @@ export function WindieProvider({ children }) {
     const ic = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
     const cur = ic?.signature === activeContextSignatures.fullSignature ? ic : null;
     const post = latestAssistantTotalTokens(selectedPathNodes);
-    const used = cur?.inputTokens ?? post;
+    const unavailable = cur?.source === "unsupported" || cur?.source === "unavailable";
+    const used = unavailable ? null : cur?.inputTokens ?? post;
     return {
       used,
       max,
       model: activeModelId,
       measuredModel: cur?.model || null,
-      source: cur?.inputTokens != null ? cur?.source || null : used != null ? "postquery_total" : null,
+      source: cur?.inputTokens != null ? cur?.source || null : unavailable ? cur.source : used != null ? "postquery_total" : null,
     };
   }, [activeConv?.id, selectedPathNodes, activeContextSignatures.fullSignature, activeCatalogModel, activeModelId, inputTokenCounts]);
 

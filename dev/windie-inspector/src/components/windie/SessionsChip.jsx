@@ -66,7 +66,6 @@ export default function SessionsChip() {
   const handleDelete = async (event, session) => {
     event.stopPropagation();
     if (!session) return;
-    if (!window.confirm("Delete this session and its exclusive branch messages?")) return;
     const deleted = await deleteSession(session.id);
     if (deleted) setMenuSession(null);
   };
@@ -77,23 +76,25 @@ export default function SessionsChip() {
         type="button"
         data-testid="topbar-sessions-chip"
         onClick={() => setOpen((current) => !current)}
-        className={`flex items-center gap-1.5 h-7 px-2 border font-mono text-[11px] uppercase tracking-widest transition-colors ${open ? "bg-surface-hover" : "hover:bg-surface-hover"}`}
+        className={`flex items-center gap-1.5 h-7 px-2 border border-border hover:bg-surface-hover transition-colors min-w-[160px] ${open ? "bg-surface-hover" : ""}`}
         title={selected ? `session ${selected.id}` : "choose a session"}
       >
         {selected && <span className={`size-1.5 rounded-full ${statusDot(selected.status)}`} />}
-        <span>{selected ? `session ${shortId(selected.id)}` : "choose session"}</span>
-        <ChevronDown className="size-3" strokeWidth={1.75} />
+        <span className="truncate font-mono text-[11px]">
+          {selected ? `session ${shortId(selected.id)}` : "choose session"}
+        </span>
+        <ChevronDown className="size-3 ml-auto" strokeWidth={1.75} />
       </button>
 
       {open && (
         <div
           data-testid="topbar-sessions-menu"
-          className="absolute left-0 top-full mt-1 z-30 w-80 bg-popover border border-border shadow-md"
+          className="absolute left-0 top-full mt-1 z-30 w-72 bg-popover border border-border shadow-md"
         >
           <div className="px-2.5 py-1.5 border-b border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             sessions · {sessions.length}
           </div>
-          <div className="max-h-72 overflow-y-auto windie-scroll">
+          <div className="max-h-64 overflow-y-auto windie-scroll">
             {sessions.length === 0 ? (
               <div className="px-3 py-3 font-mono text-[11px] text-muted-foreground">
                 no sessions yet

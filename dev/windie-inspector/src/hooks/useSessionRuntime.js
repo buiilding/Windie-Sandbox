@@ -258,13 +258,14 @@ export function useSessionRuntime({
         const reloaded = await refreshActiveConversation(session.id, headMessageId);
         if (!reloaded) return false;
         advanceSessionHead(session.id, headMessageId);
+        setSelectedNodeId(headMessageId);
         setPendingAssistantBySessionId((current) => ({ ...current, [session.id]: null }));
         return true;
       } catch (_) {
         return false;
       }
     },
-    [advanceSessionHead, refreshActiveConversation]
+    [advanceSessionHead, refreshActiveConversation, setSelectedNodeId]
   );
 
   const handleEvent = useCallback(
@@ -539,15 +540,20 @@ export function useSessionRuntime({
   }, [rememberSession, setApiError, subscribeToSession]);
 
   const stopStreaming = useCallback(async (sessionId = selectedSessionId) => {
-    if (!sessionId) return;
+    const targetSessionId =
+      typeof sessionId === "string" ? sessionId : selectedSessionId;
+    if (!targetSessionId) return;
     try {
-      const session = sessionFromApi(await stopSessionApi(sessionId));
+      const session = sessionFromApi(await stopSessionApi(targetSessionId));
       rememberSession(session);
-      setPendingAssistantBySessionId((current) => ({ ...current, [sessionId]: null }));
-      const controller = subscriptionsRef.current.get(sessionId);
+      setPendingAssistantBySessionId((current) => ({
+        ...current,
+        [targetSessionId]: null,
+      }));
+      const controller = subscriptionsRef.current.get(targetSessionId);
       if (controller) {
         controller.abort();
-        subscriptionsRef.current.delete(sessionId);
+        subscriptionsRef.current.delete(targetSessionId);
       }
     } catch (error) {
       setApiError(error.message);

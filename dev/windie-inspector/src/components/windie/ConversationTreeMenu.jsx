@@ -27,7 +27,6 @@ export default function ConversationTreeMenu() {
   if (!activeConv) return null;
 
   const deleteCurrentConversation = async () => {
-    if (!window.confirm("Delete this conversation and its tree?")) return;
     try {
       await deleteConversation(activeConv.id);
       setOpen(false);

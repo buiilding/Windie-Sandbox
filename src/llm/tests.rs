@@ -116,9 +116,9 @@ fn builds_model_parameter_candidates_for_nested_model_ids() {
     assert_eq!(
         model_parameter_candidates("openrouter/openai/gpt-4o-mini"),
         vec![
-            "openrouter/openai/gpt-4o-mini",
+            "gpt-4o-mini",
             "openai/gpt-4o-mini",
-            "gpt-4o-mini"
+            "openrouter/openai/gpt-4o-mini"
         ]
     );
 }
