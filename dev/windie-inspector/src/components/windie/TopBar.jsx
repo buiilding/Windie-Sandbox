@@ -64,7 +64,7 @@ export default function TopBar({ treeCollapsed, onTreeToggle }) {
         onClick={() => setInspectorPanelOpen(!inspectorPanelOpen)}
         title={inspectorPanelOpen ? "hide inspector panel" : "show inspector panel"}
         aria-label={inspectorPanelOpen ? "hide inspector panel" : "show inspector panel"}
-        className={`flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors ${inspectorPanelOpen ? "bg-foreground text-background hover:bg-foreground" : ""}`}
+        className="flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors"
       >
         <Columns2 className="size-3.5" strokeWidth={1.75} />
       </button>

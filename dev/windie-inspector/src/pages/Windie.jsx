@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import TopBar from "@/components/windie/TopBar";
 import Sidebar from "@/components/windie/Sidebar";
 import ChatPanel from "@/components/windie/ChatPanel";
@@ -7,7 +7,22 @@ import { useWindie } from "@/context/WindieContext";
 
 export default function Windie() {
   const { inspectorPanelOpen } = useWindie();
-  const [treeCollapsed, setTreeCollapsed] = useState(false);
+  const [treeCollapsed, setTreeCollapsed] = useState(() => {
+    try {
+      const value = window.localStorage.getItem("windie.treeCollapsed");
+      return value == null ? false : value === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("windie.treeCollapsed", String(treeCollapsed));
+    } catch {
+      // Storage may be unavailable; panel state still works for this session.
+    }
+  }, [treeCollapsed]);
 
   return (
     <div
