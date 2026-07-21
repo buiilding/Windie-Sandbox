@@ -28,7 +28,6 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
       <div className="flex items-center gap-2">
         <div className="size-2 bg-foreground" />
         <span className="font-semibold tracking-tight text-sm font-sans">windie</span>
-        <span className="text-muted-foreground">/ local runtime</span>
       </div>
 
       <div className="h-4 w-px bg-border" />

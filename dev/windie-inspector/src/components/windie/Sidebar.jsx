@@ -12,7 +12,7 @@ export default function Sidebar({ treeCollapsed }) {
     >
       {!treeCollapsed && (
         <>
-          <div className="relative z-40 shrink-0">
+          <div className="relative z-40 shrink-0 pt-9">
             <ConversationPicker variant="sidebar" />
           </div>
           <div className="flex-1 min-h-0" data-testid="windie-sidebar-content">
