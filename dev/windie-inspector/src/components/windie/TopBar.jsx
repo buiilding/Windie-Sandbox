@@ -46,30 +46,32 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
 
       <SessionsChip />
 
-      <button
-        type="button"
-        data-testid="topbar-open-system"
-        onClick={() => onOverlayChange(overlay === "system" ? null : "system")}
-        className={`h-7 px-2 border border-border font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover transition-colors ${overlay === "system" ? "bg-surface-hover" : ""}`}
-      >
-        system
-      </button>
-
-      <button
-        type="button"
-        data-testid="topbar-open-tools"
-        onClick={() => onOverlayChange(overlay === "tools" ? null : "tools")}
-        className={`h-7 px-2 border border-border font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover transition-colors ${overlay === "tools" ? "bg-surface-hover" : ""}`}
-      >
-        tools{approvals.length > 0 ? ` · ${approvals.length}` : ""}
-      </button>
-
       <div className="flex-1" />
 
       <div
-        className="flex items-center gap-1.5 text-muted-foreground"
+        className="flex items-center gap-1.5"
         title={TOKEN_METER_TITLE}
       >
+        <button
+          type="button"
+          data-testid="topbar-open-system"
+          onClick={() => onOverlayChange(overlay === "system" ? null : "system")}
+          className={`h-6 px-1.5 border border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover transition-colors ${overlay === "system" ? "bg-surface-hover text-foreground" : ""}`}
+        >
+          system
+        </button>
+
+        <button
+          type="button"
+          data-testid="topbar-open-tools"
+          onClick={() => onOverlayChange(overlay === "tools" ? null : "tools")}
+          className={`h-6 px-1.5 border border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover transition-colors ${overlay === "tools" ? "bg-surface-hover text-foreground" : ""}`}
+        >
+          tools{approvals.length > 0 ? ` · ${approvals.length}` : ""}
+        </button>
+
+        <div className="h-4 w-px bg-border mx-1" />
+
         <span className="uppercase tracking-widest">tokens</span>
         <span className="text-foreground">
           {formatTokenCount(tokenMeter?.used)} / {formatTokenCount(tokenMeter?.max)}
