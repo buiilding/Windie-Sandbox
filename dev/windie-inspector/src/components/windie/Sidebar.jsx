@@ -8,7 +8,7 @@ export default function Sidebar({ treeCollapsed }) {
   return (
     <aside
       data-testid="windie-sidebar"
-      className={`shrink-0 border-r border-border flex flex-col bg-background transition-[width] duration-300 ease-out ${treeCollapsed ? "w-10 overflow-hidden" : "w-[24.5rem] overflow-visible"}`}
+      className={`shrink-0 flex flex-col bg-background transition-[width] duration-300 ease-out ${treeCollapsed ? "w-0 border-r-0 overflow-hidden" : "w-[24.5rem] border-r border-border overflow-visible"}`}
     >
       {!treeCollapsed && (
         <>
