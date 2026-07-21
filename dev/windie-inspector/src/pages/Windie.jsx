@@ -27,7 +27,7 @@ export default function Windie() {
   return (
     <div
       data-testid="windie-app-root"
-      className="h-full w-full flex flex-col bg-background text-foreground overflow-hidden"
+      className="relative h-full w-full flex flex-col bg-background text-foreground overflow-hidden"
     >
       <TopBar
         treeCollapsed={treeCollapsed}
