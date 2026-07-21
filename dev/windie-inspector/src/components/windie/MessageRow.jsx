@@ -463,7 +463,7 @@ export default function MessageRow({ node, index, isLast }) {
         </div>
 
         {!editing && (
-          <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5">
+          <div className="absolute right-6 top-3.5 z-10 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5">
             <button
               data-testid={`msg-action-set-path-${node.id}`}
               title="set path head"
