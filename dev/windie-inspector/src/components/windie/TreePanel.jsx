@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
 import { ROLE_TOKENS } from "@/lib/mockData";
-import { GitBranch, Route, Scissors, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { GitBranch } from "lucide-react";
+import ConversationTreeMenu from "@/components/windie/ConversationTreeMenu";
+import TreeNodeContextMenu, { treeContextMenuPosition } from "@/components/windie/TreeNodeContextMenu";
 
 function layoutTree(conv) {
   const nodes = conv.nodes;
@@ -33,7 +34,8 @@ function layoutTree(conv) {
 }
 
 export default function TreePanel() {
-  const { activeConv, selectedPathNodes, selectedNodeId, subscribeToPathLeaf, inspectNode, forkFromMessage, truncateAfter, removeMessage } = useWindie();
+  const { activeConv, selectedPathNodes, selectedNodeId, setPathHead } = useWindie();
+  const [contextMenu, setContextMenu] = useState(null);
   const layout = useMemo(() => (activeConv ? layoutTree(activeConv) : null), [activeConv]);
   const pathSet = useMemo(() => new Set(selectedPathNodes.map((n) => n.id)), [selectedPathNodes]);
 
@@ -49,6 +51,7 @@ export default function TreePanel() {
           <span className="uppercase tracking-widest">conversation tree</span>
           <span className="text-muted-foreground truncate">{Object.keys(activeConv.nodes).length} nodes · {Object.values(activeConv.nodes).filter((n) => n.childrenIds.length > 1).length} branches · path {selectedPathNodes.length}</span>
         </div>
+        <ConversationTreeMenu />
       </div>
       <div className="flex-1 min-h-0 overflow-auto windie-scroll windie-grid-bg">
         <div className="relative" style={{ width: layout.width, height: layout.height }}>
@@ -67,7 +70,7 @@ export default function TreePanel() {
             const isSel = id === selectedNodeId;
             const text = n.message.parts.find((p) => p.type === "text")?.text || "";
             return (
-              <button key={id} data-testid={`tree-node-${id}`} onClick={() => inspectNode(id)} className={`absolute text-left border transition-all ${isSel ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]" : onPath ? "border-[hsl(var(--accent))] bg-background" : "border-border bg-background hover:border-foreground/60"}`} style={{ left: pos.x, top: pos.y, width: layout.NODE_W, height: layout.NODE_H }}>
+              <button key={id} data-testid={`tree-node-${id}`} onClick={() => { setContextMenu(null); setPathHead(id); }} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ nodeId: id, position: treeContextMenuPosition(event.clientX, event.clientY) }); }} className={`absolute text-left border transition-all ${isSel ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]" : onPath ? "border-[hsl(var(--accent))] bg-background" : "border-border bg-background hover:border-foreground/60"}`} style={{ left: pos.x, top: pos.y, width: layout.NODE_W, height: layout.NODE_H }}>
                 <div className="h-full flex flex-col p-2 gap-0.5">
                   <div className="flex items-center justify-between"><span className={`font-mono text-[10px] font-bold tracking-widest ${token.color}`}>[{token.label}]</span><span className="font-mono text-[9px] text-muted-foreground">{id.slice(0, 6)}</span></div>
                   <div className="text-[11px] leading-tight truncate">{text.slice(0, 42) || <span className="italic text-muted-foreground">(empty)</span>}</div>
@@ -78,12 +81,11 @@ export default function TreePanel() {
           })}
         </div>
       </div>
-      <div className="h-8 shrink-0 border-t border-border px-3 flex items-center gap-1">
-        <button data-testid="tree-detail-action-set-path" onClick={() => { if (!selectedNodeId) return; subscribeToPathLeaf(selectedNodeId, activeConv.id); toast.message("path subscribed"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest" disabled={!selectedNodeId}><Route className="size-3" /> subscribe path</button>
-        <button data-testid="tree-detail-action-fork" onClick={() => { if (!selectedNodeId) return; forkFromMessage(activeConv.id, selectedNodeId); toast.message("forked"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest" disabled={!selectedNodeId}><GitBranch className="size-3" /> fork</button>
-        <button data-testid="tree-detail-action-truncate" onClick={() => { if (!selectedNodeId) return; truncateAfter(activeConv.id, selectedNodeId); toast.message("truncated"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest" disabled={!selectedNodeId}><Scissors className="size-3" /> truncate</button>
-        <button data-testid="tree-detail-action-remove" onClick={() => { if (!selectedNodeId) return; removeMessage(activeConv.id, selectedNodeId); toast.message("removed"); }} className="h-6 px-2 flex items-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]" disabled={!selectedNodeId}><Trash2 className="size-3" /> remove</button>
-      </div>
+      <TreeNodeContextMenu
+        nodeId={contextMenu?.nodeId}
+        position={contextMenu?.position}
+        onClose={() => setContextMenu(null)}
+      />
     </div>
   );
 }

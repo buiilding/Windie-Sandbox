@@ -4,9 +4,7 @@ import MessageRow, { PendingAssistantRow } from "@/components/windie/MessageRow"
 import Composer from "@/components/windie/Composer";
 
 export default function ChatPanel() {
-  const { activeConv, selectedPathNodes, streaming, pendingAssistant, apiError } = useWindie();
-  const activePendingAssistant =
-    pendingAssistant?.convId === activeConv?.id ? pendingAssistant : null;
+  const { activeConv, selectedSession, selectedPathNodes, streaming, pendingAssistant, stopStreaming, apiError } = useWindie();
   const scrollRef = useRef(null);
   const prevConvId = useRef(activeConv?.id);
 
@@ -29,9 +27,7 @@ export default function ChatPanel() {
     activeConv?.id,
     selectedPathNodes.length,
     streaming,
-    activePendingAssistant?.text,
-    activePendingAssistant?.reasoning,
-    activePendingAssistant?.toolCalls,
+    pendingAssistant,
   ]);
 
   if (!activeConv) {
@@ -76,12 +72,14 @@ export default function ChatPanel() {
             isLast={i === selectedPathNodes.length - 1}
           />
         ))}
-        {activePendingAssistant && (
+        {pendingAssistant && selectedSession ? (
           <PendingAssistantRow
-            pendingAssistant={activePendingAssistant}
+            pendingAssistant={pendingAssistant}
             index={selectedPathNodes.length}
+            sessionId={selectedSession.id}
+            onStop={() => stopStreaming(selectedSession.id)}
           />
-        )}
+        ) : null}
       </div>
 
       <Composer />

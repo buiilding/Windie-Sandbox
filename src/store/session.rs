@@ -1,9 +1,10 @@
 //! Runtime session and replayable session-event persistence.
 
+use super::compaction::delete_compactions_for_conversation;
 use super::*;
 
 impl Store {
-    /// Creates one sessiontime session from an explicit conversation head.
+    /// Creates one selectable session branch from an explicit conversation head.
     pub fn create_session(
         &mut self,
         session_id: &SessionId,
@@ -11,6 +12,25 @@ impl Store {
         start_head_message_id: Option<&MessageId>,
         model: &str,
         reasoning: Option<&ReasoningRequest>,
+    ) -> Result<Session> {
+        self.create_session_with_status(
+            session_id,
+            conversation_id,
+            start_head_message_id,
+            model,
+            reasoning,
+            SessionStatus::Ready,
+        )
+    }
+
+    fn create_session_with_status(
+        &mut self,
+        session_id: &SessionId,
+        conversation_id: &ConversationId,
+        start_head_message_id: Option<&MessageId>,
+        model: &str,
+        reasoning: Option<&ReasoningRequest>,
+        status: SessionStatus,
     ) -> Result<Session> {
         self.ensure_conversation_exists(conversation_id)?;
         if let Some(message_id) = start_head_message_id {
@@ -49,7 +69,7 @@ impl Store {
                     conversation_id.as_str(),
                     start_head_message_id.map(MessageId::as_str),
                     start_head_message_id.map(MessageId::as_str),
-                    SessionStatus::Running.as_storage(),
+                    status.as_storage(),
                     model,
                     reasoning_json.as_deref(),
                     now
@@ -156,6 +176,125 @@ impl Store {
             .context("failed to list conversation runtime sessions")?
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("failed to decode conversation runtime sessions")
+    }
+
+    /// Deletes one terminal session and its exclusive message suffix.
+    ///
+    /// Session rows are pointers into the shared conversation tree. Deleting a
+    /// session therefore removes only the path segment after its start head,
+    /// and only when no other session still needs those messages. Shared
+    /// ancestors and surviving session branches remain visible in the tree.
+    pub fn remove_session(&mut self, session_id: &SessionId) -> Result<()> {
+        let session = self.load_session(session_id)?;
+        if matches!(
+            session.status,
+            SessionStatus::Running | SessionStatus::WaitingForApproval
+        ) {
+            return Err(error::invalid_request(
+                "cannot delete a running or approval-waiting session; stop it first",
+            ));
+        }
+
+        let conversation_id = session.conversation_id.clone();
+        let current_path = session
+            .current_head_message_id
+            .as_ref()
+            .map(|head| self.load_path_to_message_rows(&conversation_id, head))
+            .transpose()?
+            .unwrap_or_default();
+        let start_index = session.start_head_message_id.as_ref().and_then(|start| {
+            current_path
+                .iter()
+                .position(|message| message.id.as_ref() == Some(start))
+        });
+        let branch_path = match start_index {
+            Some(index) => current_path.into_iter().skip(index + 1).collect::<Vec<_>>(),
+            None if session.start_head_message_id.is_none() => current_path,
+            None => Vec::new(),
+        };
+
+        let surviving_sessions = self
+            .list_conversation_sessions(&conversation_id)?
+            .into_iter()
+            .filter(|other| other.id != *session_id)
+            .collect::<Vec<_>>();
+        let mut protected_message_ids = HashSet::new();
+        for other in surviving_sessions {
+            for head in [other.start_head_message_id, other.current_head_message_id]
+                .into_iter()
+                .flatten()
+            {
+                for message in self.load_path_to_message_rows(&conversation_id, &head)? {
+                    if let Some(message_id) = message.id {
+                        protected_message_ids.insert(message_id.as_str().to_string());
+                    }
+                }
+            }
+        }
+
+        let candidate_message_ids = branch_path
+            .iter()
+            .filter_map(|message| message.id.as_ref())
+            .map(|message_id| message_id.as_str().to_string())
+            .filter(|message_id| !protected_message_ids.contains(message_id))
+            .collect::<HashSet<_>>();
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start session delete transaction")?;
+
+        delete_compactions_for_conversation(&transaction, &conversation_id)
+            .context("failed to delete compactions after session delete")?;
+        transaction
+            .execute(
+                "DELETE FROM session_events WHERE session_id = ?1",
+                params![session_id.as_str()],
+            )
+            .context("failed to delete session events")?;
+        transaction
+            .execute(
+                "DELETE FROM sessions WHERE id = ?1",
+                params![session_id.as_str()],
+            )
+            .context("failed to delete session")?;
+
+        // Delete leaves first. A candidate with a surviving child is a shared
+        // branch point and must remain in the conversation tree.
+        for message_id in branch_path
+            .iter()
+            .rev()
+            .filter_map(|message| message.id.as_ref())
+            .map(|message_id| message_id.as_str().to_string())
+            .filter(|message_id| candidate_message_ids.contains(message_id))
+        {
+            transaction
+                .execute(
+                    "
+                    DELETE FROM messages
+                    WHERE conversation_id = ?1
+                      AND id = ?2
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM messages AS child
+                          WHERE child.parent_message_id = messages.id
+                      )
+                    ",
+                    params![conversation_id.as_str(), message_id],
+                )
+                .context("failed to delete exclusive session message")?;
+        }
+
+        delete_orphan_image_assets_in_transaction(&transaction)
+            .context("failed to delete orphan image assets after session delete")?;
+        touch_conversation_in_transaction(&transaction, &conversation_id, now)
+            .context("failed to update conversation after session delete")?;
+        transaction
+            .commit()
+            .context("failed to commit session delete")?;
+
+        Ok(())
     }
 
     /// Updates one session's current message head.

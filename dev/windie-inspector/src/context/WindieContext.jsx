@@ -11,59 +11,20 @@ import { toast } from "sonner";
 import {
   apiRequest,
   countConversationInputTokens,
-  approveSessionTool as approveSessionToolApi,
-  createSession as createSessionApi,
-  denySessionTool as denySessionToolApi,
   fetchModelParameters,
-  getSession,
-  listSessions,
   listModels,
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
-  stopSession as stopSessionApi,
 } from "@/lib/windieApi";
-import { streamSessionEvents } from "@/lib/sessionStream";
 import {
   conversationFromInspection,
   conversationSummaryFromApi,
-  sessionFromApi,
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
 } from "@/lib/windieMappers";
+import { useSessionRuntime } from "@/hooks/useSessionRuntime";
 
 const WindieCtx = createContext(null);
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      resolve(result.includes(",") ? result.split(",")[1] : result);
-    };
-    reader.onerror = () => reject(reader.error || new Error("failed to read image"));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function messagePartsForSend(text, attachments = []) {
-  const parts = [];
-  if (text.trim()) {
-    parts.push({ type: "text", text });
-  }
-  for (const attachment of attachments) {
-    if (attachment.source === "path" && attachment.path) {
-      parts.push({ type: "image", path: attachment.path });
-    }
-    if (attachment.source === "clipboard" && attachment.file) {
-      parts.push({
-        type: "image_data",
-        mime_type: attachment.file.type || "image/png",
-        data: await fileToBase64(attachment.file),
-      });
-    }
-  }
-  return parts;
-}
 
 function tokenCountKey(conversationId, modelId) {
   return `${conversationId || ""}::${modelId || ""}`;
@@ -71,25 +32,6 @@ function tokenCountKey(conversationId, modelId) {
 
 function isAbortError(error) {
   return error?.name === "AbortError";
-}
-
-function isLiveSession(session) {
-  // Single source of truth: sessions.status row in SQLite
-  // running = agent loop active, waiting_for_approval = still live, needs human
-  return session?.status === "running" || session?.status === "waiting_for_approval";
-}
-
-function isAncestor(ancestorId, leafId, nodes) {
-  if (!ancestorId || !leafId || !nodes) return false;
-  if (ancestorId === leafId) return true;
-  let cur = nodes[leafId];
-  const seen = new Set();
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id);
-    if (cur.parentId === ancestorId) return true;
-    cur = cur.parentId ? nodes[cur.parentId] : null;
-  }
-  return false;
 }
 
 function pathNodesForConversation(conversation) {
@@ -160,27 +102,11 @@ function contextSignatureParts(conversation, modelId, pathNodesOverride = null) 
   };
 }
 
-function findLiveForLeaf(leafId, sessionsById, nodes) {
-  // Single source of truth: sessions row
-  // Use durable current_head from DB, not local ref. Live = running OR waiting_for_approval.
-  if (!leafId || !nodes) return [];
-  const out = [];
-  for (const s of Object.values(sessionsById || {})) {
-    if (!isLiveSession(s)) continue;
-    const live = s.currentHeadMessageId || s.startHeadMessageId;
-    if (!live) continue;
-    if (isAncestor(s.startHeadMessageId, leafId, nodes) || s.startHeadMessageId === leafId || isAncestor(leafId, live, nodes) || live === leafId) {
-      out.push(s);
-    }
-  }
-  out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  return out;
-}
-
 export function WindieProvider({ children }) {
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvId] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [viewHeadId, setViewHeadId] = useState(null);
   const [theme, setTheme] = useState("dark");
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
@@ -196,38 +122,15 @@ export function WindieProvider({ children }) {
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
-  const [sessionsById, setSessionsById] = useState({});
-  const [visibleSessionId, setVisibleSessionId] = useState(null);
-  const [sessionEventsBySessionId, setSessionEventsBySessionId] = useState({});
-  const [pendingAssistantBySessionId, setPendingAssistantBySessionId] = useState({});
 
-  // path-centric model - single source of truth is sessions table (store/sessions)
-  const subscriptionsRef = useRef(new Map()); // sessionId -> AbortController
-  const followedSessionIdRef = useRef(null);
-  const lastEventIdRef = useRef({});
-  const activeConvRef = useRef(null);
-  const sessionsRef = useRef({});
+  // The selection ref is only an async load anchor. The rendered selection
+  // remains selectedNodeId; the session runtime owns session selection.
   const selectedNodeRef = useRef(null);
-
-  useEffect(() => {
-    activeConvRef.current = conversations.find((c) => c.id === activeConvId) || null;
-  }, [conversations, activeConvId]);
-
-  useEffect(() => {
-    sessionsRef.current = sessionsById;
-  }, [sessionsById]);
+  const loadSeqRef = useRef({});
 
   useEffect(() => {
     selectedNodeRef.current = selectedNodeId;
   }, [selectedNodeId]);
-
-  useEffect(
-    () => () => {
-      for (const c of subscriptionsRef.current.values()) c.abort();
-      subscriptionsRef.current.clear();
-    },
-    []
-  );
 
   useEffect(() => {
     const root = document.documentElement;
@@ -304,22 +207,30 @@ export function WindieProvider({ children }) {
     async (convId, options = {}) => {
       if (!convId) return null;
       const hasHead = Object.prototype.hasOwnProperty.call(options, "headMessageId");
-      const headMessageId = hasHead ? options.headMessageId : selectedNodeRef.current;
+      const headMessageId = hasHead
+        ? options.headMessageId
+        : selectedNodeRef.current;
       const q = headMessageId ? `?head_message_id=${encodeURIComponent(headMessageId)}` : "";
+      // Latest-wins guard: bump this conversation's load sequence and only apply
+      // the result if no newer load started while we were awaiting.
+      const seq = (loadSeqRef.current[convId] || 0) + 1;
+      loadSeqRef.current[convId] = seq;
       const [report, approvalBody] = await Promise.all([
         apiRequest(`/api/conversations/${convId}${q}`),
         apiRequest(`/api/conversations/${convId}/run-approvals`),
       ]);
+      if (loadSeqRef.current[convId] !== seq) {
+        // A newer load started; discard this stale response.
+        return null;
+      }
       const loaded = conversationFromInspection(report, null);
       setConversations((prev) => {
         const fallback = prev.find((conv) => conv.id === convId);
         const withFallback = conversationFromInspection(report, fallback);
         return prev.some((c) => c.id === convId) ? prev.map((c) => (c.id === convId ? withFallback : c)) : [withFallback, ...prev];
       });
-      if (options.selectLast !== false) {
-        const last = loaded?.selectedPath?.[loaded.selectedPath.length - 1] || loaded?.rootId || null;
-        setSelectedNodeId((cur) => (cur && loaded?.nodes?.[cur] ? cur : last));
-      }
+      const last = loaded?.selectedPath?.[loaded.selectedPath.length - 1] || loaded?.rootId || null;
+      setSelectedNodeId((cur) => (cur && loaded?.nodes?.[cur] ? cur : last));
       setApprovals(approvalBody.approvals || []);
 
       if (options.countTokens !== false && loaded?.id) {
@@ -375,24 +286,53 @@ export function WindieProvider({ children }) {
     refreshAvailableTools().catch((e) => setApiError(e.message));
   }, [refreshAvailableTools]);
 
-  useEffect(() => {
-    if (!activeConvId) return;
-    let cancelled = false;
-    loadConversation(activeConvId)
-      .then(() => {
-        if (!cancelled) setApiError(null);
-      })
-      .catch((e) => {
-        if (!cancelled) setApiError(e.message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeConvId, loadConversation]);
-
   const activeConv = useMemo(() => conversations.find((c) => c.id === activeConvId) || null, [conversations, activeConvId]);
-  const selectedPathNodes = useMemo(() => pathNodesToNode(activeConv, selectedNodeId), [activeConv, selectedNodeId]);
-  const activeModelId = useMemo(() => activeConv?.model || null, [activeConv?.model]);
+  const activeModelId = activeConv?.model || null;
+  const activeReasoning = activeConv?.reasoning || null;
+  const sessionRuntime = useSessionRuntime({
+    conversationId: activeConvId,
+    conversationModel: activeModelId,
+    reasoning: activeReasoning,
+    viewHeadId,
+    setViewHeadId,
+    selectedNodeId,
+    setSelectedNodeId,
+    setConversations,
+    loadConversation,
+    setApiError,
+  });
+  const {
+    sessionsById,
+    selectedSession,
+    selectedSessionId,
+    pendingAssistant,
+    streaming,
+    refreshSessions,
+    selectSession,
+    sendMessage,
+    continueConversation,
+    stopStreaming,
+    deleteSession,
+    approveToolCall,
+    denyToolCall,
+  } = sessionRuntime;
+  const selectedPathNodes = useMemo(
+    () => pathNodesToNode(activeConv, sessionRuntime.selectedPathHead),
+    [activeConv, sessionRuntime.selectedPathHead]
+  );
+  const setPathHead = useCallback(
+    async (nodeId) => {
+      if (!activeConvId || !activeConv?.nodes?.[nodeId]) return null;
+      setViewHeadId(nodeId);
+      setSelectedNodeId(nodeId);
+      await loadConversation(activeConvId, {
+        headMessageId: nodeId,
+        countTokens: false,
+      });
+      return nodeId;
+    },
+    [activeConv, activeConvId, loadConversation]
+  );
   const activeContextSignatures = useMemo(
     () => contextSignatureParts(activeConv, activeModelId, selectedPathNodes),
     [activeConv, activeModelId, selectedPathNodes]
@@ -419,7 +359,6 @@ export function WindieProvider({ children }) {
   }, [activeCatalogModel, activeModelId, loadModelParameters]);
 
   const activeModelParameters = useMemo(() => modelParametersById[activeModelId] || null, [activeModelId, modelParametersById]);
-  const activeReasoning = activeConv?.reasoning || null;
 
   const runMutation = useCallback(
     async (op, options = {}) => {
@@ -458,10 +397,7 @@ export function WindieProvider({ children }) {
   );
 
   const selectConversation = useCallback((convId) => {
-    for (const c of subscriptionsRef.current.values()) c.abort();
-    subscriptionsRef.current.clear();
-    followedSessionIdRef.current = null;
-    setVisibleSessionId(null);
+    setViewHeadId(null);
     setSelectedNodeId(null);
     setActiveConvId(convId);
   }, []);
@@ -469,9 +405,8 @@ export function WindieProvider({ children }) {
   const createConversation = useCallback(async () => {
     const body = await runMutation(() => apiRequest("/api/conversations", { method: "POST" }), { reload: false, refreshList: true });
     selectConversation(body.conversation_id);
-    await loadConversation(body.conversation_id, { headMessageId: null });
     return body.conversation_id;
-  }, [loadConversation, runMutation, selectConversation]);
+  }, [runMutation, selectConversation]);
 
   const renameConversation = useCallback(() => {
     toast.message("rename is not a Windie primitive yet");
@@ -528,181 +463,54 @@ export function WindieProvider({ children }) {
     [runMutation]
   );
 
-  const rememberSession = useCallback((session) => {
-    const norm = sessionFromApi(session);
-    if (!norm) return null;
-    setSessionsById((p) => ({ ...p, [norm.id]: norm }));
-    sessionsRef.current = { ...sessionsRef.current, [norm.id]: norm };
-    return norm;
-  }, []);
-
-  const abortAll = useCallback(() => {
-    for (const c of subscriptionsRef.current.values()) c.abort();
-    subscriptionsRef.current.clear();
-    followedSessionIdRef.current = null;
-    setVisibleSessionId(null);
-  }, []);
-
   const inspectNode = useCallback(
     (nodeId) => {
-      // left tree = inspect only, unsubscribe
-      if (followedSessionIdRef.current) {
-        for (const c of subscriptionsRef.current.values()) c.abort();
-        subscriptionsRef.current.clear();
-        followedSessionIdRef.current = null;
-        setVisibleSessionId(null);
-        toast.message("unfollowed · inspecting message");
-      } else {
-        abortAll();
-      }
+      // Tree selection is for inspecting a node. Session selection remains the
+      // source of truth for the chat path and query target.
       setSelectedNodeId(nodeId);
     },
-    [abortAll]
+    []
   );
-
-  const handleEvent = useCallback(
-    async (session, data) => {
-      if (!data?.type) return;
-      setSessionEventsBySessionId((p) => ({ ...p, [session.id]: [...(p[session.id] || []), data] }));
-
-      if (data.type === "assistant_delta") {
-        setPendingAssistantBySessionId((p) => {
-          const cur = p[session.id] || { convId: session.conversationId, text: "", reasoning: "", toolCalls: {} };
-          return { ...p, [session.id]: { ...cur, text: cur.text + (data.text || "") } };
-        });
-        return;
-      }
-      if (data.type === "reasoning_delta") {
-        setPendingAssistantBySessionId((p) => {
-          const cur = p[session.id] || { convId: session.conversationId, text: "", reasoning: "", toolCalls: {} };
-          return { ...p, [session.id]: { ...cur, reasoning: (cur.reasoning || "") + (data.text || "") } };
-        });
-        return;
-      }
-      if (data.type === "tool_call_delta") {
-        setPendingAssistantBySessionId((p) => {
-          const cur = p[session.id] || { convId: session.conversationId, text: "", reasoning: "", toolCalls: {} };
-          const idx = String(data.index ?? 0);
-          const ex = cur.toolCalls?.[idx] || { id: null, name: null, argumentsText: "" };
-          return {
-            ...p,
-            [session.id]: {
-              ...cur,
-              toolCalls: { ...(cur.toolCalls || {}), [idx]: { id: data.id || ex.id, name: data.name || ex.name, argumentsText: ex.argumentsText + (data.arguments_delta || "") } },
-            },
-          };
-        });
-        return;
-      }
-
-      if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
-        // Single source of truth is sessions.current_head in DB (updated in manager.rs on every save)
-        // Optimistically update sessionsById so dot stays stable even before poll
-        if (data.message_id) {
-          setSessionsById((p) => {
-            const s = p[session.id];
-            if (!s) return p;
-            const next = { ...s, currentHeadMessageId: data.message_id };
-            sessionsRef.current = { ...sessionsRef.current, [session.id]: next };
-            return { ...p, [session.id]: next };
-          });
-        }
-        const followed = followedSessionIdRef.current === session.id;
-        if (followed) {
-          await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: data.message_id || null }).catch(() => {});
-          if (data.message_id) setSelectedNodeId(data.message_id);
-          setPendingAssistantBySessionId((p) => ({ ...p, [session.id]: null }));
-        } else {
-          await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: undefined }).catch(() => {});
-        }
-        // Refresh durable status in background
-        getSession(session.id).then((latest) => { if (latest) rememberSession(latest); }).catch(() => {});
-        return;
-      }
-
-      if (data.type === "completed" || data.type === "failed" || data.type === "cancelled" || data.type === "waiting_for_approval") {
-        const latest = await getSession(session.id).catch(() => null);
-        if (latest) rememberSession(latest);
-        const followed = followedSessionIdRef.current === session.id;
-        if (followed) {
-          if (data.type === "completed" && data.message_id) {
-            await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: data.message_id }).catch(() => {});
-            setSelectedNodeId(data.message_id);
-          } else {
-            await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: undefined }).catch(() => {});
-          }
-        } else {
-          await loadConversation(session.conversationId, { countTokens: false, selectLast: false, headMessageId: undefined }).catch(() => {});
-        }
-        if (data.type !== "waiting_for_approval") setPendingAssistantBySessionId((p) => ({ ...p, [session.id]: null }));
-      }
-    },
-    [loadConversation, rememberSession]
-  );
-
-  const subscribeToSession = useCallback(
-    (session) => {
-      const norm = rememberSession(session);
-      if (!norm) return null;
-      for (const c of subscriptionsRef.current.values()) c.abort();
-      subscriptionsRef.current.clear();
-      followedSessionIdRef.current = norm.id;
-      setVisibleSessionId(norm.id);
-      const controller = new AbortController();
-      subscriptionsRef.current.set(norm.id, controller);
-      streamSessionEvents(
-        norm.id,
-        lastEventIdRef.current[norm.id] ?? null,
-        async ({ id, data }) => {
-          await handleEvent(norm, data);
-          const eid = id ?? data?.event_id ?? null;
-          if (eid != null) lastEventIdRef.current[norm.id] = eid;
-        },
-        { signal: controller.signal }
-      )
-        .catch((e) => {
-          if (!isAbortError(e)) {
-            setApiError(e.message);
-            toast.error(e.message);
-          }
-        })
-        .finally(() => {
-          if (subscriptionsRef.current.get(norm.id) === controller) subscriptionsRef.current.delete(norm.id);
-        });
-      return norm;
-    },
-    [handleEvent, rememberSession]
-  );
-
-  const subscribeToPathLeaf = useCallback(
-    async (leafId, convIdOverride) => {
-      if (!leafId) return null;
-      const convId = convIdOverride || activeConvRef.current?.id;
-      if (!convId) return null;
-      const conv = activeConvRef.current;
-      const cand = findLiveForLeaf(leafId, sessionsRef.current, conv?.nodes);
-      const sess = cand[0] || null;
-      // unsubscribe old
-      for (const c of subscriptionsRef.current.values()) c.abort();
-      subscriptionsRef.current.clear();
-      followedSessionIdRef.current = sess ? sess.id : null;
-      setVisibleSessionId(sess ? sess.id : null);
-      setSelectedNodeId(leafId);
-      await loadConversation(convId, { headMessageId: leafId, selectLast: false, countTokens: false }).catch(() => {});
-      if (sess) {
-        subscribeToSession(sess);
-        return sess;
-      }
-      return null;
-    },
-    [loadConversation, subscribeToSession]
-  );
-
-  const selectPathHead = useCallback(async (_convId, leafId) => subscribeToPathLeaf(leafId, _convId), [subscribeToPathLeaf]);
-  const selectPath = useCallback((convId, path) => selectPathHead(convId, path[path.length - 1]), [selectPathHead]);
 
   const truncateAfter = useCallback((convId, nodeId) => runMutation(() => apiRequest(`/api/conversations/${convId}/truncate`, { method: "POST", body: JSON.stringify({ message_id: nodeId }) })), [runMutation]);
-  const removeMessage = useCallback((convId, nodeId) => runMutation(() => apiRequest(`/api/conversations/${convId}/messages/${nodeId}`, { method: "DELETE" })), [runMutation]);
+  const removeMessage = useCallback(
+    async (convId, nodeId) => {
+      const conversation = conversations.find((item) => item.id === convId);
+      const node = conversation?.nodes?.[nodeId];
+      const parentHead = node?.parentId || null;
+      const currentHead =
+        viewHeadId ||
+        selectedNodeRef.current ||
+        selectedSession?.currentHeadMessageId ||
+        selectedSession?.startHeadMessageId ||
+        null;
+      const nextHead = currentHead === nodeId ? parentHead : currentHead;
+
+      await runMutation(
+        () => apiRequest(`/api/conversations/${convId}/messages/${nodeId}`, { method: "DELETE" }),
+        { reload: false }
+      );
+      await refreshSessions();
+
+      if (convId !== activeConvId) return;
+      if (viewHeadId === nodeId) setViewHeadId(parentHead);
+      setSelectedNodeId((current) => (current === nodeId ? parentHead : current));
+      await loadConversation(convId, {
+        headMessageId: nextHead,
+        countTokens: false,
+      });
+    },
+    [
+      activeConvId,
+      conversations,
+      loadConversation,
+      refreshSessions,
+      runMutation,
+      selectedSession,
+      setViewHeadId,
+      viewHeadId,
+    ]
+  );
   const editMessage = useCallback((convId, nodeId, text) => runMutation(() => apiRequest(`/api/conversations/${convId}/messages/${nodeId}`, { method: "PATCH", body: JSON.stringify({ text }) })), [runMutation]);
   const forkFromMessage = useCallback(
     async (convId, nodeId) => {
@@ -710,143 +518,21 @@ export function WindieProvider({ children }) {
         reload: false,
         refreshList: true,
       });
-      abortAll();
       setSelectedNodeId(null);
       setActiveConvId(body.conversation_id);
-      await loadConversation(body.conversation_id);
       return body.conversation_id;
     },
-    [loadConversation, runMutation, abortAll]
-  );
-
-  const refreshSessions = useCallback(async () => {
-    const sessions = (await listSessions()).map(sessionFromApi).filter(Boolean);
-    setSessionsById(Object.fromEntries(sessions.map((s) => [s.id, s])));
-    sessionsRef.current = Object.fromEntries(sessions.map((s) => [s.id, s]));
-    return sessions;
-  }, []);
-
-  useEffect(() => {
-    refreshSessions().catch((e) => setApiError(e.message));
-  }, [refreshSessions]);
-
-  // Poll sessions as single source of truth for long runs - SSE can drop, table is durable
-  useEffect(() => {
-    const id = setInterval(() => {
-      refreshSessions().catch(() => {});
-    }, 5000);
-    return () => clearInterval(id);
-  }, [refreshSessions]);
-
-  const stopStreaming = useCallback(async () => {
-    if (!visibleSessionId) return;
-    try {
-      const s = await stopSessionApi(visibleSessionId);
-      rememberSession(s);
-      setPendingAssistantBySessionId((p) => ({ ...p, [visibleSessionId]: null }));
-      abortAll();
-    } catch (e) {
-      setApiError(e.message);
-      toast.error(e.message);
-    }
-  }, [rememberSession, visibleSessionId, abortAll]);
-
-  const sendMessage = useCallback(
-    async (convId, text, options = {}) => {
-      const att = options.attachments || [];
-      if (!text.trim() && att.length === 0) return;
-      const conv = activeConvRef.current;
-      const leaf = conv?.selectedPath?.[conv?.selectedPath.length - 1] || selectedNodeRef.current || null;
-      if (leaf) {
-        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes);
-        if (busy.length > 0) {
-          toast.message("path busy", { description: "wait for running agent on this path" });
-          return;
-        }
-      }
-      try {
-        const parts = await messagePartsForSend(text, att);
-        const parentId = selectedNodeRef.current || null;
-        const ins = await apiRequest(`/api/conversations/${convId}/messages`, {
-          method: "POST",
-          body: JSON.stringify({ head_message_id: parentId, role: "user", parts }),
-        });
-        // Fix flash: stay on parent path until new branch exists locally.
-        await loadConversation(convId, { headMessageId: ins.message_id, selectLast: false, countTokens: false });
-        setSelectedNodeId(ins.message_id);
-        const session = await createSessionApi(convId, { headMessageId: ins.message_id, model: activeConv?.model || null, reasoning: activeReasoning });
-        subscribeToSession(session);
-        setApiError(null);
-      } catch (e) {
-        setApiError(e.message);
-        toast.error(e.message);
-      }
-    },
-    [activeConv?.model, activeReasoning, loadConversation, subscribeToSession]
-  );
-
-  const continueConversation = useCallback(
-    async (convId) => {
-      if (!convId) return;
-      const conv = activeConvRef.current;
-      const leaf = conv?.selectedPath?.[conv?.selectedPath.length - 1] || selectedNodeRef.current || null;
-      if (leaf) {
-        const busy = findLiveForLeaf(leaf, sessionsRef.current, conv?.nodes);
-        if (busy.length > 0) {
-          toast.message("path busy", { description: "wait for running agent on this path" });
-          return;
-        }
-      }
-      try {
-        const session = await createSessionApi(convId, { headMessageId: selectedNodeRef.current, model: activeConv?.model || null, reasoning: activeReasoning });
-        subscribeToSession(session);
-        setApiError(null);
-      } catch (e) {
-        setApiError(e.message);
-        toast.error(e.message);
-      }
-    },
-    [activeConv?.model, activeReasoning, subscribeToSession]
+    [runMutation]
   );
 
   const startGateway = useCallback(() => runMutation(async () => { const r = await apiRequest("/api/gateway/start", { method: "POST" }); await refreshGateway(); await refreshModels().catch(() => {}); return r; }, { reload: false }), [refreshGateway, refreshModels, runMutation]);
   const stopGateway = useCallback(() => runMutation(async () => { const r = await apiRequest("/api/gateway/stop", { method: "POST" }); await refreshGateway(); await refreshModels().catch(() => {}); return r; }, { reload: false }), [refreshGateway, refreshModels, runMutation]);
-  const approveToolCall = useCallback(
-    async (sid, tcid) => {
-      if (!sid) return;
-      try {
-        const s = await approveSessionToolApi(sid, tcid);
-        subscribeToSession(s);
-      } catch (e) {
-        setApiError(e.message);
-        toast.error(e.message);
-      }
-    },
-    [subscribeToSession]
-  );
-  const denyToolCall = useCallback(
-    async (sid, tcid) => {
-      if (!sid) return;
-      try {
-        const s = await denySessionToolApi(sid, tcid);
-        subscribeToSession(s);
-      } catch (e) {
-        setApiError(e.message);
-        toast.error(e.message);
-      }
-    },
-    [subscribeToSession]
-  );
-
-  const visibleSession = visibleSessionId ? sessionsById[visibleSessionId] || null : null;
-  const streaming = isLiveSession(visibleSession);
-  const pendingAssistant = visibleSessionId ? pendingAssistantBySessionId[visibleSessionId] || null : null;
-
   const value = {
     conversations,
     activeConv,
     activeConvId,
     selectedNodeId,
+    viewHeadId,
     selectedPathNodes,
     theme,
     treeOverlayOpen,
@@ -854,9 +540,8 @@ export function WindieProvider({ children }) {
     streaming,
     pendingAssistant,
     sessionsById,
-    visibleSession,
-    visibleSessionId,
-    sessionEventsBySessionId,
+    selectedSession,
+    selectedSessionId,
     searchQuery,
     models,
     modelsLoading,
@@ -871,11 +556,8 @@ export function WindieProvider({ children }) {
     apiError,
     gatewayRunning,
     approvals,
-    isAncestor,
-    findLiveForLeaf,
-    subscribeToPathLeaf,
     inspectNode,
-    abortAllSubscriptions: abortAll,
+    setPathHead,
     setSelectedNodeId,
     setTheme,
     setTreeOverlayOpen,
@@ -887,6 +569,8 @@ export function WindieProvider({ children }) {
     setInspectorPanelOpen,
     createConversation,
     selectConversation,
+    selectSession,
+    deleteSession,
     renameConversation,
     deleteConversation,
     setSystemPrompt,
@@ -897,8 +581,6 @@ export function WindieProvider({ children }) {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
-    selectPath,
-    selectPathHead,
     truncateAfter,
     removeMessage,
     editMessage,

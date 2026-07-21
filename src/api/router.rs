@@ -96,18 +96,21 @@ pub(super) fn router(state: ApiState) -> Router {
         )
         .route(
             "/api/conversations/{conversation_id}/sessions",
-            post(create_session),
+            get(list_conversation_sessions).post(create_session_branch),
         )
         .route(
-            "/api/conversations/{conversation_id}/wakeups/continue",
-            post(create_session),
+            "/api/sessions/{session_id}/query",
+            post(query_session),
         )
         .route(
-            "/api/conversations/{conversation_id}/wakeups/query",
-            post(create_session),
+            "/api/sessions/{session_id}/continue",
+            post(continue_session),
         )
         .route("/api/sessions", get(list_sessions))
-        .route("/api/sessions/{session_id}", get(get_run))
+        .route(
+            "/api/sessions/{session_id}",
+            get(get_run).delete(remove_session),
+        )
         .route(
             "/api/sessions/{session_id}/approvals",
             get(list_session_approvals),
@@ -120,26 +123,6 @@ pub(super) fn router(state: ApiState) -> Router {
         )
         .route(
             "/api/sessions/{session_id}/approvals/{tool_call_id}/deny",
-            post(deny_session_tool),
-        )
-        .route(
-            "/api/conversations/{conversation_id}/runs",
-            post(create_session),
-        )
-        .route("/api/runs", get(list_sessions))
-        .route("/api/runs/{session_id}", get(get_run))
-        .route(
-            "/api/runs/{session_id}/approvals",
-            get(list_session_approvals),
-        )
-        .route("/api/runs/{session_id}/events", get(session_events))
-        .route("/api/runs/{session_id}/stop", post(stop_run))
-        .route(
-            "/api/runs/{session_id}/approvals/{tool_call_id}/approve",
-            post(approve_session_tool),
-        )
-        .route(
-            "/api/runs/{session_id}/approvals/{tool_call_id}/deny",
             post(deny_session_tool),
         )
         .route(

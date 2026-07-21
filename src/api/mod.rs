@@ -42,7 +42,6 @@ use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
 };
 use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
-use crate::wakeup::ContinueWakeup;
 
 mod auth;
 mod conversation;

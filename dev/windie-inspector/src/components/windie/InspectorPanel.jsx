@@ -1,14 +1,10 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useWindie } from "@/context/WindieContext";
-import { ROLE_TOKENS } from "@/lib/mockData";
 import {
   ChevronRight,
   Pencil,
-  GitBranch,
-  Scissors,
   Trash2,
   ChevronDown,
-  Route,
   Plus,
   Loader2,
 } from "lucide-react";
@@ -34,25 +30,11 @@ function Section({ title, children, defaultOpen = true, right, testId, resetKey 
   );
 }
 
-function KV({ k, v, mono = true }) {
-  return (
-    <div className="flex items-baseline gap-2 py-0.5 text-[11px]">
-      <span className="text-muted-foreground font-mono uppercase tracking-widest w-24 shrink-0">{k}</span>
-      <span className={mono ? "font-mono text-foreground break-all" : "text-foreground"}>{v}</span>
-    </div>
-  );
-}
-
 export default function InspectorPanel() {
   const {
     activeConv,
-    selectedNodeId,
-    selectedPathNodes,
     setSystemPrompt,
     setToolApprovalMode,
-    forkFromMessage,
-    truncateAfter,
-    removeMessage,
     toolSchemas,
     approvals,
     approveToolCall,
@@ -63,11 +45,6 @@ export default function InspectorPanel() {
     removeToolSchema,
     removeToolSchemas,
     toolProviderStatuses,
-    sessionsById,
-    subscribeToPathLeaf,
-    inspectNode,
-    isAncestor,
-    findLiveForLeaf,
   } = useWindie();
 
   const [editingSys, setEditingSys] = useState(false);
@@ -79,9 +56,6 @@ export default function InspectorPanel() {
 
   useEffect(() => setSysDraft(activeConv?.systemPrompt || ""), [activeConv?.id, activeConv?.systemPrompt]);
 
-  const selectedNode = selectedNodeId ? activeConv?.nodes[selectedNodeId] : null;
-  const selectedPathIds = useMemo(() => new Set(selectedPathNodes.map((n) => n.id)), [selectedPathNodes]);
-  const onSelectedPath = selectedNode && selectedPathIds.has(selectedNodeId);
   const attachedNames = useMemo(() => new Set(toolSchemas.map((s) => s.name)), [toolSchemas]);
   const pendingSet = useMemo(() => new Set(pendingToolActionKeys), [pendingToolActionKeys]);
   const collapsedSet = useMemo(() => new Set(collapsedToolProviderIds), [collapsedToolProviderIds]);
@@ -136,66 +110,7 @@ export default function InspectorPanel() {
     <aside data-testid="windie-inspector" className="w-[340px] shrink-0 border-l border-border bg-background flex flex-col">
       <div className="h-8 shrink-0 border-b border-border px-3 flex items-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground">inspector</div>
       <div className="flex-1 min-h-0 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
-        <Section title="conversation" testId="inspector-section-conversation">
-          <KV k="id" v={activeConv.id} />
-          <KV k="model" v={activeConv.model} />
-          <KV k="nodes" v={Object.keys(activeConv.nodes).length} />
-          <KV k="branches" v={Object.values(activeConv.nodes).filter((n) => n.childrenIds.length > 1).length} />
-          <KV k="updated" v={new Date(activeConv.updatedAt).toLocaleString()} />
-          <div className="flex items-center gap-2 py-1 text-[11px]">
-            <span className="text-muted-foreground font-mono uppercase tracking-widest w-24 shrink-0">tool access</span>
-            <div className="grid grid-cols-2 border border-border">
-              <button data-testid="tool-approval-mode-manual" onClick={() => { setToolApprovalMode(activeConv.id, "manual"); toast.message("tool access set", { description: "manual" }); }} className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest ${activeConv.toolApprovalMode === "manual" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover"}`}>manual</button>
-              <button data-testid="tool-approval-mode-auto" onClick={() => { setToolApprovalMode(activeConv.id, "auto_approve_attached"); toast.message("tool access set", { description: "full access" }); }} className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest border-l border-border ${activeConv.toolApprovalMode === "auto_approve_attached" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover"}`}>full access</button>
-            </div>
-          </div>
-        </Section>
-
-        <Section title={`paths · ${(activeConv?.paths || []).length}`} testId="inspector-section-paths" defaultOpen={false}>
-          {(activeConv?.paths || []).length === 0 ? (
-            <div className="font-mono text-[11px] text-muted-foreground">no paths</div>
-          ) : (
-            <div className="space-y-0.5">
-              {activeConv.paths.map((path, idx) => {
-                const leafId = path.leafMessageId;
-                if (!leafId) return null;
-                const isCurrent = activeConv.selectedPath?.includes(leafId);
-                // Single source of truth: sessions table via findLiveForLeaf (uses current_head, handles waiting_for_approval)
-                const live = findLiveForLeaf ? findLiveForLeaf(leafId, sessionsById, activeConv.nodes) : [];
-                const liveForConv = live.filter((s) => s.conversationId === activeConv.id);
-                const running = liveForConv.some((s) => s.status === "running");
-                const waiting = liveForConv.some((s) => s.status === "waiting_for_approval");
-                return (
-                  <button key={leafId} data-testid={`inspector-path-leaf-${leafId}`} onClick={() => { subscribeToPathLeaf(leafId, activeConv.id); toast.message("path subscribed", { description: `${path.leafPreview?.slice(0, 40) || ""}${running ? " · running" : waiting ? " · needs approval" : ""}` }); }} className={`w-full text-left flex items-center gap-2 px-1.5 py-1 border-l-2 font-mono text-[11px] ${isCurrent ? "bg-surface border-[hsl(var(--accent))]" : "border-transparent hover:bg-surface/60"}`}>
-                    <span className="text-muted-foreground w-5 text-right">{String(idx).padStart(2, "0")}</span>
-                    <span className="text-muted-foreground w-10">d{path.depth}</span>
-                    {(running || waiting) && <span className={`size-1.5 rounded-full shrink-0 ${running ? "bg-green-500" : "bg-amber-500"}`} />}
-                    <span className="truncate flex-1 text-muted-foreground">{path.leafPreview || "(empty)"}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </Section>
-
-        <Section title="selected path" testId="inspector-section-active-path" defaultOpen={false}>
-          <div className="font-mono text-[10px] text-muted-foreground mb-1.5">{selectedPathNodes.length} nodes · click to inspect (unfollow)</div>
-          <div className="space-y-0.5">
-            {selectedPathNodes.map((n, i) => {
-              if (!n) return null;
-              const token = ROLE_TOKENS[n.message.role];
-              return (
-                <button key={n.id} data-testid={`inspector-path-node-${n.id}`} onClick={() => inspectNode(n.id)} className={`w-full text-left flex items-center gap-2 px-1.5 py-1 border-l-2 font-mono text-[11px] ${n.id === selectedNodeId ? "bg-surface border-[hsl(var(--accent))]" : "border-transparent hover:bg-surface/60"}`}>
-                  <span className="text-muted-foreground w-5 text-right">{String(i).padStart(2, "0")}</span>
-                  <span className={`w-8 ${token.color}`}>[{token.label}]</span>
-                  <span className="truncate flex-1 text-muted-foreground">{(n.message.parts.find((p) => p.type === "text")?.text || "").slice(0, 40) || "(empty)"}</span>
-                </button>
-              );
-            })}
-          </div>
-        </Section>
-
-        <Section title="system prompt" testId="inspector-section-system-prompt" defaultOpen={false} right={!editingSys && <span data-testid="inspector-edit-sysprompt-icon" onClick={(e) => { e.stopPropagation(); setSysDraft(activeConv.systemPrompt); setEditingSys(true); }} className="p-1 hover:bg-surface-hover"><Pencil className="size-3" /></span>}>
+        <Section title="system prompt" testId="inspector-section-system-prompt" right={!editingSys && <span data-testid="inspector-edit-sysprompt-icon" onClick={(e) => { e.stopPropagation(); setSysDraft(activeConv.systemPrompt); setEditingSys(true); }} className="p-1 hover:bg-surface-hover"><Pencil className="size-3" /></span>}>
           {editingSys ? (
             <div className="space-y-2">
               <textarea data-testid="inspector-sysprompt-textarea" value={sysDraft} onChange={(e) => setSysDraft(e.target.value)} rows={5} className="w-full bg-transparent border border-foreground/60 p-2 font-mono text-[11px] outline-none resize-none" />
@@ -209,34 +124,21 @@ export default function InspectorPanel() {
           )}
         </Section>
 
-        <Section title={selectedNodeId ? `selected · ${activeConv.nodes[selectedNodeId] ? ROLE_TOKENS[activeConv.nodes[selectedNodeId].message.role].label : ""}` : "selected message"} testId="inspector-section-selected">
-          {!selectedNodeId || !activeConv.nodes[selectedNodeId] ? (
-            <div className="font-mono text-[11px] text-muted-foreground">no message selected</div>
-          ) : (
-            <>
-              <KV k="node id" v={selectedNodeId} />
-              <KV k="parent" v={activeConv.nodes[selectedNodeId].parentId || "(root)"} />
-              <KV k="children" v={activeConv.nodes[selectedNodeId].childrenIds.length} />
-              <KV k="on path" v={selectedPathIds.has(selectedNodeId) ? <span className="text-[hsl(var(--accent))]">yes</span> : <span className="text-muted-foreground">no</span>} />
-              <div className="mt-3 grid grid-cols-2 gap-1">
-                <button data-testid="inspector-action-fork" onClick={() => { forkFromMessage(activeConv.id, selectedNodeId); toast.message("forked"); }} className="h-8 flex items-center justify-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest"><GitBranch className="size-3" /> fork</button>
-                <button data-testid="inspector-action-set-path" onClick={() => { subscribeToPathLeaf(selectedNodeId, activeConv.id); toast.message("path subscribed"); }} className="h-8 flex items-center justify-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest"><Route className="size-3" /> subscribe</button>
-                <button data-testid="inspector-action-truncate" onClick={() => { truncateAfter(activeConv.id, selectedNodeId); toast.message("truncated"); }} className="h-8 flex items-center justify-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest"><Scissors className="size-3" /> truncate</button>
-                <button data-testid="inspector-action-remove" onClick={() => { removeMessage(activeConv.id, selectedNodeId); toast.message("removed"); }} className="h-8 flex items-center justify-center gap-1.5 border border-border font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]"><Trash2 className="size-3" /> remove</button>
-              </div>
-            </>
-          )}
-        </Section>
-
-        <Section title={`approvals · ${approvals.length}`} testId="inspector-section-approvals" defaultOpen={true}>
+        <Section title={`approvals · ${approvals.length}`} testId="inspector-section-approvals">
+          <div className="flex items-center gap-2 py-1 text-[11px]">
+            <span className="text-muted-foreground font-mono uppercase tracking-widest w-24 shrink-0">tool access</span>
+            <div className="grid grid-cols-2 border border-border">
+              <button data-testid="tool-approval-mode-manual" onClick={() => { setToolApprovalMode(activeConv.id, "manual"); toast.message("tool access set", { description: "manual" }); }} className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest ${activeConv.toolApprovalMode === "manual" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover"}`}>manual</button>
+              <button data-testid="tool-approval-mode-auto" onClick={() => { setToolApprovalMode(activeConv.id, "auto_approve_attached"); toast.message("tool access set", { description: "full access" }); }} className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest border-l border-border ${activeConv.toolApprovalMode === "auto_approve_attached" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover"}`}>full access</button>
+            </div>
+          </div>
           {approvals.length === 0 ? <div className="font-mono text-[11px] text-muted-foreground">no pending</div> : approvals.map((a) => (
             <div key={a.tool_call_id} className="border border-border mb-2">
               <div className="px-2 py-1 border-b border-border flex justify-between"><span className="font-mono text-[11px] text-[hsl(var(--tool-call))]">{a.tool_name}</span><span className="font-mono text-[9px] text-muted-foreground">session {a.session_id?.slice(0, 8)}</span></div>
               <div className="px-2 py-1.5 space-y-1">
                 <div className="font-mono text-[10px] text-muted-foreground">{a.reason}</div>
                 <pre className="font-mono text-[10px] bg-surface/60 border border-border p-2 overflow-auto max-h-32 whitespace-pre-wrap">{(() => { try { return JSON.stringify(JSON.parse(a.arguments), null, 2); } catch { return a.arguments; } })()}</pre>
-                <div className="grid grid-cols-3 gap-1">
-                  <button data-testid={`approval-view-${a.tool_call_id}`} onClick={() => { inspectNode(a.assistant_message_id); }} className="h-7 border border-border font-mono text-[10px] uppercase">view path</button>
+                <div className="grid grid-cols-2 gap-1">
                   <button data-testid={`approval-approve-${a.tool_call_id}`} onClick={() => { approveToolCall(a.session_id, a.tool_call_id); toast.message("approved"); }} className="h-7 border border-foreground bg-foreground text-background font-mono text-[10px] uppercase">approve</button>
                   <button data-testid={`approval-deny-${a.tool_call_id}`} onClick={() => { denyToolCall(a.session_id, a.tool_call_id); toast.message("denied"); }} className="h-7 border border-border font-mono text-[10px] uppercase text-[hsl(var(--destructive))]">deny</button>
                 </div>
@@ -245,7 +147,7 @@ export default function InspectorPanel() {
           ))}
         </Section>
 
-        <Section title={`tool schemas · ${availableToolSchemas.length}`} testId="inspector-section-tools" defaultOpen={true} resetKey={activeConv.id}>
+        <Section title={`tool schemas · ${availableToolSchemas.length}`} testId="inspector-section-tools" resetKey={activeConv.id}>
           <div className="space-y-2">
             {grouped.length > 0 || unavailable.length > 0 ? (
               <div className="space-y-2">

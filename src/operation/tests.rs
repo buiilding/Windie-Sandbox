@@ -379,7 +379,7 @@ fn shared_operations_match_direct_store_state() {
 }
 
 #[test]
-fn start_session_from_wakeup_captures_requested_head() {
+fn create_session_branch_captures_requested_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
     let user_id = insert_message(
@@ -391,22 +391,21 @@ fn start_session_from_wakeup_captures_requested_head() {
     )
     .unwrap();
 
-    let session = start_session_from_wakeup(
-        &mut store,
-        crate::wakeup::ContinueWakeup {
-            conversation_id: conversation_id.clone(),
-            head_message_id: Some(user_id.clone()),
-            model: None,
-            reasoning: None,
-        },
-    )
-    .unwrap();
+    let session = store
+        .create_session(
+            &SessionId::fresh(),
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
 
     assert_eq!(session.conversation_id, conversation_id);
     assert_eq!(session.start_head_message_id.as_ref(), Some(&user_id));
     assert_eq!(session.current_head_message_id.as_ref(), Some(&user_id));
     assert_eq!(session.model, "openai/test");
-    assert_eq!(session.status, SessionStatus::Running);
+    assert_eq!(session.status, SessionStatus::Ready);
 }
 
 #[test]

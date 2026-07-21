@@ -63,7 +63,7 @@ use crate::tool::{
     ToolSchema, ToolSchemaName,
 };
 use crate::tool_provider::ToolProviderRegistry;
-use crate::wakeup::{ContinueWakeup, Wakeup};
+use crate::wakeup::Wakeup;
 
 #[cfg(test)]
 mod tests;

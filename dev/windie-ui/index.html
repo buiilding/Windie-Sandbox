@@ -6,7 +6,23 @@
   <title>Windie</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
-    #app { max-width: 720px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+    #layout { display: flex; height: 100vh; }
+    #app { flex: 1; max-width: 720px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+
+    /* sidebar: conversation list */
+    #sidebar { width: 220px; flex-shrink: 0; border-right: 1px solid #222; background: #0d0d0d; display: flex; flex-direction: column; }
+    #sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 12px; border-bottom: 1px solid #222; }
+    #sidebar-head .tag { font-size: 10px; color: #888; letter-spacing: 1.5px; }
+    #new-conv { width: 26px; height: 26px; padding: 0; border-radius: 6px; font-size: 16px; line-height: 1; }
+    #conv-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .conv-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; }
+    .conv-row:hover { background: #1c1c1c; }
+    .conv-row.active { background: #18243a; }
+    .conv-row .cname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .conv-row .cmeta { font-size: 10px; color: #777; flex-shrink: 0; }
+    .conv-row .cdel { background: none; border: 0; color: #666; cursor: pointer; font-size: 14px; padding: 0 2px; flex-shrink: 0; visibility: hidden; }
+    .conv-row:hover .cdel { visibility: visible; }
+    .conv-row .cdel:hover { color: #c66; }
     #status { font-size: 13px; color: #888; margin-bottom: 12px; }
     #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
     .msg { padding: 8px 12px; border-radius: 8px; white-space: pre-wrap; max-width: 85%; }
@@ -26,10 +42,43 @@
     .approval .args { background: #1a1a1a; padding: 8px; border-radius: 6px; font-size: 12px; overflow-x: auto; margin: 6px 0; }
     .approval button { margin-right: 8px; padding: 6px 12px; font-size: 12px; }
     .approval button.deny { background: #6a2a2a; }
+
+    /* markdown body (mirrors .windie-markdown in windie-inspector) */
+    .md { overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; }
+    .md > * + * { margin-top: 10px; }
+    .md p { margin: 0; }
+    .md h1, .md h2, .md h3, .md h4 { margin: 0; font-size: 1em; line-height: 1.3; }
+    .md ul, .md ol { margin: 0; padding-left: 20px; }
+    .md ul { list-style: disc; }
+    .md ol { list-style: decimal; }
+    .md li + li { margin-top: 3px; }
+    .md blockquote { margin: 0; padding-left: 12px; border-left: 2px solid #333; color: #aaa; }
+    .md code { padding: 1px 4px; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; font-size: 0.82em; }
+    .md pre { margin: 0; padding: 11px; overflow-x: auto; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; }
+    .md pre code { padding: 0; background: transparent; border: 0; font-size: 12px; white-space: pre; }
+    .md a { color: #6ab0ff; text-decoration: underline; text-underline-offset: 2px; }
+    .md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 13px; }
+    .md th, .md td { padding: 6px 8px; border: 1px solid #333; text-align: left; vertical-align: top; }
+    .md th { background: #1a1a1a; font-weight: 600; }
+
     #composer { display: flex; gap: 8px; align-items: center; }
-    #input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #333; background: #1a1a1a; color: #eee; }
+    #composer-right { flex: 1; min-width: 0; }
+    #composer-input-row { display: flex; gap: 8px; align-items: center; }
+    #input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #333; background: #1a1a1a; color: #eee; resize: none; overflow-y: auto; font-family: inherit; font-size: inherit; line-height: 1.4; }
     button { padding: 10px 16px; border-radius: 8px; border: 0; background: #2b5cb8; color: #fff; cursor: pointer; }
     button:disabled { opacity: 0.5; cursor: default; }
+
+    /* clipboard preview strip above composer */
+    #clip-strip { display: none; gap: 8px; padding: 8px 0 2px; overflow-x: auto; }
+    #clip-strip.show { display: flex; }
+    .clip-item { position: relative; flex-shrink: 0; }
+    .clip-item img { height: 56px; width: 56px; object-fit: cover; border: 1px solid #333; border-radius: 6px; display: block; }
+    .clip-item .x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border-radius: 50%; background: #222; border: 1px solid #444; color: #bbb; font-size: 12px; line-height: 1; cursor: pointer; }
+    .clip-item .x:hover { color: #fff; background: #333; }
+    .clip-item .meta { position: absolute; left: 2px; bottom: 2px; font-size: 9px; color: #ddd; background: rgba(0,0,0,0.6); padding: 1px 3px; border-radius: 3px; max-width: 52px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* markdown image preview (persisted image parts, mirrors inspector) */
+    .md img { max-width: 280px; max-height: 200px; border: 1px solid #333; border-radius: 6px; display: block; margin-top: 8px; }
 
     /* model button in the composer bar */
     #model-btn { display: flex; align-items: center; gap: 8px; background: #1a1a1a; border: 1px solid #333; color: #eee; padding: 10px 12px; border-radius: 8px; max-width: 45%; }
@@ -87,21 +136,35 @@
   </style>
 </head>
 <body>
-  <div id="app">
-    <div id="status">starting…</div>
-    <div id="messages"></div>
-    <div id="composer">
-      <button id="model-btn" title="choose model">
-        <span class="tag">MODEL</span>
-        <span class="name" id="model-btn-name">…</span>
-        <span class="caret">▾</span>
-      </button>
-      <button id="tools-btn" title="choose tools">
-        <span class="tag">TOOLS</span>
-        <span class="count" id="tools-btn-count">0</span>
-      </button>
-      <input id="input" placeholder="type a message…" autocomplete="off" />
-      <button id="send">send</button>
+  <div id="layout">
+    <aside id="sidebar">
+      <div id="sidebar-head">
+        <span class="tag">CHATS</span>
+        <button id="new-conv" title="new conversation">+</button>
+      </div>
+      <div id="conv-list"></div>
+    </aside>
+    <div id="app">
+      <div id="status">starting…</div>
+      <div id="messages"></div>
+      <div id="composer">
+        <button id="model-btn" title="choose model">
+          <span class="tag">MODEL</span>
+          <span class="name" id="model-btn-name">…</span>
+          <span class="caret">▾</span>
+        </button>
+        <button id="tools-btn" title="choose tools">
+          <span class="tag">TOOLS</span>
+          <span class="count" id="tools-btn-count">0</span>
+        </button>
+        <div id="composer-right">
+          <div id="clip-strip"></div>
+          <div id="composer-input-row">
+            <textarea id="input" rows="1" placeholder="type a message… (enter to send, shift+enter for newline, paste images here)" autocomplete="off"></textarea>
+            <button id="send">send</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -127,6 +190,9 @@
     </div>
     <div id="tools-list"></div>
   </div>
+
+  <!-- marked for GFM markdown (loaded before format.js, which uses it) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
   <!-- module so we can `import` from api.js and stream.js -->
   <script type="module" src="app.js"></script>

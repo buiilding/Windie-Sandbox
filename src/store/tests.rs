@@ -1360,7 +1360,9 @@ fn remove_message_clears_deleted_runtime_run_head() {
 
     assert_eq!(run.start_head_message_id, None);
     assert_eq!(run.current_head_message_id, None);
-    assert_eq!(run.status, SessionStatus::Cancelled);
+    // A ready branch whose head was deleted is not running, so it stays ready
+    // rather than being cancelled; only its dangling head pointer is cleared.
+    assert_eq!(run.status, SessionStatus::Ready);
 }
 
 #[test]
@@ -1409,7 +1411,9 @@ fn remove_message_clears_deleted_session_start_but_keeps_surviving_current_head(
 
     assert_eq!(run.start_head_message_id, None);
     assert_eq!(run.current_head_message_id.as_ref(), Some(&third_id));
-    assert_eq!(run.status, SessionStatus::Running);
+    // The surviving current head keeps the branch resumable; deleting only the
+    // start pointer does not cancel a ready branch.
+    assert_eq!(run.status, SessionStatus::Ready);
     assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
 }
 
@@ -2245,7 +2249,9 @@ fn truncate_clears_deleted_runtime_run_head() {
 
     assert_eq!(run.start_head_message_id, None);
     assert_eq!(run.current_head_message_id, None);
-    assert_eq!(run.status, SessionStatus::Cancelled);
+    // Truncating away a ready branch's head clears the dangling pointers but
+    // leaves the branch ready, since it was never running.
+    assert_eq!(run.status, SessionStatus::Ready);
 }
 
 #[test]
@@ -2391,6 +2397,150 @@ fn deletes_conversation() {
     store.remove_conversation(&conversation_id).unwrap();
 
     assert!(store.list_conversations().unwrap().is_empty());
+}
+
+#[test]
+fn removes_terminal_session_events_and_exclusive_branch_messages() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let branch_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::Assistant,
+            "branch",
+            None,
+        )
+        .unwrap();
+    let session_id = SessionId::new("session-delete-exclusive");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&root_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_head(&session_id, Some(&branch_id))
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Completed, None)
+        .unwrap();
+    store
+        .append_session_event(
+            &session_id,
+            SessionEvent::Completed {
+                message_id: Some(branch_id.to_string()),
+            },
+        )
+        .unwrap();
+
+    store.remove_session(&session_id).unwrap();
+
+    assert!(store.load_session(&session_id).is_err());
+    assert!(store.load_session_events_after(&session_id, None).is_err());
+    assert_eq!(
+        message_ids(&store.load_messages(&conversation_id).unwrap()),
+        vec![root_id.to_string()]
+    );
+}
+
+#[test]
+fn removes_session_preserves_messages_needed_by_another_session() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let shared_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::Assistant,
+            "shared",
+            None,
+        )
+        .unwrap();
+    let deleted_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "deleted branch",
+            None,
+        )
+        .unwrap();
+    let surviving_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "surviving branch",
+            None,
+        )
+        .unwrap();
+
+    let deleted_session_id = SessionId::new("session-delete-branch");
+    store
+        .create_session(
+            &deleted_session_id,
+            &conversation_id,
+            Some(&shared_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_head(&deleted_session_id, Some(&deleted_id))
+        .unwrap();
+    store
+        .update_session_status(&deleted_session_id, SessionStatus::Completed, None)
+        .unwrap();
+
+    let surviving_session_id = SessionId::new("session-delete-survivor");
+    store
+        .create_session(
+            &surviving_session_id,
+            &conversation_id,
+            Some(&shared_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_head(&surviving_session_id, Some(&surviving_id))
+        .unwrap();
+
+    store.remove_session(&deleted_session_id).unwrap();
+
+    let ids = message_ids(&store.load_messages(&conversation_id).unwrap());
+    assert!(!ids.contains(&deleted_id.to_string()));
+    assert!(ids.contains(&shared_id.to_string()));
+    assert!(ids.contains(&surviving_id.to_string()));
+    assert!(store.load_session(&surviving_session_id).is_ok());
+}
+
+#[test]
+fn refuses_to_remove_live_session() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("session-delete-live");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Running, None)
+        .unwrap();
+
+    let error = store.remove_session(&session_id).unwrap_err();
+
+    assert!(error.to_string().contains("cannot delete a running"));
+    assert!(store.load_session(&session_id).is_ok());
 }
 
 #[test]

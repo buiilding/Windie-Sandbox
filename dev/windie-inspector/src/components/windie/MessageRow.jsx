@@ -13,7 +13,9 @@ import {
   Wrench,
   Check,
   X,
+  Square,
   Image as ImageIcon,
+  Target,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -253,12 +255,13 @@ function MessageMarkdown({ text, isStreaming }) {
  * This row has no store-backed node: it exists only while a query streams and
  * is replaced by the durable persisted message once `assistant_message_saved`
  * arrives. It intentionally omits selection, edit, fork, and tree actions
- * because there is no message id to act on yet.
+ * because there is no message id to act on yet. `sessionId` labels which
+ * session is streaming and wires the per-session stop button.
  */
-export function PendingAssistantRow({ pendingAssistant, index }) {
+export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop }) {
   return (
     <div
-      data-testid="msg-row-pending-assistant"
+      data-testid={`msg-row-pending-assistant${sessionId ? `-${sessionId.slice(0, 8)}` : ""}`}
       className="relative border-b border-border py-3.5 px-6"
     >
       <div className="flex items-start gap-3">
@@ -271,6 +274,18 @@ export function PendingAssistantRow({ pendingAssistant, index }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             <span className="text-foreground/70">streaming</span>
+            {sessionId && <span className="text-muted-foreground/70">· session {sessionId.slice(0, 8)}</span>}
+            {onStop && (
+              <button
+                type="button"
+                data-testid={`pending-stop-${sessionId?.slice(0, 8) || "session"}`}
+                onClick={onStop}
+                className="ml-auto inline-flex items-center gap-1 border border-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover hover:text-foreground"
+              >
+                <Square className="size-2 fill-current" />
+                stop
+              </button>
+            )}
           </div>
           <ReasoningLane reasoning={pendingAssistant.reasoning} />
           <MessageMarkdown text={pendingAssistant.text} isStreaming />
@@ -285,6 +300,7 @@ export default function MessageRow({ node, index, isLast }) {
   const {
     selectedNodeId,
     setSelectedNodeId,
+    setPathHead,
     activeConv,
     forkFromMessage,
     truncateAfter,
@@ -427,6 +443,20 @@ export default function MessageRow({ node, index, isLast }) {
         {!editing && (
           <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5">
             <button
+              data-testid={`msg-action-set-path-${node.id}`}
+              title="set path head"
+              onClick={(e) => {
+                e.stopPropagation();
+                setPathHead(node.id);
+                toast.message("path set", {
+                  description: "the next query uses this path; a different path creates a new session",
+                });
+              }}
+              className="p-1 border border-transparent hover:border-border hover:bg-surface-hover"
+            >
+              <Target className="size-3.5" strokeWidth={1.75} />
+            </button>
+            <button
               data-testid={`msg-action-fork-${node.id}`}
               title="fork from this message"
               onClick={(e) => {
@@ -467,7 +497,7 @@ export default function MessageRow({ node, index, isLast }) {
                 title="remove message"
                 onClick={(e) => {
                   e.stopPropagation();
-                  removeMessage(activeConv.id, node.id);
+                  void removeMessage(activeConv.id, node.id).catch(() => {});
                   toast.message("message removed");
                 }}
                 className="p-1 border border-transparent hover:border-border hover:bg-surface-hover text-[hsl(var(--destructive))]"

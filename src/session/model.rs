@@ -11,6 +11,7 @@ use super::SessionId;
 #[serde(rename_all = "snake_case")]
 /// Durable lifecycle state for one session.
 pub enum SessionStatus {
+    Ready,
     Running,
     WaitingForApproval,
     Completed,
@@ -22,6 +23,7 @@ impl SessionStatus {
     /// Converts storage text into the typed status.
     pub fn from_storage(value: &str) -> Option<Self> {
         match value {
+            "ready" => Some(Self::Ready),
             "running" => Some(Self::Running),
             "waiting_for_approval" => Some(Self::WaitingForApproval),
             "completed" => Some(Self::Completed),
@@ -34,6 +36,7 @@ impl SessionStatus {
     /// Returns the stable storage representation.
     pub fn as_storage(self) -> &'static str {
         match self {
+            Self::Ready => "ready",
             Self::Running => "running",
             Self::WaitingForApproval => "waiting_for_approval",
             Self::Completed => "completed",

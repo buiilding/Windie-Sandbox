@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// Starts and advances a CLI-owned session from a conversation wakeup.
+/// Creates a session branch at a conversation head and advances it to blocked.
 pub async fn start_cli_session(
     conversation_id: ConversationId,
     head_message_id: Option<MessageId>,
@@ -14,14 +14,16 @@ pub async fn start_cli_session(
     base_url: BaseUrl,
 ) -> Result<()> {
     let mut store = Store::open()?;
-    let session = start_session_from_wakeup(
-        &mut store,
-        ContinueWakeup {
-            conversation_id,
-            head_message_id,
-            model,
-            reasoning: None,
-        },
+    let model = match model {
+        Some(model) => model,
+        None => conversation_model(&store, &conversation_id)?,
+    };
+    let session = store.create_session(
+        &SessionId::fresh(),
+        &conversation_id,
+        head_message_id.as_ref(),
+        model.as_str(),
+        None,
     )?;
     let output = TerminalOutput;
 

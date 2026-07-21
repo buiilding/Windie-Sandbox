@@ -1,8 +1,8 @@
 // app.js — the single v1 screen. Wires api.js + stream.js into a send→stream loop.
 //
 // Flow when you hit send:
-//   1. insertUserMessage  (api.js)  — save your message, get a message id
-//   2. createSession      (api.js)  — start a session from that head, get a session id
+//   1. createSession      (api.js)  — create a ready session branch at the current head
+//   2. querySession       (api.js)  — append your message to the branch and start the run
 //   3. streamSessionEvents(stream.js) — listen and append assistant tokens live
 //
 // State is deliberately tiny: one conversation id, one current head message id.
@@ -10,8 +10,10 @@
 import {
   health,
   createConversation,
-  insertUserMessage,
+  listConversations,
+  deleteConversation,
   createSession,
+  querySession,
   listModels,
   setConversationModel,
   approveSessionTool,
@@ -24,8 +26,10 @@ import {
   attachTools,
   detachTool,
   setToolApprovalMode,
+  fetchImageAsset,
 } from "./api.js";
 import { streamSessionEvents } from "./stream.js";
+import { renderMarkdown } from "./format.js";
 
 const API_BASE = "http://127.0.0.1:8787";
 
@@ -38,6 +42,11 @@ const statusEl = document.getElementById("status");
 const messagesEl = document.getElementById("messages");
 const inputEl = document.getElementById("input");
 const sendEl = document.getElementById("send");
+const clipStripEl = document.getElementById("clip-strip");
+
+// Clipboard images staged for the next send. Each: { id, file, mimeType, objectUrl }
+let stagedImages = [];
+let stagedImageId = 0;
 
 // model picker elements
 const modelBtn = document.getElementById("model-btn");          // composer button
@@ -63,10 +72,84 @@ function addMessage(role, label) {
     div.appendChild(meta);
   }
   const body = document.createElement("div");
+  body.className = "md";
   div.appendChild(body);
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return body;
+}
+
+// Read one clipboard File into a base64 data payload (no data: prefix).
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",")[1] : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("failed to read image"));
+    reader.readAsDataURL(file);
+  });
+}
+
+// Re-render the clipboard preview strip from stagedImages.
+function renderClipStrip() {
+  clipStripEl.innerHTML = "";
+  clipStripEl.classList.toggle("show", stagedImages.length > 0);
+  for (const img of stagedImages) {
+    const item = document.createElement("div");
+    item.className = "clip-item";
+
+    const thumb = document.createElement("img");
+    thumb.src = img.objectUrl;
+    thumb.alt = img.mimeType;
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = img.mimeType.split("/")[1] || "img";
+
+    const remove = document.createElement("button");
+    remove.className = "x";
+    remove.textContent = "×";
+    remove.title = "remove";
+    remove.addEventListener("click", () => {
+      URL.revokeObjectURL(img.objectUrl);
+      stagedImages = stagedImages.filter((s) => s.id !== img.id);
+      renderClipStrip();
+    });
+
+    item.appendChild(thumb);
+    item.appendChild(meta);
+    item.appendChild(remove);
+    clipStripEl.appendChild(item);
+  }
+}
+
+// Paste images from the clipboard into the composer.
+inputEl.addEventListener("paste", (event) => {
+  const files = Array.from(event.clipboardData?.items || [])
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  if (files.length === 0) return;
+
+  event.preventDefault();
+  for (const file of files) {
+    stagedImages.push({
+      id: ++stagedImageId,
+      file,
+      mimeType: file.type || "image/png",
+      objectUrl: URL.createObjectURL(file),
+    });
+  }
+  renderClipStrip();
+});
+
+// Drop staged images (after send or conversation switch), revoking object URLs.
+function clearStagedImages() {
+  for (const img of stagedImages) URL.revokeObjectURL(img.objectUrl);
+  stagedImages = [];
+  renderClipStrip();
 }
 
 // The provider segment of a model id, shown as the right-hand tag.
@@ -111,10 +194,16 @@ function renderPickerList() {
   }
 }
 
-// Apply a chosen model to this conversation, update the button, close the panel.
-async function pickModel(id) {
+// Show a model on the button WITHOUT writing it to the conversation.
+// Used when we just want to reflect the conversation's stored model.
+function showModel(id) {
   selectedModel = id;
   modelBtnName.textContent = id;
+}
+
+// Apply a chosen model to this conversation, update the button, close the panel.
+async function pickModel(id) {
+  showModel(id);
   closePicker();
   if (conversationId) await setConversationModel(conversationId, id);
   statusEl.textContent = `conversation ${conversationId.slice(0, 8)}… · ${id}`;
@@ -387,7 +476,93 @@ modeAutoBtn.addEventListener("click", async () => {
   renderToolsList();
 });
 
-// Boot: confirm the server is up, make a conversation, set its model.
+// ===========================================================================
+// Sidebar: conversation list + reload (the "come back to a conversation" path).
+// ===========================================================================
+
+const convListEl = document.getElementById("conv-list");
+const newConvBtn = document.getElementById("new-conv");
+
+// Display name for a conversation row: title if set, else short id.
+function conversationLabel(conv) {
+  return conv.title || `conversation ${conv.id.slice(0, 8)}`;
+}
+
+// Reload the sidebar list, marking the active conversation.
+async function renderConversationList() {
+  const conversations = await listConversations();
+  convListEl.innerHTML = "";
+  for (const conv of conversations) {
+    const row = document.createElement("div");
+    row.className = "conv-row" + (conv.id === conversationId ? " active" : "");
+
+    const name = document.createElement("span");
+    name.className = "cname";
+    name.textContent = conversationLabel(conv);
+
+    const meta = document.createElement("span");
+    meta.className = "cmeta";
+    meta.textContent = String(conv.message_count ?? 0);
+
+    const del = document.createElement("button");
+    del.className = "cdel";
+    del.textContent = "×";
+    del.title = "delete conversation";
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await removeConversation(conv.id);
+    });
+
+    row.appendChild(name);
+    row.appendChild(meta);
+    row.appendChild(del);
+    row.addEventListener("click", () => selectConversation(conv.id));
+    convListEl.appendChild(row);
+  }
+}
+
+// Select a conversation: set it active, reset head, render its persisted history.
+async function selectConversation(id) {
+  if (id === conversationId) return;
+  conversationId = id;
+  headMessageId = null;
+  clearPending();
+  clearStagedImages();
+  await renderConversation();
+  await renderConversationList(); // refresh active highlight
+  loadToolsPanel();               // refresh attached-tools count for this conv
+  statusEl.textContent = `conversation ${id.slice(0, 8)}…`;
+}
+
+// Create a fresh conversation and select it.
+async function newConversation() {
+  const id = await createConversation();
+  await renderConversationList();
+  await selectConversation(id);
+}
+
+// Delete a conversation, then select another (or create one if none remain).
+async function removeConversation(id) {
+  await deleteConversation(id);
+  if (id === conversationId) {
+    conversationId = null;
+    headMessageId = null;
+    clearPending();
+    clearStagedImages();
+    messagesEl.innerHTML = "";
+  }
+  const remaining = await listConversations();
+  if (remaining.length === 0) {
+    await newConversation();
+  } else {
+    await renderConversationList();
+    if (!conversationId) await selectConversation(remaining[0].id);
+  }
+}
+
+newConvBtn.addEventListener("click", newConversation);
+
+// Boot: confirm the server is up, load models, then load/select a conversation.
 async function boot() {
   try {
     await health();
@@ -398,17 +573,22 @@ async function boot() {
     return;
   }
 
-  // For v1 we always create a fresh conversation on load.
-  conversationId = await createConversation();
-
-  // Load the gateway's models, then default to the first so sends work.
+  // Load the gateway's models so the picker works.
   await loadModels();
-  if (allModels.length > 0) {
-    await pickModel(allModels[0]);
+
+  // Load existing conversations; select the most recent, or create one if none.
+  const conversations = await listConversations();
+  if (conversations.length > 0) {
+    await renderConversationList();
+    await selectConversation(conversations[0].id);
+  } else {
+    await newConversation();
   }
 
-  // Show the current attached-tools count on the TOOLS button.
-  loadToolsPanel();
+  // Default the model so sends work even if the user doesn't pick one.
+  if (allModels.length > 0 && !selectedModel) {
+    await pickModel(allModels[0]);
+  }
 }
 
 // ===========================================================================
@@ -419,6 +599,27 @@ async function boot() {
 // re-render the persisted messages, so saved content (including real tool
 // outputs) is exact.
 // ===========================================================================
+
+// Render one image part as an <img> fed by the durable asset endpoint.
+// Mirrors the inspector's MessageImagePreview: blob -> object URL -> <img>.
+function appendImagePart(container, message, part) {
+  const img = document.createElement("img");
+  img.alt = `${part.mime_type || "image"} · ${part.byte_count || 0}b`;
+  container.appendChild(img);
+
+  fetchImageAsset(conversationId, part.asset_id)
+    .then((blob) => {
+      img.src = URL.createObjectURL(blob);
+    })
+    .catch(() => {
+      // Leave the frame with the alt text if the asset can't load.
+      img.style.display = "none";
+      const fallback = document.createElement("div");
+      fallback.className = "meta";
+      fallback.textContent = `[image unavailable: ${part.mime_type || "image"}]`;
+      container.appendChild(fallback);
+    });
+}
 
 // Extract the text of one message from its parts (fallback to content).
 function messageText(message) {
@@ -461,10 +662,15 @@ function renderPersistedMessage(message) {
     return;
   }
 
-  // User / assistant / system text bubble.
+  // User / assistant / system text bubble (markdown-rendered).
   const label = role === "user" ? "you" : role;
   const body = addMessage(role === "user" ? "user" : "assistant", label);
-  body.textContent = messageText(message);
+  body.innerHTML = renderMarkdown(messageText(message));
+
+  // Image parts render below the text, fed by the durable asset endpoint.
+  for (const part of message.parts || []) {
+    if (part.type === "image") appendImagePart(body, message, part);
+  }
 
   // Tool-call lane for assistant messages that requested tools.
   if (metadata.tool_calls && metadata.tool_calls.length > 0) {
@@ -490,6 +696,9 @@ async function renderConversation() {
   if (!conversationId) return;
   const report = await getConversation(conversationId);
 
+  // Reflect the conversation's stored model on the button (no write).
+  if (report.model) showModel(report.model);
+
   messagesEl.innerHTML = "";
   const nodes = report.messages || [];
   for (const message of nodes) {
@@ -509,6 +718,7 @@ async function renderConversation() {
 let pendingEl = null;          // the ephemeral streaming bubble
 let pendingReasoningEl = null; // ephemeral reasoning block
 let pendingToolChips = [];     // ephemeral tool-call chips
+let pendingText = "";          // accumulated streaming assistant text
 
 function clearPending() {
   for (const el of [pendingEl, pendingReasoningEl, ...pendingToolChips]) {
@@ -517,6 +727,7 @@ function clearPending() {
   pendingEl = null;
   pendingReasoningEl = null;
   pendingToolChips = [];
+  pendingText = "";
 }
 
 function pendingTextBody() {
@@ -600,28 +811,46 @@ function addApprovalCard(sessionId, approval) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-// Send: save message → start session → stream deltas, reload on save.
+// Send: build parts from text + staged images → save message → start session → stream.
 async function send() {
   const text = inputEl.value.trim();
-  if (!text) return;
+  if (!text && stagedImages.length === 0) return;
   inputEl.value = "";
   sendEl.disabled = true;
 
   try {
-    // 1. save the user message; it becomes the new head
-    headMessageId = await insertUserMessage(conversationId, text, headMessageId);
+    // Build ordered parts: text first, then each staged image as base64.
+    const parts = [];
+    if (text) parts.push({ type: "text", text });
+    for (const img of stagedImages) {
+      parts.push({
+        type: "image_data",
+        mime_type: img.mimeType,
+        data: await fileToBase64(img.file),
+      });
+    }
+    clearStagedImages();
+
+    // 1. create a ready session branch at the current head, then query it with
+    //    the user's parts. The query inserts the user message under the branch
+    //    head, advances the head, and starts the run — so one session owns this
+    //    whole turn trajectory rather than one session per user message.
+    const sessionId = await createSession(conversationId, headMessageId);
+    await querySession(sessionId, parts);
     // show the persisted user message immediately
     await renderConversation();
 
-    // 2. start a session from that head
-    const sessionId = await createSession(conversationId, headMessageId);
-
-    // 3. stream events; deltas are ephemeral, saves trigger a reload
+    // 2. stream events; deltas are ephemeral, saves trigger a reload
     const { apiToken } = await import("./api.js");
 
     await streamSessionEvents(sessionId, async ({ data }) => {
       if (data.type === "assistant_delta") {
-        pendingTextBody().textContent += data.text;
+        // Accumulate the full text and re-render each delta (mirrors the
+        // inspector feeding pendingAssistant.text through MessageMarkdown).
+        // Never append rendered HTML fragments — an open code fence would
+        // never close visually.
+        pendingText += data.text;
+        pendingTextBody().innerHTML = renderMarkdown(pendingText);
       } else if (data.type === "reasoning_delta") {
         pendingReasoningBody().textContent += data.text;
       } else if (data.type === "waiting_for_approval") {
@@ -638,15 +867,23 @@ async function send() {
       } else if (data.type === "completed") {
         clearPending();
         await renderConversation();
+        renderConversationList(); // refresh sidebar message counts
       } else if (data.type === "failed") {
         clearPending();
-        addMessage("assistant", "assistant").textContent = `[error] ${data.error}`;
+        // Errors render as pre-wrapped plain text, never markdown.
+        const body = addMessage("assistant", "assistant");
+        body.className = "";
+        body.style.whiteSpace = "pre-wrap";
+        body.textContent = `[error] ${data.error}`;
       }
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }, { apiBase: API_BASE, token: apiToken() });
   } catch (error) {
     clearPending();
-    addMessage("assistant", "assistant").textContent = `[error] ${error.message}`;
+    const body = addMessage("assistant", "assistant");
+    body.className = "";
+    body.style.whiteSpace = "pre-wrap";
+    body.textContent = `[error] ${error.message}`;
   } finally {
     sendEl.disabled = false;
     inputEl.focus();
@@ -654,8 +891,17 @@ async function send() {
 }
 
 sendEl.addEventListener("click", send);
+
+// Enter sends; Shift+Enter inserts a newline. Auto-grow the box up to ~8 lines.
 inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") send();
+  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    e.preventDefault();
+    send();
+  }
+});
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + "px";
 });
 
 boot();

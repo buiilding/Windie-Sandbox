@@ -145,12 +145,12 @@ export default function Composer() {
     const sentAttachments = attachments;
     setText("");
     clearAttachments();
-    await sendMessage(activeConv.id, sentText, { attachments: sentAttachments });
+    await sendMessage(sentText, { attachments: sentAttachments });
   };
 
   const continueQuery = () => {
     if (!activeConv) return;
-    continueConversation(activeConv.id);
+    continueConversation();
   };
 
   const refreshModelList = () => {

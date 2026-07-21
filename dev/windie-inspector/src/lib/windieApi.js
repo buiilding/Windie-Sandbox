@@ -124,8 +124,35 @@ export async function listSessions() {
   return body.sessions || [];
 }
 
+export async function listConversationSessions(conversationId) {
+  const body = await apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/sessions`
+  );
+  return body.sessions || [];
+}
+
+export async function querySession(sessionId, parts) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/query`, {
+    method: "POST",
+    body: JSON.stringify({ parts }),
+  });
+}
+
+export async function continueSession(sessionId) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/continue`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function getSession(sessionId) {
   return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export async function deleteSession(sessionId) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function stopSession(sessionId) {

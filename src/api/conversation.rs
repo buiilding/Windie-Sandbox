@@ -71,9 +71,10 @@ pub(super) async fn remove_conversation(
     Path(conversation_id): Path<String>,
 ) -> ApiResult<DeletedResponse> {
     let conversation_id = ConversationId::new(conversation_id);
-    let mut store = open_store(&state)?;
-
-    operation::remove_conversation(&mut store, &conversation_id)?;
+    state
+        .session_manager
+        .remove_conversation(&conversation_id)
+        .await?;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }

@@ -14,16 +14,16 @@ use anyhow::Result;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::conversation::{ConversationId, MessageId, ToolCallId};
+use crate::conversation::{ConversationId, MessageId, Role, ToolCallId};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName, ReasoningRequest};
-use crate::operation::{self, RuntimeDependencies};
+use crate::operation::{self, MessageInputPart, RuntimeDependencies};
 use crate::output::RuntimeOutput;
 use crate::runtime::RuntimeEventSink;
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId, SessionStatus};
 use crate::store::Store;
 use crate::tool_provider::ToolProviderRegistry;
-use crate::wakeup::{ContinueWakeup, StopWakeup, ToolDecisionWakeup, Wakeup};
+use crate::wakeup::{StopWakeup, ToolDecisionWakeup, Wakeup};
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -92,19 +92,139 @@ impl SessionManager {
         }
     }
 
-    /// Starts a backend-owned session from a continuation wakeup.
-    pub fn start_continue_wakeup(&self, wakeup: ContinueWakeup) -> Result<Session> {
+    /// Deletes one terminal session after confirming no live task still owns it.
+    pub async fn remove_session(&self, session_id: &SessionId) -> Result<()> {
+        let store = self.open_store()?;
+        let session = store.load_session(session_id)?;
+        drop(store);
+
+        if self
+            .active
+            .lock()
+            .expect("run manager lock poisoned")
+            .contains_key(session_id.as_str())
+        {
+            return Err(crate::error::invalid_request(
+                "cannot delete a live session; stop it first",
+            ));
+        }
+        if matches!(
+            session.status,
+            SessionStatus::Running | SessionStatus::WaitingForApproval
+        ) {
+            return Err(crate::error::invalid_request(
+                "cannot delete a running or approval-waiting session; stop it first",
+            ));
+        }
+
         let mut store = self.open_store()?;
-        let session = operation::start_session_from_wakeup(&mut store, wakeup)?;
-        let session_id = session.id.clone();
-        let conversation_id = session.conversation_id.clone();
-        let head_message_id = session.current_head_message_id.clone();
-        let model = session.model.clone();
-        let reasoning = session.reasoning.clone();
+        operation::remove_session(&mut store, session_id)?;
+        self.channels
+            .lock()
+            .expect("run manager lock poisoned")
+            .remove(session_id.as_str());
+        Ok(())
+    }
+
+    /// Stops and joins all live tasks for a conversation before deleting it.
+    ///
+    /// Joining aborted tasks is important: the database delete must not race a
+    /// task that is still able to persist a terminal status or event.
+    pub async fn remove_conversation(&self, conversation_id: &ConversationId) -> Result<()> {
+        let store = self.open_store()?;
+        let sessions = store.list_conversation_sessions(conversation_id)?;
+        drop(store);
+
+        let session_ids = sessions
+            .iter()
+            .map(|session| session.id.as_str().to_string())
+            .collect::<std::collections::HashSet<_>>();
+        let tasks = {
+            let mut active = self.active.lock().expect("run manager lock poisoned");
+            session_ids
+                .iter()
+                .filter_map(|session_id| active.remove(session_id))
+                .collect::<Vec<_>>()
+        };
+
+        for task in &tasks {
+            task.abort();
+        }
+        self.channels
+            .lock()
+            .expect("run manager lock poisoned")
+            .retain(|session_id, _| !session_ids.contains(session_id));
+        for task in tasks {
+            let _ = task.await;
+        }
+
+        let mut store = self.open_store()?;
+        operation::remove_conversation(&mut store, conversation_id)
+    }
+
+    /// Creates a selectable branch without starting model execution.
+    pub fn create_session_branch(
+        &self,
+        conversation_id: ConversationId,
+        head_message_id: Option<MessageId>,
+        model: String,
+        reasoning: Option<ReasoningRequest>,
+    ) -> Result<Session> {
+        let mut store = self.open_store()?;
+        store.create_session(
+            &SessionId::fresh(),
+            &conversation_id,
+            head_message_id.as_ref(),
+            &model,
+            reasoning.as_ref(),
+        )
+    }
+
+    /// Inserts one user query into a session branch and starts that session.
+    pub fn query_session(
+        &self,
+        session_id: &SessionId,
+        parts: &[MessageInputPart],
+    ) -> Result<Session> {
+        if self
+            .active
+            .lock()
+            .expect("run manager lock poisoned")
+            .contains_key(session_id.as_str())
+        {
+            return Err(crate::error::invalid_request(
+                "session is already running",
+            ));
+        }
+
+        let mut store = self.open_store()?;
+        let session = store.load_session(session_id)?;
+        if session.status == SessionStatus::WaitingForApproval {
+            return Err(crate::error::invalid_request(
+                "session is waiting for tool approval",
+            ));
+        }
+
+        let user_message_id = operation::insert_message(
+            &mut store,
+            &session.conversation_id,
+            session.current_head_message_id.as_ref(),
+            Role::User,
+            parts,
+        )?;
+        store.update_session_head(session_id, Some(&user_message_id))?;
+        store.update_session_status(session_id, SessionStatus::Running, None)?;
+
+        let updated = store.load_session(session_id)?;
+        let session_id_for_spawn = updated.id.clone();
+        let conversation_id = updated.conversation_id.clone();
+        let head_message_id = updated.current_head_message_id.clone();
+        let model = updated.model.clone();
+        let reasoning = updated.reasoning.clone();
         drop(store);
 
         self.spawn(
-            session_id,
+            session_id_for_spawn,
             conversation_id,
             head_message_id,
             Some(ModelName::new(model)),
@@ -112,7 +232,43 @@ impl SessionManager {
             SessionCommand::Continue,
         );
 
-        Ok(session)
+        Ok(updated)
+    }
+
+    /// Starts one selected session from its current head without adding input.
+    pub fn continue_session(&self, session_id: &SessionId) -> Result<Session> {
+        if self
+            .active
+            .lock()
+            .expect("run manager lock poisoned")
+            .contains_key(session_id.as_str())
+        {
+            return Err(crate::error::invalid_request(
+                "session is already running",
+            ));
+        }
+
+        let mut store = self.open_store()?;
+        let session = store.load_session(session_id)?;
+        if session.status == SessionStatus::WaitingForApproval {
+            return Err(crate::error::invalid_request(
+                "session is waiting for tool approval",
+            ));
+        }
+        store.update_session_status(session_id, SessionStatus::Running, None)?;
+        let updated = store.load_session(session_id)?;
+        drop(store);
+
+        self.spawn(
+            updated.id.clone(),
+            updated.conversation_id.clone(),
+            updated.current_head_message_id.clone(),
+            Some(ModelName::new(updated.model.clone())),
+            updated.reasoning.clone(),
+            SessionCommand::Continue,
+        );
+
+        Ok(updated)
     }
 
     /// Stops one live session explicitly.

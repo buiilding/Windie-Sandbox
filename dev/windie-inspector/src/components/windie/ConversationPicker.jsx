@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
-import { Plus, ChevronDown, Check, X } from "lucide-react";
+import { Plus, ChevronDown, Check, X, MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
+import FloatingDeleteMenu, { floatingMenuPosition } from "@/components/windie/FloatingDeleteMenu";
 
 function shortId(id) {
   if (!id) return "";
@@ -22,16 +23,19 @@ export default function ConversationPicker() {
     activeConvId,
     selectConversation,
     createConversation,
+    deleteConversation,
   } = useWindie();
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [menuConversation, setMenuConversation] = useState(null);
   const rootRef = useRef(null);
   const inputRef = useRef(null);
 
   useEffect(() => {
     if (!open) {
       setQuery("");
+      setMenuConversation(null);
       return;
     }
     if (inputRef.current) {
@@ -88,6 +92,19 @@ export default function ConversationPicker() {
     setOpen(false);
   };
 
+  const handleDelete = async (event, conversationId) => {
+    event.stopPropagation();
+    if (!window.confirm("Delete this conversation and its tree?")) return;
+    try {
+      await deleteConversation(conversationId);
+      setMenuConversation(null);
+      setOpen(false);
+      toast.message("conversation deleted");
+    } catch (error) {
+      toast.error(error.message);
+    }
+  };
+
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -141,18 +158,45 @@ export default function ConversationPicker() {
               sorted.map((conv) => {
                 const active = conv.id === activeConvId;
                 return (
-                  <button
-                    type="button"
+                  <div
                     key={conv.id}
-                    onClick={() => handleSelect(conv.id)}
-                    className={`w-full text-left px-3 py-1.5 font-mono text-[11px] flex items-center gap-2 hover:bg-surface-hover ${
+                    className={`relative w-full px-3 py-1.5 font-mono text-[11px] flex items-center gap-1 hover:bg-surface-hover ${
                       active ? "bg-surface" : ""
                     }`}
                   >
-                    <span className="truncate">{shortId(conv.id)}</span>
-                    <span className="text-muted-foreground truncate flex-1">{conv.model}</span>
-                    {active && <Check className="size-3 text-foreground" strokeWidth={2} />}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSelect(conv.id)}
+                      className="min-w-0 flex-1 text-left flex items-center gap-2"
+                    >
+                      <span className="truncate">{shortId(conv.id)}</span>
+                      <span className="text-muted-foreground truncate flex-1">{conv.model}</span>
+                      {active && <Check className="size-3 text-foreground" strokeWidth={2} />}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`topbar-conv-menu-${shortId(conv.id)}`}
+                      aria-label={`conversation actions ${shortId(conv.id)}`}
+                      title="conversation actions"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const position = floatingMenuPosition(
+                          event.currentTarget.getBoundingClientRect()
+                        );
+                        setMenuConversation((current) =>
+                          current?.id === conv.id
+                            ? null
+                            : {
+                                id: conv.id,
+                                position,
+                              }
+                        );
+                      }}
+                      className="shrink-0 p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover"
+                    >
+                      <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
+                    </button>
+                  </div>
                 );
               })
             )}
@@ -171,6 +215,17 @@ export default function ConversationPicker() {
           </div>
         </div>
       )}
+      <FloatingDeleteMenu
+        open={Boolean(open && menuConversation)}
+        position={menuConversation?.position}
+        testId={
+          menuConversation
+            ? `topbar-conv-delete-${shortId(menuConversation.id)}`
+            : "topbar-conv-delete"
+        }
+        label="delete conversation"
+        onDelete={(event) => handleDelete(event, menuConversation?.id)}
+      />
     </div>
   );
 }

@@ -282,6 +282,7 @@ async fn conversation_image_route_returns_scoped_image_bytes() {
     let app = test_app(db_path.clone());
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::GET,
             &format!("/api/conversations/{conversation_id}/images/{asset_id}"),
@@ -312,6 +313,7 @@ async fn insert_tool_role_message_returns_raw_error() {
     let conversation_id = created["conversation_id"].as_str().unwrap();
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::POST,
             &format!("/api/conversations/{conversation_id}/messages"),
@@ -852,6 +854,7 @@ async fn create_session_records_gateway_error() {
     drop(store);
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::POST,
             &format!("/api/conversations/{conversation_id}/sessions"),
@@ -861,11 +864,22 @@ async fn create_session_records_gateway_error() {
         .unwrap();
     let status = response.status();
     let body = response_json_body(response).await;
+    assert_eq!(body["status"], "ready");
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
     let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(session.status, SessionStatus::Failed);
+    assert_ne!(session.current_head_message_id.as_ref(), Some(&head_message_id));
     assert_eq!(
         session.error.as_deref(),
         Some("Bifrost is not running. Start it with: windie gateway start")
@@ -874,7 +888,7 @@ async fn create_session_records_gateway_error() {
 }
 
 #[tokio::test]
-async fn query_wakeup_starts_session_from_requested_head() {
+async fn query_session_advances_branch_from_requested_head() {
     let db_path = temp_database_path();
     let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
     let mut store = Store::open_at(&db_path).unwrap();
@@ -885,9 +899,10 @@ async fn query_wakeup_starts_session_from_requested_head() {
     drop(store);
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::POST,
-            &format!("/api/conversations/{conversation_id}/wakeups/query"),
+            &format!("/api/conversations/{conversation_id}/sessions"),
             Some(json!({
                 "head_message_id": head_message_id.as_str(),
                 "model":"openai/test"
@@ -897,7 +912,17 @@ async fn query_wakeup_starts_session_from_requested_head() {
         .unwrap();
     let status = response.status();
     let body = response_json_body(response).await;
+    assert_eq!(body["status"], "ready");
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
     let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -905,7 +930,9 @@ async fn query_wakeup_starts_session_from_requested_head() {
         session.start_head_message_id.as_ref(),
         Some(&head_message_id)
     );
-    assert_eq!(
+    // The query appended a user message under the requested head and advanced
+    // the branch head, so the current head moved past the requested head.
+    assert_ne!(
         session.current_head_message_id.as_ref(),
         Some(&head_message_id)
     );
@@ -935,6 +962,16 @@ async fn session_events_replay_gateway_errors_as_sse_events() {
         .unwrap();
     let body = response_json_body(response).await;
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
     let _run = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
     let response = app
@@ -985,6 +1022,16 @@ async fn session_survives_event_stream_client_disconnect() {
         .unwrap();
     let body = response_json(response).await;
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
 
     let response = app
         .oneshot(authed_request(

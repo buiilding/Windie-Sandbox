@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
 import { ROLE_TOKENS } from "@/lib/mockData";
-import { X, GitBranch, Route, Scissors, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { X, GitBranch } from "lucide-react";
+import ConversationTreeMenu from "@/components/windie/ConversationTreeMenu";
+import TreeNodeContextMenu, { treeContextMenuPosition } from "@/components/windie/TreeNodeContextMenu";
 
 /**
  * Layout the tree by depth. For each depth level we place nodes horizontally.
@@ -78,12 +79,9 @@ export default function TreeOverlay() {
     selectedPathNodes,
     setTreeOverlayOpen,
     selectedNodeId,
-    setSelectedNodeId,
-    selectPathHead,
-    forkFromMessage,
-    truncateAfter,
-    removeMessage,
+    setPathHead,
   } = useWindie();
+  const [contextMenu, setContextMenu] = useState(null);
 
   const layout = useMemo(() => layoutTree(activeConv), [activeConv]);
   const pathSet = useMemo(
@@ -106,13 +104,16 @@ export default function TreeOverlay() {
             points · selected path {selectedPathNodes.length}
           </span>
         </div>
-        <button
-          data-testid="tree-overlay-close"
-          onClick={() => setTreeOverlayOpen(false)}
-          className="p-1 border border-border hover:bg-surface-hover"
-        >
-          <X className="size-3.5" strokeWidth={1.75} />
-        </button>
+        <div className="flex items-center gap-1">
+          <ConversationTreeMenu />
+          <button
+            data-testid="tree-overlay-close"
+            onClick={() => setTreeOverlayOpen(false)}
+            className="p-1 border border-border hover:bg-surface-hover"
+          >
+            <X className="size-3.5" strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 flex">
@@ -166,7 +167,17 @@ export default function TreeOverlay() {
                 <button
                   key={id}
                   data-testid={`tree-node-${id}`}
-                  onClick={() => setSelectedNodeId(id)}
+                  onClick={() => {
+                    setContextMenu(null);
+                    setPathHead(id);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({
+                      nodeId: id,
+                      position: treeContextMenuPosition(event.clientX, event.clientY),
+                    });
+                  }}
                   className={`absolute text-left border transition-all ${
                     isSel
                       ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]"
@@ -227,22 +238,6 @@ export default function TreeOverlay() {
               <TreeNodeDetail
                 node={activeConv.nodes[selectedNodeId]}
                 onPath={pathSet.has(selectedNodeId)}
-                onSetPath={() => {
-                  selectPathHead(activeConv.id, selectedNodeId);
-                  toast.message("selected path set");
-                }}
-                onFork={() => {
-                  forkFromMessage(activeConv.id, selectedNodeId);
-                  toast.message("forked", { description: "new conversation created" });
-                }}
-                onTruncate={() => {
-                  truncateAfter(activeConv.id, selectedNodeId);
-                  toast.message("truncated", { description: "descendants deleted" });
-                }}
-                onRemove={() => {
-                  removeMessage(activeConv.id, selectedNodeId);
-                  toast.message("removed");
-                }}
               />
             ) : (
               <div className="text-muted-foreground font-mono">select a node</div>
@@ -250,11 +245,16 @@ export default function TreeOverlay() {
           </div>
         </div>
       </div>
+      <TreeNodeContextMenu
+        nodeId={contextMenu?.nodeId}
+        position={contextMenu?.position}
+        onClose={() => setContextMenu(null)}
+      />
     </div>
   );
 }
 
-function TreeNodeDetail({ node, onPath, onSetPath, onFork, onTruncate, onRemove }) {
+function TreeNodeDetail({ node, onPath }) {
   const token = ROLE_TOKENS[node.message.role];
   const text = node.message.parts.find((p) => p.type === "text")?.text || "";
   return (
@@ -284,36 +284,6 @@ function TreeNodeDetail({ node, onPath, onSetPath, onFork, onTruncate, onRemove 
         {text || <span className="italic text-muted-foreground">(empty)</span>}
       </div>
 
-      <div className="grid grid-cols-2 gap-1 pt-2 border-t border-border">
-        <button
-          data-testid="tree-detail-action-set-path"
-          onClick={onSetPath}
-          className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest"
-        >
-          <Route className="size-3" strokeWidth={1.75} /> set path
-        </button>
-        <button
-          data-testid="tree-detail-action-fork"
-          onClick={onFork}
-          className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest"
-        >
-          <GitBranch className="size-3" strokeWidth={1.75} /> fork
-        </button>
-        <button
-          data-testid="tree-detail-action-truncate"
-          onClick={onTruncate}
-          className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest"
-        >
-          <Scissors className="size-3" strokeWidth={1.75} /> truncate
-        </button>
-        <button
-          data-testid="tree-detail-action-remove"
-          onClick={onRemove}
-          className="h-8 flex items-center justify-center gap-1.5 border border-border hover:bg-surface-hover font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))]"
-        >
-          <Trash2 className="size-3" strokeWidth={1.75} /> remove
-        </button>
-      </div>
     </div>
   );
 }

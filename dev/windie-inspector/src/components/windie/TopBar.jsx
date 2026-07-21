@@ -1,6 +1,7 @@
 import { useWindie } from "@/context/WindieContext";
 import { Sun, Moon, Columns2 } from "lucide-react";
 import ConversationPicker from "@/components/windie/ConversationPicker";
+import SessionsChip from "@/components/windie/SessionsChip";
 
 function formatTokenCount(value) {
   if (value == null) return "--";
@@ -35,6 +36,8 @@ export default function TopBar() {
       <div className="h-4 w-px bg-border" />
 
       <ConversationPicker />
+
+      <SessionsChip />
 
       <div className="flex-1" />
 

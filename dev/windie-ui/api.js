@@ -56,26 +56,67 @@ export function createConversation() {
   );
 }
 
-// POST /api/conversations/{id}/messages — insert a user text message.
+// GET /api/conversations — list all persisted conversations.
+// Returns [{ id, title, model, message_count }].
+export function listConversations() {
+  return request("/api/conversations").then((d) => d.conversations || []);
+}
+
+// DELETE /api/conversations/{id} — remove one conversation and its data.
+export function deleteConversation(conversationId) {
+  return request(`/api/conversations/${conversationId}`, { method: "DELETE" });
+}
+
+// POST /api/conversations/{id}/messages — insert a user message as ordered parts.
+// parts: [{ type: "text", text } | { type: "image_data", mime_type, data }]
+// (image_data = base64, e.g. from a pasted clipboard file — validated by the
+// backend in src/input/image.rs, no client-side sniffing needed).
 // Returns the new message id (this becomes the head the session runs from).
-export function insertUserMessage(conversationId, text, headMessageId = null) {
+export function insertUserMessage(conversationId, parts, headMessageId = null) {
   return request(`/api/conversations/${conversationId}/messages`, {
     method: "POST",
     body: {
       head_message_id: headMessageId,
       role: "user",
-      text,
+      parts,
     },
   }).then((d) => d.message_id);
 }
 
-// POST /api/conversations/{id}/sessions — start a session from a head.
-// Returns the new session id; stream.js then listens to its events.
+// GET /api/conversations/{id}/images/{asset_id} — durable bytes for one image
+// part. Returns a Blob; the caller wraps it in URL.createObjectURL for <img>.
+export async function fetchImageAsset(conversationId, assetId) {
+  const token = apiToken();
+  const response = await fetch(
+    `${API_BASE}/api/conversations/${conversationId}/images/${encodeURIComponent(assetId)}`,
+    { headers: token ? { "X-Windie-Api-Token": token } : {} }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
+    throw new Error(data?.error || `image request failed (${response.status})`);
+  }
+  return response.blob();
+}
+
+// POST /api/conversations/{id}/sessions — create a selectable session branch at
+// a head. The branch is "ready" and does not run until queried/continued.
+// Returns the new session id.
 export function createSession(conversationId, headMessageId = null) {
   return request(`/api/conversations/${conversationId}/sessions`, {
     method: "POST",
     body: { head_message_id: headMessageId, model: null, reasoning: null },
   }).then((d) => d.id);
+}
+
+// POST /api/sessions/{id}/query — append a user message to the branch's current
+// head and start the run. parts mirrors insertUserMessage; the backend inserts
+// them, advances the branch head, and begins streaming. Returns the session.
+export function querySession(sessionId, parts) {
+  return request(`/api/sessions/${sessionId}/query`, {
+    method: "POST",
+    body: { parts },
+  });
 }
 
 // GET /api/models — list models the gateway reports (e.g. your OpenRouter set).
