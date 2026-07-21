@@ -234,9 +234,6 @@ export default function TreeOverlay() {
                       >
                         [{token.label}]
                       </span>
-                      <span className="font-mono text-[9px] text-muted-foreground">
-                        {node.originalId.slice(0, 6)}
-                      </span>
                     </div>
                     <div className="font-mono text-[10px] text-muted-foreground truncate">
                       {node.message.model || " "}
@@ -244,16 +241,6 @@ export default function TreeOverlay() {
                     <div className="text-[11px] leading-tight truncate">
                       {text.slice(0, 42) || (
                         <span className="italic text-muted-foreground">(empty)</span>
-                      )}
-                    </div>
-                    <div className="mt-auto flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                      {onPath && (
-                        <span className="text-[hsl(var(--accent))]">on path</span>
-                      )}
-                      {node.childrenIds.length > 1 && (
-                        <span className="text-foreground/80">
-                          {node.childrenIds.length} branches
-                        </span>
                       )}
                     </div>
                   </div>
@@ -298,12 +285,6 @@ function TreeNodeDetail({ node, onPath }) {
         <span className={`font-mono text-[10px] font-bold tracking-widest ${token.color}`}>
           [{token.label}]
         </span>
-        <span className="font-mono text-[10px] text-muted-foreground">{node.id}</span>
-        {onPath && (
-          <span className="ml-auto font-mono text-[9px] uppercase tracking-widest text-[hsl(var(--accent))]">
-            on path
-          </span>
-        )}
       </div>
       <div className="font-mono text-[10px] text-muted-foreground space-y-0.5">
         <div>parent: <span className="text-foreground">{node.parentId || "(root)"}</span></div>

@@ -278,12 +278,9 @@ export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop
       data-testid={`msg-row-pending-assistant${sessionId ? `-${sessionId.slice(0, 8)}` : ""}`}
       className="windie-message-assistant relative border-b border-border py-3.5 px-6"
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-baseline gap-3">
         <div className="w-16 shrink-0 pt-0.5">
           <RoleBadge role="assistant" />
-          <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">
-            #{String(index).padStart(2, "0")}
-          </div>
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -355,17 +352,23 @@ export default function MessageRow({ node, index, isLast }) {
     <div
       data-testid={`msg-row-${node.id}`}
       onClick={() => setSelectedNodeId(node.id)}
-      className={`group relative border-b border-border py-3.5 px-6 transition-colors cursor-pointer ${messageTint} ${rowSurface}`}
+      className={`group relative border-b border-border pt-3.5 pb-12 px-6 transition-colors cursor-pointer ${messageTint} ${rowSurface}`}
     >
       {isSelected && (
         <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-[hsl(var(--accent))]" />
       )}
-      <div className="flex items-start gap-3">
+      {node.message.timestamp && (
+        <span className="absolute right-6 top-3.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
+          {new Date(node.message.timestamp).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })}
+        </span>
+      )}
+      <div className="flex items-baseline gap-3">
         <div className="w-16 shrink-0 pt-0.5">
           <RoleBadge role={role} />
-          <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">
-            #{String(index).padStart(2, "0")}
-          </div>
           {hasSiblings && (
             <div className="mt-1 font-mono text-[10px] text-[hsl(var(--accent))]">
               {siblings.indexOf(node.id) + 1}/{siblings.length}
@@ -374,24 +377,16 @@ export default function MessageRow({ node, index, isLast }) {
         </div>
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            {node.message.model && <span className="text-foreground/70">{node.message.model}</span>}
+          {(node.message.tokens || node.message.metadata?.toolCallId) && (
+            <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             {node.message.tokens && <span>· {node.message.tokens}tok</span>}
             {node.message.metadata?.toolCallId && (
               <span className="text-[hsl(var(--tool-call))]">
                 · call {node.message.metadata.toolCallId}
               </span>
             )}
-            {node.message.timestamp && (
-              <span className="ml-auto text-muted-foreground/60">
-                {new Date(node.message.timestamp).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })}
-              </span>
-            )}
-          </div>
+            </div>
+          )}
 
           {editing ? (
             <div className="space-y-2">
@@ -463,7 +458,7 @@ export default function MessageRow({ node, index, isLast }) {
         </div>
 
         {!editing && (
-          <div className="absolute right-6 top-3.5 z-10 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5">
+          <div className="absolute left-[6.25rem] bottom-3.5 z-10 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5">
             <button
               data-testid={`msg-action-set-path-${node.id}`}
               title="set path head"

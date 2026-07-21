@@ -144,9 +144,8 @@ export default function TreePanel() {
                 style={{ left: position.x, top: position.y, width: layout.NODE_W, height: position.height }}
               >
                 <div className="h-full flex flex-col p-2 gap-0.5">
-                  <div className="flex items-center justify-between"><span className={`font-mono text-[10px] font-bold tracking-widest ${token.color}`}>[{token.label}]</span><span className="font-mono text-[9px] text-muted-foreground">{node.originalId.slice(0, 6)}</span></div>
+                  <div className="flex items-center"><span className={`font-mono text-[10px] font-bold tracking-widest ${token.color}`}>[{token.label}]</span></div>
                   <div className="text-[11px] leading-tight truncate">{text.slice(0, 42) || <span className="italic text-muted-foreground">(empty)</span>}</div>
-                  <div className="mt-auto flex gap-2 font-mono text-[9px] uppercase tracking-widest text-muted-foreground">{onPath && <span className="text-[hsl(var(--accent))]">on path</span>}{node.childrenIds.length > 1 && <span>{node.childrenIds.length} branches</span>}</div>
                 </div>
               </button>
             );

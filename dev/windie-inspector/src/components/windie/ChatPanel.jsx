@@ -1,12 +1,67 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
 import MessageRow, { PendingAssistantRow } from "@/components/windie/MessageRow";
 import Composer from "@/components/windie/Composer";
+import { isExecutionNode } from "@/lib/treeProjection";
+import { MoreHorizontal } from "lucide-react";
+
+function transcriptItems(nodes) {
+  const items = [];
+  let executionNodes = [];
+
+  const flushExecution = () => {
+    if (!executionNodes.length) return;
+    items.push({
+      type: "execution",
+      id: `transcript-execution:${executionNodes[0].node.id}`,
+      nodes: executionNodes,
+    });
+    executionNodes = [];
+  };
+
+  nodes.forEach((node, index) => {
+    if (isExecutionNode(node)) {
+      executionNodes.push({ node, index });
+      return;
+    }
+    flushExecution();
+    items.push({ type: "message", node, index });
+  });
+  flushExecution();
+  return items;
+}
+
+function TranscriptExecutionGroup({ group, expanded, onToggle }) {
+  return (
+    <>
+      <button
+        type="button"
+        data-testid={`transcript-execution-group-${group.id}`}
+        aria-expanded={expanded}
+        onClick={onToggle}
+        className="relative flex w-full items-center justify-center gap-2 py-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+        title={expanded ? "collapse tool execution" : "expand tool execution"}
+      >
+        <MoreHorizontal className="size-4" strokeWidth={1.75} />
+        <span>{expanded ? "collapse" : `${group.nodes.length} tools`}</span>
+      </button>
+      <div className={`windie-reasoning-content ${expanded ? "open" : ""}`}>
+        <div className="windie-reasoning-inner">
+          {group.nodes.map(({ node, index }) => (
+            <MessageRow key={node.id} node={node} index={index} isLast={false} />
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
 
 export default function ChatPanel() {
   const { activeConv, selectedSession, selectedPathNodes, streaming, pendingAssistant, stopStreaming, apiError } = useWindie();
   const scrollRef = useRef(null);
   const prevConvId = useRef(activeConv?.id);
+  const [expandedExecutionGroups, setExpandedExecutionGroups] = useState(() => new Set());
+  const items = useMemo(() => transcriptItems(selectedPathNodes), [selectedPathNodes]);
 
   // Scroll behavior:
   //   - On conversation switch: reset scroll to top (do NOT auto-scroll to bottom;
@@ -47,14 +102,32 @@ export default function ChatPanel() {
         data-testid="chat-scroll"
         className="flex-1 min-h-0 overflow-y-auto windie-scroll"
       >
-        {selectedPathNodes.map((node, i) => (
-          <MessageRow
-            key={node.id}
-            node={node}
-            index={i}
-            isLast={i === selectedPathNodes.length - 1}
-          />
-        ))}
+        {items.map((item) => {
+          if (item.type === "execution") {
+            const expanded = expandedExecutionGroups.has(item.id);
+            return (
+              <TranscriptExecutionGroup
+                key={item.id}
+                group={item}
+                expanded={expanded}
+                onToggle={() => setExpandedExecutionGroups((current) => {
+                  const next = new Set(current);
+                  if (next.has(item.id)) next.delete(item.id);
+                  else next.add(item.id);
+                  return next;
+                })}
+              />
+            );
+          }
+          return (
+            <MessageRow
+              key={item.node.id}
+              node={item.node}
+              index={item.index}
+              isLast={item.index === selectedPathNodes.length - 1}
+            />
+          );
+        })}
         {pendingAssistant && selectedSession ? (
           <PendingAssistantRow
             pendingAssistant={pendingAssistant}
