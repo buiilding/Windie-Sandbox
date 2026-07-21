@@ -26,15 +26,6 @@ import { useSessionRuntime } from "@/hooks/useSessionRuntime";
 
 const WindieCtx = createContext(null);
 
-function readStoredBoolean(key, fallback) {
-  try {
-    const value = window.localStorage.getItem(key);
-    return value == null ? fallback : value === "true";
-  } catch {
-    return fallback;
-  }
-}
-
 function tokenCountKey(conversationId, modelId) {
   return `${conversationId || ""}::${modelId || ""}`;
 }
@@ -119,9 +110,6 @@ export function WindieProvider({ children }) {
   const [theme, setTheme] = useState("dark");
   const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
-  const [inspectorPanelOpen, setInspectorPanelOpen] = useState(() =>
-    readStoredBoolean("windie.inspectorPanelOpen", true)
-  );
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
   const [gatewayRunning, setGatewayRunning] = useState(false);
@@ -149,14 +137,6 @@ export function WindieProvider({ children }) {
     if (theme === "dark") root.classList.add("dark");
     else root.classList.remove("dark");
   }, [theme]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("windie.inspectorPanelOpen", String(inspectorPanelOpen));
-    } catch {
-      // Storage may be unavailable; panel state still works for this session.
-    }
-  }, [inspectorPanelOpen]);
 
   const refreshConversations = useCallback(async () => {
     const body = await apiRequest("/api/conversations");
@@ -607,8 +587,6 @@ export function WindieProvider({ children }) {
     setSearchQuery,
     refreshModels,
     loadModelParameters,
-    inspectorPanelOpen,
-    setInspectorPanelOpen,
     createConversation,
     selectConversation,
     selectSession,

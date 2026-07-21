@@ -1,5 +1,5 @@
 import { useWindie } from "@/context/WindieContext";
-import { Sun, Moon, Columns2, GitBranch } from "lucide-react";
+import { Sun, Moon, GitBranch } from "lucide-react";
 import SessionsChip from "@/components/windie/SessionsChip";
 
 function formatTokenCount(value) {
@@ -11,13 +11,12 @@ function formatTokenCount(value) {
 
 const TOKEN_METER_TITLE = "Token count over selected model context";
 
-export default function TopBar({ treeCollapsed, onTreeToggle }) {
+export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlayChange }) {
   const {
     theme,
     setTheme,
-    inspectorPanelOpen,
-    setInspectorPanelOpen,
     tokenMeter,
+    approvals,
   } =
     useWindie();
 
@@ -47,6 +46,24 @@ export default function TopBar({ treeCollapsed, onTreeToggle }) {
 
       <SessionsChip />
 
+      <button
+        type="button"
+        data-testid="topbar-open-system"
+        onClick={() => onOverlayChange(overlay === "system" ? null : "system")}
+        className={`h-7 px-2 border border-border font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover transition-colors ${overlay === "system" ? "bg-surface-hover" : ""}`}
+      >
+        system
+      </button>
+
+      <button
+        type="button"
+        data-testid="topbar-open-tools"
+        onClick={() => onOverlayChange(overlay === "tools" ? null : "tools")}
+        className={`h-7 px-2 border border-border font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover transition-colors ${overlay === "tools" ? "bg-surface-hover" : ""}`}
+      >
+        tools{approvals.length > 0 ? ` · ${approvals.length}` : ""}
+      </button>
+
       <div className="flex-1" />
 
       <div
@@ -58,16 +75,6 @@ export default function TopBar({ treeCollapsed, onTreeToggle }) {
           {formatTokenCount(tokenMeter?.used)} / {formatTokenCount(tokenMeter?.max)}
         </span>
       </div>
-
-      <button
-        data-testid="topbar-toggle-inspector"
-        onClick={() => setInspectorPanelOpen(!inspectorPanelOpen)}
-        title={inspectorPanelOpen ? "hide inspector panel" : "show inspector panel"}
-        aria-label={inspectorPanelOpen ? "hide inspector panel" : "show inspector panel"}
-        className="flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors"
-      >
-        <Columns2 className="size-3.5" strokeWidth={1.75} />
-      </button>
 
       <button
         data-testid="topbar-toggle-theme"

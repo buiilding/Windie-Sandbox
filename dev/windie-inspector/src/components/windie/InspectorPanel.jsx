@@ -2,11 +2,11 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { useWindie } from "@/context/WindieContext";
 import {
   ChevronRight,
-  Pencil,
   Trash2,
   ChevronDown,
   Plus,
   Loader2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,7 +30,7 @@ function Section({ title, children, defaultOpen = true, right, testId, resetKey 
   );
 }
 
-export default function InspectorPanel() {
+export default function InspectorPanel({ mode, onClose }) {
   const {
     activeConv,
     setSystemPrompt,
@@ -47,7 +47,6 @@ export default function InspectorPanel() {
     toolProviderStatuses,
   } = useWindie();
 
-  const [editingSys, setEditingSys] = useState(false);
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
   const [pendingToolActionKeys, setPendingToolActionKeys] = useState([]);
   const [collapsedToolProviderIds, setCollapsedToolProviderIds] = useState([]);
@@ -104,25 +103,42 @@ export default function InspectorPanel() {
     setCollapsedToolProviderIds((c) => [...new Set([...c, ...unseen])]);
   }, [grouped]);
 
-  if (!activeConv) return null;
+  useEffect(() => {
+    const handleKey = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  if (!activeConv || !mode) return null;
 
   return (
-    <aside data-testid="windie-inspector" className="w-[340px] shrink-0 border-l border-border bg-background flex flex-col">
-      <div className="h-8 shrink-0 border-b border-border px-3 flex items-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground">inspector</div>
-      <div className="flex-1 min-h-0 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
-        <Section title="system prompt" testId="inspector-section-system-prompt" right={!editingSys && <span data-testid="inspector-edit-sysprompt-icon" onClick={(e) => { e.stopPropagation(); setSysDraft(activeConv.systemPrompt); setEditingSys(true); }} className="p-1 hover:bg-surface-hover"><Pencil className="size-3" /></span>}>
-          {editingSys ? (
-            <div className="space-y-2">
-              <textarea data-testid="inspector-sysprompt-textarea" value={sysDraft} onChange={(e) => setSysDraft(e.target.value)} rows={5} className="w-full bg-transparent border border-foreground/60 p-2 font-mono text-[11px] outline-none resize-none" />
-              <div className="flex gap-1">
-                <button data-testid="inspector-sysprompt-commit" onClick={() => { setSystemPrompt(activeConv.id, sysDraft); setEditingSys(false); toast.message("system prompt updated"); }} className="text-[10px] uppercase px-2 py-1 border border-foreground bg-foreground text-background font-mono">commit</button>
-                <button onClick={() => setEditingSys(false)} className="text-[10px] uppercase px-2 py-1 border border-border font-mono">cancel</button>
+    <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center p-6 overflow-y-auto windie-scroll">
+      <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl min-h-[70vh]" : "max-w-2xl max-h-full"}`}>
+        <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
+          <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system prompt" : "tools"}</span>
+          <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
+            <X className="size-3.5" strokeWidth={1.75} />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
+          {mode === "system" ? (
+            <div className="min-h-[calc(70vh-2.5rem)] flex flex-col p-6 gap-4">
+              <textarea
+                data-testid="inspector-sysprompt-textarea"
+                value={sysDraft}
+                onChange={(e) => setSysDraft(e.target.value)}
+                placeholder="Write the system prompt..."
+                className="flex-1 min-h-[55vh] w-full resize-none bg-transparent border border-border p-4 font-mono text-sm leading-relaxed outline-none focus:border-foreground"
+              />
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">conversation-wide</span>
+                <button data-testid="inspector-sysprompt-commit" onClick={() => { setSystemPrompt(activeConv.id, sysDraft); toast.message("system prompt updated"); }} className="text-[10px] uppercase px-3 py-1.5 border border-foreground bg-foreground text-background font-mono">save</button>
               </div>
             </div>
           ) : (
-            <div className="font-mono text-[11px] text-muted-foreground whitespace-pre-wrap border-l-2 border-muted-foreground/40 pl-2 py-1">{activeConv.systemPrompt}</div>
-          )}
-        </Section>
+            <>
 
         <Section title={`approvals · ${approvals.length}`} testId="inspector-section-approvals">
           <div className="flex items-center gap-2 py-1 text-[11px]">
@@ -191,7 +207,10 @@ export default function InspectorPanel() {
             ) : <div className="font-mono text-[11px] text-muted-foreground">no tool schemas</div>}
           </div>
         </Section>
+            </>
+          )}
+        </div>
       </div>
-    </aside>
+    </div>
   );
 }
