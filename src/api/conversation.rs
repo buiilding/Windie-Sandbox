@@ -47,12 +47,23 @@ pub(super) struct ConversationIdResponse {
     pub(super) conversation_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+/// Optional settings used when creating a new conversation.
+pub(super) struct CreateConversationRequest {
+    pub(super) model: Option<String>,
+}
+
 /// Creates a new empty conversation.
 pub(super) async fn create_conversation(
     State(state): State<ApiState>,
+    request: Option<Json<CreateConversationRequest>>,
 ) -> ApiResult<ConversationIdResponse> {
     let store = open_store(&state)?;
-    let conversation_id = operation::create_conversation(&store, &ModelName::new(state.model))?;
+    let model = request
+        .and_then(|Json(body)| body.model)
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| state.model.clone());
+    let conversation_id = operation::create_conversation(&store, &ModelName::new(model))?;
 
     Ok(Json(ConversationIdResponse {
         conversation_id: conversation_id.as_str().to_string(),

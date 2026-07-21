@@ -425,10 +425,16 @@ export function WindieProvider({ children }) {
   }, []);
 
   const createConversation = useCallback(async () => {
-    const body = await runMutation(() => apiRequest("/api/conversations", { method: "POST" }), { reload: false, refreshList: true });
+    const body = await runMutation(
+      () => apiRequest("/api/conversations", {
+        method: "POST",
+        body: JSON.stringify({ model: activeConv?.model || null }),
+      }),
+      { reload: false, refreshList: true }
+    );
     selectConversation(body.conversation_id);
     return body.conversation_id;
-  }, [runMutation, selectConversation]);
+  }, [activeConv?.model, runMutation, selectConversation]);
 
   const renameConversation = useCallback(() => {
     toast.message("rename is not a Windie primitive yet");
