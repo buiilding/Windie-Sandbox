@@ -245,9 +245,30 @@ code,
     animation: windie-tree-execution-step-in 700ms ease-out both;
 }
 
+.windie-reasoning-content {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition: grid-template-rows 300ms ease-out, opacity 200ms ease-out;
+}
+
+.windie-reasoning-content.open {
+    grid-template-rows: 1fr;
+    opacity: 1;
+}
+
+.windie-reasoning-inner {
+    min-height: 0;
+    overflow: hidden;
+}
+
 @media (prefers-reduced-motion: reduce) {
     .windie-tree-execution-step {
         animation: none;
+    }
+
+    .windie-reasoning-content {
+        transition: none;
     }
 }
 

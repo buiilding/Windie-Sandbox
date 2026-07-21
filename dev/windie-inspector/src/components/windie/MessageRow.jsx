@@ -16,6 +16,7 @@ import {
   Square,
   Image as ImageIcon,
   Target,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -32,14 +33,27 @@ function RoleBadge({ role }) {
 }
 
 function ReasoningLane({ reasoning }) {
+  const [open, setOpen] = useState(false);
   if (!reasoning) return null;
   return (
-    <div className="mb-3 border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5">
-      <div className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))]">
-        reasoning
-      </div>
-      <div className="mt-0.5 text-xs text-muted-foreground italic leading-relaxed">
-        {reasoning}
+    <div className="mb-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))] hover:text-foreground transition-colors"
+      >
+        <span>{open ? "hide reasoning" : "show reasoning"}</span>
+        <ChevronDown className={`size-3 transition-transform duration-300 ease-out ${open ? "rotate-180" : ""}`} strokeWidth={1.75} />
+      </button>
+      <div className={`windie-reasoning-content ${open ? "open" : ""}`}>
+        <div className="windie-reasoning-inner">
+          <div className="mt-1 border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5">
+            <div className="text-xs text-muted-foreground italic leading-relaxed">
+              {reasoning}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
