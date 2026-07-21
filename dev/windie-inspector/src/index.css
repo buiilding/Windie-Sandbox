@@ -48,6 +48,7 @@ code,
         --muted-foreground: 240 4% 45%;
         --accent: 38 92% 50%;
         --accent-foreground: 216 3% 11%;
+        --tree-edge: 220 4% 66%;
         --user-message: 173 58% 39%;
         --assistant-message: 271 76% 68%;
         --tool-call: 217 91% 55%;
@@ -80,6 +81,7 @@ code,
         --muted-foreground: 240 5% 65%;
         --accent: 38 92% 55%;
         --accent-foreground: 240 10% 4%;
+        --tree-edge: 220 3% 40%;
         --user-message: 173 58% 55%;
         --assistant-message: 271 81% 74%;
         --tool-call: 213 94% 68%;

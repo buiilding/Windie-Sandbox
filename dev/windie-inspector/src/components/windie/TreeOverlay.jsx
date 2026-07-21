@@ -162,11 +162,11 @@ export default function TreeOverlay() {
                     stroke={
                       active
                         ? "hsl(var(--accent))"
-                        : "hsl(var(--border))"
+                        : "hsl(var(--tree-edge))"
                     }
-                    strokeWidth={active ? 1.5 : 1}
+                    strokeWidth={active ? 1.75 : 1.5}
                     fill="none"
-                    strokeDasharray={active ? "0" : "3 3"}
+                    strokeLinecap="round"
                   />
                 );
               })}

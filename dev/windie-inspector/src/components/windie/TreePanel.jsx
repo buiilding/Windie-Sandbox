@@ -99,7 +99,7 @@ export default function TreePanel() {
               const toPosition = layout.positions[to];
               if (!fromPosition || !toPosition) return null;
               const active = isProjectedNodeOnPath(from) && isProjectedNodeOnPath(to);
-              return <path key={index} d={`M ${fromPosition.x + layout.NODE_W / 2} ${fromPosition.y + fromPosition.height} C ${fromPosition.x + layout.NODE_W / 2} ${(fromPosition.y + fromPosition.height + toPosition.y) / 2}, ${toPosition.x + layout.NODE_W / 2} ${(fromPosition.y + fromPosition.height + toPosition.y) / 2}, ${toPosition.x + layout.NODE_W / 2} ${toPosition.y}`} stroke={active ? "hsl(var(--accent))" : "hsl(var(--border))"} strokeWidth={active ? 1.5 : 1} fill="none" strokeDasharray={active ? "0" : "3 3"} />;
+              return <path key={index} d={`M ${fromPosition.x + layout.NODE_W / 2} ${fromPosition.y + fromPosition.height} C ${fromPosition.x + layout.NODE_W / 2} ${(fromPosition.y + fromPosition.height + toPosition.y) / 2}, ${toPosition.x + layout.NODE_W / 2} ${(fromPosition.y + fromPosition.height + toPosition.y) / 2}, ${toPosition.x + layout.NODE_W / 2} ${toPosition.y}`} stroke={active ? "hsl(var(--accent))" : "hsl(var(--tree-edge))"} strokeWidth={active ? 1.75 : 1.5} fill="none" strokeLinecap="round" />;
             })}
           </svg>
           {Object.entries(layout.positions).map(([id, position]) => {
