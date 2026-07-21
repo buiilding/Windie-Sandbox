@@ -42,23 +42,6 @@ export default function ChatPanel() {
 
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-background min-h-0" data-testid="chat-panel">
-      <div className="h-8 shrink-0 border-b border-border px-6 flex items-center justify-between font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-        <div className="flex items-center gap-3">
-          <span>selected path</span>
-          <span className="text-foreground/80">
-            {selectedPathNodes.length} nodes
-          </span>
-          <span>·</span>
-          <span>root {activeConv.rootId ? activeConv.rootId.slice(0, 6) : "(empty)"}</span>
-          <span>·</span>
-          <span>{Object.keys(activeConv.nodes).length} total</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <span>model</span>
-          <span className="text-foreground/80">{activeConv.model}</span>
-        </div>
-      </div>
-
       <div
         ref={scrollRef}
         data-testid="chat-scroll"

@@ -1,5 +1,5 @@
 import { useWindie } from "@/context/WindieContext";
-import { Sun, Moon, Columns2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Sun, Moon, Columns2, GitBranch } from "lucide-react";
 import ConversationPicker from "@/components/windie/ConversationPicker";
 import SessionsChip from "@/components/windie/SessionsChip";
 
@@ -43,11 +43,7 @@ export default function TopBar({ treeCollapsed, onTreeToggle }) {
         aria-label={treeCollapsed ? "show conversation tree" : "hide conversation tree"}
         className="flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors"
       >
-        {treeCollapsed ? (
-          <PanelLeftOpen className="size-3.5" strokeWidth={1.75} />
-        ) : (
-          <PanelLeftClose className="size-3.5" strokeWidth={1.75} />
-        )}
+        <GitBranch className="size-3.5" strokeWidth={1.75} />
       </button>
 
       <ConversationPicker />
