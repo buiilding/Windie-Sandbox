@@ -33,21 +33,21 @@ code,
 @layer base {
     :root {
         --background: 0 0% 100%;
-        --foreground: 240 10% 4%;
+        --foreground: 216 3% 11%;
         --surface: 240 5% 96%;
         --surface-hover: 240 5% 90%;
         --card: 0 0% 100%;
-        --card-foreground: 240 10% 4%;
+        --card-foreground: 216 3% 11%;
         --popover: 0 0% 100%;
-        --popover-foreground: 240 10% 4%;
-        --primary: 240 10% 4%;
+        --popover-foreground: 216 3% 11%;
+        --primary: 216 3% 11%;
         --primary-foreground: 0 0% 100%;
         --secondary: 240 5% 96%;
-        --secondary-foreground: 240 10% 4%;
+        --secondary-foreground: 216 3% 11%;
         --muted: 240 5% 96%;
         --muted-foreground: 240 4% 45%;
         --accent: 38 92% 50%;
-        --accent-foreground: 240 10% 4%;
+        --accent-foreground: 216 3% 11%;
         --user-message: 173 58% 39%;
         --assistant-message: 271 76% 68%;
         --tool-call: 217 91% 55%;
@@ -59,7 +59,7 @@ code,
         --destructive-foreground: 0 0% 98%;
         --border: 240 6% 90%;
         --input: 240 6% 90%;
-        --ring: 240 10% 4%;
+        --ring: 216 3% 11%;
         --radius: 0.125rem;
     }
 

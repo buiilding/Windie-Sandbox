@@ -21,11 +21,28 @@ function statusDot(status) {
   return "bg-muted-foreground";
 }
 
+function sessionNodeCount(session, nodes) {
+  const startId = session.startHeadMessageId;
+  let currentId = session.currentHeadMessageId || session.startHeadMessageId;
+  let count = 0;
+  const visited = new Set();
+
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    if (currentId === startId) break;
+    count += 1;
+    currentId = nodes[currentId]?.parentId || null;
+  }
+
+  return count;
+}
+
 export default function SessionsChip() {
   const {
     activeConv,
     sessionsById,
     selectedSessionId,
+    viewHeadId,
     selectSession,
     deleteSession,
   } = useWindie();
@@ -61,7 +78,9 @@ export default function SessionsChip() {
 
   if (!activeConv || sessions.length === 0) return null;
 
-  const selected = sessions.find((session) => session.id === selectedSessionId) || null;
+  const selected = viewHeadId
+    ? null
+    : sessions.find((session) => session.id === selectedSessionId) || null;
 
   const handleDelete = async (event, session) => {
     event.stopPropagation();
@@ -77,11 +96,11 @@ export default function SessionsChip() {
         data-testid="topbar-sessions-chip"
         onClick={() => setOpen((current) => !current)}
         className={`flex items-center gap-1.5 h-7 px-2 border border-border hover:bg-surface-hover transition-colors min-w-[160px] ${open ? "bg-surface-hover" : ""}`}
-        title={selected ? `session ${selected.id}` : "choose a session"}
+        title={selected ? `session ${selected.id}` : viewHeadId ? "new session at selected path" : "choose a session"}
       >
         {selected && <span className={`size-1.5 rounded-full ${statusDot(selected.status)}`} />}
         <span className="truncate font-mono text-[11px]">
-          {selected ? `session ${shortId(selected.id)}` : "choose session"}
+          {selected ? `session ${shortId(selected.id)}` : viewHeadId ? "new session" : "choose session"}
         </span>
         <ChevronDown className="size-3 ml-auto" strokeWidth={1.75} />
       </button>
@@ -116,13 +135,15 @@ export default function SessionsChip() {
                   >
                     <span className={`size-1.5 rounded-full shrink-0 ${statusDot(session.status)}`} />
                     <span className="shrink-0">{shortId(session.id)}</span>
-                    <span className="text-muted-foreground uppercase text-[10px] shrink-0">
-                      {statusLabel(session.status)}
-                    </span>
+                    {session.status !== "completed" && (
+                      <span className="text-muted-foreground uppercase text-[10px] shrink-0">
+                        {statusLabel(session.status)}
+                      </span>
+                    )}
                     <span className="truncate flex-1 text-muted-foreground text-right text-[10px]">
-                      head {shortId(session.currentHeadMessageId || session.startHeadMessageId) || "root"}
+                      {sessionNodeCount(session, activeConv.nodes)} nodes
                     </span>
-                    {session.id === selectedSessionId && <Check className="size-3 shrink-0" />}
+                    {!viewHeadId && session.id === selectedSessionId && <Check className="size-3 shrink-0" />}
                   </button>
                   <button
                     type="button"

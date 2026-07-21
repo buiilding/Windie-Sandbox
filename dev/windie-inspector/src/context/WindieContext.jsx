@@ -363,7 +363,8 @@ export function WindieProvider({ children }) {
   const setPathHead = useCallback(
     async (nodeId) => {
       if (!activeConvId || !activeConv?.nodes?.[nodeId]) return null;
-      setViewHeadId(nodeId);
+      const sessionHead = selectedSession?.currentHeadMessageId || selectedSession?.startHeadMessageId || null;
+      setViewHeadId(nodeId === sessionHead ? null : nodeId);
       setSelectedNodeId(nodeId);
       await loadConversation(activeConvId, {
         headMessageId: nodeId,
@@ -371,7 +372,7 @@ export function WindieProvider({ children }) {
       });
       return nodeId;
     },
-    [activeConv, activeConvId, loadConversation]
+    [activeConv, activeConvId, loadConversation, selectedSession]
   );
   const activeContextSignatures = useMemo(
     () => contextSignatureParts(activeConv, activeModelId, selectedPathNodes),
