@@ -1,22 +1,18 @@
 import { useMemo, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
 import { ROLE_TOKENS } from "@/lib/mockData";
-import { X, GitBranch } from "lucide-react";
+import { X, GitBranch, MoreHorizontal } from "lucide-react";
 import ConversationTreeMenu from "@/components/windie/ConversationTreeMenu";
 import TreeNodeContextMenu, { treeContextMenuPosition } from "@/components/windie/TreeNodeContextMenu";
+import { isExecutionGroup, projectTree } from "@/lib/treeProjection";
 
 /**
  * Layout the tree by depth. For each depth level we place nodes horizontally.
  * Returns: {positions: {nodeId: {x, y, depth}}, width, height, edges: [{from,to}]}
  */
-function layoutTree(conv) {
-  const nodes = conv.nodes;
-  const rootIds =
-    conv.rootIds?.length
-      ? conv.rootIds
-      : Object.values(nodes)
-          .filter((node) => node.parentId === null)
-          .map((node) => node.id);
+function layoutTree(tree) {
+  const nodes = tree.nodes;
+  const rootIds = tree.rootIds;
   if (!rootIds.length) {
     return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 200, NODE_H: 62 };
   }
@@ -47,29 +43,36 @@ function layoutTree(conv) {
   });
   const NODE_W = 200;
   const NODE_H = 62;
+  const GROUP_H = 30;
   const H_GAP = 40;
   const V_GAP = 28;
   const positions = {};
   const maxRow = Math.max(...Object.values(byDepth).map((r) => r.length), 1);
+  let y = 40;
   Object.entries(byDepth).forEach(([d, ids]) => {
+    const rowHeight = Math.max(...ids.map((id) => (isExecutionGroup(nodes[id]) ? GROUP_H : NODE_H)));
     ids.forEach((id, i) => {
       positions[id] = {
         x: 40 + i * (NODE_W + H_GAP),
-        y: 40 + parseInt(d, 10) * (NODE_H + V_GAP),
+        y,
         depth: parseInt(d, 10),
+        height: isExecutionGroup(nodes[id]) ? GROUP_H : NODE_H,
       };
     });
+    y += rowHeight + V_GAP;
   });
   const edges = [];
-  Object.values(nodes).forEach((n) => {
-    if (n.parentId && nodes[n.parentId]) edges.push({ from: n.parentId, to: n.id });
+  Object.values(nodes).forEach((node) => {
+    (node.childrenIds || []).forEach((childId) => {
+      if (nodes[childId]) edges.push({ from: node.id, to: childId });
+    });
   });
   const width = Math.max(
     900,
     40 + maxRow * (NODE_W + H_GAP)
   );
   const height =
-    Math.max(...Object.values(positions).map((p) => p.y)) + NODE_H + 40;
+    Math.max(...Object.values(positions).map((p) => p.y + p.height), 0) + 40;
   return { positions, edges, width, height, NODE_W, NODE_H };
 }
 
@@ -82,12 +85,27 @@ export default function TreeOverlay() {
     setPathHead,
   } = useWindie();
   const [contextMenu, setContextMenu] = useState(null);
+  const [expandedGroups, setExpandedGroups] = useState(new Set());
 
-  const layout = useMemo(() => layoutTree(activeConv), [activeConv]);
+  const tree = useMemo(() => projectTree(activeConv, expandedGroups), [activeConv, expandedGroups]);
+  const layout = useMemo(() => layoutTree(tree), [tree]);
   const pathSet = useMemo(
     () => new Set(selectedPathNodes.map((node) => node.id)),
     [selectedPathNodes]
   );
+  const isProjectedNodeOnPath = (id) => {
+    const node = tree.nodes[id];
+    return node && (isExecutionGroup(node) ? node.hiddenIds.some((hiddenId) => pathSet.has(hiddenId)) : pathSet.has(node.originalId));
+  };
+
+  const toggleGroup = (groupId) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
 
   return (
     <div
@@ -133,10 +151,10 @@ export default function TreeOverlay() {
                 const p2 = layout.positions[to];
                 if (!p1 || !p2) return null;
                 const x1 = p1.x + layout.NODE_W / 2;
-                const y1 = p1.y + layout.NODE_H;
+                const y1 = p1.y + p1.height;
                 const x2 = p2.x + layout.NODE_W / 2;
                 const y2 = p2.y;
-                const active = pathSet.has(from) && pathSet.has(to);
+                const active = isProjectedNodeOnPath(from) && isProjectedNodeOnPath(to);
                 return (
                   <path
                     key={i}
@@ -155,41 +173,58 @@ export default function TreeOverlay() {
             </svg>
 
             {Object.entries(layout.positions).map(([id, pos]) => {
-              const n = activeConv.nodes[id];
-              if (!n) return null;
-              const role = n.message.role;
-              const token = ROLE_TOKENS[role];
-              const onPath = pathSet.has(id);
-              const isSel = id === selectedNodeId;
-              const text =
-                n.message.parts.find((p) => p.type === "text")?.text || "";
+              const node = tree.nodes[id];
+              if (!node) return null;
+              const group = isExecutionGroup(node);
+              const token = group ? null : ROLE_TOKENS[node.message.role];
+              const onPath = group ? node.hiddenIds.some((hiddenId) => pathSet.has(hiddenId)) : pathSet.has(node.originalId);
+              const isSel = !group && node.originalId === selectedNodeId;
+              const text = group ? "" : node.message.parts.find((part) => part.type === "text")?.text || "";
+              const className = `absolute text-left border transition-all ${isSel ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]" : onPath ? "border-[hsl(var(--accent))] bg-background" : "border-border bg-background hover:border-foreground/60"}`;
+
+              if (group) {
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    data-testid={`tree-group-${id}`}
+                    title="expand tool execution"
+                    onClick={() => toggleGroup(id)}
+                    className="absolute flex items-center justify-center text-muted-foreground hover:text-foreground"
+                    style={{ left: pos.x, top: pos.y, width: layout.NODE_W, height: pos.height }}
+                  >
+                    <div className="flex items-center justify-center gap-2 px-2">
+                      <MoreHorizontal className="size-5 text-muted-foreground" strokeWidth={1.5} />
+                      <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+                        {node.hiddenIds.length} tools
+                      </span>
+                    </div>
+                  </button>
+                );
+              }
+
               return (
                 <button
                   key={id}
-                  data-testid={`tree-node-${id}`}
+                  type="button"
+                  data-testid={`tree-node-${node.originalId}`}
                   onClick={() => {
                     setContextMenu(null);
-                    setPathHead(id);
+                    setPathHead(node.originalId);
                   }}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     setContextMenu({
-                      nodeId: id,
+                      nodeId: node.originalId,
                       position: treeContextMenuPosition(event.clientX, event.clientY),
                     });
                   }}
-                  className={`absolute text-left border transition-all ${
-                    isSel
-                      ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]"
-                      : onPath
-                        ? "border-[hsl(var(--accent))] bg-background"
-                        : "border-border bg-background hover:border-foreground/60"
-                  }`}
+                  className={className}
                   style={{
                     left: pos.x,
                     top: pos.y,
                     width: layout.NODE_W,
-                    height: layout.NODE_H,
+                    height: pos.height,
                   }}
                 >
                   <div className="h-full flex flex-col p-2 gap-0.5">
@@ -200,11 +235,11 @@ export default function TreeOverlay() {
                         [{token.label}]
                       </span>
                       <span className="font-mono text-[9px] text-muted-foreground">
-                        {id.slice(0, 6)}
+                        {node.originalId.slice(0, 6)}
                       </span>
                     </div>
                     <div className="font-mono text-[10px] text-muted-foreground truncate">
-                      {n.message.model || " "}
+                      {node.message.model || " "}
                     </div>
                     <div className="text-[11px] leading-tight truncate">
                       {text.slice(0, 42) || (
@@ -215,9 +250,9 @@ export default function TreeOverlay() {
                       {onPath && (
                         <span className="text-[hsl(var(--accent))]">on path</span>
                       )}
-                      {n.childrenIds.length > 1 && (
+                      {node.childrenIds.length > 1 && (
                         <span className="text-foreground/80">
-                          {n.childrenIds.length} branches
+                          {node.childrenIds.length} branches
                         </span>
                       )}
                     </div>
