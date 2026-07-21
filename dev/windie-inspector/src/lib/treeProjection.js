@@ -57,11 +57,12 @@ export function projectTree(conversation, expandedGroupIds = new Set()) {
     else rootIds.push(id);
   };
 
-  const addGroup = (startId, parentId, hiddenIds, frontierIds) => {
+  const addGroup = (startId, parentId, hiddenIds, frontierIds, expanded = false) => {
     const id = groupId(startId);
     projectedNodes[id] = {
       id,
       kind: "execution_group",
+      expanded,
       originalId: null,
       parentId,
       childrenIds: [],
@@ -103,7 +104,8 @@ export function projectTree(conversation, expandedGroupIds = new Set()) {
     const { hiddenIds, frontierIds } = collectExecutionSubtree(sourceNodes, startId);
     const id = groupId(startId);
     if (expandedGroupIds.has(id)) {
-      renderExpandedExecution(startId, parentId);
+      const groupNodeId = addGroup(startId, parentId, hiddenIds, frontierIds, true);
+      renderExpandedExecution(startId, groupNodeId);
       return;
     }
 

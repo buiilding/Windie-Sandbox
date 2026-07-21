@@ -1,5 +1,5 @@
 import { useWindie } from "@/context/WindieContext";
-import { Sun, Moon, Columns2 } from "lucide-react";
+import { Sun, Moon, Columns2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import ConversationPicker from "@/components/windie/ConversationPicker";
 import SessionsChip from "@/components/windie/SessionsChip";
 
@@ -12,7 +12,7 @@ function formatTokenCount(value) {
 
 const TOKEN_METER_TITLE = "Token count over selected model context";
 
-export default function TopBar() {
+export default function TopBar({ treeCollapsed, onTreeToggle }) {
   const {
     theme,
     setTheme,
@@ -34,6 +34,21 @@ export default function TopBar() {
       </div>
 
       <div className="h-4 w-px bg-border" />
+
+      <button
+        type="button"
+        data-testid="topbar-toggle-tree"
+        onClick={onTreeToggle}
+        title={treeCollapsed ? "show conversation tree" : "hide conversation tree"}
+        aria-label={treeCollapsed ? "show conversation tree" : "hide conversation tree"}
+        className="flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors"
+      >
+        {treeCollapsed ? (
+          <PanelLeftOpen className="size-3.5" strokeWidth={1.75} />
+        ) : (
+          <PanelLeftClose className="size-3.5" strokeWidth={1.75} />
+        )}
+      </button>
 
       <ConversationPicker />
 

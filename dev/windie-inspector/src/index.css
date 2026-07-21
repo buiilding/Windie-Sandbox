@@ -48,6 +48,8 @@ code,
         --muted-foreground: 240 4% 45%;
         --accent: 38 92% 50%;
         --accent-foreground: 240 10% 4%;
+        --user-message: 173 58% 39%;
+        --assistant-message: 271 76% 68%;
         --tool-call: 217 91% 55%;
         --refusal: 0 84% 60%;
         --reasoning: 271 76% 53%;
@@ -78,6 +80,8 @@ code,
         --muted-foreground: 240 5% 65%;
         --accent: 38 92% 55%;
         --accent-foreground: 240 10% 4%;
+        --user-message: 173 58% 55%;
+        --assistant-message: 271 81% 74%;
         --tool-call: 213 94% 68%;
         --refusal: 0 84% 68%;
         --reasoning: 271 81% 66%;
@@ -221,6 +225,28 @@ code,
             transparent 1px
         );
     background-size: 32px 32px;
+}
+
+@keyframes windie-tree-execution-step-in {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.windie-tree-execution-step {
+    animation: windie-tree-execution-step-in 700ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .windie-tree-execution-step {
+        animation: none;
+    }
 }
 
 /* No focus outline flash; we use ring via tailwind */

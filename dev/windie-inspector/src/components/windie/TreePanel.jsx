@@ -4,7 +4,7 @@ import { ROLE_TOKENS } from "@/lib/mockData";
 import { GitBranch, MoreHorizontal } from "lucide-react";
 import ConversationTreeMenu from "@/components/windie/ConversationTreeMenu";
 import TreeNodeContextMenu, { treeContextMenuPosition } from "@/components/windie/TreeNodeContextMenu";
-import { isExecutionGroup, projectTree } from "@/lib/treeProjection";
+import { isExecutionGroup, isExecutionNode, projectTree } from "@/lib/treeProjection";
 
 function layoutTree(tree) {
   const nodes = tree.nodes;
@@ -119,7 +119,7 @@ export default function TreePanel() {
             const isSelected = !group && node.originalId === selectedNodeId;
             const token = group ? null : ROLE_TOKENS[node.message.role];
             const text = group ? "" : node.message.parts.find((part) => part.type === "text")?.text || "";
-            const className = `absolute text-left border transition-all ${isSelected ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]" : onPath ? "border-[hsl(var(--accent))] bg-background" : "border-border bg-background hover:border-foreground/60"}`;
+            const className = `absolute text-left border transition-all duration-700 ease-out ${isExecutionNode(node) ? "windie-tree-execution-step" : ""} ${isSelected ? "border-foreground bg-surface shadow-[0_0_0_1px_hsl(var(--foreground))]" : onPath ? "border-[hsl(var(--accent))]" : "border-border bg-background hover:border-foreground/60"}`;
 
             if (group) {
               return (
@@ -127,16 +127,16 @@ export default function TreePanel() {
                   key={id}
                   type="button"
                   data-testid={`tree-group-${id}`}
-                  title="expand tool execution"
+                  title={node.expanded ? "collapse tool execution" : "expand tool execution"}
                   onClick={() => toggleGroup(id)}
                   className="absolute flex items-center justify-center text-muted-foreground hover:text-foreground"
                   style={{ left: position.x, top: position.y, width: layout.NODE_W, height: position.height }}
                 >
                   <div className="flex items-center justify-center gap-2 px-2">
-                    <MoreHorizontal className="size-5 text-muted-foreground" strokeWidth={1.5} />
-                    <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                      {node.hiddenIds.length} tools
-                    </span>
+                      <MoreHorizontal className="size-5 text-muted-foreground" strokeWidth={1.5} />
+                      <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+                        {node.expanded ? "collapse" : `${node.hiddenIds.length} tools`}
+                      </span>
                   </div>
                 </button>
               );

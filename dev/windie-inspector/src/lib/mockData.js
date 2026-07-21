@@ -638,7 +638,7 @@ export const INITIAL_CONVERSATIONS = [c1, c2, c3, c4, c5, c6];
 
 export const ROLE_TOKENS = {
   system: { label: "SYS", color: "text-muted-foreground" },
-  user: { label: "USR", color: "text-foreground" },
-  assistant: { label: "AST", color: "text-foreground" },
+  user: { label: "USR", color: "text-[hsl(var(--user-message))]" },
+  assistant: { label: "AST", color: "text-[hsl(var(--assistant-message))]" },
   tool: { label: "TOL", color: "text-[hsl(var(--tool-call))]" },
 };
