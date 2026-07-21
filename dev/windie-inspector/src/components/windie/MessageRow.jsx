@@ -276,7 +276,7 @@ export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop
   return (
     <div
       data-testid={`msg-row-pending-assistant${sessionId ? `-${sessionId.slice(0, 8)}` : ""}`}
-      className="relative border-b border-border py-3.5 px-6"
+      className="windie-message-assistant relative border-b border-border py-3.5 px-6"
     >
       <div className="flex items-start gap-3">
         <div className="w-16 shrink-0 pt-0.5">
@@ -327,6 +327,16 @@ export default function MessageRow({ node, index, isLast }) {
   const isSelected = selectedNodeId === node.id;
   const role = node.message.role;
   const isSystem = role === "system";
+  const messageTint = role === "user"
+    ? "windie-message-user"
+    : role === "assistant"
+      ? "windie-message-assistant"
+      : "";
+  const rowSurface = isSelected
+    ? "windie-message-selected"
+    : messageTint
+      ? ""
+      : "hover:bg-surface/40";
   const isStreaming = node.message.streaming;
   const textPart = node.message.parts.find((p) => p.type === "text");
   const imageParts = node.message.parts.filter((p) => p.type === "image");
@@ -345,9 +355,7 @@ export default function MessageRow({ node, index, isLast }) {
     <div
       data-testid={`msg-row-${node.id}`}
       onClick={() => setSelectedNodeId(node.id)}
-      className={`group relative border-b border-border py-3.5 px-6 transition-colors cursor-pointer ${
-        isSelected ? "bg-surface" : "hover:bg-surface/40"
-      }`}
+      className={`group relative border-b border-border py-3.5 px-6 transition-colors cursor-pointer ${messageTint} ${rowSurface}`}
     >
       {isSelected && (
         <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-[hsl(var(--accent))]" />

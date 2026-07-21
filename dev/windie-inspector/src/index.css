@@ -49,9 +49,9 @@ code,
         --accent: 38 92% 50%;
         --accent-foreground: 216 3% 11%;
         --tree-edge: 220 4% 66%;
-        --user-message: 173 58% 39%;
-        --assistant-message: 271 76% 68%;
-        --tool-call: 217 91% 55%;
+        --user-message: 204 78% 45%;
+        --assistant-message: 216 3% 32%;
+        --tool-call: 142 62% 38%;
         --refusal: 0 84% 60%;
         --reasoning: 271 76% 53%;
         --annotation: 173 58% 39%;
@@ -82,9 +82,9 @@ code,
         --accent: 38 92% 55%;
         --accent-foreground: 240 10% 4%;
         --tree-edge: 220 3% 40%;
-        --user-message: 173 58% 55%;
-        --assistant-message: 271 81% 74%;
-        --tool-call: 213 94% 68%;
+        --user-message: 204 86% 64%;
+        --assistant-message: 0 0% 92%;
+        --tool-call: 142 65% 56%;
         --refusal: 0 84% 68%;
         --reasoning: 271 81% 66%;
         --annotation: 173 58% 55%;
@@ -128,6 +128,31 @@ code,
 
 .windie-markdown {
     overflow-wrap: anywhere;
+}
+
+/* Keep user and assistant turns visually distinct without boxing the content. */
+.windie-message-user {
+    background: hsl(var(--user-message) / 0.045);
+}
+
+.windie-message-user:hover {
+    background: hsl(var(--user-message) / 0.085);
+}
+
+.windie-message-assistant {
+    background: transparent;
+}
+
+.windie-message-assistant:hover {
+    background: hsl(var(--surface) / 0.4);
+}
+
+.windie-message-selected {
+    background: hsl(var(--surface));
+}
+
+.windie-message-user.windie-message-selected {
+    background: hsl(var(--user-message) / 0.12);
 }
 
 .windie-markdown > * + * {
