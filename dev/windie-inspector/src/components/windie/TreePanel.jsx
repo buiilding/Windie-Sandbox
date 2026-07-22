@@ -4,65 +4,7 @@ import { ROLE_TOKENS } from "@/lib/mockData";
 import { MoreHorizontal } from "lucide-react";
 import TreeNodeContextMenu, { treeContextMenuPosition } from "@/components/windie/TreeNodeContextMenu";
 import { isExecutionGroup, isExecutionNode, projectTree } from "@/lib/treeProjection";
-
-function layoutTree(tree) {
-  const nodes = tree.nodes;
-  const rootIds = tree.rootIds;
-  if (!rootIds.length) return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 180, NODE_H: 78 };
-
-  const depthOf = {};
-  const order = [];
-  const queue = [...rootIds];
-  rootIds.forEach((rootId) => { depthOf[rootId] = 0; });
-  while (queue.length) {
-    const id = queue.shift();
-    order.push(id);
-    (nodes[id]?.childrenIds || []).forEach((childId) => {
-      if (depthOf[childId] === undefined) {
-        depthOf[childId] = depthOf[id] + 1;
-        queue.push(childId);
-      }
-    });
-  }
-
-  const byDepth = {};
-  order.forEach((id) => {
-    const depth = depthOf[id];
-    if (!byDepth[depth]) byDepth[depth] = [];
-    byDepth[depth].push(id);
-  });
-
-  const NODE_W = 180;
-  const NODE_H = 78;
-  const GROUP_H = 30;
-  const H_GAP = 40;
-  const V_GAP = 28;
-  const positions = {};
-  const maxRow = Math.max(...Object.values(byDepth).map((row) => row.length), 1);
-  let y = 40;
-  Object.entries(byDepth).forEach(([depth, ids]) => {
-    const rowHeight = Math.max(...ids.map((id) => (isExecutionGroup(nodes[id]) ? GROUP_H : NODE_H)));
-    ids.forEach((id, index) => {
-      positions[id] = {
-        x: 40 + index * (NODE_W + H_GAP),
-        y,
-        depth: Number(depth),
-        height: isExecutionGroup(nodes[id]) ? GROUP_H : NODE_H,
-      };
-    });
-    y += rowHeight + V_GAP;
-  });
-
-  const edges = [];
-  Object.values(nodes).forEach((node) => {
-    (node.childrenIds || []).forEach((childId) => {
-      if (nodes[childId]) edges.push({ from: node.id, to: childId });
-    });
-  });
-  const width = Math.max(900, 40 + maxRow * (NODE_W + H_GAP));
-  const height = Math.max(...Object.values(positions).map((position) => position.y + position.height), 0) + 40;
-  return { positions, edges, width, height, NODE_W, NODE_H };
-}
+import { layoutTree } from "@/lib/treeLayout";
 
 export default function TreePanel() {
   const { activeConv, selectedPathNodes, selectedNodeId, setPathHead } = useWindie();

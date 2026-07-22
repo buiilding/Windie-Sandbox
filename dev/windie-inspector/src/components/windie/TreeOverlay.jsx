@@ -5,76 +5,7 @@ import { X, GitBranch, MoreHorizontal } from "lucide-react";
 import ConversationTreeMenu from "@/components/windie/ConversationTreeMenu";
 import TreeNodeContextMenu, { treeContextMenuPosition } from "@/components/windie/TreeNodeContextMenu";
 import { isExecutionGroup, isExecutionNode, projectTree } from "@/lib/treeProjection";
-
-/**
- * Layout the tree by depth. For each depth level we place nodes horizontally.
- * Returns: {positions: {nodeId: {x, y, depth}}, width, height, edges: [{from,to}]}
- */
-function layoutTree(tree) {
-  const nodes = tree.nodes;
-  const rootIds = tree.rootIds;
-  if (!rootIds.length) {
-    return { positions: {}, edges: [], width: 900, height: 280, NODE_W: 180, NODE_H: 78 };
-  }
-
-  // BFS depths across every root in the conversation forest.
-  const depthOf = {};
-  const order = [];
-  const queue = [...rootIds];
-  rootIds.forEach((rootId) => {
-    depthOf[rootId] = 0;
-  });
-  while (queue.length) {
-    const id = queue.shift();
-    order.push(id);
-    (nodes[id]?.childrenIds || []).forEach((cid) => {
-      if (depthOf[cid] === undefined) {
-        depthOf[cid] = depthOf[id] + 1;
-        queue.push(cid);
-      }
-    });
-  }
-  // group by depth
-  const byDepth = {};
-  order.forEach((id) => {
-    const d = depthOf[id];
-    if (!byDepth[d]) byDepth[d] = [];
-    byDepth[d].push(id);
-  });
-  const NODE_W = 180;
-  const NODE_H = 78;
-  const GROUP_H = 30;
-  const H_GAP = 40;
-  const V_GAP = 28;
-  const positions = {};
-  const maxRow = Math.max(...Object.values(byDepth).map((r) => r.length), 1);
-  let y = 40;
-  Object.entries(byDepth).forEach(([d, ids]) => {
-    const rowHeight = Math.max(...ids.map((id) => (isExecutionGroup(nodes[id]) ? GROUP_H : NODE_H)));
-    ids.forEach((id, i) => {
-      positions[id] = {
-        x: 40 + i * (NODE_W + H_GAP),
-        y,
-        depth: parseInt(d, 10),
-        height: isExecutionGroup(nodes[id]) ? GROUP_H : NODE_H,
-      };
-    });
-    y += rowHeight + V_GAP;
-  });
-  const edges = [];
-  Object.values(nodes).forEach((node) => {
-    (node.childrenIds || []).forEach((childId) => {
-      if (nodes[childId]) edges.push({ from: node.id, to: childId });
-    });
-  });
-  const width = Math.max(
-    900,
-    40 + maxRow * (NODE_W + H_GAP)
-  );
-  const height =
-    Math.max(...Object.values(positions).map((p) => p.y + p.height), 0) + 40;
-  return { positions, edges, width, height, NODE_W, NODE_H };
-}
+import { layoutTree } from "@/lib/treeLayout";
 
 export default function TreeOverlay() {
   const {
