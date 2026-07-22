@@ -35,31 +35,41 @@ function RoleBadge({ role }) {
   );
 }
 
-function ReasoningLane({ reasoning }) {
+function ReasoningLane({ reasoning, placeholder = false }) {
   const [open, setOpen] = useState(false);
-  if (!reasoning) return null;
+  if (!reasoning && !placeholder) return null;
+  const canExpand = Boolean(reasoning);
   return (
     <div className="mb-3">
       <button
         type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))] hover:text-foreground transition-colors"
+        aria-expanded={canExpand && open}
+        onClick={() => {
+          if (canExpand) setOpen((value) => !value);
+        }}
+        className="group flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--reasoning))] hover:text-foreground transition-colors"
       >
-        <span>{open ? "hide reasoning" : "show reasoning"}</span>
-        <ChevronDown className={`size-3 transition-transform duration-300 ease-out ${open ? "rotate-180" : ""}`} strokeWidth={1.75} />
+        <span>thinking</span>
+        <ChevronDown className="size-3 opacity-0 group-hover:opacity-100" strokeWidth={1.75} />
       </button>
-      <div className={`windie-reasoning-content ${open ? "open" : ""}`}>
+      <div className={`windie-reasoning-content ${canExpand && open ? "open" : ""}`}>
         <div className="windie-reasoning-inner">
-          <div className="mt-1 border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5">
-            <div className="text-xs text-muted-foreground italic leading-relaxed">
-              {reasoning}
+          {reasoning ? (
+            <div className="mt-1 border-l-2 border-[hsl(var(--reasoning))] pl-2 py-1 bg-[hsl(var(--reasoning))]/5">
+              <div className="text-xs text-muted-foreground italic leading-relaxed">
+                {reasoning}
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       </div>
     </div>
   );
+}
+
+function PendingThinkingLane({ pendingAssistant }) {
+  if (!pendingAssistant.reasoning && pendingAssistant.text) return null;
+  return <ReasoningLane reasoning={pendingAssistant.reasoning} placeholder />;
 }
 
 function MetadataLanes({ metadata }) {
@@ -279,29 +289,29 @@ export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop
   return (
     <div
       data-testid={`msg-row-pending-assistant${sessionId ? `-${sessionId.slice(0, 8)}` : ""}`}
-      className="windie-message-assistant relative border-b border-border py-3.5 px-6"
+      className="windie-message-assistant relative border-b border-border pt-3.5 pb-12 px-6"
     >
+      <div className="absolute right-6 top-3.5 z-10 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+        <span className="text-foreground/70">streaming</span>
+        {sessionId && <span className="text-muted-foreground/70">· session {sessionId.slice(0, 8)}</span>}
+        {onStop && (
+          <button
+            type="button"
+            data-testid={`pending-stop-${sessionId?.slice(0, 8) || "session"}`}
+            onClick={onStop}
+            className="inline-flex items-center gap-1 border border-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover hover:text-foreground"
+          >
+            <Square className="size-2 fill-current" />
+            stop
+          </button>
+        )}
+      </div>
       <div className="flex items-baseline gap-3">
         <div className="w-16 shrink-0 pt-0.5">
           <RoleBadge role="assistant" />
         </div>
         <div className="flex-1 min-w-0 pt-2">
-          <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            <span className="text-foreground/70">streaming</span>
-            {sessionId && <span className="text-muted-foreground/70">· session {sessionId.slice(0, 8)}</span>}
-            {onStop && (
-              <button
-                type="button"
-                data-testid={`pending-stop-${sessionId?.slice(0, 8) || "session"}`}
-                onClick={onStop}
-                className="ml-auto inline-flex items-center gap-1 border border-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover hover:text-foreground"
-              >
-                <Square className="size-2 fill-current" />
-                stop
-              </button>
-            )}
-          </div>
-          <ReasoningLane reasoning={pendingAssistant.reasoning} />
+          <PendingThinkingLane pendingAssistant={pendingAssistant} />
           <MessageMarkdown text={pendingAssistant.text} isStreaming />
           <PendingMetadataLanes pendingAssistant={pendingAssistant} />
         </div>

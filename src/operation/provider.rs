@@ -1,14 +1,15 @@
 //! Provider-manager lifecycle operations.
 //!
 //! These operations persist provider state and run explicit health checks. They
-//! also own the first provider-specific setup workflow. Desktop Commander is
-//! currently the only provider with one-click setup; its `npx` launch command
-//! acquires the package during the first verified MCP catalog request.
+//! also own the approved MCP setup workflows. Each setup flow first uses the
+//! matching local dependency installer, then verifies the provider by loading
+//! its MCP catalog before enabling it.
 
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::error;
+use crate::local;
 use crate::store::{InstalledProvider, Store};
 use crate::tool::ToolProviderId;
 use crate::tool_provider::{
@@ -89,26 +90,29 @@ pub fn install_provider(
     provider_installation(store, registry, provider_id)
 }
 
-/// Installs, configures, verifies, and enables Desktop Commander.
+/// Installs, configures, verifies, and enables one approved MCP provider.
 ///
-/// The provider's MCP command uses `npx -y`, so the first catalog request
-/// downloads the published package without asking the user to open a shell.
-/// The provider definition prepares an isolated `~/.windie` configuration
-/// before that request starts. A failed download, launch, or MCP handshake is
-/// retained as `broken` so the caller can show the actionable error.
+/// The provider-specific dependency setup is owned by `local::install_target`.
+/// The subsequent catalog request is the health check: it catches failures to
+/// launch the MCP process, missing credentials, and failed MCP handshakes.
+/// A failed verification is retained as `broken` so the caller can show the
+/// actionable provider error.
 pub fn setup_provider(
     store: &Store,
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     let desktop_commander_id = ToolProviderId::new("desktop-commander");
+    ensure_manifest(registry, provider_id)?;
+
+    // Desktop Commander is self-installing through its npx command and also
+    // needs its isolated configuration prepared by the provider adapter. The
+    // other approved MCPs have explicit local setup targets that verify their
+    // executable or run their upstream installer before the health check.
     if provider_id != &desktop_commander_id {
-        return Err(error::invalid_request(format!(
-            "one-click setup is not implemented for provider: {provider_id}"
-        )));
+        local::install_target(provider_id.as_str())?;
     }
 
-    ensure_manifest(registry, provider_id)?;
     store.install_provider(provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 

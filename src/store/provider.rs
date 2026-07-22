@@ -51,8 +51,8 @@ impl Store {
 
     /// Creates or resets one provider lifecycle record to `installed`.
     ///
-    /// This records manager state only. It intentionally does not download a
-    /// package or execute a setup command; phase 3 will supply that behavior.
+    /// This records manager state only. Provider-specific setup and dependency
+    /// installation are orchestrated by `operation::provider::setup_provider`.
     pub fn install_provider(&self, provider_id: &ToolProviderId) -> Result<InstalledProvider> {
         let now = now_millis()?;
         self.connection

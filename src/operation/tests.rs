@@ -442,17 +442,14 @@ fn uninstalled_provider_is_not_exposed_to_tool_catalog_or_attachment() {
 }
 
 #[test]
-fn one_click_setup_rejects_unimplemented_provider() {
+fn one_click_setup_rejects_unknown_provider() {
     let store = Store::open_memory().unwrap();
     let registry = ToolProviderRegistry::new();
 
-    let error = setup_provider(&store, &registry, &ToolProviderId::new("blender-mcp")).unwrap_err();
+    let error =
+        setup_provider(&store, &registry, &ToolProviderId::new("unknown-provider")).unwrap_err();
 
-    assert!(
-        error
-            .to_string()
-            .contains("one-click setup is not implemented")
-    );
+    assert!(error.to_string().contains("provider does not exist"));
 }
 
 #[test]

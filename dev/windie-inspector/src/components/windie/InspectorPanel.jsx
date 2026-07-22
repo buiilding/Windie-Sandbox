@@ -155,7 +155,7 @@ export default function InspectorPanel({ mode, onClose }) {
               onClick={() => setToolsView("attached")}
               className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${toolsView === "attached" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"}`}
             >
-              attached
+              installed
             </button>
             <button
               type="button"

@@ -1,16 +1,11 @@
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
-  Box,
   Check,
   CheckCircle2,
   Download,
-  Globe2,
-  HardDrive,
+  ExternalLink,
   Loader2,
-  MonitorCog,
-  MousePointer2,
-  Network,
   PackageOpen,
   Power,
   ShieldCheck,
@@ -19,26 +14,23 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useWindie } from "@/context/WindieContext";
+import cuaDarkLogo from "@/assets/provider-icons/cua-dark.svg";
+import cuaLightLogo from "@/assets/provider-icons/cua-light.svg";
+import desktopCommanderLogo from "@/assets/provider-icons/desktop-commander.svg";
+import blenderLogo from "@/assets/provider-icons/blender.svg";
+import brightDataLogo from "@/assets/provider-icons/brightdata.svg";
 
 const providerIcons = {
-  "desktop-commander": MonitorCog,
-  "cua-driver": MousePointer2,
-  "blender-mcp": Box,
-  brightdata: Globe2,
+  "desktop-commander": desktopCommanderLogo,
+  "blender-mcp": blenderLogo,
+  brightdata: brightDataLogo,
 };
 
-const permissionIcons = {
-  computer_control: MousePointer2,
-  external_process: Power,
-  filesystem: HardDrive,
-  network: Network,
-};
-
-const permissionLabels = {
-  computer_control: "computer control",
-  external_process: "external process",
-  filesystem: "filesystem",
-  network: "network",
+const providerRepositories = {
+  "cua-driver": "https://github.com/trycua/cua",
+  "desktop-commander": "https://github.com/wonderwhy-er/DesktopCommanderMCP",
+  "blender-mcp": "https://github.com/ahujasid/blender-mcp",
+  brightdata: "https://github.com/brightdata/brightdata-mcp",
 };
 
 function providerStatus(provider, toolStatus) {
@@ -56,7 +48,7 @@ function providerStatus(provider, toolStatus) {
     return { label: "needs repair", tone: "bad", icon: AlertTriangle };
   }
   if (state === "updating") {
-    return { label: "setting up", tone: "accent", icon: Loader2 };
+    return { label: "installing", tone: "accent", icon: Loader2 };
   }
   if (toolStatus && !toolStatus.available) {
     return { label: "not responding", tone: "bad", icon: AlertTriangle };
@@ -81,33 +73,26 @@ function StatusBadge({ status }) {
   );
 }
 
-function PermissionChip({ permission }) {
-  const Icon = permissionIcons[permission] || ShieldCheck;
-  return (
-    <span className="inline-flex items-center gap-1 border border-border bg-surface/35 px-1.5 py-1 font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
-      <Icon className="size-3" strokeWidth={1.5} />
-      {permissionLabels[permission] || permission.replaceAll("_", " ")}
-    </span>
-  );
-}
-
-function ProviderCard({ provider, toolStatus, pending, onAction }) {
-  const Icon = providerIcons[provider.providerId] || ShieldCheck;
+function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
+  const providerIcon = provider.providerId === "cua-driver"
+    ? theme === "dark" ? cuaDarkLogo : cuaLightLogo
+    : providerIcons[provider.providerId];
+  const Icon = providerIcon || ShieldCheck;
   const status = providerStatus(provider, toolStatus);
   const installed = Boolean(provider.installation);
   const state = provider.installation?.state;
-  const setupAvailable = provider.providerId === "desktop-commander";
-  const toolCount = toolStatus?.toolCount ?? 0;
-  const requirements = [
-    ...(provider.dependencies || []).map((dependency) => dependency.executable),
-    ...(provider.secrets || []).map((secret) => secret.env_key),
-  ];
+  const setupAvailable = (provider.kind || "mcp").toLowerCase() === "mcp";
+  const repositoryUrl = providerRepositories[provider.providerId];
 
   return (
     <article className="group flex min-h-[250px] flex-col border border-border bg-card/60 transition-colors hover:border-muted-foreground/50 hover:bg-card">
       <div className="flex items-start gap-3 border-b border-border p-4">
         <div className="grid size-12 shrink-0 place-items-center border border-border bg-surface text-foreground shadow-sm">
-          <Icon className="size-6" strokeWidth={1.35} />
+          {providerIcon ? (
+            <img src={providerIcon} alt="" aria-hidden="true" className="size-7 object-contain" />
+          ) : (
+            <Icon className="size-6" strokeWidth={1.35} />
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
@@ -123,22 +108,20 @@ function ProviderCard({ provider, toolStatus, pending, onAction }) {
       <div className="flex flex-1 flex-col gap-4 p-4">
         <p className="min-h-[42px] text-[12px] leading-relaxed text-muted-foreground">{provider.description}</p>
 
-        <div className="flex flex-wrap gap-1.5">
-          {(provider.permissions || []).map((permission) => (
-            <PermissionChip key={permission} permission={permission} />
-          ))}
-        </div>
-
-        <div className="mt-auto space-y-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-          <div className="flex items-center justify-between gap-2">
-            <span>{installed ? `${toolCount} tools available` : "local extension"}</span>
-            <span>{provider.kind || "mcp"}</span>
-          </div>
-          {requirements.length > 0 && (
-            <div className="truncate border-t border-border pt-2" title={requirements.join(", ")}>
-              requires {requirements.join(" · ")}
-            </div>
-          )}
+        <div className="mt-auto flex items-center justify-between gap-3 border-t border-border pt-3 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+          <span>{provider.kind || "mcp"}</span>
+          {repositoryUrl ? (
+            <a
+              href={repositoryUrl}
+              target="_blank"
+              rel="noreferrer"
+              title={repositoryUrl}
+              className="inline-flex min-w-0 items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <span className="truncate normal-case tracking-normal">GitHub repository</span>
+              <ExternalLink className="size-3 shrink-0" strokeWidth={1.75} />
+            </a>
+          ) : null}
         </div>
       </div>
 
@@ -151,7 +134,7 @@ function ProviderCard({ provider, toolStatus, pending, onAction }) {
             className={`inline-flex h-8 flex-1 items-center justify-center gap-2 border px-3 font-mono text-[10px] uppercase tracking-widest transition-opacity disabled:cursor-not-allowed disabled:opacity-50 ${setupAvailable ? "border-foreground bg-foreground text-background hover:opacity-85" : "border-border text-muted-foreground"}`}
           >
             {pending ? <Loader2 className="size-3 animate-spin" /> : setupAvailable ? <Download className="size-3" /> : null}
-            {pending ? "setting up" : setupAvailable ? "set up" : "setup unavailable"}
+            {pending ? "installing" : setupAvailable ? "install" : "install unavailable"}
           </button>
         ) : state === "updating" || pending ? (
           <div className="flex flex-1 items-center justify-center gap-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -214,6 +197,7 @@ function ProviderCard({ provider, toolStatus, pending, onAction }) {
 
 export default function ExtensionsPanel() {
   const {
+    theme,
     providerInstallations,
     providerInstallationsLoading,
     toolProviderStatuses,
@@ -224,11 +208,20 @@ export default function ExtensionsPanel() {
     uninstallProvider,
   } = useWindie();
   const [pendingProviderId, setPendingProviderId] = useState(null);
+  const [catalog, setCatalog] = useState("mcps");
 
   const toolStatusesById = useMemo(
     () => new Map((toolProviderStatuses || []).map((provider) => [provider.providerId, provider])),
     [toolProviderStatuses]
   );
+
+  const catalogs = [
+    { id: "mcps", label: "MCPs", count: providerInstallations.length },
+    { id: "skills", label: "Skills", count: 0 },
+    { id: "plugins", label: "Plugins", count: 0 },
+  ];
+
+  const catalogLabel = catalogs.find((entry) => entry.id === catalog)?.label || "MCPs";
 
   const runAction = async (action, providerId) => {
     if (action === "uninstall" && !window.confirm("Remove this extension from Windie?")) return;
@@ -237,7 +230,7 @@ export default function ExtensionsPanel() {
       const actions = { setup: setupProvider, enable: enableProvider, disable: disableProvider, repair: repairProvider, uninstall: uninstallProvider };
       await actions[action](providerId);
       const labels = {
-        setup: "set up",
+        setup: "installed",
         enable: "enabled",
         disable: "disabled",
         repair: "repaired",
@@ -259,26 +252,49 @@ export default function ExtensionsPanel() {
           <div className="min-w-0">
             <div className="font-sans text-lg font-medium tracking-tight">Extension library</div>
             <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-muted-foreground">
-              Install local capabilities once. Only enabled, healthy extensions can be attached to a conversation.
+              Browse MCPs, skills, and plugins available to Windie.
             </p>
           </div>
           <div className="ml-auto hidden shrink-0 text-right sm:block">
-            <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">local catalog</div>
-            <div className="mt-1 font-mono text-sm text-foreground">{providerInstallations.length} extensions</div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">{catalogLabel} catalog</div>
+            <div className="mt-1 font-mono text-sm text-foreground">{catalogs.find((entry) => entry.id === catalog)?.count || 0} {catalogLabel}</div>
           </div>
         </div>
       </div>
 
       <div className="flex-1 p-5">
-        {providerInstallationsLoading && providerInstallations.length === 0 ? (
+        <div className="mb-5 flex items-center gap-1 border-b border-border pb-3" role="tablist" aria-label="extension catalogs">
+          {catalogs.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              aria-selected={catalog === entry.id}
+              data-testid={`extensions-catalog-${entry.id}`}
+              onClick={() => setCatalog(entry.id)}
+              className={`h-8 px-3 font-mono text-[10px] uppercase tracking-widest transition-colors ${catalog === entry.id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"}`}
+            >
+              {entry.label}
+              <span className="ml-1.5 opacity-60">{entry.count}</span>
+            </button>
+          ))}
+        </div>
+
+        {catalog !== "mcps" ? (
+          <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center">
+            <PackageOpen className="size-7 text-muted-foreground" strokeWidth={1.25} />
+            <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">no {catalogLabel.toLowerCase()} installed</div>
+            <p className="max-w-sm text-[12px] text-muted-foreground">This catalog is ready for future {catalogLabel.toLowerCase()} packages.</p>
+          </div>
+        ) : providerInstallationsLoading && providerInstallations.length === 0 ? (
           <div className="flex min-h-48 items-center justify-center gap-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
-            loading extensions
+            loading MCPs
           </div>
         ) : providerInstallations.length === 0 ? (
           <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center">
             <PackageOpen className="size-7 text-muted-foreground" strokeWidth={1.25} />
-            <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">no extensions found</div>
+            <div className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">no MCPs found</div>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -288,6 +304,7 @@ export default function ExtensionsPanel() {
                 provider={provider}
                 toolStatus={toolStatusesById.get(provider.providerId)}
                 pending={pendingProviderId === provider.providerId}
+                theme={theme}
                 onAction={runAction}
               />
             ))}

@@ -481,6 +481,10 @@ export function useSessionRuntime({
         setSelectedSessionId(updated.id);
         selectedSessionRef.current = updated;
         if (!updated.queued) {
+          setPendingAssistantBySessionId((current) => ({
+            ...current,
+            [updated.id]: emptyPending(updated),
+          }));
           setSelectedNodeId(updated.currentHeadMessageId);
           addOptimisticUserMessage(
             setConversations,
@@ -528,6 +532,10 @@ export function useSessionRuntime({
       selectedSessionRef.current = session;
       setSelectedSessionId(session.id);
       setViewHeadId(null);
+      setPendingAssistantBySessionId((current) => ({
+        ...current,
+        [session.id]: emptyPending(session),
+      }));
       subscribeToSession(session);
       setApiError(null);
     } catch (error) {
