@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import SessionsChip from "@/components/windie/SessionsChip";
 
 function attachmentId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -319,6 +320,8 @@ export default function Composer() {
                 </>
               )}
             </div>
+
+            <SessionsChip dropUp />
 
             {reasoningOptions.length > 0 && (
               <div className="relative">

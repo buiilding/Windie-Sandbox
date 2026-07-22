@@ -37,7 +37,7 @@ function sessionNodeCount(session, nodes) {
   return count;
 }
 
-export default function SessionsChip() {
+export default function SessionsChip({ dropUp = false }) {
   const {
     activeConv,
     sessionsById,
@@ -108,7 +108,7 @@ export default function SessionsChip() {
       {open && (
         <div
           data-testid="topbar-sessions-menu"
-          className="absolute left-0 top-full mt-1 z-30 w-72 bg-popover border border-border shadow-md"
+          className={`absolute z-30 w-72 bg-popover border border-border shadow-md ${dropUp ? "left-0 bottom-full mb-1" : "left-0 top-full mt-1"}`}
         >
           <div className="px-2.5 py-1.5 border-b border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             sessions · {sessions.length}

@@ -16,7 +16,7 @@ function conversationLabel(conv) {
   return conv.name || `conversation ${shortId(conv.id)}`;
 }
 
-export default function ConversationPicker({ variant = "topbar" }) {
+export default function ConversationPicker({ variant = "topbar", dropUp = false }) {
   const inSidebar = variant === "sidebar";
   const {
     conversations,
@@ -111,7 +111,7 @@ export default function ConversationPicker({ variant = "topbar" }) {
         type="button"
         data-testid={inSidebar ? "sidebar-conv-picker" : "topbar-conv-picker"}
         onClick={() => setOpen((current) => !current)}
-        className={`${inSidebar ? "w-full h-10 px-3 border-0 border-b" : "flex min-w-[160px] h-7 px-2 border"} flex items-center gap-1.5 border-border hover:bg-surface-hover transition-colors ${
+        className={`${inSidebar ? "w-full h-10 px-3 border-0 border-b" : "flex min-w-[160px] h-7 px-2 border bg-background"} flex items-center gap-1.5 border-border hover:bg-surface-hover transition-colors ${
           open ? "bg-surface-hover" : ""
         }`}
         title={activeConv ? activeConv.id : "no conversation selected"}
@@ -123,7 +123,7 @@ export default function ConversationPicker({ variant = "topbar" }) {
       {open && (
         <div
           data-testid={inSidebar ? "sidebar-conv-picker-menu" : "topbar-conv-picker-menu"}
-          className={`absolute top-full z-30 bg-popover border border-border shadow-md ${inSidebar ? "left-0 mt-0 w-full" : "right-0 mt-1 w-72"}`}
+          className={`absolute z-30 bg-popover border border-border shadow-md ${inSidebar ? "left-0 mt-0 w-full" : `${dropUp ? "bottom-full mb-1 left-0" : "top-full mt-1 left-0"} w-72`}`}
         >
           <div className="flex items-center gap-1.5 px-2 h-8 border-b border-border">
             <input
