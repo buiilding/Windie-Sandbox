@@ -1057,8 +1057,19 @@ async fn query_while_running_is_accepted_and_drained_fifo() {
         .unwrap()
         .load_messages(&conversation_id)
         .unwrap();
-    assert!(messages.iter().any(|message| message.content == "first"));
-    assert!(messages.iter().any(|message| message.content == "second"));
+    let history = messages
+        .iter()
+        .map(|message| (message.role, message.content.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        history,
+        vec![
+            (Role::User, "first"),
+            (Role::Assistant, "after disconnect"),
+            (Role::User, "second"),
+            (Role::Assistant, "after disconnect"),
+        ]
+    );
     assert_eq!(
         Store::open_at(&db_path)
             .unwrap()
