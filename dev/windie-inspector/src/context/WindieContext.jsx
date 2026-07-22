@@ -115,6 +115,7 @@ export function WindieProvider({ children }) {
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [approvals, setApprovals] = useState([]);
   const [availableToolSchemas, setAvailableToolSchemas] = useState([]);
+  const [availableToolsLoading, setAvailableToolsLoading] = useState(false);
   const [toolProviderStatuses, setToolProviderStatuses] = useState([]);
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -197,10 +198,15 @@ export function WindieProvider({ children }) {
   );
 
   const refreshAvailableTools = useCallback(async () => {
-    const body = await apiRequest("/api/tools");
-    setAvailableToolSchemas(toolCatalogFromApi(body));
-    setToolProviderStatuses(toolProviderStatusesFromApi(body));
-    return toolCatalogFromApi(body);
+    setAvailableToolsLoading(true);
+    try {
+      const body = await apiRequest("/api/tools");
+      setAvailableToolSchemas(toolCatalogFromApi(body));
+      setToolProviderStatuses(toolProviderStatusesFromApi(body));
+      return toolCatalogFromApi(body);
+    } finally {
+      setAvailableToolsLoading(false);
+    }
   }, []);
 
   const loadConversation = useCallback(
@@ -442,14 +448,17 @@ export function WindieProvider({ children }) {
 
   const deleteConversation = useCallback(
     async (convId) => {
+      const wasActive = activeConvId === convId;
       await runMutation(() => apiRequest(`/api/conversations/${convId}`, { method: "DELETE" }), {
         reload: false,
         refreshList: false,
       });
       const summaries = await refreshConversations();
-      selectConversation(summaries.find((c) => c.id !== convId)?.id || null);
+      if (wasActive) {
+        selectConversation(summaries.find((c) => c.id !== convId)?.id || null);
+      }
     },
-    [refreshConversations, runMutation, selectConversation]
+    [activeConvId, refreshConversations, runMutation, selectConversation]
   );
 
   const setSystemPrompt = useCallback(
@@ -580,6 +589,7 @@ export function WindieProvider({ children }) {
     tokenMeter,
     toolSchemas: activeConv?.toolSchemas || [],
     availableToolSchemas,
+    availableToolsLoading,
     toolProviderStatuses,
     apiError,
     gatewayRunning,

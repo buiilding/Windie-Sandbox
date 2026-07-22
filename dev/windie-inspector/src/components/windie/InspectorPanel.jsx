@@ -40,6 +40,7 @@ export default function InspectorPanel({ mode, onClose }) {
     approveToolCall,
     denyToolCall,
     availableToolSchemas,
+    availableToolsLoading,
     addToolSchema,
     addToolSchemas,
     removeToolSchema,
@@ -181,7 +182,7 @@ export default function InspectorPanel({ mode, onClose }) {
           ))}
         </Section>
 
-        <Section title={`tool schemas · ${availableToolSchemas.length}`} testId="inspector-section-tools" resetKey={activeConv.id}>
+        <Section title={`tool schemas · ${availableToolsLoading ? "loading" : availableToolSchemas.length}`} testId="inspector-section-tools" resetKey={activeConv.id}>
           <div className="space-y-2">
             {grouped.length > 0 || unavailable.length > 0 ? (
               <div className="space-y-2">
