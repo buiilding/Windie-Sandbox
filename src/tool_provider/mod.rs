@@ -6,10 +6,16 @@
 //! the only implemented backend family today; built-in, skill, and plugin
 //! backends can later join through the same registry shape.
 
+mod lifecycle;
+mod manifest;
 mod mcp;
 mod registry;
 
 #[cfg(test)]
 mod tests;
 
+pub use lifecycle::ProviderInstallState;
+pub use manifest::{
+    ProviderDependency, ProviderManifest, ProviderPermission, ProviderPlatform, ProviderSecret,
+};
 pub use registry::{ToolProviderRegistry, ToolProviderStatus};

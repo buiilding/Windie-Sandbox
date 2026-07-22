@@ -3,6 +3,7 @@
 use super::*;
 use crate::mcp::McpCommand;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
+use crate::tool_provider::ProviderInstallState;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -346,6 +347,73 @@ fn batch_attaches_available_provider_tools() {
         "desktop-commander"
     );
     assert_eq!(attached_tools[0].provider.tool_name.as_str(), "read_file");
+}
+
+#[test]
+fn provider_manager_persists_lifecycle_transitions_and_health() {
+    let store = Store::open_memory().unwrap();
+    let registry = registry_with_cached_test_tool();
+    let provider_id = ToolProviderId::new("desktop-commander");
+
+    let installed = install_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        installed.installation.unwrap().state,
+        ProviderInstallState::Installed
+    );
+
+    let enabled = enable_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        enabled.installation.unwrap().state,
+        ProviderInstallState::Enabled
+    );
+
+    let healthy = health_check_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        healthy.installation.unwrap().state,
+        ProviderInstallState::Enabled
+    );
+
+    let disabled = disable_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        disabled.installation.unwrap().state,
+        ProviderInstallState::Disabled
+    );
+
+    uninstall_provider(&store, &registry, &provider_id).unwrap();
+    assert!(
+        store
+            .load_installed_provider(&provider_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn desktop_commander_setup_verifies_and_enables_provider() {
+    let store = Store::open_memory().unwrap();
+    let registry = registry_with_cached_test_tool();
+    let provider_id = ToolProviderId::new("desktop-commander");
+
+    let setup = setup_provider(&store, &registry, &provider_id).unwrap();
+    let installation = setup.installation.unwrap();
+
+    assert_eq!(installation.state, ProviderInstallState::Enabled);
+    assert!(installation.error.is_none());
+    assert!(installation.last_health_check_at.is_some());
+}
+
+#[test]
+fn one_click_setup_rejects_unimplemented_provider() {
+    let store = Store::open_memory().unwrap();
+    let registry = ToolProviderRegistry::new();
+
+    let error = setup_provider(&store, &registry, &ToolProviderId::new("blender-mcp")).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("one-click setup is not implemented")
+    );
 }
 
 #[test]

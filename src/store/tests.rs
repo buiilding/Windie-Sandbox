@@ -5,7 +5,9 @@ use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::session::{SessionId, SessionStatus};
+use crate::tool::ToolProviderId;
 use crate::tool::{ToolApprovalMode, ToolSchema, ToolSchemaName};
+use crate::tool_provider::ProviderInstallState;
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
     UnsavedMessagePart::Text(text.to_string())
@@ -34,6 +36,40 @@ fn index_exists(store: &Store, index_name: &str) -> bool {
             |row| row.get(0),
         )
         .unwrap()
+}
+
+#[test]
+fn provider_lifecycle_state_persists_and_uninstalls() {
+    let store = Store::open_memory().unwrap();
+    let provider_id = ToolProviderId::new("desktop-commander");
+
+    let installed = store.install_provider(&provider_id).unwrap();
+    assert_eq!(installed.state, ProviderInstallState::Installed);
+    assert!(installed.error.is_none());
+
+    let enabled = store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
+    assert_eq!(enabled.state, ProviderInstallState::Enabled);
+
+    let broken = store
+        .record_provider_health(
+            &provider_id,
+            ProviderInstallState::Broken,
+            Some("npx is missing"),
+        )
+        .unwrap();
+    assert_eq!(broken.state, ProviderInstallState::Broken);
+    assert_eq!(broken.error.as_deref(), Some("npx is missing"));
+    assert!(broken.last_health_check_at.is_some());
+
+    store.uninstall_provider(&provider_id).unwrap();
+    assert!(
+        store
+            .load_installed_provider(&provider_id)
+            .unwrap()
+            .is_none()
+    );
 }
 
 fn message_parent<'a>(messages: &'a [Message], message_id: &MessageId) -> Option<&'a MessageId> {

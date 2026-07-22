@@ -24,6 +24,26 @@ pub(super) fn router(state: ApiState) -> Router {
         .route("/api/model-parameters", get(model_parameters))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))
+        .route("/api/providers", get(list_providers))
+        .route(
+            "/api/providers/{provider_id}",
+            get(get_provider).delete(uninstall_provider),
+        )
+        .route(
+            "/api/providers/{provider_id}/install",
+            post(install_provider),
+        )
+        .route("/api/providers/{provider_id}/setup", post(setup_provider))
+        .route("/api/providers/{provider_id}/enable", post(enable_provider))
+        .route(
+            "/api/providers/{provider_id}/disable",
+            post(disable_provider),
+        )
+        .route("/api/providers/{provider_id}/repair", post(repair_provider))
+        .route(
+            "/api/providers/{provider_id}/health-check",
+            post(health_check_provider),
+        )
         .route("/api/gateway/start", post(start_gateway))
         .route("/api/gateway/stop", post(stop_gateway))
         .route(

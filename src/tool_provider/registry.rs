@@ -31,6 +31,7 @@ use crate::tool::{
 pub struct ToolProviderStatus {
     pub provider_id: ToolProviderId,
     pub display_name: String,
+    pub manifest: super::manifest::ProviderManifest,
     pub available: bool,
     pub tool_count: usize,
     pub error: Option<String>,
@@ -93,6 +94,7 @@ impl ToolProviderRegistry {
                 Ok(tools) => ToolProviderStatus {
                     provider_id: provider.provider_id.clone(),
                     display_name: provider.display_name.to_string(),
+                    manifest: provider.manifest().clone(),
                     available: true,
                     tool_count: tools.len(),
                     error: None,
@@ -100,12 +102,32 @@ impl ToolProviderRegistry {
                 Err(error) => ToolProviderStatus {
                     provider_id: provider.provider_id.clone(),
                     display_name: provider.display_name.to_string(),
+                    manifest: provider.manifest().clone(),
                     available: false,
                     tool_count: 0,
                     error: Some(error.to_string()),
                 },
             })
             .collect()
+    }
+
+    /// Returns manifests for every provider known to this registry.
+    pub fn provider_manifests(&self) -> Vec<super::manifest::ProviderManifest> {
+        self.mcp_providers
+            .iter()
+            .map(|provider| provider.manifest().clone())
+            .collect()
+    }
+
+    /// Returns one known provider manifest by stable provider ID.
+    pub fn provider_manifest(
+        &self,
+        provider_id: &ToolProviderId,
+    ) -> Option<super::manifest::ProviderManifest> {
+        self.mcp_providers
+            .iter()
+            .find(|provider| provider.id() == provider_id)
+            .map(|provider| provider.manifest().clone())
     }
 
     /// Lists available tools for one provider ID.
@@ -231,6 +253,17 @@ impl ToolProviderRegistry {
 
         Self {
             mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                manifest: crate::tool_provider::ProviderManifest::mcp_stdio(
+                    provider_id,
+                    display_name,
+                    "Test MCP provider.",
+                    command.program,
+                    command.args,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 provider_id,
                 schema_prefix,
                 display_name,

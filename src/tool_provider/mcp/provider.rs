@@ -12,14 +12,16 @@ use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
+use crate::tool_provider::manifest::ProviderManifest;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 /// Static definition for one code-approved MCP provider.
 ///
 /// This is intentionally data, not runtime state. Adding a future approved MCP
 /// provider should add one server definition while keeping `McpToolProvider`
 /// generic.
 pub(in crate::tool_provider) struct McpProviderDefinition {
+    pub(in crate::tool_provider) manifest: ProviderManifest,
     pub(in crate::tool_provider) provider_id: &'static str,
     pub(in crate::tool_provider) schema_prefix: &'static str,
     pub(in crate::tool_provider) display_name: &'static str,
@@ -37,6 +39,7 @@ pub(in crate::tool_provider) enum McpProviderSetup {
 #[derive(Debug, Clone)]
 /// Provider for an approved MCP stdio server.
 pub(in crate::tool_provider) struct McpToolProvider {
+    manifest: ProviderManifest,
     pub(in crate::tool_provider) provider_id: ToolProviderId,
     pub(in crate::tool_provider) schema_prefix: &'static str,
     pub(in crate::tool_provider) display_name: &'static str,
@@ -49,6 +52,7 @@ impl McpToolProvider {
     /// Builds a runtime provider from a code-approved provider definition.
     pub(in crate::tool_provider) fn new(definition: McpProviderDefinition) -> Self {
         Self {
+            manifest: definition.manifest,
             provider_id: ToolProviderId::new(definition.provider_id),
             schema_prefix: definition.schema_prefix,
             display_name: definition.display_name,
@@ -61,6 +65,11 @@ impl McpToolProvider {
     /// Returns the stable provider ID used by attachments and dispatch.
     pub(in crate::tool_provider) fn id(&self) -> &ToolProviderId {
         &self.provider_id
+    }
+
+    /// Returns the metadata contract for this provider.
+    pub(in crate::tool_provider) fn manifest(&self) -> &ProviderManifest {
+        &self.manifest
     }
 
     /// Lists tools from the MCP server and maps them into Windie definitions.

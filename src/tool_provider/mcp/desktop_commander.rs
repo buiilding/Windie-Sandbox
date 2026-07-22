@@ -13,23 +13,45 @@ use serde_json::json;
 
 use super::provider::{McpProviderDefinition, McpProviderSetup};
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
+use crate::tool_provider::{
+    ProviderDependency, ProviderManifest, ProviderPermission, ProviderPlatform,
+};
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 
 /// Returns the code-approved Desktop Commander MCP provider definition.
 pub(super) fn definition() -> McpProviderDefinition {
+    let command = McpCommand {
+        program: "npx",
+        args: &["-y", "@wonderwhy-er/desktop-commander@latest"],
+        env: &[McpEnv {
+            key: "HOME",
+            value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
+        }],
+    };
+
     McpProviderDefinition {
+        manifest: ProviderManifest::mcp_stdio(
+            "desktop-commander",
+            "Desktop Commander",
+            "Read, write, and manage files and local processes through Desktop Commander.",
+            command.program,
+            command.args,
+            ProviderPlatform::desktop(),
+            vec![ProviderDependency::executable(
+                "npx",
+                "Node.js package runner for Desktop Commander",
+            )],
+            Vec::new(),
+            vec![
+                ProviderPermission::ExternalProcess,
+                ProviderPermission::Filesystem,
+            ],
+        ),
         provider_id: "desktop-commander",
         schema_prefix: "desktop_commander",
         display_name: "Desktop Commander",
-        command: McpCommand {
-            program: "npx",
-            args: &["-y", "@wonderwhy-er/desktop-commander@latest"],
-            env: &[McpEnv {
-                key: "HOME",
-                value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
-            }],
-        },
+        command,
         shutdown_command: None,
         setup: Some(McpProviderSetup::DesktopCommanderConfig),
     }

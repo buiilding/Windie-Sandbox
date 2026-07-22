@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 17;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 18;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -149,6 +149,15 @@ impl Store {
                     FOREIGN KEY (conversation_id) REFERENCES conversations(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS installed_providers (
+                    provider_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    error TEXT,
+                    installed_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    last_health_check_at INTEGER
+                );
+
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
                 ON messages(conversation_id, created_at);
 
@@ -169,6 +178,9 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
                 ON tool_schemas(conversation_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS installed_providers_updated_idx
+                ON installed_providers(updated_at);
                 ",
             )
             .context("failed to migrate database")?;
