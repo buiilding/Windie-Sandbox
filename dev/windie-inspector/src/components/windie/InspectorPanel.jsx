@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import ExtensionsPanel from "@/components/windie/ExtensionsPanel";
 
 function Section({ title, children, defaultOpen = true, right, testId, resetKey }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -51,10 +52,15 @@ export default function InspectorPanel({ mode, onClose }) {
   const [sysDraft, setSysDraft] = useState(activeConv?.systemPrompt || "");
   const [pendingToolActionKeys, setPendingToolActionKeys] = useState([]);
   const [collapsedToolProviderIds, setCollapsedToolProviderIds] = useState(null);
+  const [toolsView, setToolsView] = useState("attached");
   const pendingRef = useRef(new Set());
   const initRef = useRef(new Set());
 
   useEffect(() => setSysDraft(activeConv?.systemPrompt || ""), [activeConv?.id, activeConv?.systemPrompt]);
+
+  useEffect(() => {
+    if (mode !== "tools") setToolsView("attached");
+  }, [mode]);
 
   const attachedNames = useMemo(() => new Set(toolSchemas.map((s) => s.name)), [toolSchemas]);
   const pendingSet = useMemo(() => new Set(pendingToolActionKeys), [pendingToolActionKeys]);
@@ -134,13 +140,36 @@ export default function InspectorPanel({ mode, onClose }) {
 
   return (
     <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center px-6 pt-12 pb-6 overflow-y-auto windie-scroll">
-      <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl min-h-[70vh]" : "max-w-2xl max-h-full"}`}>
+      <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl min-h-[70vh]" : "max-w-4xl max-h-[calc(100vh-4rem)]"}`}>
         <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system prompt" : "tools"}</span>
           <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
             <X className="size-3.5" strokeWidth={1.75} />
           </button>
         </div>
+        {mode === "tools" && (
+          <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-surface/20 px-3">
+            <button
+              type="button"
+              data-testid="tools-tab-attached"
+              onClick={() => setToolsView("attached")}
+              className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${toolsView === "attached" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"}`}
+            >
+              attached
+            </button>
+            <button
+              type="button"
+              data-testid="tools-tab-extensions"
+              onClick={() => setToolsView("extensions")}
+              className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${toolsView === "extensions" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"}`}
+            >
+              extensions
+            </button>
+            <span className="ml-auto font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+              {toolsView === "extensions" ? "local capabilities" : "conversation access"}
+            </span>
+          </div>
+        )}
         <div className="flex-1 min-h-0 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
           {mode === "system" ? (
             <div className="min-h-[calc(70vh-2.5rem)] flex flex-col p-6 gap-4">
@@ -156,6 +185,8 @@ export default function InspectorPanel({ mode, onClose }) {
                 <button data-testid="inspector-sysprompt-commit" onClick={saveSystemPrompt} className="text-[10px] uppercase px-3 py-1.5 border border-foreground bg-foreground text-background font-mono">save</button>
               </div>
             </div>
+          ) : toolsView === "extensions" ? (
+            <ExtensionsPanel />
           ) : (
             <>
 

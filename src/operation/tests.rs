@@ -293,6 +293,7 @@ fn attaches_available_provider_tool() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
     let registry = registry_with_cached_test_tool();
+    enable_test_provider(&store);
     let read_file = registry
         .find_tool(
             &ToolProviderId::new("desktop-commander"),
@@ -327,6 +328,7 @@ fn batch_attaches_available_provider_tools() {
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
 
     let registry = registry_with_cached_test_tool();
+    enable_test_provider(&store);
     let schema_names = attach_tools_with_registry(
         &mut store,
         &conversation_id,
@@ -400,6 +402,43 @@ fn desktop_commander_setup_verifies_and_enables_provider() {
     assert_eq!(installation.state, ProviderInstallState::Enabled);
     assert!(installation.error.is_none());
     assert!(installation.last_health_check_at.is_some());
+
+    let tools = available_tools_with_registry(&store, &registry).unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].provider.provider_id, provider_id);
+    assert_eq!(
+        enabled_provider_statuses(&store, &registry).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn uninstalled_provider_is_not_exposed_to_tool_catalog_or_attachment() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let registry = registry_with_cached_test_tool();
+    let provider_id = ToolProviderId::new("desktop-commander");
+
+    assert!(
+        available_tools_with_registry(&store, &registry)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        enabled_provider_statuses(&store, &registry)
+            .unwrap()
+            .is_empty()
+    );
+
+    let error = attach_tool_with_registry(
+        &mut store,
+        &conversation_id,
+        &provider_id,
+        &ProviderToolName::new("read_file"),
+        &registry,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("provider is not installed"));
 }
 
 #[test]
@@ -582,6 +621,14 @@ fn registry_with_cached_test_tool() -> ToolProviderRegistry {
         },
         vec![desktop_commander_read_file_definition()],
     )
+}
+
+fn enable_test_provider(store: &Store) {
+    let provider_id = ToolProviderId::new("desktop-commander");
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
 }
 
 fn desktop_commander_read_file_definition() -> ToolDefinition {

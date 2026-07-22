@@ -74,6 +74,7 @@ impl ToolProviderRegistry {
     /// returned definition before the model sees the function schema. Provider
     /// catalogs loaded here are cached for later attachment requests in the same
     /// process.
+    #[cfg(test)]
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
         let mut tools = Vec::new();
         for provider in &self.mcp_providers {
@@ -85,30 +86,32 @@ impl ToolProviderRegistry {
         Ok(tools)
     }
 
-    /// Lists every approved provider with either a loaded tool count or a
-    /// concrete availability error.
-    pub fn list_provider_statuses(&self) -> Vec<ToolProviderStatus> {
-        self.mcp_providers
-            .iter()
-            .map(|provider| match self.list_provider_tools(provider.id()) {
-                Ok(tools) => ToolProviderStatus {
-                    provider_id: provider.provider_id.clone(),
-                    display_name: provider.display_name.to_string(),
-                    manifest: provider.manifest().clone(),
-                    available: true,
-                    tool_count: tools.len(),
-                    error: None,
-                },
-                Err(error) => ToolProviderStatus {
-                    provider_id: provider.provider_id.clone(),
-                    display_name: provider.display_name.to_string(),
-                    manifest: provider.manifest().clone(),
-                    available: false,
-                    tool_count: 0,
-                    error: Some(error.to_string()),
-                },
-            })
-            .collect()
+    /// Returns one provider's live catalog status without probing other
+    /// providers.
+    ///
+    /// Lifecycle filtering belongs to the operation/store boundary. This
+    /// method only asks the executable provider whether its catalog is
+    /// reachable after the caller has decided that the provider is eligible.
+    pub fn provider_status(&self, provider_id: &ToolProviderId) -> Option<ToolProviderStatus> {
+        let provider = self.mcp_provider(provider_id)?;
+        match self.list_provider_tools(provider.id()) {
+            Ok(tools) => Some(ToolProviderStatus {
+                provider_id: provider.provider_id.clone(),
+                display_name: provider.display_name.to_string(),
+                manifest: provider.manifest().clone(),
+                available: true,
+                tool_count: tools.len(),
+                error: None,
+            }),
+            Err(error) => Some(ToolProviderStatus {
+                provider_id: provider.provider_id.clone(),
+                display_name: provider.display_name.to_string(),
+                manifest: provider.manifest().clone(),
+                available: false,
+                tool_count: 0,
+                error: Some(error.to_string()),
+            }),
+        }
     }
 
     /// Returns manifests for every provider known to this registry.

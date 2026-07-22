@@ -31,6 +31,31 @@ export function toolProviderStatusesFromApi(body) {
   }));
 }
 
+export function providerInstallationsFromApi(body) {
+  const providers = Array.isArray(body) ? body : body.providers || [];
+  return providers.map((provider) => ({
+    providerId: provider.manifest?.provider_id || "unknown",
+    displayName: provider.manifest?.display_name || provider.manifest?.provider_id || "Unknown extension",
+    description: provider.manifest?.description || "",
+    kind: provider.manifest?.kind || "mcp",
+    transport: provider.manifest?.transport || "stdio",
+    launch: provider.manifest?.launch || null,
+    platforms: provider.manifest?.platforms || [],
+    dependencies: provider.manifest?.dependencies || [],
+    secrets: provider.manifest?.secrets || [],
+    permissions: provider.manifest?.permissions || [],
+    installation: provider.installation
+      ? {
+          state: provider.installation.state,
+          error: provider.installation.error || null,
+          installedAt: provider.installation.installed_at,
+          updatedAt: provider.installation.updated_at,
+          lastHealthCheckAt: provider.installation.last_health_check_at,
+        }
+      : null,
+  }));
+}
+
 export function sessionFromApi(session) {
   if (!session) return null;
   return {

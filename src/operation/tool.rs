@@ -4,25 +4,36 @@
 use super::*;
 
 pub fn available_tools() -> Result<Vec<ToolDefinition>> {
+    let store = Store::open()?;
     let registry = ToolProviderRegistry::new();
-    available_tools_with_registry(&registry)
+    available_tools_with_registry(&store, &registry)
 }
 
 pub fn available_tools_with_registry(
+    store: &Store,
     registry: &ToolProviderRegistry,
 ) -> Result<Vec<ToolDefinition>> {
-    registry.list_available_tools()
+    let mut tools = Vec::new();
+    for manifest in registry.provider_manifests() {
+        if store.provider_is_enabled(&manifest.provider_id)? {
+            tools.extend(registry.list_provider_tools(&manifest.provider_id)?);
+        }
+    }
+    Ok(tools)
 }
 
 pub fn available_provider_tools(provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
+    let store = Store::open()?;
     let registry = ToolProviderRegistry::new();
-    available_provider_tools_with_registry(&registry, provider_id)
+    available_provider_tools_with_registry(&store, &registry, provider_id)
 }
 
 pub fn available_provider_tools_with_registry(
+    store: &Store,
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<Vec<ToolDefinition>> {
+    super::provider::require_enabled_provider(store, registry, provider_id)?;
     registry.list_provider_tools(provider_id)
 }
 
@@ -43,6 +54,7 @@ pub fn attach_tool_with_registry(
     tool_name: &ProviderToolName,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolSchemaName> {
+    super::provider::require_enabled_provider(store, registry, provider_id)?;
     let definition = registry.find_tool(provider_id, tool_name)?.ok_or_else(|| {
         error::not_found(format!("tool does not exist: {provider_id}/{tool_name}"))
     })?;
@@ -78,6 +90,7 @@ pub fn attach_tools_with_registry(
         HashMap::new();
 
     for request in requests {
+        super::provider::require_enabled_provider(store, registry, &request.provider_id)?;
         if provider_catalogs.contains_key(&request.provider_id) {
             continue;
         }

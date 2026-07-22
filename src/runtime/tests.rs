@@ -16,7 +16,7 @@ use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolExecutionResult, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool_provider::{ProviderInstallState, ToolProviderRegistry};
 
 const TEST_PROVIDER_ID: &str = "desktop-commander";
 const TEST_PROVIDER_PREFIX: &str = "desktop_commander";
@@ -1563,6 +1563,11 @@ fn insert_multi_tool_call_assistant(
 }
 
 fn attach_test_mcp_tool(store: &mut Store, conversation_id: &ConversationId) {
+    let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
     store
         .insert_attached_tool(conversation_id, &test_tool_definition().attached_tool())
         .unwrap();

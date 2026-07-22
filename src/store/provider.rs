@@ -10,6 +10,20 @@ use serde::{Deserialize, Serialize};
 use crate::tool_provider::ProviderInstallState;
 
 impl Store {
+    /// Returns whether a provider is installed, enabled, and has no recorded
+    /// health error.
+    ///
+    /// Provider manifests describe what Windie knows about. This persisted
+    /// lifecycle record decides whether that provider may be exposed to a
+    /// conversation or executed by a runtime session.
+    pub fn provider_is_enabled(&self, provider_id: &ToolProviderId) -> Result<bool> {
+        Ok(self
+            .load_installed_provider(provider_id)?
+            .is_some_and(|provider| {
+                provider.state == ProviderInstallState::Enabled && provider.error.is_none()
+            }))
+    }
+
     /// Loads one installed-provider lifecycle record.
     pub fn load_installed_provider(
         &self,

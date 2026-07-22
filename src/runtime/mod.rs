@@ -216,7 +216,7 @@ pub(crate) fn pending_approvals_at_head(
     if let PolicyDecision::Ask { reason } = policy.decide(
         &tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(input.tools, attached_tool.as_ref()),
+        attached_tool_can_execute(store, input.tools, attached_tool.as_ref()),
         approval_mode,
     ) {
         return Ok(vec![ToolApprovalRequest {
@@ -299,7 +299,7 @@ fn store_policy_denied_tool_results_at_head(
         let PolicyDecision::Deny { reason } = policy.decide(
             &tool_call,
             attached_tool.as_ref(),
-            attached_tool_can_execute(tools, attached_tool.as_ref()),
+            attached_tool_can_execute(store, tools, attached_tool.as_ref()),
             approval_mode,
         ) else {
             return Ok(());
@@ -351,7 +351,7 @@ async fn resolve_next_automatic_tool_call_at_head(
     let result = match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(tools, attached_tool.as_ref()),
+        attached_tool_can_execute(store, tools, attached_tool.as_ref()),
         approval_mode,
     ) {
         PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
@@ -466,7 +466,7 @@ pub(crate) fn prepare_pending_tool_execution(
     match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(registry, attached_tool.as_ref()),
+        attached_tool_can_execute(store, registry, attached_tool.as_ref()),
         approval_mode,
     ) {
         PolicyDecision::Deny { reason } => Ok(PendingToolExecution::Finished(
@@ -569,10 +569,16 @@ fn load_attached_tool_for_call(
 }
 
 fn attached_tool_can_execute(
+    store: &Store,
     registry: &ToolProviderRegistry,
     attached_tool: Option<&AttachedTool>,
 ) -> bool {
-    attached_tool.is_some_and(|attached_tool| registry.can_execute(attached_tool))
+    attached_tool.is_some_and(|attached_tool| {
+        store
+            .provider_is_enabled(&attached_tool.provider.provider_id)
+            .unwrap_or(false)
+            && registry.can_execute(attached_tool)
+    })
 }
 
 pub(crate) fn store_pending_tool_result_at_head(

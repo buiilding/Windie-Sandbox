@@ -182,6 +182,45 @@ export async function denySessionTool(sessionId, toolCallId) {
   );
 }
 
+export async function listProviderInstallations() {
+  const body = await apiRequest("/api/providers");
+  return Array.isArray(body) ? body : body.providers || [];
+}
+
+export async function setupProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/setup`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function enableProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/enable`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function disableProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function repairProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/repair`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function uninstallProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function setConversationModel(conversationId, model) {
   return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/model`, {
     method: "PATCH",

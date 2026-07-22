@@ -15,10 +15,17 @@ import {
   listModels,
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
+  listProviderInstallations,
+  setupProvider as setupProviderApi,
+  enableProvider as enableProviderApi,
+  disableProvider as disableProviderApi,
+  repairProvider as repairProviderApi,
+  uninstallProvider as uninstallProviderApi,
 } from "@/lib/windieApi";
 import {
   conversationFromInspection,
   conversationSummaryFromApi,
+  providerInstallationsFromApi,
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
 } from "@/lib/windieMappers";
@@ -117,6 +124,8 @@ export function WindieProvider({ children }) {
   const [availableToolSchemas, setAvailableToolSchemas] = useState([]);
   const [availableToolsLoading, setAvailableToolsLoading] = useState(false);
   const [toolProviderStatuses, setToolProviderStatuses] = useState([]);
+  const [providerInstallations, setProviderInstallations] = useState([]);
+  const [providerInstallationsLoading, setProviderInstallationsLoading] = useState(false);
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(null);
@@ -206,6 +215,17 @@ export function WindieProvider({ children }) {
       return toolCatalogFromApi(body);
     } finally {
       setAvailableToolsLoading(false);
+    }
+  }, []);
+
+  const refreshProviderInstallations = useCallback(async () => {
+    setProviderInstallationsLoading(true);
+    try {
+      const nextProviders = providerInstallationsFromApi(await listProviderInstallations());
+      setProviderInstallations(nextProviders);
+      return nextProviders;
+    } finally {
+      setProviderInstallationsLoading(false);
     }
   }, []);
 
@@ -311,6 +331,10 @@ export function WindieProvider({ children }) {
   useEffect(() => {
     refreshAvailableTools().catch((e) => setApiError(e.message));
   }, [refreshAvailableTools]);
+
+  useEffect(() => {
+    refreshProviderInstallations().catch((e) => setApiError(e.message));
+  }, [refreshProviderInstallations]);
 
   const activeConv = useMemo(() => conversations.find((c) => c.id === activeConvId) || null, [conversations, activeConvId]);
   const activeModelId = activeConv?.model || null;
@@ -500,6 +524,44 @@ export function WindieProvider({ children }) {
     [runMutation]
   );
 
+  const runProviderAction = useCallback(
+    async (action, providerId) => {
+      try {
+        const result = await action(providerId);
+        setApiError(null);
+        await refreshProviderInstallations();
+        await refreshAvailableTools();
+        return result;
+      } catch (error) {
+        setApiError(error.message);
+        toast.error(error.message);
+        throw error;
+      }
+    },
+    [refreshAvailableTools, refreshProviderInstallations]
+  );
+
+  const setupProvider = useCallback(
+    (providerId) => runProviderAction(setupProviderApi, providerId),
+    [runProviderAction]
+  );
+  const enableProvider = useCallback(
+    (providerId) => runProviderAction(enableProviderApi, providerId),
+    [runProviderAction]
+  );
+  const disableProvider = useCallback(
+    (providerId) => runProviderAction(disableProviderApi, providerId),
+    [runProviderAction]
+  );
+  const repairProvider = useCallback(
+    (providerId) => runProviderAction(repairProviderApi, providerId),
+    [runProviderAction]
+  );
+  const uninstallProvider = useCallback(
+    (providerId) => runProviderAction(uninstallProviderApi, providerId),
+    [runProviderAction]
+  );
+
   const inspectNode = useCallback(
     (nodeId) => {
       // Tree selection is for inspecting a node. Session selection remains the
@@ -591,6 +653,8 @@ export function WindieProvider({ children }) {
     availableToolSchemas,
     availableToolsLoading,
     toolProviderStatuses,
+    providerInstallations,
+    providerInstallationsLoading,
     apiError,
     gatewayRunning,
     approvals,
@@ -617,6 +681,12 @@ export function WindieProvider({ children }) {
     addToolSchemas,
     removeToolSchema,
     removeToolSchemas,
+    setupProvider,
+    enableProvider,
+    disableProvider,
+    repairProvider,
+    uninstallProvider,
+    refreshProviderInstallations,
     truncateAfter,
     removeMessage,
     editMessage,

@@ -14,6 +14,7 @@ use crate::conversation::{MessageMetadata, MessagePart, ToolCall};
 use crate::mcp::McpCommand;
 use crate::session::{SessionId, SessionStatus};
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
+use crate::tool_provider::ProviderInstallState;
 
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -685,6 +686,12 @@ async fn batch_attach_tools_route_attaches_provider_tools() {
     )
     .await;
     let conversation_id = created["conversation_id"].as_str().unwrap();
+    let provider_id = crate::tool::ToolProviderId::new("desktop-commander");
+    let store = Store::open_at(&db_path).unwrap();
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
 
     let attached = response_json(
         app.clone()
@@ -1448,6 +1455,11 @@ fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationI
     let mut store = Store::open_at(db_path).unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let registry = registry_with_cached_test_tool();
+    let provider_id = crate::tool::ToolProviderId::new("desktop-commander");
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
     operation::attach_tool_with_registry(
         &mut store,
         &conversation_id,

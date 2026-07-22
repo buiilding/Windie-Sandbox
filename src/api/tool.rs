@@ -33,11 +33,10 @@ impl ToolProviderStatusResponse {
 }
 
 pub(super) async fn list_tools(State(state): State<ApiState>) -> ApiResult<ToolCatalogResponse> {
+    let store = open_store(&state)?;
     Ok(Json(ToolCatalogResponse {
-        tools: operation::available_tools_with_registry(&state.tool_registry)?,
-        providers: state
-            .tool_registry
-            .list_provider_statuses()
+        tools: operation::available_tools_with_registry(&store, &state.tool_registry)?,
+        providers: operation::enabled_provider_statuses(&store, &state.tool_registry)?
             .into_iter()
             .map(ToolProviderStatusResponse::from_status)
             .collect(),
@@ -49,15 +48,15 @@ pub(super) async fn list_provider_tools(
     Path(provider_id): Path<String>,
 ) -> ApiResult<ToolCatalogResponse> {
     let provider_id = ToolProviderId::new(provider_id);
+    let store = open_store(&state)?;
 
     Ok(Json(ToolCatalogResponse {
         tools: operation::available_provider_tools_with_registry(
+            &store,
             &state.tool_registry,
             &provider_id,
         )?,
-        providers: state
-            .tool_registry
-            .list_provider_statuses()
+        providers: operation::enabled_provider_statuses(&store, &state.tool_registry)?
             .into_iter()
             .filter(|status| status.provider_id == provider_id)
             .map(ToolProviderStatusResponse::from_status)

@@ -11,7 +11,9 @@ use serde::Serialize;
 use crate::error;
 use crate::store::{InstalledProvider, Store};
 use crate::tool::ToolProviderId;
-use crate::tool_provider::{ProviderInstallState, ProviderManifest, ToolProviderRegistry};
+use crate::tool_provider::{
+    ProviderInstallState, ProviderManifest, ToolProviderRegistry, ToolProviderStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 /// One known provider plus its persisted local lifecycle record.
@@ -35,6 +37,45 @@ pub fn list_provider_installations(
             })
         })
         .collect()
+}
+
+/// Returns whether a known provider is eligible for conversation access.
+pub(super) fn require_enabled_provider(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+    provider_id: &ToolProviderId,
+) -> Result<()> {
+    ensure_manifest(registry, provider_id)?;
+
+    let Some(installation) = store.load_installed_provider(provider_id)? else {
+        return Err(error::invalid_request(format!(
+            "provider is not installed: {provider_id}"
+        )));
+    };
+
+    if installation.state != ProviderInstallState::Enabled || installation.error.is_some() {
+        return Err(error::invalid_request(format!(
+            "provider is not enabled and healthy: {provider_id}"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Lists only enabled providers and probes only those providers for tools.
+pub fn enabled_provider_statuses(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+) -> Result<Vec<ToolProviderStatus>> {
+    let mut statuses = Vec::new();
+    for manifest in registry.provider_manifests() {
+        if store.provider_is_enabled(&manifest.provider_id)? {
+            if let Some(status) = registry.provider_status(&manifest.provider_id) {
+                statuses.push(status);
+            }
+        }
+    }
+    Ok(statuses)
 }
 
 /// Records one known provider as installed.
