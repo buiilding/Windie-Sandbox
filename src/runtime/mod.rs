@@ -293,8 +293,7 @@ fn store_policy_denied_tool_results_at_head(
         let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
             return Ok(());
         };
-        let attached_tool =
-            load_attached_tool_for_call(store, conversation_id, &tool_call)?;
+        let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
         let approval_mode = store.tool_approval_mode(conversation_id)?;
 
         let PolicyDecision::Deny { reason } = policy.decide(
@@ -347,8 +346,7 @@ async fn resolve_next_automatic_tool_call_at_head(
         tool_call,
     };
     let policy = ToolPolicy;
-    let attached_tool =
-        load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
     let result = match policy.decide(
         &pending.tool_call,
@@ -462,8 +460,7 @@ pub(crate) fn prepare_pending_tool_execution(
     registry: &ToolProviderRegistry,
 ) -> Result<PendingToolExecution> {
     let policy = ToolPolicy;
-    let attached_tool =
-        load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
 
     match policy.decide(

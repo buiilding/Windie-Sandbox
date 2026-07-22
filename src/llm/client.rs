@@ -82,7 +82,9 @@ impl BifrostClient {
                         && error
                             .get("message")
                             .and_then(serde_json::Value::as_str)
-                            .is_some_and(|message| message.contains("count_tokens is not supported"))
+                            .is_some_and(|message| {
+                                message.contains("count_tokens is not supported")
+                            })
                 });
                 if unsupported {
                     return Ok(None);

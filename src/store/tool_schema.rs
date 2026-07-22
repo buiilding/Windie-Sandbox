@@ -256,10 +256,7 @@ impl Store {
         conversation_id: &ConversationId,
         name: &ToolSchemaName,
     ) -> Result<()> {
-        if self
-            .load_attached_tool(conversation_id, name)?
-            .is_none()
-        {
+        if self.load_attached_tool(conversation_id, name)?.is_none() {
             return Err(error::not_found(format!(
                 "tool schema does not exist: {name}"
             )));
@@ -272,9 +269,8 @@ fn read_attached_tool_row(row: &Row<'_>) -> rusqlite::Result<AttachedTool> {
     let name = row.get::<_, String>(0)?;
     let description = row.get::<_, String>(1)?;
     let parameters_json = row.get::<_, String>(2)?;
-    let parameters = serde_json::from_str(&parameters_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(e))
-    })?;
+    let parameters = serde_json::from_str(&parameters_json)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(e)))?;
     let provider_id = ToolProviderId::new(row.get::<_, String>(3)?);
     let provider_tool_name = ProviderToolName::new(row.get::<_, String>(4)?);
     let provider_kind_text = row.get::<_, String>(5)?;

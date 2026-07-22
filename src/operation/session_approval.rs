@@ -88,7 +88,8 @@ where
 {
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
-    let execution = prepare_pending_tool_execution(store, conversation_id, &pending, runtime.tools)?;
+    let execution =
+        prepare_pending_tool_execution(store, conversation_id, &pending, runtime.tools)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {

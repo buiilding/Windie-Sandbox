@@ -1,6 +1,7 @@
 //! Tool catalog and tree-wide tool mutation API handlers.
 
 use super::*;
+use crate::tool_provider::ProviderManifest;
 
 #[derive(Debug, Serialize)]
 pub(super) struct ToolCatalogResponse {
@@ -12,6 +13,7 @@ pub(super) struct ToolCatalogResponse {
 pub(super) struct ToolProviderStatusResponse {
     pub(super) provider_id: String,
     pub(super) display_name: String,
+    pub(super) manifest: ProviderManifest,
     pub(super) available: bool,
     pub(super) tool_count: usize,
     pub(super) error: Option<String>,
@@ -22,6 +24,7 @@ impl ToolProviderStatusResponse {
         Self {
             provider_id: status.provider_id.as_str().to_string(),
             display_name: status.display_name,
+            manifest: status.manifest,
             available: status.available,
             tool_count: status.tool_count,
             error: status.error,
@@ -228,12 +231,7 @@ pub(super) async fn update_tool_schema(
     let tool_schema = request.into_tool_schema();
     let mut store = open_store(&state)?;
 
-    operation::update_tool_schema(
-        &mut store,
-        &conversation_id,
-        &current_name,
-        &tool_schema,
-    )?;
+    operation::update_tool_schema(&mut store, &conversation_id, &current_name, &tool_schema)?;
 
     Ok(Json(ToolSchemaResponse {
         name: tool_schema.name.as_str().to_string(),

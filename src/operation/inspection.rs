@@ -113,7 +113,9 @@ struct InspectionMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum InspectionMessagePart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Image {
         asset_id: String,
         mime_type: String,

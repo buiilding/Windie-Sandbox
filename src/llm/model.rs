@@ -175,9 +175,7 @@ pub async fn model_parameters(base_url: BaseUrl, model: &ModelName) -> Result<Mo
             Ok(raw) => raw,
             Err(error) => {
                 has_unexpected_error = true;
-                last_error = Some(anyhow!(
-                    "failed to parse model parameter response: {error}"
-                ));
+                last_error = Some(anyhow!("failed to parse model parameter response: {error}"));
                 continue;
             }
         };

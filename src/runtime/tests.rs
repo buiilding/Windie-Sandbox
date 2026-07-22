@@ -554,8 +554,7 @@ async fn approve_latest_head_tool_call_with_registry(
         head_message_id.as_ref(),
         tool_call_id,
     )?;
-    let execution =
-        prepare_pending_tool_execution(store, conversation_id, &pending, registry)?;
+    let execution = prepare_pending_tool_execution(store, conversation_id, &pending, registry)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
@@ -779,7 +778,13 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
         .insert_message(&conversation_id, Some(&root_id), Role::User, "branch", None)
         .unwrap();
     let sibling_id = store
-        .insert_message(&conversation_id, Some(&root_id), Role::User, "sibling", None)
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::User,
+            "sibling",
+            None,
+        )
         .unwrap();
 
     store

@@ -80,12 +80,12 @@ impl SessionResponse {
     }
 }
 
-pub(super) fn response_with_queue(
-    store: &Store,
-    session: Session,
-) -> Result<SessionResponse> {
+pub(super) fn response_with_queue(store: &Store, session: Session) -> Result<SessionResponse> {
     let queue_depth = store.session_input_count(&session.id)?;
-    Ok(SessionResponse::from_session_with_queue(session, queue_depth))
+    Ok(SessionResponse::from_session_with_queue(
+        session,
+        queue_depth,
+    ))
 }
 
 #[derive(Debug, Serialize)]
