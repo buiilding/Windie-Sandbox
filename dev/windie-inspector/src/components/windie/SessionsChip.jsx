@@ -95,7 +95,7 @@ export default function SessionsChip() {
         type="button"
         data-testid="topbar-sessions-chip"
         onClick={() => setOpen((current) => !current)}
-        className={`flex items-center gap-1.5 h-7 px-2 border border-border hover:bg-surface-hover transition-colors min-w-[160px] ${open ? "bg-surface-hover" : ""}`}
+        className={`flex items-center gap-1.5 h-7 px-2 border border-border bg-background hover:bg-surface-hover transition-colors min-w-[160px] ${open ? "bg-surface-hover" : ""}`}
         title={selected ? `session ${selected.id}` : viewHeadId ? "new session at selected path" : "choose a session"}
       >
         {selected && <span className={`size-1.5 rounded-full ${statusDot(selected.status)}`} />}

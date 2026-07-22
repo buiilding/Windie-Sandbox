@@ -38,7 +38,7 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
         onClick={onTreeToggle}
         title={treeCollapsed ? "show conversation tree" : "hide conversation tree"}
         aria-label={treeCollapsed ? "show conversation tree" : "hide conversation tree"}
-        className="pointer-events-auto flex items-center justify-center size-7 border border-border hover:bg-surface-hover transition-colors"
+        className="pointer-events-auto flex items-center justify-center size-7 border border-border bg-background hover:bg-surface-hover transition-colors"
       >
         <GitBranch className="size-3.5" strokeWidth={1.75} />
       </button>
@@ -57,7 +57,7 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
           type="button"
           data-testid="topbar-open-system"
           onClick={() => onOverlayChange(overlay === "system" ? null : "system")}
-          className={`pointer-events-auto h-6 px-1.5 border border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover transition-colors ${overlay === "system" ? "bg-surface-hover text-foreground" : ""}`}
+          className={`pointer-events-auto h-6 px-1.5 border border-border bg-background font-mono text-[10px] uppercase tracking-widest text-foreground hover:bg-surface-hover transition-colors ${overlay === "system" ? "bg-surface-hover" : ""}`}
         >
           system
         </button>
@@ -66,7 +66,7 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
           type="button"
           data-testid="topbar-open-tools"
           onClick={() => onOverlayChange(overlay === "tools" ? null : "tools")}
-          className={`pointer-events-auto h-6 px-1.5 border border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover transition-colors ${overlay === "tools" ? "bg-surface-hover text-foreground" : ""}`}
+          className={`pointer-events-auto h-6 px-1.5 border border-border bg-background font-mono text-[10px] uppercase tracking-widest text-foreground hover:bg-surface-hover transition-colors ${overlay === "tools" ? "bg-surface-hover" : ""}`}
         >
           tools{approvals.length > 0 ? ` · ${approvals.length}` : ""}
         </button>

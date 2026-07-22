@@ -108,6 +108,12 @@ export default function InspectorPanel({ mode, onClose }) {
       : [...current, id];
   });
 
+  const saveSystemPrompt = async () => {
+    await setSystemPrompt(activeConv.id, sysDraft);
+    toast.message("system prompt updated");
+    onClose();
+  };
+
   useEffect(() => {
     const unseen = grouped.map((g) => g.providerId).filter((id) => !initRef.current.has(id));
     if (!unseen.length) return;
@@ -146,7 +152,7 @@ export default function InspectorPanel({ mode, onClose }) {
               />
               <div className="flex items-center justify-between">
                 <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">conversation-wide</span>
-                <button data-testid="inspector-sysprompt-commit" onClick={() => { setSystemPrompt(activeConv.id, sysDraft); toast.message("system prompt updated"); }} className="text-[10px] uppercase px-3 py-1.5 border border-foreground bg-foreground text-background font-mono">save</button>
+                <button data-testid="inspector-sysprompt-commit" onClick={saveSystemPrompt} className="text-[10px] uppercase px-3 py-1.5 border border-foreground bg-foreground text-background font-mono">save</button>
               </div>
             </div>
           ) : (
