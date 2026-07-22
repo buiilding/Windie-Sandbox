@@ -39,10 +39,17 @@ pub(super) struct SessionResponse {
     pub(super) error: Option<String>,
     pub(super) created_at: i64,
     pub(super) updated_at: i64,
+    pub(super) queued: bool,
+    pub(super) queue_depth: usize,
+    pub(super) queue_id: Option<String>,
 }
 
 impl SessionResponse {
     pub(super) fn from_session(session: Session) -> Self {
+        Self::from_session_with_queue(session, 0)
+    }
+
+    pub(super) fn from_session_with_queue(session: Session, queue_depth: usize) -> Self {
         Self {
             id: session.id.as_str().to_string(),
             conversation_id: session.conversation_id.as_str().to_string(),
@@ -58,8 +65,27 @@ impl SessionResponse {
             error: session.error,
             created_at: session.created_at,
             updated_at: session.updated_at,
+            queued: false,
+            queue_depth,
+            queue_id: None,
         }
     }
+
+    fn from_query(result: crate::session::SessionQueryResult) -> Self {
+        let mut response = Self::from_session(result.session);
+        response.queued = result.queued;
+        response.queue_depth = result.queue_depth;
+        response.queue_id = result.input_id.map(|id| id.as_str().to_string());
+        response
+    }
+}
+
+pub(super) fn response_with_queue(
+    store: &Store,
+    session: Session,
+) -> Result<SessionResponse> {
+    let queue_depth = store.session_input_count(&session.id)?;
+    Ok(SessionResponse::from_session_with_queue(session, queue_depth))
 }
 
 #[derive(Debug, Serialize)]
@@ -104,8 +130,8 @@ pub(super) async fn list_conversation_sessions(
     let sessions = store
         .list_conversation_sessions(&ConversationId::new(conversation_id))?
         .into_iter()
-        .map(SessionResponse::from_session)
-        .collect();
+        .map(|session| response_with_queue(&store, session))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(Json(SessionListResponse { sessions }))
 }
@@ -117,11 +143,11 @@ pub(super) async fn query_session(
     Json(request): Json<SessionQueryRequest>,
 ) -> ApiResult<SessionResponse> {
     let parts = normalize_insert_parts(request.text, request.parts)?;
-    let session = state
+    let result = state
         .session_manager
         .query_session(&SessionId::new(session_id), &parts)?;
 
-    Ok(Json(SessionResponse::from_session(session)))
+    Ok(Json(SessionResponse::from_query(result)))
 }
 
 /// Continues one selected session from its current head.
@@ -133,7 +159,8 @@ pub(super) async fn continue_session(
         .session_manager
         .continue_session(&SessionId::new(session_id))?;
 
-    Ok(Json(SessionResponse::from_session(session)))
+    let store = open_store(&state)?;
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 /// Lists persisted sessions.
@@ -142,8 +169,8 @@ pub(super) async fn list_sessions(State(state): State<ApiState>) -> ApiResult<Se
     let sessions = store
         .list_sessions()?
         .into_iter()
-        .map(SessionResponse::from_session)
-        .collect();
+        .map(|session| response_with_queue(&store, session))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(Json(SessionListResponse { sessions }))
 }
@@ -155,8 +182,7 @@ pub(super) async fn get_run(
 ) -> ApiResult<SessionResponse> {
     let store = open_store(&state)?;
     let session = store.load_session(&SessionId::new(session_id))?;
-
-    Ok(Json(SessionResponse::from_session(session)))
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 /// Removes one terminal session and its exclusive conversation-tree suffix.
@@ -182,7 +208,7 @@ pub(super) async fn stop_run(
     let store = open_store(&state)?;
     let session = store.load_session(&session_id)?;
 
-    Ok(Json(SessionResponse::from_session(session)))
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 #[derive(Debug, Deserialize)]

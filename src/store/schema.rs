@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 16;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 17;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -102,11 +102,24 @@ impl Store {
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS session_inputs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    parts_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_sessions_conversation
                 ON sessions(conversation_id);
 
                 CREATE INDEX IF NOT EXISTS idx_session_events_run_id_id
                 ON session_events(session_id, id);
+
+                CREATE INDEX IF NOT EXISTS idx_session_inputs_session_created
+                ON session_inputs(session_id, created_at);
 
                 CREATE TABLE IF NOT EXISTS compactions (
                     id TEXT PRIMARY KEY,

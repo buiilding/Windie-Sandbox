@@ -112,3 +112,10 @@ Conversations are durable message trees:
 - update: replace node content.
 - session/query: run from a selected head and append assistant/tool nodes as results.
 - show/tree/inspect: inspect the tree, path, and model-facing context.
+
+Session queries are serialized per session. A query received while the agent
+loop is running is stored as a durable FIFO session input rather than inserted
+into the conversation tree immediately. When the active run completes, Windie
+materializes the oldest queued input under the latest session head and starts
+the next run. This keeps queued inputs from becoming stale tree branches and
+lets the inspector display queue state without owning execution.

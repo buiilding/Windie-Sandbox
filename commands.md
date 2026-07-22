@@ -98,6 +98,8 @@ POST   /api/conversations/{conversation_id}/input-tokens
 POST   /api/conversations/{conversation_id}/sessions
 POST   /api/conversations/{conversation_id}/wakeups/query
 POST   /api/conversations/{conversation_id}/wakeups/continue
+POST   /api/sessions/{session_id}/query
+POST   /api/sessions/{session_id}/continue
 GET    /api/sessions
 GET    /api/sessions/{session_id}
 GET    /api/sessions/{session_id}/approvals
@@ -147,6 +149,13 @@ Run events use server-sent events. `approve` executes and stores the pending
 tool result for that run, then continues the run when no later manual approval
 is waiting. `deny` stores a rejected tool result and follows the same
 continuation rule. Conversations store state; runs own execution and approvals.
+If `POST /api/sessions/{session_id}/query` arrives while the session is already
+running, Windie accepts it into a durable FIFO input queue instead of returning
+an error. The response includes `queued: true`, `queue_id`, and `queue_depth`.
+The queued input is inserted into the conversation tree only when the current
+run completes, under the run's latest message head. Inputs remain queued while
+tool approval is pending and are resumed by `continue` after an interrupted or
+cancelled run.
 The `/runs` routes are compatibility aliases for the primary `/sessions`
 routes.
 

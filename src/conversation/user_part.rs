@@ -4,6 +4,8 @@
 //! Durable image storage is owned by `store.rs`; this module only defines the
 //! typed runtime shapes for saved and unsaved parts.
 
+use serde::{Deserialize, Serialize};
+
 use crate::conversation::ImageAssetId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +15,7 @@ pub enum MessagePart {
     Image(ImagePart),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// One typed message part before it has been copied into durable storage.
 ///
 /// Unsaved parts carry raw bytes only. `store.rs` is responsible for assigning
@@ -31,7 +33,7 @@ pub struct ImagePart {
     pub bytes: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Image bytes that have not yet been copied into durable image asset storage.
 pub struct UnsavedImagePart {
     pub mime_type: String,

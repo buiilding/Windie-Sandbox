@@ -42,6 +42,9 @@ export function sessionFromApi(session) {
     model: session.model,
     reasoning: session.reasoning || null,
     error: session.error || null,
+    queued: Boolean(session.queued),
+    queueDepth: session.queue_depth || 0,
+    queueId: session.queue_id || null,
     createdAt: session.created_at,
     updatedAt: session.updated_at,
   };

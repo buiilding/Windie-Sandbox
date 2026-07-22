@@ -140,6 +140,11 @@ export default function SessionsChip({ dropUp = false }) {
                         {statusLabel(session.status)}
                       </span>
                     )}
+                    {session.queueDepth > 0 && (
+                      <span className="text-amber-600 uppercase text-[10px] shrink-0">
+                        queue {session.queueDepth}
+                      </span>
+                    )}
                     <span className="truncate flex-1 text-muted-foreground text-right text-[10px]">
                       {sessionNodeCount(session, activeConv.nodes)} nodes
                     </span>

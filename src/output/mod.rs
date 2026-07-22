@@ -604,6 +604,14 @@ impl TerminalOutput {
     /// Prints one persisted session event.
     pub fn session_event(&self, event: &SessionEventRecord) {
         match &event.event {
+            SessionEvent::InputQueued {
+                input_id,
+                queue_depth,
+            } => println!("input queued {input_id} (depth {queue_depth})"),
+            SessionEvent::InputStarted {
+                input_id,
+                message_id,
+            } => println!("input started {input_id} as message {message_id}"),
             SessionEvent::AssistantDelta { text } => print!("{text}"),
             SessionEvent::ReasoningDelta { text } => print!("{text}"),
             SessionEvent::ToolCallDelta {

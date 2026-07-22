@@ -1295,17 +1295,12 @@ impl Store {
             children_by_parent.entry(parent).or_default().push(id);
         }
 
-        let mut roots = children_by_parent
-            .remove(&None)
-            .unwrap_or_default();
+        let mut roots = children_by_parent.remove(&None).unwrap_or_default();
         roots.sort_by_key(|id| id.as_str().to_string());
 
         let mut paths: Vec<Vec<MessageId>> = Vec::new();
-        let mut stack: Vec<(MessageId, Vec<MessageId>)> = roots
-            .into_iter()
-            .rev()
-            .map(|id| (id, Vec::new()))
-            .collect();
+        let mut stack: Vec<(MessageId, Vec<MessageId>)> =
+            roots.into_iter().rev().map(|id| (id, Vec::new())).collect();
 
         while let Some((current_id, mut prefix)) = stack.pop() {
             prefix.push(current_id.clone());
@@ -1406,7 +1401,7 @@ fn read_message_part_row(row: &Row<'_>) -> rusqlite::Result<(String, MessagePart
 }
 
 /// Inserts ordered message parts for one new message row.
-fn insert_unsaved_message_parts_in_transaction(
+pub(super) fn insert_unsaved_message_parts_in_transaction(
     transaction: &Transaction<'_>,
     message_id: &MessageId,
     parts: &[UnsavedMessagePart],

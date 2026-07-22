@@ -88,8 +88,7 @@ pub(super) async fn approve_session_tool(
         .approve_tool(&session_id, ToolCallId::new(tool_call_id))?;
     let store = open_store(&state)?;
     let session = store.load_session(&session_id)?;
-
-    Ok(Json(SessionResponse::from_session(session)))
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 /// Stores a rejected result for one pending tool call and resumes its session.
@@ -103,6 +102,5 @@ pub(super) async fn deny_session_tool(
         .deny_tool(&session_id, ToolCallId::new(tool_call_id))?;
     let store = open_store(&state)?;
     let session = store.load_session(&session_id)?;
-
-    Ok(Json(SessionResponse::from_session(session)))
+    Ok(Json(response_with_queue(&store, session)?))
 }

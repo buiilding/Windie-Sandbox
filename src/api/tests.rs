@@ -597,13 +597,7 @@ async fn system_prompt_and_tools_are_tree_wide() {
         .insert_message(&conversation_id, None, Role::User, "root", None)
         .unwrap();
     let branch_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&root_id),
-            Role::User,
-            "branch",
-            None,
-        )
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "branch", None)
         .unwrap();
     let sibling_id = store
         .insert_message(
@@ -651,10 +645,7 @@ async fn system_prompt_and_tools_are_tree_wide() {
     let store = Store::open_at(&db_path).unwrap();
 
     assert_eq!(
-        store
-            .system_prompt(&conversation_id)
-            .unwrap()
-            .as_deref(),
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
         Some("global prompt")
     );
     assert_eq!(
@@ -664,9 +655,20 @@ async fn system_prompt_and_tools_are_tree_wide() {
         "global_tool"
     );
     // Tree-wide: both branches see same
-    assert!(store.load_path_to_message(&conversation_id, &branch_id).is_ok());
-    assert!(store.load_path_to_message(&conversation_id, &sibling_id).is_ok());
-    assert_eq!(store.system_prompt(&conversation_id).unwrap().as_deref(), Some("global prompt"));
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &branch_id)
+            .is_ok()
+    );
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &sibling_id)
+            .is_ok()
+    );
+    assert_eq!(
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
+        Some("global prompt")
+    );
     let _ = fs::remove_file(db_path);
 }
 
@@ -879,7 +881,10 @@ async fn create_session_records_gateway_error() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(session.status, SessionStatus::Failed);
-    assert_ne!(session.current_head_message_id.as_ref(), Some(&head_message_id));
+    assert_ne!(
+        session.current_head_message_id.as_ref(),
+        Some(&head_message_id)
+    );
     assert_eq!(
         session.error.as_deref(),
         Some("Bifrost is not running. Start it with: windie gateway start")
@@ -996,6 +1001,71 @@ async fn session_events_replay_gateway_errors_as_sse_events() {
     assert!(content_type.starts_with("text/event-stream"));
     assert!(body.contains("event: failed"));
     assert!(body.contains("Bifrost is not running. Start it with: windie gateway start"));
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn query_while_running_is_accepted_and_drained_fifo() {
+    let db_path = temp_database_path();
+    let mock = spawn_mock_bifrost(Duration::from_millis(150)).await;
+    let app = test_app_with_urls(db_path.clone(), &mock.gateway_url, &mock.base_url);
+    let store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    drop(store);
+
+    let session = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/sessions"),
+                Some(json!({"model":"openai/test"})),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let session_id = SessionId::new(session["id"].as_str().unwrap());
+
+    let first = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"first"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"second"})),
+        ))
+        .await
+        .unwrap();
+    let second_body = response_json_body(second).await;
+    assert_eq!(second_body["queued"], true);
+    assert_eq!(second_body["queue_depth"], 1);
+    assert!(second_body["queue_id"].as_str().is_some());
+
+    let finished = wait_for_session_status(&db_path, &session_id, SessionStatus::Completed).await;
+    assert_eq!(finished.status, SessionStatus::Completed);
+    let messages = Store::open_at(&db_path)
+        .unwrap()
+        .load_messages(&conversation_id)
+        .unwrap();
+    assert!(messages.iter().any(|message| message.content == "first"));
+    assert!(messages.iter().any(|message| message.content == "second"));
+    assert_eq!(
+        Store::open_at(&db_path)
+            .unwrap()
+            .session_input_count(&session_id)
+            .unwrap(),
+        0
+    );
     let _ = fs::remove_file(db_path);
 }
 

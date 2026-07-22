@@ -18,7 +18,7 @@ mod tool;
 
 pub use conversation::*;
 pub use gateway::*;
-pub use input::MessageInputPart;
+pub use input::{MessageInputPart, PreparedMessageInput, prepare_message_input};
 pub use inspection::*;
 pub use message::*;
 pub use session::*;

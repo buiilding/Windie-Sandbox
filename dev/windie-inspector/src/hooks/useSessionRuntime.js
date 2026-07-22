@@ -271,6 +271,20 @@ export function useSessionRuntime({
   const handleEvent = useCallback(
     async (session, data) => {
       if (!data?.type) return;
+      if (data.type === "input_queued") {
+        rememberSession({
+          ...session,
+          queueDepth: data.queue_depth ?? session.queueDepth ?? 0,
+        });
+        return;
+      }
+      if (data.type === "input_started") {
+        const head = data.message_id || null;
+        if (head) await commitMessage(session, head);
+        const latest = await getSession(session.id).catch(() => null);
+        if (latest) rememberSession(sessionFromApi(latest));
+        return;
+      }
       if (["assistant_delta", "reasoning_delta", "tool_call_delta"].includes(data.type)) {
         setPendingAssistantBySessionId((current) => reducePending(current, session, data));
         return;
@@ -461,18 +475,25 @@ export function useSessionRuntime({
           setSelectedSessionId(session.id);
           selectedSessionRef.current = session;
         }
-        if (isLiveSession(session)) {
-          toast.message("session busy", { description: "wait for this session to finish" });
-          return;
-        }
-
         const parentHead = session.currentHeadMessageId || session.startHeadMessageId || null;
         const updated = sessionFromApi(await querySessionApi(session.id, parts));
         rememberSession(updated);
         setSelectedSessionId(updated.id);
         selectedSessionRef.current = updated;
-        setSelectedNodeId(updated.currentHeadMessageId);
-        addOptimisticUserMessage(setConversations, conversationId, updated.currentHeadMessageId, parentHead, parts);
+        if (!updated.queued) {
+          setSelectedNodeId(updated.currentHeadMessageId);
+          addOptimisticUserMessage(
+            setConversations,
+            conversationId,
+            updated.currentHeadMessageId,
+            parentHead,
+            parts
+          );
+        } else {
+          toast.message("message queued", {
+            description: `${updated.queueDepth} message${updated.queueDepth === 1 ? "" : "s"} waiting`,
+          });
+        }
         subscribeToSession(updated);
         setViewHeadId(null);
         setApiError(null);

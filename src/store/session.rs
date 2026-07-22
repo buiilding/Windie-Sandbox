@@ -1,9 +1,165 @@
 //! Runtime session and replayable session-event persistence.
 
 use super::compaction::delete_compactions_for_conversation;
+use super::message::insert_unsaved_message_parts_in_transaction;
 use super::*;
 
+use crate::session::SessionInputId;
+
+#[derive(Debug, Clone)]
+/// One queued user input ready to be materialized into the conversation tree.
+pub struct QueuedSessionInput {
+    pub id: SessionInputId,
+    pub content: String,
+    pub parts: Vec<UnsavedMessagePart>,
+}
+
 impl Store {
+    /// Persists one prepared user input for FIFO execution by a session.
+    pub fn enqueue_session_input(
+        &mut self,
+        session_id: &SessionId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<SessionInputId> {
+        self.ensure_session_exists(session_id)?;
+        let input_id = SessionInputId::fresh();
+        let parts_json = serde_json::to_string(parts).context("failed to encode queued input")?;
+        let now = now_millis()?;
+
+        self.connection
+            .execute(
+                "
+                INSERT INTO session_inputs (id, session_id, content, parts_json, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ",
+                params![
+                    input_id.as_str(),
+                    session_id.as_str(),
+                    content,
+                    parts_json,
+                    now
+                ],
+            )
+            .context("failed to enqueue session input")?;
+
+        Ok(input_id)
+    }
+
+    /// Counts pending inputs for one session.
+    pub fn session_input_count(&self, session_id: &SessionId) -> Result<usize> {
+        self.ensure_session_exists(session_id)?;
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM session_inputs WHERE session_id = ?1",
+                params![session_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed to count queued session inputs")
+            .map(|count| count as usize)
+    }
+
+    /// Materializes the oldest queued input under the latest session head.
+    ///
+    /// Message creation, session-head movement, and queue removal share one
+    /// SQLite transaction so a claimed input cannot be lost between those
+    /// state changes.
+    pub fn materialize_next_session_input(
+        &mut self,
+        session_id: &SessionId,
+    ) -> Result<Option<QueuedSessionInput>> {
+        let session = self.load_session(session_id)?;
+        let transaction = self
+            .connection
+            .transaction()
+            .context("failed to start queued input transaction")?;
+        let queued = transaction
+            .query_row(
+                "
+                SELECT id, content, parts_json
+                FROM session_inputs
+                WHERE session_id = ?1
+                ORDER BY created_at, rowid
+                LIMIT 1
+                ",
+                params![session_id.as_str()],
+                |row| {
+                    let parts_json: String = row.get(2)?;
+                    let parts = serde_json::from_str(&parts_json).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
+                    })?;
+                    Ok(QueuedSessionInput {
+                        id: SessionInputId::new(row.get::<_, String>(0)?),
+                        content: row.get(1)?,
+                        parts,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to load next queued session input")?;
+
+        let Some(queued) = queued else {
+            transaction
+                .commit()
+                .context("failed to commit empty queued input transaction")?;
+            return Ok(None);
+        };
+
+        let message_id = MessageId::new(Uuid::new_v4().to_string());
+        let now = now_millis()?;
+        transaction
+            .execute(
+                "
+                INSERT INTO messages (
+                    id, conversation_id, parent_message_id, role, content, metadata, created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)
+                ",
+                params![
+                    message_id.as_str(),
+                    session.conversation_id.as_str(),
+                    session
+                        .current_head_message_id
+                        .as_ref()
+                        .map(MessageId::as_str),
+                    Role::User.as_str(),
+                    queued.content,
+                    now
+                ],
+            )
+            .context("failed to materialize queued session message")?;
+        insert_unsaved_message_parts_in_transaction(&transaction, &message_id, &queued.parts, now)
+            .context("failed to materialize queued session message parts")?;
+        transaction
+            .execute(
+                "DELETE FROM session_inputs WHERE id = ?1",
+                params![queued.id.as_str()],
+            )
+            .context("failed to remove materialized session input")?;
+        transaction
+            .execute(
+                "
+                UPDATE sessions
+                SET current_head_message_id = ?1, status = ?2, error = NULL, updated_at = ?3
+                WHERE id = ?4
+                ",
+                params![
+                    message_id.as_str(),
+                    SessionStatus::Running.as_storage(),
+                    now,
+                    session_id.as_str()
+                ],
+            )
+            .context("failed to advance session to queued message")?;
+        touch_conversation_in_transaction(&transaction, &session.conversation_id, now)
+            .context("failed to update conversation after queued message")?;
+        transaction
+            .commit()
+            .context("failed to commit queued session input")?;
+
+        Ok(Some(queued))
+    }
+
     /// Creates one selectable session branch from an explicit conversation head.
     pub fn create_session(
         &mut self,

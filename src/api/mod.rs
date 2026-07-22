@@ -105,6 +105,7 @@ pub async fn serve(
         base_url.to_string(),
         tool_registry.clone(),
     ));
+    session_manager.recover_interrupted_sessions()?;
     let state = ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),

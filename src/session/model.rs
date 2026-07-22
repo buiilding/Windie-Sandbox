@@ -66,3 +66,12 @@ pub struct Session {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+#[derive(Debug, Clone)]
+/// Result of accepting one user query into a session.
+pub struct SessionQueryResult {
+    pub session: Session,
+    pub queued: bool,
+    pub input_id: Option<super::SessionInputId>,
+    pub queue_depth: usize,
+}

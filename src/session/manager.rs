@@ -14,13 +14,15 @@ use anyhow::Result;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::conversation::{ConversationId, MessageId, Role, ToolCallId};
+use crate::conversation::{ConversationId, MessageId, ToolCallId};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName, ReasoningRequest};
 use crate::operation::{self, MessageInputPart, RuntimeDependencies};
 use crate::output::RuntimeOutput;
 use crate::runtime::RuntimeEventSink;
-use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId, SessionStatus};
+use crate::session::{
+    Session, SessionEvent, SessionEventRecord, SessionId, SessionQueryResult, SessionStatus,
+};
 use crate::store::Store;
 use crate::tool_provider::ToolProviderRegistry;
 use crate::wakeup::{StopWakeup, ToolDecisionWakeup, Wakeup};
@@ -57,6 +59,8 @@ pub struct SessionManager {
     /// Live running tasks, keyed by session. A task is removed when it finishes,
     /// including when the session pauses for approval.
     active: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    /// Per-session gates that serialize input acceptance and run handoff.
+    gates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Durable broadcast channel per session, keyed by session. This outlives
     /// any one task so a single subscription survives pause/resume across
     /// approval waits. Removed only on terminal completion.
@@ -88,12 +92,15 @@ impl SessionManager {
             base_url,
             tools,
             active: Arc::new(Mutex::new(HashMap::new())),
+            gates: Arc::new(Mutex::new(HashMap::new())),
             channels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Deletes one terminal session after confirming no live task still owns it.
     pub async fn remove_session(&self, session_id: &SessionId) -> Result<()> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
         let session = store.load_session(session_id)?;
         drop(store);
@@ -185,17 +192,14 @@ impl SessionManager {
         &self,
         session_id: &SessionId,
         parts: &[MessageInputPart],
-    ) -> Result<Session> {
-        if self
+    ) -> Result<SessionQueryResult> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
+        let active = self
             .active
             .lock()
             .expect("run manager lock poisoned")
-            .contains_key(session_id.as_str())
-        {
-            return Err(crate::error::invalid_request(
-                "session is already running",
-            ));
-        }
+            .contains_key(session_id.as_str());
 
         let mut store = self.open_store()?;
         let session = store.load_session(session_id)?;
@@ -205,12 +209,33 @@ impl SessionManager {
             ));
         }
 
-        let user_message_id = operation::insert_message(
+        let prepared = operation::prepare_message_input(parts)?;
+        if active {
+            let input_id =
+                store.enqueue_session_input(session_id, &prepared.content, &prepared.parts)?;
+            let queue_depth = store.session_input_count(session_id)?;
+            let record = store.append_session_event(
+                session_id,
+                SessionEvent::InputQueued {
+                    input_id: input_id.as_str().to_string(),
+                    queue_depth,
+                },
+            )?;
+            self.channel_for_session(session_id).send(record).ok();
+            let session = store.load_session(session_id)?;
+            return Ok(SessionQueryResult {
+                session,
+                queued: true,
+                input_id: Some(input_id),
+                queue_depth,
+            });
+        }
+
+        let user_message_id = operation::insert_prepared_user_message(
             &mut store,
             &session.conversation_id,
             session.current_head_message_id.as_ref(),
-            Role::User,
-            parts,
+            &prepared,
         )?;
         store.update_session_head(session_id, Some(&user_message_id))?;
         store.update_session_status(session_id, SessionStatus::Running, None)?;
@@ -232,20 +257,25 @@ impl SessionManager {
             SessionCommand::Continue,
         );
 
-        Ok(updated)
+        Ok(SessionQueryResult {
+            session: updated,
+            queued: false,
+            input_id: None,
+            queue_depth: 0,
+        })
     }
 
     /// Starts one selected session from its current head without adding input.
     pub fn continue_session(&self, session_id: &SessionId) -> Result<Session> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
         if self
             .active
             .lock()
             .expect("run manager lock poisoned")
             .contains_key(session_id.as_str())
         {
-            return Err(crate::error::invalid_request(
-                "session is already running",
-            ));
+            return Err(crate::error::invalid_request("session is already running"));
         }
 
         let mut store = self.open_store()?;
@@ -254,6 +284,35 @@ impl SessionManager {
             return Err(crate::error::invalid_request(
                 "session is waiting for tool approval",
             ));
+        }
+
+        if store.session_input_count(session_id)? > 0 {
+            let input = store.materialize_next_session_input(session_id)?;
+            if let Some(input) = input {
+                let updated = store.load_session(session_id)?;
+                let record = store.append_session_event(
+                    session_id,
+                    SessionEvent::InputStarted {
+                        input_id: input.id.as_str().to_string(),
+                        message_id: updated
+                            .current_head_message_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                    },
+                )?;
+                self.channel_for_session(session_id).send(record).ok();
+                drop(store);
+                self.spawn(
+                    updated.id.clone(),
+                    updated.conversation_id.clone(),
+                    updated.current_head_message_id.clone(),
+                    Some(ModelName::new(updated.model.clone())),
+                    updated.reasoning.clone(),
+                    SessionCommand::Continue,
+                );
+                return Ok(updated);
+            }
         }
         store.update_session_status(session_id, SessionStatus::Running, None)?;
         let updated = store.load_session(session_id)?;
@@ -273,6 +332,8 @@ impl SessionManager {
 
     /// Stops one live session explicitly.
     pub fn stop(&self, session_id: &SessionId) -> Result<()> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
         let Some(resume) = operation::resume_session_from_wakeup(
             &store,
@@ -330,6 +391,8 @@ impl SessionManager {
 
     /// Resumes a waiting session after a policy change.
     pub fn resume(&self, session_id: &SessionId) -> Result<()> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
         let session = store.load_session(session_id)?;
         drop(store);
@@ -415,8 +478,6 @@ impl SessionManager {
 
         let manager = self.clone();
         let run_id_for_task = session_id.clone();
-        let task_key = session_key.clone();
-
         let task = tokio::spawn(async move {
             let result = manager
                 .run_task(SessionTaskInput {
@@ -437,34 +498,7 @@ impl SessionManager {
                     });
             }
 
-            // The task is done for now (completed, failed, or waiting for
-            // approval). Remove just the task; the durable channel stays so a
-            // later resume keeps publishing to existing subscribers.
-            manager
-                .active
-                .lock()
-                .expect("run manager lock poisoned")
-                .remove(task_key.as_str());
-
-            // Only drop the durable channel once the session reached a terminal
-            // state, so waiting-for-approval keeps the subscription alive.
-            let terminal = manager
-                .open_store()
-                .and_then(|store| store.load_session(&run_id_for_task))
-                .map(|session| {
-                    matches!(
-                        session.status,
-                        SessionStatus::Completed | SessionStatus::Failed | SessionStatus::Cancelled
-                    )
-                })
-                .unwrap_or(false);
-            if terminal {
-                manager
-                    .channels
-                    .lock()
-                    .expect("run manager lock poisoned")
-                    .remove(task_key.as_str());
-            }
+            manager.finish_task(&run_id_for_task);
         });
 
         let mut active = self.active.lock().expect("run manager lock poisoned");
@@ -566,6 +600,89 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Completes one task and immediately hands off to the next queued input.
+    fn finish_task(&self, session_id: &SessionId) {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
+        self.active
+            .lock()
+            .expect("run manager lock poisoned")
+            .remove(session_id.as_str());
+
+        let Ok(mut store) = self.open_store() else {
+            return;
+        };
+        let Ok(session) = store.load_session(session_id) else {
+            return;
+        };
+
+        if session.status == SessionStatus::Completed {
+            match store.materialize_next_session_input(session_id) {
+                Ok(Some(input)) => {
+                    let Ok(updated) = store.load_session(session_id) else {
+                        return;
+                    };
+                    if let Ok(record) = store.append_session_event(
+                        session_id,
+                        SessionEvent::InputStarted {
+                            input_id: input.id.as_str().to_string(),
+                            message_id: updated
+                                .current_head_message_id
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
+                        },
+                    ) {
+                        self.channel_for_session(session_id).send(record).ok();
+                    }
+                    drop(store);
+                    self.spawn(
+                        updated.id,
+                        updated.conversation_id,
+                        updated.current_head_message_id,
+                        Some(ModelName::new(updated.model)),
+                        updated.reasoning,
+                        SessionCommand::Continue,
+                    );
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("failed to start queued session input: {error}");
+                    return;
+                }
+            }
+        }
+
+        if matches!(
+            session.status,
+            SessionStatus::Completed | SessionStatus::Failed | SessionStatus::Cancelled
+        ) {
+            self.channels
+                .lock()
+                .expect("run manager lock poisoned")
+                .remove(session_id.as_str());
+        }
+    }
+
+    /// Returns the process-local gate for one session.
+    fn session_gate(&self, session_id: &SessionId) -> Arc<Mutex<()>> {
+        let mut gates = self.gates.lock().expect("session gates lock poisoned");
+        gates
+            .entry(session_id.as_str().to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Returns the durable live-event channel, creating it when needed.
+    fn channel_for_session(&self, session_id: &SessionId) -> broadcast::Sender<SessionEventRecord> {
+        let mut channels = self.channels.lock().expect("run manager lock poisoned");
+        channels
+            .entry(session_id.as_str().to_string())
+            .or_insert_with(|| broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY).0)
+            .clone()
+    }
+
     fn open_store(&self) -> Result<Store> {
         match self.store_path.as_ref() {
             Some(path) => Store::open_at(path),
@@ -573,7 +690,45 @@ impl SessionManager {
         }
     }
 
+    /// Marks tasks interrupted by an API-process restart as failed.
+    ///
+    /// The queued inputs remain durable and can be resumed explicitly with the
+    /// normal continue operation. Replaying an interrupted model request
+    /// automatically could duplicate provider-side work, so recovery is
+    /// intentionally conservative.
+    pub fn recover_interrupted_sessions(&self) -> Result<()> {
+        let mut store = self.open_store()?;
+        let sessions = store.list_sessions()?;
+        for session in sessions
+            .into_iter()
+            .filter(|session| session.status == SessionStatus::Running)
+        {
+            store.update_session_status(
+                &session.id,
+                SessionStatus::Failed,
+                Some("session task was interrupted by Windie restart"),
+            )?;
+            store.append_session_event(
+                &session.id,
+                SessionEvent::Failed {
+                    error: "session task was interrupted by Windie restart".to_string(),
+                    causes: vec![
+                        "the previous Windie process stopped before completion".to_string(),
+                    ],
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn resume_with_wakeup(&self, wakeup: Wakeup) -> Result<()> {
+        let session_id = match &wakeup {
+            Wakeup::ApproveTool(decision) => &decision.session_id,
+            Wakeup::DenyTool(decision) => &decision.session_id,
+            Wakeup::Stop(stop) => &stop.session_id,
+        };
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
         let Some(resume) = operation::resume_session_from_wakeup(&store, wakeup)? else {
             return Ok(());

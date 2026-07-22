@@ -374,7 +374,13 @@ fn system_prompt_is_tree_wide_same_for_any_head() {
         .insert_message(&conversation_id, Some(&root_id), Role::User, "branch", None)
         .unwrap();
     let sibling_id = store
-        .insert_message(&conversation_id, Some(&root_id), Role::User, "sibling", None)
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::User,
+            "sibling",
+            None,
+        )
         .unwrap();
 
     store
@@ -391,8 +397,16 @@ fn system_prompt_is_tree_wide_same_for_any_head() {
         Some("global prompt")
     );
     // Ensure branch ids exist still
-    assert!(store.load_path_to_message(&conversation_id, &branch_id).is_ok());
-    assert!(store.load_path_to_message(&conversation_id, &sibling_id).is_ok());
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &branch_id)
+            .is_ok()
+    );
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &sibling_id)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -696,7 +710,13 @@ fn tool_schemas_are_tree_wide_same_for_any_head() {
         .insert_message(&conversation_id, Some(&root_id), Role::User, "branch", None)
         .unwrap();
     let sibling_id = store
-        .insert_message(&conversation_id, Some(&root_id), Role::User, "sibling", None)
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::User,
+            "sibling",
+            None,
+        )
         .unwrap();
     store
         .insert_tool_schema(&conversation_id, &shared_tool)
@@ -707,8 +727,16 @@ fn tool_schemas_are_tree_wide_same_for_any_head() {
         vec![shared_tool.clone()]
     );
     // Both branches see same tools tree-wide
-    assert!(store.load_path_to_message(&conversation_id, &branch_id).is_ok());
-    assert!(store.load_path_to_message(&conversation_id, &sibling_id).is_ok());
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &branch_id)
+            .is_ok()
+    );
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &sibling_id)
+            .is_ok()
+    );
     assert_eq!(
         store.load_tool_schemas(&conversation_id).unwrap(),
         vec![shared_tool]
@@ -2337,12 +2365,8 @@ fn forks_conversation_at_message() {
     let forked_reasoning_effort = store
         .conversation_reasoning_effort(&forked_conversation_id)
         .unwrap();
-    let forked_system_prompt = store
-        .system_prompt(&forked_conversation_id)
-        .unwrap();
-    let forked_tool_schemas = store
-        .load_tool_schemas(&forked_conversation_id)
-        .unwrap();
+    let forked_system_prompt = store.system_prompt(&forked_conversation_id).unwrap();
+    let forked_tool_schemas = store.load_tool_schemas(&forked_conversation_id).unwrap();
 
     assert_ne!(forked_conversation_id, conversation_id);
     assert_eq!(forked_model, "anthropic/test");
@@ -2397,6 +2421,83 @@ fn deletes_conversation() {
     store.remove_conversation(&conversation_id).unwrap();
 
     assert!(store.list_conversations().unwrap().is_empty());
+}
+
+#[test]
+fn queues_and_materializes_inputs_in_fifo_order() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::Assistant, "root", None)
+        .unwrap();
+    let session_id = SessionId::new("session-queue-fifo");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&root_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+
+    let first_input = store
+        .enqueue_session_input(&session_id, "first queued", &[unsaved_text("first queued")])
+        .unwrap();
+    let second_input = store
+        .enqueue_session_input(
+            &session_id,
+            "second queued",
+            &[unsaved_text("second queued")],
+        )
+        .unwrap();
+    assert_ne!(first_input, second_input);
+    assert_eq!(store.session_input_count(&session_id).unwrap(), 2);
+
+    let first = store
+        .materialize_next_session_input(&session_id)
+        .unwrap()
+        .unwrap();
+    let session = store.load_session(&session_id).unwrap();
+    assert_eq!(first.id, first_input);
+    assert_eq!(first.content, "first queued");
+    assert_eq!(
+        session
+            .current_head_message_id
+            .as_ref()
+            .unwrap()
+            .to_string(),
+        store
+            .load_messages(&conversation_id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .id
+            .as_ref()
+            .unwrap()
+            .to_string()
+    );
+    assert_eq!(store.session_input_count(&session_id).unwrap(), 1);
+
+    let second = store
+        .materialize_next_session_input(&session_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.id, second_input);
+    assert_eq!(second.content, "second queued");
+    assert_eq!(store.session_input_count(&session_id).unwrap(), 0);
+    let messages = store
+        .load_path_to_message(
+            &conversation_id,
+            &store
+                .load_session(&session_id)
+                .unwrap()
+                .current_head_message_id
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(messages[1].content, "first queued");
+    assert_eq!(messages[2].content, "second queued");
 }
 
 #[test]

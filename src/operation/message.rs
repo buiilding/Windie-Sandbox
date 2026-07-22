@@ -1,6 +1,6 @@
 //! Message and system-prompt mutation operation workflows.
 
-use super::input::{LoadedInsertPart, insert_content, load_insert_part, validate_insert_parts};
+use super::input::{insert_content, validate_insert_parts};
 use super::*;
 
 pub fn insert_message(
@@ -10,56 +10,47 @@ pub fn insert_message(
     role: Role,
     parts: &[MessageInputPart],
 ) -> Result<MessageId> {
-    validate_insert_parts(parts)?;
-
     if role == Role::Tool {
         return Err(error::invalid_request(
             "role: tool messages must be created through approve or deny",
         ));
     }
 
-    let has_image = parts.iter().any(|part| {
-        matches!(
-            part,
-            MessageInputPart::ImagePath(_) | MessageInputPart::ImageBytes { .. }
-        )
-    });
-    let has_multiple_parts = parts.len() > 1;
-    let content = insert_content(parts);
-
-    if has_image || has_multiple_parts {
-        if role != Role::User {
+    if role != Role::User {
+        validate_insert_parts(parts)?;
+        if parts.len() != 1 || !matches!(parts[0], MessageInputPart::Text(_)) {
             return Err(error::invalid_request(
                 "multi-part input is only supported for user messages",
             ));
         }
-
-        let loaded_parts = parts
-            .iter()
-            .map(load_insert_part)
-            .collect::<Result<Vec<_>>>()?;
-        let message_parts = loaded_parts
-            .iter()
-            .map(|part| match part {
-                LoadedInsertPart::Text(text) => UnsavedMessagePart::Text(text.clone()),
-                LoadedInsertPart::Image(image) => UnsavedMessagePart::Image(UnsavedImagePart {
-                    mime_type: image.mime_type.clone(),
-                    bytes: image.bytes.clone(),
-                }),
-            })
-            .collect::<Vec<_>>();
-
-        return store.insert_message_with_parts(
+        return store.insert_message(
             conversation_id,
             parent_message_id,
-            Role::User,
-            &content,
-            &message_parts,
+            role,
+            &insert_content(parts),
             None,
         );
     }
 
-    store.insert_message(conversation_id, parent_message_id, role, &content, None)
+    let prepared = prepare_message_input(parts)?;
+    insert_prepared_user_message(store, conversation_id, parent_message_id, &prepared)
+}
+
+/// Inserts a previously validated and loaded user input.
+pub fn insert_prepared_user_message(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    parent_message_id: Option<&MessageId>,
+    prepared: &PreparedMessageInput,
+) -> Result<MessageId> {
+    store.insert_message_with_parts(
+        conversation_id,
+        parent_message_id,
+        Role::User,
+        &prepared.content,
+        &prepared.parts,
+        None,
+    )
 }
 
 /// Replaces visible message text without changing metadata.
