@@ -139,8 +139,8 @@ export default function InspectorPanel({ mode, onClose }) {
   if (!activeConv || !mode) return null;
 
   return (
-    <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center px-6 pt-12 pb-6 overflow-y-auto windie-scroll">
-      <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl min-h-[70vh]" : "max-w-4xl max-h-[calc(100vh-4rem)]"}`}>
+    <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center px-6 pt-12 pb-6 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
+      <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl min-h-[70vh]" : "max-w-4xl max-h-[calc(100vh-7rem)]"}`}>
         <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system prompt" : "tools"}</span>
           <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
