@@ -89,7 +89,19 @@ export default function ChatPanel() {
   const prevConvId = useRef(activeConv?.id);
   const [expandedExecutionGroups, setExpandedExecutionGroups] = useState(() => new Set());
   const items = useMemo(() => transcriptItems(selectedPathNodes), [selectedPathNodes]);
-  const pendingToolCount = pendingAssistant?.toolCount || 0;
+  // Streaming previews belong to a session's active path, not to whichever
+  // historical path is currently being inspected. Keep the session's
+  // transient state alive in the hook, but hide it from alternate paths.
+  const sessionHead = selectedSession?.currentHeadMessageId || selectedSession?.startHeadMessageId || null;
+  const displayedHead = selectedPathNodes[selectedPathNodes.length - 1]?.id || null;
+  const isViewingSessionHead = Boolean(
+    activeConv?.id &&
+      selectedSession?.conversationId === activeConv.id &&
+      sessionHead &&
+      displayedHead === sessionHead
+  );
+  const visiblePendingAssistant = isViewingSessionHead && streaming ? pendingAssistant : null;
+  const pendingToolCount = visiblePendingAssistant?.toolCount || 0;
   const lastItem = items[items.length - 1];
   const currentExecutionGroup = lastItem?.type === "execution" ? lastItem : null;
   const persistedToolCount = currentExecutionGroup
@@ -169,9 +181,9 @@ export default function ChatPanel() {
         {!currentExecutionGroup && liveToolCount > 0 ? (
           <LiveExecutionIndicator count={liveToolCount} />
         ) : null}
-        {pendingAssistant && selectedSession ? (
+        {visiblePendingAssistant && selectedSession ? (
           <PendingAssistantRow
-            pendingAssistant={pendingAssistant}
+            pendingAssistant={visiblePendingAssistant}
             index={selectedPathNodes.length}
             sessionId={selectedSession.id}
             onStop={() => stopStreaming(selectedSession.id)}
