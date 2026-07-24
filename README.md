@@ -1,8 +1,6 @@
-<!-- Uncomment once a banner image is added to assets/
 <p align="center">
-  <img src="assets/banner.png" alt="Windie" width="100%">
+  <img src="assets/Wordmark.png" alt="Windie" width="100%">
 </p>
--->
 
 # Windie
 <p align="center">
