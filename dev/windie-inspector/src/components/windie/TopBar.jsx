@@ -23,7 +23,7 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
   return (
     <header
       data-testid="windie-topbar"
-      className="absolute inset-x-0 top-0 z-50 h-9 pointer-events-none flex items-center px-3 gap-4 text-xs font-mono select-none"
+      className="relative z-50 h-9 shrink-0 pointer-events-none flex items-center px-3 gap-4 bg-background border-b border-border text-xs font-mono select-none"
     >
       <div className="flex items-center gap-2">
         <div className="size-2 bg-foreground" />

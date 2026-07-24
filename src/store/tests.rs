@@ -1226,6 +1226,16 @@ fn updates_message_text_without_deleting_later_messages() {
             None,
         )
         .unwrap();
+    let session_id = SessionId::new("session-edit-preserved");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&assistant_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     store
         .insert_message(
@@ -1249,6 +1259,105 @@ fn updates_message_text_without_deleting_later_messages() {
     assert_eq!(messages[0].content, "hello");
     assert_eq!(messages[1].content, "hello back");
     assert_eq!(messages[2].content, "next");
+
+    let session = store.load_session(&session_id).unwrap();
+    assert_eq!(session.start_head_message_id.as_ref(), Some(&assistant_id));
+    assert_eq!(
+        session.current_head_message_id.as_ref(),
+        Some(&assistant_id)
+    );
+}
+
+#[test]
+fn removing_shared_message_repairs_all_sessions_without_deleting_them() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let shared_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::Assistant,
+            "shared",
+            None,
+        )
+        .unwrap();
+    let child_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&shared_id),
+            Role::User,
+            "child",
+            None,
+        )
+        .unwrap();
+
+    let first_session_id = SessionId::new("session-shared-first");
+    let second_session_id = SessionId::new("session-shared-second");
+    for session_id in [&first_session_id, &second_session_id] {
+        store
+            .create_session(
+                session_id,
+                &conversation_id,
+                Some(&shared_id),
+                "openai/test",
+                None,
+            )
+            .unwrap();
+    }
+
+    store.remove_message(&conversation_id, &shared_id).unwrap();
+
+    for session_id in [&first_session_id, &second_session_id] {
+        let session = store.load_session(session_id).unwrap();
+        assert_eq!(session.start_head_message_id.as_ref(), Some(&root_id));
+        assert_eq!(session.current_head_message_id.as_ref(), Some(&root_id));
+    }
+    assert_eq!(
+        message_parent(&store.load_messages(&conversation_id).unwrap(), &child_id),
+        Some(&root_id)
+    );
+}
+
+#[test]
+fn deleting_a_sessions_only_message_removes_that_session_only() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let deleted_message_id = store
+        .insert_message(&conversation_id, None, Role::User, "delete me", None)
+        .unwrap();
+    let surviving_message_id = store
+        .insert_message(&conversation_id, None, Role::User, "keep me", None)
+        .unwrap();
+    let deleted_session_id = SessionId::new("session-empty-after-delete");
+    let surviving_session_id = SessionId::new("session-survives-other-delete");
+    store
+        .create_session(
+            &deleted_session_id,
+            &conversation_id,
+            Some(&deleted_message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .create_session(
+            &surviving_session_id,
+            &conversation_id,
+            Some(&surviving_message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+
+    store
+        .remove_message(&conversation_id, &deleted_message_id)
+        .unwrap();
+
+    assert!(store.load_session(&deleted_session_id).is_err());
+    assert!(store.load_session(&surviving_session_id).is_ok());
 }
 
 #[test]
@@ -1392,7 +1501,7 @@ fn remove_message_deletes_leaf_only() {
 }
 
 #[test]
-fn remove_message_clears_deleted_runtime_run_head() {
+fn remove_message_repairs_deleted_runtime_run_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
@@ -1422,15 +1531,15 @@ fn remove_message_clears_deleted_runtime_run_head() {
 
     let run = store.load_session(&session_id).unwrap();
 
-    assert_eq!(run.start_head_message_id, None);
-    assert_eq!(run.current_head_message_id, None);
-    // A ready branch whose head was deleted is not running, so it stays ready
-    // rather than being cancelled; only its dangling head pointer is cleared.
+    assert_eq!(run.start_head_message_id.as_ref(), Some(&first_id));
+    assert_eq!(run.current_head_message_id.as_ref(), Some(&first_id));
+    // Removing the selected leaf moves the session to its nearest surviving
+    // ancestor instead of deleting the session.
     assert_eq!(run.status, SessionStatus::Ready);
 }
 
 #[test]
-fn remove_message_clears_deleted_session_start_but_keeps_surviving_current_head() {
+fn remove_message_repairs_deleted_session_start_but_keeps_surviving_current_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
@@ -1473,10 +1582,10 @@ fn remove_message_clears_deleted_session_start_but_keeps_surviving_current_head(
     let run = store.load_session(&session_id).unwrap();
     let messages = store.load_messages(&conversation_id).unwrap();
 
-    assert_eq!(run.start_head_message_id, None);
+    assert_eq!(run.start_head_message_id.as_ref(), Some(&first_id));
     assert_eq!(run.current_head_message_id.as_ref(), Some(&third_id));
-    // The surviving current head keeps the branch resumable; deleting only the
-    // start pointer does not cancel a ready branch.
+    // The surviving current head keeps the branch resumable, and the deleted
+    // start pointer is repaired to the nearest surviving ancestor.
     assert_eq!(run.status, SessionStatus::Ready);
     assert_eq!(message_parent(&messages, &third_id), Some(&first_id));
 }
@@ -2270,7 +2379,7 @@ fn truncates_conversation_after_message() {
 }
 
 #[test]
-fn truncate_clears_deleted_runtime_run_head() {
+fn truncate_repairs_deleted_runtime_run_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let first_id = store
@@ -2311,10 +2420,10 @@ fn truncate_clears_deleted_runtime_run_head() {
 
     let run = store.load_session(&session_id).unwrap();
 
-    assert_eq!(run.start_head_message_id, None);
-    assert_eq!(run.current_head_message_id, None);
-    // Truncating away a ready branch's head clears the dangling pointers but
-    // leaves the branch ready, since it was never running.
+    assert_eq!(run.start_head_message_id.as_ref(), Some(&first_id));
+    assert_eq!(run.current_head_message_id.as_ref(), Some(&first_id));
+    // Truncating away a ready branch's head moves it to the surviving
+    // checkpoint and leaves the session ready.
     assert_eq!(run.status, SessionStatus::Ready);
 }
 

@@ -666,7 +666,7 @@ impl Store {
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message delete")?;
         // Tree-wide tools: deleting a branch message never deletes tools.
-        detach_sessions_from_deleted_messages(
+        repair_sessions_after_deleted_messages(
             &transaction,
             conversation_id,
             &splice_delete.deleted_message_ids,
@@ -803,7 +803,7 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after conversation truncate")?;
-        detach_sessions_from_deleted_messages(&transaction, conversation_id, &descendant_ids, now)
+        repair_sessions_after_deleted_messages(&transaction, conversation_id, &descendant_ids, now)
             .context("failed to detach runtime sessions after conversation truncate")?;
         transaction
             .execute(
@@ -1630,13 +1630,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-/// Clears run message references that would otherwise point at deleted rows.
+/// Repairs session pointers after message rows are removed.
 ///
-/// Deleting a conversation branch is a storage operation, but sessions own
-/// execution heads. If the deleted set contains a run's current head, that run
-/// can no longer be resumed safely, so it is cancelled and its current head is
-/// cleared before message deletion enforces foreign keys.
-fn detach_sessions_from_deleted_messages(
+/// Sessions are durable execution records independent of individual message
+/// rows. A message mutation can therefore change a session's selected path,
+/// but must not cascade-delete every session that referenced the message. Each
+/// deleted pointer is moved to its nearest surviving ancestor. Affected
+/// sessions are removed only when both pointers have no surviving message path.
+fn repair_sessions_after_deleted_messages(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
     deleted_message_ids: &HashSet<String>,
@@ -1646,52 +1647,124 @@ fn detach_sessions_from_deleted_messages(
         return Ok(());
     }
 
-    let placeholders = std::iter::repeat_n("?", deleted_message_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut deleted_ids = deleted_message_ids.iter().cloned().collect::<Vec<_>>();
-    deleted_ids.sort();
+    let mut parent_by_message = HashMap::with_capacity(deleted_message_ids.len());
+    for message_id in deleted_message_ids {
+        let parent = transaction
+            .query_row(
+                "
+                SELECT parent_message_id
+                FROM messages
+                WHERE conversation_id = ?1 AND id = ?2
+                ",
+                params![conversation_id.as_str(), message_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .context("failed to load deleted message parent")?;
+        parent_by_message.insert(message_id.clone(), parent);
+    }
 
-    let start_sql = format!(
-        "
-        UPDATE sessions
-        SET start_head_message_id = NULL,
-            updated_at = ?
-        WHERE conversation_id = ?
-          AND start_head_message_id IN ({placeholders})
-        "
-    );
-    let mut start_params = Vec::with_capacity(deleted_ids.len() + 2);
-    start_params.push(Value::Integer(updated_at));
-    start_params.push(Value::Text(conversation_id.as_str().to_string()));
-    start_params.extend(deleted_ids.iter().cloned().map(Value::Text));
-    transaction
-        .execute(&start_sql, params_from_iter(start_params))
-        .context("failed to clear deleted runtime session start heads")?;
+    let mut statement = transaction
+        .prepare(
+            "
+            SELECT id, start_head_message_id, current_head_message_id, status
+            FROM sessions
+            WHERE conversation_id = ?1
+            ",
+        )
+        .context("failed to prepare affected session load")?;
+    let sessions = statement
+        .query_map(params![conversation_id.as_str()], |row| {
+            Ok((
+                SessionId::new(row.get::<_, String>(0)?),
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .context("failed to load sessions affected by message delete")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to decode sessions affected by message delete")?;
+    drop(statement);
 
-    let current_sql = format!(
-        "
-        UPDATE sessions
-        SET current_head_message_id = NULL,
-            status = CASE
-                WHEN status IN ('running', 'waiting_for_approval') THEN ?
-                ELSE status
-            END,
-            updated_at = ?
-        WHERE conversation_id = ?
-          AND current_head_message_id IN ({placeholders})
-        "
-    );
-    let mut current_params = Vec::with_capacity(deleted_ids.len() + 3);
-    current_params.push(Value::Text(
-        SessionStatus::Cancelled.as_storage().to_string(),
-    ));
-    current_params.push(Value::Integer(updated_at));
-    current_params.push(Value::Text(conversation_id.as_str().to_string()));
-    current_params.extend(deleted_ids.into_iter().map(Value::Text));
-    transaction
-        .execute(&current_sql, params_from_iter(current_params))
-        .context("failed to clear deleted runtime session current heads")?;
+    for (session_id, start_head, current_head, status) in sessions {
+        let start_was_deleted = start_head
+            .as_ref()
+            .is_some_and(|message_id| deleted_message_ids.contains(message_id));
+        let current_was_deleted = current_head
+            .as_ref()
+            .is_some_and(|message_id| deleted_message_ids.contains(message_id));
+        if !start_was_deleted && !current_was_deleted {
+            continue;
+        }
+
+        let repaired_start =
+            surviving_ancestor(start_head.as_ref(), deleted_message_ids, &parent_by_message);
+        let repaired_current = surviving_ancestor(
+            current_head.as_ref(),
+            deleted_message_ids,
+            &parent_by_message,
+        );
+
+        if repaired_start.is_none() && repaired_current.is_none() {
+            transaction
+                .execute(
+                    "DELETE FROM session_events WHERE session_id = ?1",
+                    params![session_id.as_str()],
+                )
+                .context("failed to delete empty session events")?;
+            transaction
+                .execute(
+                    "DELETE FROM sessions WHERE id = ?1",
+                    params![session_id.as_str()],
+                )
+                .context("failed to delete empty session")?;
+            continue;
+        }
+
+        let repaired_status = if current_was_deleted
+            && matches!(status.as_str(), "running" | "waiting_for_approval")
+        {
+            SessionStatus::Cancelled.as_storage()
+        } else {
+            status.as_str()
+        };
+        transaction
+            .execute(
+                "
+                UPDATE sessions
+                SET start_head_message_id = ?1,
+                    current_head_message_id = ?2,
+                    status = ?3,
+                    updated_at = ?4
+                WHERE id = ?5
+                ",
+                params![
+                    repaired_start,
+                    repaired_current,
+                    repaired_status,
+                    updated_at,
+                    session_id.as_str()
+                ],
+            )
+            .context("failed to repair session heads after message delete")?;
+    }
 
     Ok(())
+}
+
+/// Walks through deleted ancestors until a surviving message or tree root is
+/// reached. The map is built before deletion while parent links still exist.
+fn surviving_ancestor(
+    message_id: Option<&String>,
+    deleted_message_ids: &HashSet<String>,
+    parent_by_message: &HashMap<String, Option<String>>,
+) -> Option<String> {
+    let mut candidate = message_id.cloned();
+    while let Some(message_id) = candidate.as_ref() {
+        if !deleted_message_ids.contains(message_id) {
+            return candidate;
+        }
+        candidate = parent_by_message.get(message_id).cloned().flatten();
+    }
+    None
 }

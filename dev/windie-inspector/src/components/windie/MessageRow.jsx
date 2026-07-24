@@ -14,7 +14,6 @@ import {
   Wrench,
   Check,
   X,
-  Square,
   Image as ImageIcon,
   Target,
   ChevronDown,
@@ -154,44 +153,6 @@ function MetadataLanes({ metadata }) {
   return <div className="mt-3 space-y-1.5">{lanes}</div>;
 }
 
-function PendingMetadataLanes({ pendingAssistant }) {
-  const toolCalls = Object.entries(pendingAssistant.toolCalls || {}).map(
-    ([index, call]) => ({ index, ...call })
-  );
-  const lanes = [];
-
-  if (toolCalls.length) {
-    lanes.push(
-      <div
-        key="tc"
-        className="border-l-2 border-[hsl(var(--tool-call))] pl-2 py-1 bg-[hsl(var(--tool-call))]/5"
-      >
-        <div className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--tool-call))]">
-          tool_calls · {toolCalls.length}
-        </div>
-        {toolCalls.map((tc) => (
-          <div key={tc.id || tc.index} className="mt-1 font-mono text-[11px]">
-            <span className="text-[hsl(var(--tool-call))]">
-              {tc.name || "function_call"}
-            </span>
-            <span className="text-muted-foreground">
-              {tc.id ? ` · ${tc.id}` : ""}
-            </span>
-            {tc.argumentsText ? (
-              <pre className="mt-1 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
-                {tc.argumentsText}
-              </pre>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (!lanes.length) return null;
-  return <div className="mt-3 space-y-1.5">{lanes}</div>;
-}
-
 function MessageImagePreview({ image, testId }) {
   const [objectUrl, setObjectUrl] = useState(image.url || "");
   const [failed, setFailed] = useState(false);
@@ -280,10 +241,9 @@ function MessageMarkdown({ text, isStreaming }) {
  * Live assistant preview row rendered from ephemeral `assistant_delta` text.
  *
  * This row has no store-backed node: it exists only while a query streams and
- * is replaced by the durable persisted message once `assistant_message_saved`
- * arrives. It intentionally omits selection, edit, fork, and tree actions
- * because there is no message id to act on yet. `sessionId` labels which
- * session is streaming and wires the per-session stop button.
+ * is replaced by the durable final assistant message once the run completes.
+ * It intentionally omits selection, edit, fork, and tree actions because
+ * there is no message id to act on yet.
  */
 export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop }) {
   return (
@@ -291,21 +251,6 @@ export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop
       data-testid={`msg-row-pending-assistant${sessionId ? `-${sessionId.slice(0, 8)}` : ""}`}
       className="windie-message-assistant relative border-b border-border pt-3.5 pb-12 px-6"
     >
-      <div className="absolute right-6 top-3.5 z-10 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-        <span className="text-foreground/70">streaming</span>
-        {sessionId && <span className="text-muted-foreground/70">· session {sessionId.slice(0, 8)}</span>}
-        {onStop && (
-          <button
-            type="button"
-            data-testid={`pending-stop-${sessionId?.slice(0, 8) || "session"}`}
-            onClick={onStop}
-            className="inline-flex items-center gap-1 border border-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-muted-foreground hover:bg-surface-hover hover:text-foreground"
-          >
-            <Square className="size-2 fill-current" />
-            stop
-          </button>
-        )}
-      </div>
       <div className="flex items-baseline gap-3">
         <div className="w-16 shrink-0 pt-0.5">
           <RoleBadge role="assistant" />
@@ -313,7 +258,6 @@ export function PendingAssistantRow({ pendingAssistant, index, sessionId, onStop
         <div className="flex-1 min-w-0 pt-2">
           <PendingThinkingLane pendingAssistant={pendingAssistant} />
           <MessageMarkdown text={pendingAssistant.text} isStreaming />
-          <PendingMetadataLanes pendingAssistant={pendingAssistant} />
         </div>
       </div>
     </div>
@@ -405,14 +349,9 @@ export default function MessageRow({ node, index, isLast }) {
         </div>
 
         <div className="flex-1 min-w-0 pt-2">
-          {(node.message.tokens || node.message.metadata?.toolCallId) && (
+          {node.message.tokens && (
             <div className="flex items-center gap-2 mb-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            {node.message.tokens && <span>· {node.message.tokens}tok</span>}
-            {node.message.metadata?.toolCallId && (
-              <span className="text-[hsl(var(--tool-call))]">
-                · call {node.message.metadata.toolCallId}
-              </span>
-            )}
+              <span>· {node.message.tokens}tok</span>
             </div>
           )}
 

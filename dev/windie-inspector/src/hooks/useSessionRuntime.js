@@ -59,23 +59,37 @@ function emptyPending(session) {
     text: "",
     reasoning: "",
     toolCalls: {},
+    toolCount: 0,
+    replaceReasoningOnNextDelta: false,
+    replaceTextOnNextDelta: false,
   };
 }
 
 function reducePending(current, session, event) {
   const pending = current[session.id] || emptyPending(session);
   if (event.type === "assistant_delta") {
-    return {
-      ...current,
-      [session.id]: { ...pending, text: pending.text + (event.text || "") },
-    };
-  }
-  if (event.type === "reasoning_delta") {
+    const text = pending.replaceTextOnNextDelta
+      ? event.text || ""
+      : pending.text + (event.text || "");
     return {
       ...current,
       [session.id]: {
         ...pending,
-        reasoning: (pending.reasoning || "") + (event.text || ""),
+        text,
+        replaceTextOnNextDelta: false,
+      },
+    };
+  }
+  if (event.type === "reasoning_delta") {
+    const reasoning = pending.replaceReasoningOnNextDelta
+      ? event.text || ""
+      : (pending.reasoning || "") + (event.text || "");
+    return {
+      ...current,
+      [session.id]: {
+        ...pending,
+        reasoning,
+        replaceReasoningOnNextDelta: false,
       },
     };
   }
@@ -86,6 +100,7 @@ function reducePending(current, session, event) {
       name: null,
       argumentsText: "",
     };
+    const isNewToolCall = !pending.toolCalls?.[index];
     return {
       ...current,
       [session.id]: {
@@ -98,10 +113,20 @@ function reducePending(current, session, event) {
             argumentsText: existing.argumentsText + (event.arguments_delta || ""),
           },
         },
+        toolCount: (pending.toolCount || 0) + (isNewToolCall ? 1 : 0),
       },
     };
   }
   return current;
+}
+
+function resetPendingTurn(pending) {
+  return {
+    ...pending,
+    toolCalls: {},
+    replaceReasoningOnNextDelta: true,
+    replaceTextOnNextDelta: true,
+  };
 }
 
 function optimisticParts(conversationId, parts) {
@@ -250,7 +275,6 @@ export function useSessionRuntime({
         selectedSessionRef.current?.id === session.id;
       if (!active) {
         advanceSessionHead(session.id, headMessageId);
-        setPendingAssistantBySessionId((current) => ({ ...current, [session.id]: null }));
         return true;
       }
 
@@ -259,7 +283,6 @@ export function useSessionRuntime({
         if (!reloaded) return false;
         advanceSessionHead(session.id, headMessageId);
         setSelectedNodeId(headMessageId);
-        setPendingAssistantBySessionId((current) => ({ ...current, [session.id]: null }));
         return true;
       } catch (_) {
         return false;
@@ -294,6 +317,16 @@ export function useSessionRuntime({
         const head = data.message_id || null;
         if (!head) return;
         await commitMessage(session, head);
+        setPendingAssistantBySessionId((current) => {
+          const pending = current[session.id];
+          if (!pending) return current;
+
+          if (data.type === "tool_result_saved" || Object.keys(pending.toolCalls || {}).length > 0) {
+            return { ...current, [session.id]: resetPendingTurn(pending) };
+          }
+
+          return { ...current, [session.id]: null };
+        });
         return;
       }
 
@@ -665,10 +698,13 @@ export function useSessionRuntime({
     ]
   );
 
+  const getSelectedSession = useCallback(() => selectedSessionRef.current, []);
+
   return {
     sessionsById,
     selectedSession,
     selectedSessionId,
+    getSelectedSession,
     selectedPathHead:
       viewHeadId ||
       selectedSession?.currentHeadMessageId ||

@@ -256,6 +256,7 @@ function providerLabel(providerId) {
   if (providerId === "desktop-commander") return "Desktop Commander";
   if (providerId === "blender-mcp") return "Blender MCP";
   if (providerId === "brightdata") return "Bright Data";
+  if (providerId === "basic-memory") return "Basic Memory";
   return providerId || "Unknown Provider";
 }
 

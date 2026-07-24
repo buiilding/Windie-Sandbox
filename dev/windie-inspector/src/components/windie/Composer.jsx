@@ -84,7 +84,7 @@ export default function Composer() {
   const selectedReasoningLabel = useMemo(
     () =>
       reasoningOptions.find((option) => option.value === selectedReasoningEffort)?.label ||
-      "model",
+      "default",
     [reasoningOptions, selectedReasoningEffort]
   );
   const filteredModels = models.filter((model) =>
@@ -303,7 +303,6 @@ export default function Composer() {
                               );
                             }
                             setModelMenuOpen(false);
-                            setModelSearch("");
                           }}
                           className={`w-full text-left px-2.5 py-1.5 text-xs font-mono hover:bg-surface-hover flex items-center justify-between gap-3 ${
                             currentModel === m.id ? "bg-surface" : ""

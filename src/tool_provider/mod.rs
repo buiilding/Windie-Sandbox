@@ -6,6 +6,7 @@
 //! the only implemented backend family today; built-in, skill, and plugin
 //! backends can later join through the same registry shape.
 
+mod builtin;
 mod lifecycle;
 mod manifest;
 mod mcp;
@@ -14,6 +15,9 @@ mod registry;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use builtin::{
+    ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
+};
 pub use lifecycle::ProviderInstallState;
 pub use manifest::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,

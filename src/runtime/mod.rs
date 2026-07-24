@@ -7,7 +7,9 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
-use crate::context::ContextBuilder;
+use serde_json::Value;
+
+use crate::context::{ContextBuilder, ModelContext};
 use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, ToolCallId};
 use crate::error;
 use crate::llm::{LlmStreamEvent, PromptCacheRequest, ReasoningRequest, RuntimeLlm};
@@ -15,9 +17,11 @@ use crate::output::RuntimeOutput;
 use crate::store::Store;
 use crate::tool::{
     AttachedTool, PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy,
-    ToolSchemaName,
+    ToolProviderKind, ToolSchemaName,
 };
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool_provider::{
+    ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME, ToolProviderRegistry,
+};
 
 pub(crate) trait RuntimeEventSink {
     fn assistant_message_saved(&self, _message_id: &MessageId) {}
@@ -81,10 +85,11 @@ where
         events,
     )?;
 
-    let model_context = ContextBuilder::build_model_context(
+    let model_context = build_model_context(
         store,
         input.conversation_id,
         head_message_id.as_ref(),
+        input.tools,
     )?;
 
     output.start_assistant_message();
@@ -210,7 +215,8 @@ pub(crate) fn pending_approvals_at_head(
         return Ok(Vec::new());
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, input.conversation_id, &tool_call)?;
+    let attached_tool =
+        load_attached_tool_for_call(store, input.conversation_id, &tool_call, input.tools)?;
     let approval_mode = store.tool_approval_mode(input.conversation_id)?;
 
     if let PolicyDecision::Ask { reason } = policy.decide(
@@ -293,7 +299,7 @@ fn store_policy_denied_tool_results_at_head(
         let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
             return Ok(());
         };
-        let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call)?;
+        let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call, tools)?;
         let approval_mode = store.tool_approval_mode(conversation_id)?;
 
         let PolicyDecision::Deny { reason } = policy.decide(
@@ -346,7 +352,8 @@ async fn resolve_next_automatic_tool_call_at_head(
         tool_call,
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let attached_tool =
+        load_attached_tool_for_call(store, conversation_id, &pending.tool_call, tools)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
     let result = match policy.decide(
         &pending.tool_call,
@@ -360,7 +367,14 @@ async fn resolve_next_automatic_tool_call_at_head(
             reason,
         ),
         PolicyDecision::Allow => {
-            execute_provider_tool_call(&pending, attached_tool.as_ref(), tools).await?
+            execute_provider_tool_call(
+                store,
+                conversation_id,
+                &pending,
+                attached_tool.as_ref(),
+                tools,
+            )
+            .await?
         }
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
@@ -460,7 +474,8 @@ pub(crate) fn prepare_pending_tool_execution(
     registry: &ToolProviderRegistry,
 ) -> Result<PendingToolExecution> {
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(store, conversation_id, &pending.tool_call)?;
+    let attached_tool =
+        load_attached_tool_for_call(store, conversation_id, &pending.tool_call, registry)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
 
     match policy.decide(
@@ -489,14 +504,22 @@ pub(crate) fn prepare_pending_tool_execution(
 }
 
 pub(crate) async fn execute_pending_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
     pending: &PendingToolCall,
     attached_tool: &AttachedTool,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolExecutionResult> {
+    if attached_tool.provider.kind == ToolProviderKind::Builtin {
+        return execute_builtin_tool_call(store, conversation_id, pending, attached_tool, registry);
+    }
+
     registry.call_tool(attached_tool, &pending.tool_call).await
 }
 
 async fn execute_provider_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
     pending: &PendingToolCall,
     attached_tool: Option<&AttachedTool>,
     registry: &ToolProviderRegistry,
@@ -508,7 +531,7 @@ async fn execute_provider_tool_call(
         )));
     };
 
-    execute_pending_tool_call(pending, attached_tool, registry).await
+    execute_pending_tool_call(store, conversation_id, pending, attached_tool, registry).await
 }
 
 pub(crate) fn deny_pending_tool_call(pending: &PendingToolCall) -> ToolExecutionResult {
@@ -564,8 +587,16 @@ fn load_attached_tool_for_call(
     store: &Store,
     conversation_id: &ConversationId,
     tool_call: &ToolCall,
+    registry: &ToolProviderRegistry,
 ) -> Result<Option<AttachedTool>> {
-    store.load_attached_tool(conversation_id, &ToolSchemaName::new(tool_call.name()))
+    let schema_name = ToolSchemaName::new(tool_call.name());
+    if let Some(attached_tool) = store.load_attached_tool(conversation_id, &schema_name)? {
+        return Ok(Some(attached_tool));
+    }
+
+    Ok(registry
+        .builtin_tool(&schema_name)
+        .map(|definition| definition.attached_tool()))
 }
 
 fn attached_tool_can_execute(
@@ -574,11 +605,182 @@ fn attached_tool_can_execute(
     attached_tool: Option<&AttachedTool>,
 ) -> bool {
     attached_tool.is_some_and(|attached_tool| {
+        if attached_tool.provider.kind == ToolProviderKind::Builtin {
+            return registry.can_execute(attached_tool);
+        }
+
         store
             .provider_is_enabled(&attached_tool.provider.provider_id)
             .unwrap_or(false)
             && registry.can_execute(attached_tool)
     })
+}
+
+/// Builds runtime model context and adds Windie's implicit control tools.
+///
+/// Built-in tools are intentionally added only on the model-facing runtime
+/// path. They do not enter conversation inspection or conversation tool-schema
+/// persistence, so clients cannot detach or mistake them for providers.
+fn build_model_context(
+    store: &Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    registry: &ToolProviderRegistry,
+) -> Result<ModelContext> {
+    let mut context = ContextBuilder::build_model_context(store, conversation_id, head_message_id)?;
+    let mut names = context
+        .tool_schemas
+        .iter()
+        .map(|tool| tool.name.as_str().to_string())
+        .collect::<HashSet<_>>();
+
+    for definition in registry.builtin_tools() {
+        if names.insert(definition.schema_name.as_str().to_string()) {
+            context
+                .tool_schemas
+                .push(definition.attached_tool().schema());
+        }
+    }
+
+    Ok(context)
+}
+
+/// Executes one Windie-owned control tool and returns its compact model result.
+fn execute_builtin_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    pending: &PendingToolCall,
+    attached_tool: &AttachedTool,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
+    if attached_tool.provider.provider_id.as_str() != BUILTIN_PROVIDER_ID {
+        return Ok(ToolExecutionResult::failure(
+            pending.tool_call.id.clone(),
+            pending.tool_call.name(),
+            "unknown built-in tool",
+        ));
+    }
+
+    match attached_tool.provider.tool_name.as_str() {
+        LIST_PROVIDERS_TOOL_NAME => Ok(ToolExecutionResult {
+            tool_call_id: pending.tool_call.id.clone(),
+            tool_name: pending.tool_call.name().to_string(),
+            content: list_attachable_providers(store, registry)?,
+            parts: Vec::new(),
+            success: true,
+        }),
+        ATTACH_PROVIDER_TOOL_NAME => {
+            let arguments = match serde_json::from_str::<Value>(pending.tool_call.arguments()) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    return Ok(ToolExecutionResult::failure(
+                        pending.tool_call.id.clone(),
+                        pending.tool_call.name(),
+                        format!("invalid tool arguments: {error}"),
+                    ));
+                }
+            };
+            let Some(provider_id) = arguments.get("provider_id").and_then(Value::as_str) else {
+                return Ok(ToolExecutionResult::failure(
+                    pending.tool_call.id.clone(),
+                    pending.tool_call.name(),
+                    "provider_id is required",
+                ));
+            };
+
+            let attachment = attach_provider_to_conversation(
+                store,
+                conversation_id,
+                &crate::tool::ToolProviderId::new(provider_id),
+                registry,
+            );
+
+            let Err(error) = attachment else {
+                return Ok(ToolExecutionResult {
+                    tool_call_id: pending.tool_call.id.clone(),
+                    tool_name: pending.tool_call.name().to_string(),
+                    content: "provider attached".to_string(),
+                    parts: Vec::new(),
+                    success: true,
+                });
+            };
+
+            Ok(ToolExecutionResult::failure(
+                pending.tool_call.id.clone(),
+                pending.tool_call.name(),
+                error.to_string(),
+            ))
+        }
+        _ => Ok(ToolExecutionResult::failure(
+            pending.tool_call.id.clone(),
+            pending.tool_call.name(),
+            "unknown built-in tool",
+        )),
+    }
+}
+
+/// Formats the attachable provider list exactly as model-facing plain text.
+fn list_attachable_providers(store: &Store, registry: &ToolProviderRegistry) -> Result<String> {
+    let mut lines = vec!["provider_id, description".to_string()];
+    for manifest in registry.provider_manifests() {
+        if !store.provider_is_enabled(&manifest.provider_id)? {
+            continue;
+        }
+        let Some(status) = registry.provider_status(&manifest.provider_id) else {
+            continue;
+        };
+        if status.available {
+            lines.push(format!(
+                "{}, {}",
+                manifest.provider_id.as_str(),
+                manifest.description
+            ));
+        }
+    }
+
+    Ok(lines.join("\n"))
+}
+
+/// Validates and attaches every tool from one enabled, healthy provider.
+fn attach_provider_to_conversation(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    provider_id: &crate::tool::ToolProviderId,
+    registry: &ToolProviderRegistry,
+) -> Result<()> {
+    if registry.provider_manifest(provider_id).is_none() {
+        return Err(error::not_found(format!(
+            "provider does not exist: {provider_id}"
+        )));
+    }
+    if !store.provider_is_enabled(provider_id)? {
+        return Err(error::invalid_request(format!(
+            "provider is not installed, enabled, and healthy: {provider_id}"
+        )));
+    }
+    let Some(status) = registry.provider_status(provider_id) else {
+        return Err(error::not_found(format!(
+            "provider does not exist: {provider_id}"
+        )));
+    };
+    if !status.available {
+        return Err(error::invalid_request(format!(
+            "provider is not healthy: {provider_id}"
+        )));
+    }
+
+    let existing_names = store
+        .load_attached_tools(conversation_id)?
+        .into_iter()
+        .map(|tool| tool.schema_name)
+        .collect::<HashSet<_>>();
+    let new_tools = registry
+        .list_provider_tools(provider_id)?
+        .into_iter()
+        .filter(|tool| !existing_names.contains(&tool.schema_name))
+        .map(|tool| tool.attached_tool())
+        .collect::<Vec<_>>();
+    store.insert_attached_tools(conversation_id, &new_tools)
 }
 
 pub(crate) fn store_pending_tool_result_at_head(

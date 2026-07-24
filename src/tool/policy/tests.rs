@@ -30,6 +30,38 @@ fn attached_executable_tool_requires_approval() {
 }
 
 #[test]
+fn builtin_provider_listing_requires_approval_in_manual_mode() {
+    let policy = ToolPolicy;
+    let tool_call = ToolCall::function("call_1", "windie__list_providers", "{}");
+    let attached_tool = AttachedTool {
+        schema_name: ToolSchemaName::new("windie__list_providers"),
+        description: "List available providers".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            ToolProviderId::new("windie"),
+            ProviderToolName::new("list_providers"),
+            ToolProviderKind::Builtin,
+        ),
+        permissions: Vec::new(),
+        annotations: ToolAnnotations::default(),
+    };
+
+    let decision = policy.decide(
+        &tool_call,
+        Some(&attached_tool),
+        true,
+        ToolApprovalMode::Manual,
+    );
+
+    assert_eq!(
+        decision,
+        PolicyDecision::Ask {
+            reason: "tool requires approval".to_string()
+        }
+    );
+}
+
+#[test]
 fn detached_tool_is_denied() {
     let policy = ToolPolicy;
     let tool_call = ToolCall::function("call_1", "run_shell", r#"{"command":"ls"}"#);

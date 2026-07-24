@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
 
+use super::builtin;
 #[cfg(test)]
 use super::mcp::McpProviderDefinition;
 use super::mcp::{McpToolProvider, approved_mcp_providers};
@@ -19,7 +20,7 @@ use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolDefinition, ToolExecutionResult, ToolProviderId,
-    ToolProviderKind,
+    ToolProviderKind, ToolSchemaName,
 };
 
 #[derive(Debug, Clone)]
@@ -53,6 +54,18 @@ impl ToolProviderRegistry {
     /// Builds the default registry for the local Windie process.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns Windie-owned control tools that are always model-visible.
+    pub fn builtin_tools(&self) -> Vec<ToolDefinition> {
+        builtin::definitions()
+    }
+
+    /// Finds one Windie-owned control tool by its model-facing schema name.
+    pub fn builtin_tool(&self, schema_name: &ToolSchemaName) -> Option<ToolDefinition> {
+        self.builtin_tools()
+            .into_iter()
+            .find(|tool| tool.schema_name == *schema_name)
     }
 
     /// Builds a registry whose MCP tool calls reuse persistent provider
@@ -169,6 +182,7 @@ impl ToolProviderRegistry {
     /// tool.
     pub fn can_execute(&self, attached_tool: &AttachedTool) -> bool {
         match attached_tool.provider.kind {
+            ToolProviderKind::Builtin => true,
             ToolProviderKind::Mcp => self
                 .mcp_provider(&attached_tool.provider.provider_id)
                 .is_some(),
@@ -183,6 +197,9 @@ impl ToolProviderRegistry {
         tool_call: &ToolCall,
     ) -> Result<ToolExecutionResult> {
         match attached_tool.provider.kind {
+            ToolProviderKind::Builtin => Err(error::invalid_request(
+                "built-in tools must be executed by the Windie runtime",
+            )),
             ToolProviderKind::Mcp => {
                 let Some(provider) = self.mcp_provider(&attached_tool.provider.provider_id) else {
                     return Err(error::invalid_request(format!(

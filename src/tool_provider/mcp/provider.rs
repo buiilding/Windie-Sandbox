@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use super::desktop_commander;
+use super::{basic_memory, desktop_commander};
 use crate::mcp::{self, McpCommand, McpTool};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
@@ -33,6 +33,7 @@ pub(in crate::tool_provider) struct McpProviderDefinition {
 #[derive(Debug, Clone, Copy)]
 /// Provider-specific setup Windie runs before starting an MCP process.
 pub(in crate::tool_provider) enum McpProviderSetup {
+    BasicMemoryProject,
     DesktopCommanderConfig,
 }
 
@@ -115,6 +116,7 @@ impl McpToolProvider {
     /// Runs provider-specific setup before Windie starts the MCP process.
     pub(in crate::tool_provider) fn prepare(&self) -> Result<()> {
         match self.setup {
+            Some(McpProviderSetup::BasicMemoryProject) => basic_memory::prepare(),
             Some(McpProviderSetup::DesktopCommanderConfig) => desktop_commander::prepare(),
             None => Ok(()),
         }

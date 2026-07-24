@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
 import MessageRow, { PendingAssistantRow } from "@/components/windie/MessageRow";
 import Composer from "@/components/windie/Composer";
-import { isExecutionNode } from "@/lib/treeProjection";
-import { MoreHorizontal } from "lucide-react";
+import { executionToolCount, isExecutionNode } from "@/lib/treeProjection";
+import { ChevronDown, ChevronUp, MoreHorizontal } from "lucide-react";
 
 function transcriptItems(nodes) {
   const items = [];
@@ -31,7 +31,8 @@ function transcriptItems(nodes) {
   return items;
 }
 
-function TranscriptExecutionGroup({ group, expanded, onToggle }) {
+function TranscriptExecutionGroup({ group, expanded, onToggle, toolCount }) {
+  const count = toolCount ?? executionToolCount(group.nodes.map(({ node }) => node));
   return (
     <>
       <button
@@ -42,8 +43,12 @@ function TranscriptExecutionGroup({ group, expanded, onToggle }) {
         className="relative flex w-full items-center justify-center gap-2 py-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
         title={expanded ? "collapse tool execution" : "expand tool execution"}
       >
-        <MoreHorizontal className="size-4" strokeWidth={1.75} />
-        <span>{expanded ? "collapse" : `${group.nodes.length} tools`}</span>
+        {expanded ? (
+          <ChevronDown className="size-4" strokeWidth={1.75} />
+        ) : (
+          <MoreHorizontal className="size-4" strokeWidth={1.75} />
+        )}
+        <span>{expanded ? "collapse" : `${count} ${count === 1 ? "tool" : "tools"}`}</span>
       </button>
       <div className={`windie-reasoning-content ${expanded ? "open" : ""}`}>
         <div className="windie-reasoning-inner">
@@ -52,7 +57,29 @@ function TranscriptExecutionGroup({ group, expanded, onToggle }) {
           ))}
         </div>
       </div>
+      {expanded ? (
+        <button
+          type="button"
+          data-testid={`transcript-execution-collapse-bottom-${group.id}`}
+          aria-expanded="true"
+          onClick={onToggle}
+          className="relative flex w-full items-center justify-center gap-2 py-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+          title="collapse tool execution"
+        >
+          <ChevronUp className="size-4" strokeWidth={1.75} />
+          <span>collapse</span>
+        </button>
+      ) : null}
     </>
+  );
+}
+
+function LiveExecutionIndicator({ count }) {
+  return (
+    <div className="relative flex w-full items-center justify-center gap-2 py-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+      <MoreHorizontal className="size-4" strokeWidth={1.75} />
+      <span>{count} {count === 1 ? "tool" : "tools"}</span>
+    </div>
   );
 }
 
@@ -62,6 +89,13 @@ export default function ChatPanel() {
   const prevConvId = useRef(activeConv?.id);
   const [expandedExecutionGroups, setExpandedExecutionGroups] = useState(() => new Set());
   const items = useMemo(() => transcriptItems(selectedPathNodes), [selectedPathNodes]);
+  const pendingToolCount = pendingAssistant?.toolCount || 0;
+  const lastItem = items[items.length - 1];
+  const currentExecutionGroup = lastItem?.type === "execution" ? lastItem : null;
+  const persistedToolCount = currentExecutionGroup
+    ? executionToolCount(currentExecutionGroup.nodes.map(({ node }) => node))
+    : 0;
+  const liveToolCount = pendingToolCount > persistedToolCount ? pendingToolCount : 0;
 
   // Scroll behavior:
   //   - On conversation switch: reset scroll to top (do NOT auto-scroll to bottom;
@@ -105,11 +139,15 @@ export default function ChatPanel() {
         {items.map((item) => {
           if (item.type === "execution") {
             const expanded = expandedExecutionGroups.has(item.id);
+            const toolCount = item === currentExecutionGroup && liveToolCount
+              ? liveToolCount
+              : undefined;
             return (
               <TranscriptExecutionGroup
                 key={item.id}
                 group={item}
                 expanded={expanded}
+                toolCount={toolCount}
                 onToggle={() => setExpandedExecutionGroups((current) => {
                   const next = new Set(current);
                   if (next.has(item.id)) next.delete(item.id);
@@ -128,6 +166,9 @@ export default function ChatPanel() {
             />
           );
         })}
+        {!currentExecutionGroup && liveToolCount > 0 ? (
+          <LiveExecutionIndicator count={liveToolCount} />
+        ) : null}
         {pendingAssistant && selectedSession ? (
           <PendingAssistantRow
             pendingAssistant={pendingAssistant}

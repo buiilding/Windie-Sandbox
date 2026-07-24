@@ -123,10 +123,7 @@ pub(super) fn router(state: ApiState) -> Router {
             "/api/conversations/{conversation_id}/sessions",
             get(list_conversation_sessions).post(create_session_branch),
         )
-        .route(
-            "/api/sessions/{session_id}/query",
-            post(query_session),
-        )
+        .route("/api/sessions/{session_id}/query", post(query_session))
         .route(
             "/api/sessions/{session_id}/continue",
             post(continue_session),

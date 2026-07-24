@@ -355,6 +355,7 @@ export function WindieProvider({ children }) {
     sessionsById,
     selectedSession,
     selectedSessionId,
+    getSelectedSession,
     pendingAssistant,
     streaming,
     refreshSessions,
@@ -571,7 +572,28 @@ export function WindieProvider({ children }) {
     []
   );
 
-  const truncateAfter = useCallback((convId, nodeId) => runMutation(() => apiRequest(`/api/conversations/${convId}/truncate`, { method: "POST", body: JSON.stringify({ message_id: nodeId }) })), [runMutation]);
+  const truncateAfter = useCallback(
+    async (convId, nodeId) => {
+      await runMutation(
+        () => apiRequest(`/api/conversations/${convId}/truncate`, { method: "POST", body: JSON.stringify({ message_id: nodeId }) }),
+        { reload: false }
+      );
+      const sessions = await refreshSessions();
+      if (convId !== activeConvId) return sessions;
+
+      const selected = getSelectedSession();
+      const head =
+        (selected?.conversationId === convId
+          ? selected.currentHeadMessageId || selected.startHeadMessageId
+          : null) || nodeId;
+      await loadConversation(convId, {
+        headMessageId: head,
+        countTokens: false,
+      });
+      return sessions;
+    },
+    [activeConvId, getSelectedSession, loadConversation, refreshSessions, runMutation]
+  );
   const removeMessage = useCallback(
     async (convId, nodeId) => {
       const conversation = conversations.find((item) => item.id === convId);

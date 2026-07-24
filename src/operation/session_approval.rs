@@ -93,7 +93,14 @@ where
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            execute_pending_tool_call(&pending, &attached_tool, runtime.tools).await?
+            execute_pending_tool_call(
+                store,
+                conversation_id,
+                &pending,
+                &attached_tool,
+                runtime.tools,
+            )
+            .await?
         }
     };
     let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;

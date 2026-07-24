@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, Value, ValueRef};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;

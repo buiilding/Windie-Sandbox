@@ -68,7 +68,7 @@ export default function TreePanel() {
                   <div className="flex items-center justify-center gap-2 px-2">
                       <MoreHorizontal className="size-5 text-muted-foreground" strokeWidth={1.5} />
                       <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                        {node.expanded ? "collapse" : `${node.hiddenIds.length} tools`}
+                        {node.expanded ? "collapse" : `${node.toolCount} ${node.toolCount === 1 ? "tool" : "tools"}`}
                       </span>
                   </div>
                 </button>

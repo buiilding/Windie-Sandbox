@@ -19,6 +19,8 @@ import cuaLightLogo from "@/assets/provider-icons/cua-light.svg";
 import desktopCommanderLogo from "@/assets/provider-icons/desktop-commander.svg";
 import blenderLogo from "@/assets/provider-icons/blender.svg";
 import brightDataLogo from "@/assets/provider-icons/brightdata.svg";
+import basicMemoryDarkLogo from "@/assets/provider-icons/basic-memory-dark.svg";
+import basicMemoryLightLogo from "@/assets/provider-icons/basic-memory-light.svg";
 
 const providerIcons = {
   "desktop-commander": desktopCommanderLogo,
@@ -31,6 +33,7 @@ const providerRepositories = {
   "desktop-commander": "https://github.com/wonderwhy-er/DesktopCommanderMCP",
   "blender-mcp": "https://github.com/ahujasid/blender-mcp",
   brightdata: "https://github.com/brightdata/brightdata-mcp",
+  "basic-memory": "https://github.com/basicmachines-co/basic-memory",
 };
 
 function providerStatus(provider, toolStatus) {
@@ -73,10 +76,21 @@ function StatusBadge({ status }) {
   );
 }
 
+function providerIconPresentation(providerId) {
+  if (providerId === "desktop-commander" || providerId === "basic-memory") {
+    return { size: "size-10", scale: 1.35 };
+  }
+
+  return { size: "size-7", scale: 1 };
+}
+
 function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
   const providerIcon = provider.providerId === "cua-driver"
     ? theme === "dark" ? cuaDarkLogo : cuaLightLogo
+    : provider.providerId === "basic-memory"
+      ? theme === "dark" ? basicMemoryDarkLogo : basicMemoryLightLogo
     : providerIcons[provider.providerId];
+  const iconPresentation = providerIconPresentation(provider.providerId);
   const Icon = providerIcon || ShieldCheck;
   const status = providerStatus(provider, toolStatus);
   const installed = Boolean(provider.installation);
@@ -87,9 +101,15 @@ function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
   return (
     <article className="group flex min-h-[250px] flex-col border border-border bg-card/60 transition-colors hover:border-muted-foreground/50 hover:bg-card">
       <div className="flex items-start gap-3 border-b border-border p-4">
-        <div className="grid size-12 shrink-0 place-items-center border border-border bg-surface text-foreground shadow-sm">
+        <div className="grid size-12 shrink-0 place-items-center overflow-hidden border border-border bg-surface text-foreground shadow-sm">
           {providerIcon ? (
-            <img src={providerIcon} alt="" aria-hidden="true" className="size-7 object-contain" />
+            <img
+              src={providerIcon}
+              alt=""
+              aria-hidden="true"
+              className={`${iconPresentation.size} object-contain`}
+              style={{ transform: `scale(${iconPresentation.scale})` }}
+            />
           ) : (
             <Icon className="size-6" strokeWidth={1.35} />
           )}

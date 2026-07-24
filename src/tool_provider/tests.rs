@@ -36,6 +36,10 @@ fn approved_brightdata_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("brightdata").unwrap())
 }
 
+fn approved_basic_memory_provider() -> McpToolProvider {
+    McpToolProvider::new(approved_mcp_provider("basic-memory").unwrap())
+}
+
 #[test]
 fn approved_provider_manifests_describe_their_runtime_requirements() {
     let providers = [
@@ -43,6 +47,7 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
         approved_desktop_commander_provider(),
         approved_blender_mcp_provider(),
         approved_brightdata_provider(),
+        approved_basic_memory_provider(),
     ];
 
     let ids = providers
@@ -55,7 +60,8 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
             "cua-driver",
             "desktop-commander",
             "blender-mcp",
-            "brightdata"
+            "brightdata",
+            "basic-memory"
         ]
     );
 
@@ -68,6 +74,34 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
         assert!(!manifest.platforms.is_empty());
         assert!(!manifest.permissions.is_empty());
     }
+}
+
+#[test]
+fn basic_memory_manifest_declares_local_runtime_requirements() {
+    let provider = approved_basic_memory_provider();
+    let manifest = provider.manifest();
+
+    assert_eq!(manifest.launch.program, "uvx");
+    assert_eq!(
+        manifest.launch.args,
+        vec![
+            "basic-memory".to_string(),
+            "mcp".to_string(),
+            "--project".to_string(),
+            "windie-memory".to_string(),
+        ]
+    );
+    assert!(
+        manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.executable == "uvx")
+    );
+    assert!(
+        manifest
+            .permissions
+            .contains(&crate::tool_provider::ProviderPermission::Filesystem)
+    );
 }
 
 #[test]

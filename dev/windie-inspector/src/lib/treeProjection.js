@@ -9,6 +9,24 @@ export function isExecutionNode(node) {
   return role === "tool" || (role === "assistant" && node.message.metadata?.toolCalls?.length > 0);
 }
 
+/**
+ * Counts actual tool invocations represented by an execution group.
+ *
+ * An execution group normally contains both an assistant tool-call message
+ * and its tool result. Counting nodes would therefore count one invocation
+ * twice. The two persisted representations are reconciled by taking the
+ * larger of the tool-call and tool-result counts.
+ */
+export function executionToolCount(nodes) {
+  const assistantCalls = nodes.reduce(
+    (count, node) =>
+      count + (node?.message?.role === "assistant" ? node.message.metadata?.toolCalls?.length || 0 : 0),
+    0
+  );
+  const toolResults = nodes.filter((node) => node?.message?.role === "tool").length;
+  return Math.max(assistantCalls, toolResults);
+}
+
 function groupId(startId) {
   return `execution-group:${startId}`;
 }
@@ -29,7 +47,11 @@ function collectExecutionSubtree(nodes, startId) {
   };
 
   visit(startId);
-  return { hiddenIds, frontierIds };
+  return {
+    hiddenIds,
+    frontierIds,
+    toolCount: executionToolCount(hiddenIds.map((id) => nodes[id])),
+  };
 }
 
 /**
@@ -57,7 +79,7 @@ export function projectTree(conversation, expandedGroupIds = new Set()) {
     else rootIds.push(id);
   };
 
-  const addGroup = (startId, parentId, hiddenIds, frontierIds, expanded = false) => {
+  const addGroup = (startId, parentId, hiddenIds, frontierIds, toolCount, expanded = false) => {
     const id = groupId(startId);
     projectedNodes[id] = {
       id,
@@ -68,6 +90,7 @@ export function projectTree(conversation, expandedGroupIds = new Set()) {
       childrenIds: [],
       hiddenIds,
       frontierIds,
+      toolCount,
     };
     if (parentId) projectedNodes[parentId]?.childrenIds.push(id);
     else rootIds.push(id);
@@ -101,15 +124,15 @@ export function projectTree(conversation, expandedGroupIds = new Set()) {
   };
 
   function renderExecutionGroup(startId, parentId) {
-    const { hiddenIds, frontierIds } = collectExecutionSubtree(sourceNodes, startId);
+    const { hiddenIds, frontierIds, toolCount } = collectExecutionSubtree(sourceNodes, startId);
     const id = groupId(startId);
     if (expandedGroupIds.has(id)) {
-      const groupNodeId = addGroup(startId, parentId, hiddenIds, frontierIds, true);
+      const groupNodeId = addGroup(startId, parentId, hiddenIds, frontierIds, toolCount, true);
       renderExpandedExecution(startId, groupNodeId);
       return;
     }
 
-    const groupNodeId = addGroup(startId, parentId, hiddenIds, frontierIds);
+    const groupNodeId = addGroup(startId, parentId, hiddenIds, frontierIds, toolCount);
     frontierIds.forEach((childId) => renderVisible(childId, groupNodeId));
   }
 

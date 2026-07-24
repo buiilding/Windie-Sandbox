@@ -5,6 +5,7 @@
 //! code-approved MCP server definitions.
 
 mod approved;
+mod basic_memory;
 mod blender;
 mod brightdata;
 mod cua;

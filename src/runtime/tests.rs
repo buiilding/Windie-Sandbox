@@ -258,6 +258,65 @@ struct ToolThenReplyLlm {
     second_turn_messages: Mutex<Vec<Message>>,
 }
 
+struct AttachThenReplyLlm {
+    calls: Mutex<usize>,
+    second_turn_tools: Mutex<Vec<ToolSchema>>,
+}
+
+impl AttachThenReplyLlm {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(0),
+            second_turn_tools: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl RuntimeLlm for AttachThenReplyLlm {
+    async fn stream<F>(
+        &self,
+        _messages: &[Message],
+        tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
+        mut handle_delta: F,
+    ) -> Result<AssistantResponse>
+    where
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
+    {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+
+        if *calls == 1 {
+            assert!(
+                tools
+                    .iter()
+                    .any(|tool| tool.name.as_str() == "windie__attach_provider")
+            );
+            return Ok(AssistantResponse {
+                content: String::new(),
+                metadata: MessageMetadata {
+                    tool_calls: vec![ToolCall::function(
+                        "call_attach",
+                        "windie__attach_provider",
+                        r#"{"provider_id":"desktop-commander"}"#,
+                    )],
+                    ..Default::default()
+                },
+                finish_reason: Some(FinishReason::ToolCalls),
+            });
+        }
+
+        *self.second_turn_tools.lock().unwrap() = tools.to_vec();
+        handle_delta(LlmStreamEvent::AssistantDelta("done"))?;
+        Ok(AssistantResponse {
+            content: "done".to_string(),
+            metadata: MessageMetadata::default(),
+            finish_reason: Some(FinishReason::Stop),
+        })
+    }
+}
+
 impl ToolThenReplyLlm {
     fn new() -> Self {
         Self {
@@ -558,7 +617,8 @@ async fn approve_latest_head_tool_call_with_registry(
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            execute_pending_tool_call(&pending, &attached_tool, registry).await?
+            execute_pending_tool_call(store, conversation_id, &pending, &attached_tool, registry)
+                .await?
         }
     };
     store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
@@ -763,7 +823,14 @@ async fn run_head_passes_tool_schemas_to_llm() {
         .await
         .unwrap();
 
-    assert_eq!(*llm.tools.lock().unwrap(), vec![tool_schema]);
+    let mut expected_tools = vec![tool_schema];
+    expected_tools.extend(
+        ToolProviderRegistry::new()
+            .builtin_tools()
+            .into_iter()
+            .map(|tool| tool.attached_tool().schema()),
+    );
+    assert_eq!(*llm.tools.lock().unwrap(), expected_tools);
 }
 
 #[tokio::test]
@@ -824,7 +891,14 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
         let captured_messages = llm.messages.lock().unwrap();
         assert_eq!(captured_messages[0].role, Role::System);
         assert_eq!(captured_messages[0].content, "global prompt");
-        assert_eq!(*llm.tools.lock().unwrap(), vec![global_tool.clone()]);
+        let mut expected_tools = vec![global_tool.clone()];
+        expected_tools.extend(
+            registry
+                .builtin_tools()
+                .into_iter()
+                .map(|tool| tool.attached_tool().schema()),
+        );
+        assert_eq!(*llm.tools.lock().unwrap(), expected_tools);
     }
 
     // Run from sibling head — should see same prompt + tools (tree-wide)
@@ -847,7 +921,14 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
     let captured_messages = llm2.messages.lock().unwrap();
     assert_eq!(captured_messages[0].role, Role::System);
     assert_eq!(captured_messages[0].content, "global prompt");
-    assert_eq!(*llm2.tools.lock().unwrap(), vec![global_tool]);
+    let mut expected_tools = vec![global_tool];
+    expected_tools.extend(
+        registry
+            .builtin_tools()
+            .into_iter()
+            .map(|tool| tool.attached_tool().schema()),
+    );
+    assert_eq!(*llm2.tools.lock().unwrap(), expected_tools);
 }
 
 #[tokio::test]
@@ -1523,6 +1604,159 @@ async fn run_head_reports_llm_failure() {
         .unwrap_err();
 
     assert_eq!(error.to_string(), "llm failed");
+}
+
+#[test]
+fn builtin_tools_are_always_model_visible_but_not_persisted() {
+    let store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let registry = ToolProviderRegistry::new();
+
+    let context = build_model_context(&store, &conversation_id, None, &registry).unwrap();
+    let names = context
+        .tool_schemas
+        .into_iter()
+        .map(|tool| tool.name.as_str().to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names,
+        vec!["windie__list_providers", "windie__attach_provider"]
+    );
+    assert!(
+        store
+            .load_tool_schemas(&conversation_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn builtin_provider_tools_list_and_attach_through_existing_conversation_storage() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let registry = test_mcp_registry();
+    let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
+
+    let list_definition = registry
+        .builtin_tool(&ToolSchemaName::new("windie__list_providers"))
+        .unwrap();
+    let user_id = store
+        .insert_message(
+            &conversation_id,
+            None,
+            Role::User,
+            "attach a provider",
+            None,
+        )
+        .unwrap();
+    let list_pending = PendingToolCall {
+        result_parent_message_id: user_id.clone(),
+        tool_call: ToolCall::function("call_list", "windie__list_providers", "{}"),
+    };
+    let list_result = execute_pending_tool_call(
+        &mut store,
+        &conversation_id,
+        &list_pending,
+        &list_definition.attached_tool(),
+        &registry,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        list_result.content,
+        "provider_id, description\ndesktop-commander, Test MCP provider."
+    );
+
+    let attach_definition = registry
+        .builtin_tool(&ToolSchemaName::new("windie__attach_provider"))
+        .unwrap();
+    let attach_pending = PendingToolCall {
+        result_parent_message_id: user_id,
+        tool_call: ToolCall::function(
+            "call_attach",
+            "windie__attach_provider",
+            r#"{"provider_id":"desktop-commander"}"#,
+        ),
+    };
+    let attach_result = execute_pending_tool_call(
+        &mut store,
+        &conversation_id,
+        &attach_pending,
+        &attach_definition.attached_tool(),
+        &registry,
+    )
+    .await
+    .unwrap();
+
+    assert!(attach_result.success);
+    assert_eq!(attach_result.content, "provider attached");
+    assert_eq!(
+        store.load_tool_schemas(&conversation_id).unwrap()[0]
+            .name
+            .as_str(),
+        TEST_TOOL_SCHEMA_NAME
+    );
+}
+
+#[tokio::test]
+async fn runtime_attaches_provider_then_queries_with_provider_tools() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    store
+        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
+        .unwrap();
+    let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
+    store
+        .insert_message(
+            &conversation_id,
+            None,
+            Role::User,
+            "attach desktop commander",
+            None,
+        )
+        .unwrap();
+
+    let registry = test_mcp_registry();
+    let llm = AttachThenReplyLlm::new();
+    let events = NoopRuntimeEventSink;
+    let head_message_id = latest_head(&store, &conversation_id);
+    let outcome = advance_until_blocked(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: head_message_id.as_ref(),
+            tools: &registry,
+            model_request: RuntimeModelRequest::new(None, None),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(outcome, RuntimeOutcome::Completed { .. }));
+    assert!(
+        path(&store, &conversation_id)
+            .iter()
+            .any(|message| message.role == Role::Tool && message.content == "provider attached")
+    );
+    assert!(
+        llm.second_turn_tools
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|tool| tool.name.as_str() == TEST_TOOL_SCHEMA_NAME)
+    );
 }
 
 fn insert_multi_tool_call_assistant(

@@ -1,177 +1,228 @@
 # Windie
 
-Windie is a minimal local AI runtime foundation for computers.
+**Build AI that can use a computer.**
 
-It is for developers who care about security, performance, and low-level AI
-systems that live inside the local operating environment. The goal is not to
-build a chat app first. The goal is to build small, inspectable runtime
-primitives that can later support chat, shell tools, browser use, computer use,
-scheduled wakeups, local memory, and other computer-native AI capabilities
-through the same explicit boundaries.
+Windie is a local runtime for AI agents. It gives an assistant durable state,
+exact context, explicit tools, and a way to pause for approval and resume
+without losing the thread.
 
-Windie currently provides a Rust CLI, a localhost developer API, SQLite-backed
-conversation storage, model-facing context construction, and a small developer
-frontend under `dev/` for exercising the runtime primitives.
+Windie is not a personal assistant or messaging gateway. It is the small
+runtime underneath one.
 
-## Why This Exists
+- [Website](https://windieos.com)
+- [GitHub](https://github.com/buiilding/Windie-Sandbox)
 
-Most AI product surfaces treat the local computer as a thin client. Windie takes
-the opposite direction: the local runtime should own local state, local
-permissions, local files, local tool execution, and local inspection. Provider
-inference is delegated to Bifrost through one OpenAI-compatible path.
+<!-- Add the inspector screenshot at docs/inspector-preview.png. -->
+![Windie inspector preview](docs/inspector-preview.png)
 
-The project is intentionally small and direct. Each primitive should be easy to
-read, test, replace, and audit.
+## What Windie gives an agent
 
-## What Windie Owns
+An agent running on Windie can:
 
-Windie owns:
+- branch a conversation from any message
+- inspect the exact context sent to the model
+- expose only the tools attached to the current conversation
+- wait for approval before using a sensitive capability
+- queue new work while a session is running
+- resume after an approval, interruption, or client disconnect
+- show the assistant response, reasoning, tool calls, and results as they happen
 
-- local interaction flow
-- conversation trees and explicit-head path inspection
-- model-facing context construction
-- SQLite persistence
-- localhost developer API primitives
-- local image input handling
-- explicit tool execution policy
-- built-in local tool execution primitives
-- terminal and JSON output formatting
+The result is an agent whose state and actions remain visible to the person
+running it.
 
-Bifrost owns provider routing, provider keys, model calls, and LLM
-observability. Clients such as the CLI or developer inspector own user
-interface surfaces.
+## One run, end to end
 
-## Current Shape
+Suppose an agent needs to inspect a Blender scene. Windie stores the request in
+a conversation tree, builds the model context for the selected branch, exposes
+the attached Blender tool, and sends the request to the model. When the model
+asks to call Blender, Windie applies its approval policy, pauses if approval is
+needed, stores the result, and continues the run from the new message head.
 
-Important runtime files:
-
-- `src/main.rs` wires components together.
-- `src/cli.rs` parses startup arguments into typed commands.
-- `src/api.rs` exposes the localhost developer API.
-- `src/operation.rs` coordinates shared CLI/API operations.
-- `src/conversation.rs` defines message, role, identifier, tool schema, and
-  assistant metadata types.
-- `src/context.rs` builds model-facing context from the active conversation
-  path.
-- `src/store.rs` owns SQLite persistence.
-- `src/runtime.rs` coordinates head-based run execution.
-- `src/llm.rs` owns the OpenAI-compatible Bifrost HTTP request path.
-- `src/policy.rs` owns tool execution policy decisions.
-- `src/shell.rs` executes Windie's built-in `run_shell` tool.
-- `src/perf.rs` owns local benchmark timing.
-
-Developer-facing references:
-
-- `commands.md` is the concrete CLI command reference.
-- `dev/README.md` explains the localhost developer clients.
-- `benches/README.md` explains benchmark fixtures and comparison.
-- `AGENTS.md` records the project rules, boundaries, and current scope.
-
-## Local Development
-
-Install Windie and prepare its user-local runtime layout:
-
-```bash
-curl -fsSL https://github.com/buiilding/Windie-Sandbox/releases/latest/download/install.sh | sh
+```text
+input
+  → session
+  → conversation head
+  → model context
+  → assistant response or tool call
+  → approval policy
+  → extension execution
+  → stored result
+  → next model turn
 ```
 
-This installs the `windie` binary, creates `~/.windie`, creates
-`~/.windie/.env` when missing, prepares Bifrost and benchmark directories, and
-verifies `npx` for the public Bifrost runtime.
+## Conversations are trees
 
-Set provider keys explicitly:
+Windie stores messages as a durable tree instead of a flat transcript. Every
+run starts from an explicit message head, and the model sees the path from the
+root to that head.
 
-```bash
-windie env OPENAI_API_KEY=<key>
-windie env OPENROUTER_API_KEY=<key>
+That makes branching a first-class runtime operation:
+
+- fork at any message
+- insert a new child under a selected head
+- inspect every branch
+- truncate descendants
+- remove or replace messages
+- run separate sessions from different heads
+
+The complete tree stays in SQLite. The model receives only the context resolved
+for the selected head, including the system prompt, attached tools, and any
+applicable compaction checkpoint.
+
+## Extensions
+
+Extensions are how agents gain capabilities.
+
+Windie treats an extension as a provider-backed capability, not just a prompt
+file or a name in a catalog. A provider can declare its tools, launch command,
+dependencies, secrets, platforms, permissions, scope, authentication, setup
+instructions, and health state.
+
+The capability boundary is explicit:
+
+```text
+provider installed
+  → provider enabled
+  → tools discovered
+  → tool attached to a conversation
+  → schema exposed to the model
+  → tool call checked by policy
+  → execution approved or denied
 ```
 
-Install or verify approved MCP dependencies:
+Provider availability does not grant the model access to every tool. Windie also
+provides two built-in control tools for discovering and attaching providers:
 
-```bash
-windie install cua-driver
-windie install blender-mcp
-```
+- `windie__list_providers`
+- `windie__attach_provider`
 
-Build and check the Rust runtime:
+The current extension catalog is MCP-based. Plugin and skill provider families
+are future extension surfaces.
 
-```bash
-cargo fmt
-cargo check
-```
+### Current providers
 
-Start the localhost developer API:
+| Provider | Capability | Scope |
+| --- | --- | --- |
+| [CUA Driver](https://github.com/trycua/cua) | Computer control | Local |
+| [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) | Filesystem and process control | Local |
+| [Blender MCP](https://github.com/ahujasid/blender-mcp) | Blender and 3D workflows | Local |
+| [Basic Memory](https://github.com/basicmachines-co/basic-memory) | Local memory and notes | Local |
+| [Bright Data](https://github.com/brightdata/brightdata-mcp) | Live web and data access | Cloud |
 
-```bash
-target/release/windie api
-```
+## Local by design
 
-The API listens on `http://127.0.0.1:8787`, starts Bifrost when needed, and
-uses a user-local API token from `~/.windie/api-token` unless
-`WINDIE_API_TOKEN` is set.
+Windie keeps the runtime, conversation state, sessions, provider state, and
+approval decisions on the user's machine.
 
-Open the developer inspector:
-
-```bash
-target/release/windie inspector
-```
-
-The inspector command starts the local React inspector when needed and opens the
-browser with the API token already attached.
-
-## Provider Path
-
-Windie talks to Bifrost at:
+Model inference can be local or remote. Windie talks to [Bifrost](https://github.com/maximhq/bifrost)
+through one OpenAI-compatible Responses path at:
 
 ```text
 http://localhost:8080/v1
 ```
 
-Windie uses an OpenAI-compatible request path. Bifrost handles provider
-unification for OpenAI, Anthropic, Ollama, vLLM, and other providers.
+Bifrost handles routing for OpenAI, Anthropic, Ollama, vLLM, and other supported
+providers. The Windie runtime does not need a separate code path for each model
+provider.
 
-The API starts Bifrost on launch. You can still start or stop Bifrost
-explicitly through Windie:
+## Run Windie
+
+Install the latest release:
 
 ```bash
-windie gateway start
-windie gateway stop
+curl -fsSL https://github.com/buiilding/Windie-Sandbox/releases/latest/download/install.sh | sh
 ```
 
-Provider secrets should stay outside source control in the explicit provider
-key environment used for Bifrost startup.
+Configure model providers and approved extensions:
 
-## Contribution Bar
+```bash
+windie onboard
+```
 
-Windie is foundation code. Contributions should keep the runtime:
+Start the localhost API:
 
-- secure by default
-- explicit about permission boundaries
-- fast enough to benchmark locally
-- inspectable through typed data and JSON views
-- small enough for one developer to reason about
-- strict about module ownership
-- boring in the best way
+```bash
+windie api
+```
 
-Prefer typed runtime contracts over loose strings and ad hoc JSON. Keep provider
-HTTP details in `src/llm.rs`, API route mapping in `src/api.rs`, CLI argument
-parsing in `src/cli.rs`, persistence in `src/store.rs`, and model context
-construction in `src/context.rs`.
+Open the developer inspector:
 
-Do not add broad product surfaces before the primitive exists cleanly. The CLI
-and localhost API are current test harnesses for the runtime, not the whole
-product.
+```bash
+windie inspector
+```
 
-## Good First Areas
+Windie keeps its local runtime data under `~/.windie`. The API listens on
+`http://127.0.0.1:8787` and uses a per-process API token.
 
-Good contributions are small and boundary-respecting:
+## Developer surfaces
 
-- add focused tests around an existing primitive
-- improve typed contracts around runtime data
-- tighten API/CLI parity for an existing operation
-- improve provider-free benchmark coverage
-- make inspection output clearer without moving ownership
-- document command behavior in `commands.md`
+Windie has four local clients:
 
-Before changing architecture, read `AGENTS.md`. It is the source of truth for
-current scope and ownership boundaries.
+- **Rust CLI** for conversations, trees, sessions, approvals, tools, providers,
+  gateway control, and benchmarks.
+- **Localhost JSON API** for applications and test harnesses.
+- **React inspector** for conversation trees, model context, sessions,
+  approvals, providers, and extension state.
+- **Plain browser client** under `dev/windie-ui` for a smaller chat and tool
+  surface.
+
+The clients call runtime operations. They do not own persistence, context
+construction, provider execution, or approval policy.
+
+## Current scope
+
+Windie is early foundation code. The current focus is reliable local runtime
+primitives and a localhost developer harness.
+
+Implemented today:
+
+- durable conversation trees and explicit execution heads
+- session supervision, queued inputs, approvals, and event streaming
+- SQLite persistence for messages, images, sessions, tools, and provider state
+- provider-backed MCP tools with lifecycle and health management
+- computer, filesystem, Blender, memory, and web-data integrations
+- model-context inspection and compaction checkpoints
+- typed CLI, API, runtime, storage, and provider boundaries
+
+Not currently part of the runtime:
+
+- messaging-channel integrations
+- scheduled or file-event wakeups
+- a dynamic public extension marketplace
+- plugin and skill packages
+- self-improving agent behavior
+- remote worker orchestration
+
+## Development
+
+From the repository root:
+
+```bash
+cargo fmt
+cargo check
+cargo test
+```
+
+Read [commands.md](commands.md) for the concrete CLI reference, [dev/README.md](dev/README.md)
+for the local developer clients, and [AGENTS.md](AGENTS.md) for ownership
+boundaries and project rules.
+
+The runtime is organized by responsibility:
+
+- `src/conversation/` — messages, roles, IDs, parts, and assistant metadata
+- `src/context.rs` — model-facing context construction
+- `src/runtime/` — model turns and tool execution flow
+- `src/session/` — durable session state and live supervision
+- `src/tool/` — tool schemas, providers, results, and approval data
+- `src/tool_provider/` — provider discovery, lifecycle, and execution
+- `src/store/` — SQLite persistence
+- `src/api/` — localhost routes, authentication, JSON, and SSE
+- `src/llm/` — Bifrost HTTP and provider wire serialization
+
+## Contributing
+
+Windie is foundation code. Prefer one clear primitive at a time.
+
+Keep runtime actions explicit, typed, inspectable, and replaceable. Add tests
+before expanding the product surface, and keep provider-specific behavior at
+the provider boundary.

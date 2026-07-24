@@ -1,4 +1,8 @@
 /target/
+.playwright-cli/
+/windie-landing-1st/
+/windie-landing-2nd/
+/windie-landing-3st/
 .windie/perf/
 Clipboard.md
 Clipboard2.md
