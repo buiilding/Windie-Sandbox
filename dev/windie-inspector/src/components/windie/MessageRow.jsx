@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const USER_MESSAGE_PREVIEW_LENGTH = 500;
+const MESSAGE_PREVIEW_LENGTH = 500;
 
 function RoleBadge({ role }) {
   const token = ROLE_TOKENS[role] || ROLE_TOKENS.user;
@@ -277,6 +277,7 @@ export default function MessageRow({ node, index, isLast }) {
   } = useWindie();
   const [editing, setEditing] = useState(false);
   const [userMessageExpanded, setUserMessageExpanded] = useState(false);
+  const [toolOutputExpanded, setToolOutputExpanded] = useState(false);
   const [draft, setDraft] = useState(() => node.message.parts.find((p) => p.type === "text")?.text || "");
 
   const isSelected = selectedNodeId === node.id;
@@ -301,10 +302,15 @@ export default function MessageRow({ node, index, isLast }) {
     : [node.id];
   const hasSiblings = siblings.length > 1;
   const userText = textPart?.text || "";
-  const isLongUserMessage = isUserMessage && userText.length > USER_MESSAGE_PREVIEW_LENGTH;
+  const toolOutput = textPart?.text || "";
+  const isLongUserMessage = isUserMessage && userText.length > MESSAGE_PREVIEW_LENGTH;
   const visibleText = isLongUserMessage && !userMessageExpanded
-    ? `${userText.slice(0, USER_MESSAGE_PREVIEW_LENGTH).trimEnd()}…`
+    ? `${userText.slice(0, MESSAGE_PREVIEW_LENGTH).trimEnd()}…`
     : userText;
+  const isLongToolOutput = role === "tool" && toolOutput.length > MESSAGE_PREVIEW_LENGTH;
+  const visibleToolOutput = isLongToolOutput && !toolOutputExpanded
+    ? `${toolOutput.slice(0, MESSAGE_PREVIEW_LENGTH).trimEnd()}…`
+    : toolOutput;
 
   const commitEdit = () => {
     editMessage(activeConv.id, node.id, draft);
@@ -397,7 +403,7 @@ export default function MessageRow({ node, index, isLast }) {
 
               {role === "tool" ? (
                 <pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-[hsl(var(--tool-call))]/90 bg-[hsl(var(--tool-call))]/5 border border-[hsl(var(--tool-call))]/20 p-2 overflow-x-auto">
-                  {textPart?.text}
+                  {visibleToolOutput}
                 </pre>
               ) : isSystem ? (
                 <div className="font-mono text-xs leading-relaxed text-muted-foreground border-l-2 border-muted-foreground/40 pl-3 py-1 italic">
@@ -405,6 +411,20 @@ export default function MessageRow({ node, index, isLast }) {
                 </div>
               ) : (
                 <MessageMarkdown text={visibleText} isStreaming={isStreaming} />
+              )}
+
+              {isLongToolOutput && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setToolOutputExpanded((current) => !current);
+                  }}
+                  className="mt-2 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {toolOutputExpanded ? "show less" : "show more"}
+                  <ChevronDown className={`size-3 transition-transform duration-300 ${toolOutputExpanded ? "rotate-180" : ""}`} strokeWidth={1.75} />
+                </button>
               )}
 
               {isLongUserMessage && (
