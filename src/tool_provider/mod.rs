@@ -16,6 +16,7 @@ mod tests;
 
 pub use lifecycle::ProviderInstallState;
 pub use manifest::{
-    ProviderDependency, ProviderManifest, ProviderPermission, ProviderPlatform, ProviderSecret,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
+    ProviderPlatform, ProviderScope, ProviderSecret,
 };
 pub use registry::{ToolProviderRegistry, ToolProviderStatus};

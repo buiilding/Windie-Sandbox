@@ -3,7 +3,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
-    ProviderDependency, ProviderManifest, ProviderPermission, ProviderPlatform,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
+    ProviderPlatform, ProviderScope,
 };
 
 /// Returns the code-approved Blender MCP provider definition.
@@ -43,6 +44,17 @@ pub(super) fn definition() -> McpProviderDefinition {
             vec![
                 ProviderPermission::ExternalProcess,
                 ProviderPermission::ComputerControl,
+            ],
+        )
+        .with_metadata(
+            ProviderScope::Local,
+            ProviderAuthentication::None,
+            "creative_tools",
+            &["blender", "3d", "local"],
+            None,
+            &[
+                "Install Blender MCP.",
+                "Start Blender with its MCP bridge enabled.",
             ],
         ),
         provider_id: "blender-mcp",

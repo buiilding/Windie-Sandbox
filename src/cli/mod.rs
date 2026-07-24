@@ -16,6 +16,7 @@ mod bench;
 mod command;
 mod env;
 mod message;
+mod onboard;
 mod parser;
 mod session;
 mod tool_schema;
@@ -24,6 +25,7 @@ mod tool_schema;
 mod tests;
 
 pub use command::{Command, EnvCommand, InsertPart};
+pub use onboard::TerminalOnboarding;
 pub use parser::read;
 
 use bench::*;

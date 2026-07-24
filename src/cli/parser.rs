@@ -26,6 +26,7 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
         [arg] if arg == "api" => Command::Api,
         [arg] if arg == "inspector" => Command::Inspector,
+        [arg] if arg == "onboard" => Command::Onboard,
         [command, target] if command == "install" => Command::Install {
             target: target.to_string(),
         },

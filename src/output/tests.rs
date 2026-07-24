@@ -76,7 +76,7 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
     assert!(lines.contains(&"  windie install <target>".to_string()));
-    assert!(lines.contains(&"  windie env KEY=value".to_string()));
+    assert!(lines.contains(&"  windie env MCP_KEY=value".to_string()));
     assert!(lines.contains(&"  windie bench".to_string()));
     assert!(
         lines.contains(

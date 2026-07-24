@@ -3,7 +3,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
-    ProviderDependency, ProviderManifest, ProviderPermission, ProviderPlatform, ProviderSecret,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
+    ProviderPlatform, ProviderScope, ProviderSecret,
 };
 
 /// Returns the code-approved Bright Data MCP provider definition.
@@ -36,6 +37,17 @@ pub(super) fn definition() -> McpProviderDefinition {
             vec![
                 ProviderPermission::ExternalProcess,
                 ProviderPermission::Network,
+            ],
+        )
+        .with_metadata(
+            ProviderScope::Cloud,
+            ProviderAuthentication::ApiKey,
+            "web_data",
+            &["web", "search", "cloud"],
+            Some("https://brightdata.com/"),
+            &[
+                "Create a Bright Data API token.",
+                "Enter the token when prompted.",
             ],
         ),
         provider_id: "brightdata",

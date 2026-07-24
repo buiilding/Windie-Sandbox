@@ -21,6 +21,11 @@ pub(super) fn router(state: ApiState) -> Router {
         .route("/api/health", get(health))
         .route("/api/status", get(status))
         .route("/api/models", get(list_models))
+        .route("/api/llm/providers", get(list_provider_catalog))
+        .route(
+            "/api/llm/providers/{provider}/keys",
+            post(create_provider_key),
+        )
         .route("/api/model-parameters", get(model_parameters))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))

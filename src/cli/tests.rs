@@ -52,6 +52,13 @@ fn reads_inspector_command() {
 }
 
 #[test]
+fn reads_onboard_command() {
+    let command = command_from_args(["windie".to_string(), "onboard".to_string()]);
+
+    assert!(matches!(command, Command::Onboard));
+}
+
+#[test]
 fn reads_tools_command() {
     let command = command_from_args(["windie".to_string(), "tools".to_string()]);
 

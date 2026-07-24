@@ -22,6 +22,12 @@ pub struct ProviderManifest {
     pub dependencies: Vec<ProviderDependency>,
     pub secrets: Vec<ProviderSecret>,
     pub permissions: Vec<ProviderPermission>,
+    pub scope: ProviderScope,
+    pub authentication: ProviderAuthentication,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub documentation_url: Option<String>,
+    pub setup_guide: Vec<String>,
 }
 
 impl ProviderManifest {
@@ -51,8 +57,52 @@ impl ProviderManifest {
             dependencies,
             secrets,
             permissions,
+            scope: ProviderScope::Local,
+            authentication: ProviderAuthentication::None,
+            category: "other".to_string(),
+            tags: Vec::new(),
+            documentation_url: None,
+            setup_guide: Vec::new(),
         }
     }
+
+    /// Adds catalog metadata used by terminal and inspector onboarding.
+    pub fn with_metadata(
+        mut self,
+        scope: ProviderScope,
+        authentication: ProviderAuthentication,
+        category: impl Into<String>,
+        tags: &[&str],
+        documentation_url: Option<&str>,
+        setup_guide: &[&str],
+    ) -> Self {
+        self.scope = scope;
+        self.authentication = authentication;
+        self.category = category.into();
+        self.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
+        self.documentation_url = documentation_url.map(str::to_string);
+        self.setup_guide = setup_guide.iter().map(|step| (*step).to_string()).collect();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Where the provider's useful service runs relative to Windie.
+pub enum ProviderScope {
+    Local,
+    Cloud,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Credential interaction required before the provider can start.
+pub enum ProviderAuthentication {
+    None,
+    ApiKey,
+    Environment,
+    OAuth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

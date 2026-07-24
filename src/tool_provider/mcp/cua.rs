@@ -3,7 +3,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::McpCommand;
 use crate::tool_provider::{
-    ProviderDependency, ProviderManifest, ProviderPermission, ProviderPlatform,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
+    ProviderPlatform, ProviderScope,
 };
 
 /// Returns the code-approved CUA Driver MCP provider definition.
@@ -31,6 +32,14 @@ pub(super) fn definition() -> McpProviderDefinition {
                 ProviderPermission::ExternalProcess,
                 ProviderPermission::ComputerControl,
             ],
+        )
+        .with_metadata(
+            ProviderScope::Local,
+            ProviderAuthentication::None,
+            "computer_control",
+            &["computer-use", "local"],
+            None,
+            &["Install CUA Driver.", "Allow computer-control permissions."],
         ),
         provider_id: "cua-driver",
         schema_prefix: "cua_driver",

@@ -53,6 +53,7 @@ async fn main() -> Result<()> {
     match cli::read() {
         Command::Api => api().await,
         Command::Inspector => open_inspector(),
+        Command::Onboard => onboard().await,
         Command::Noop => Ok(()),
         Command::AttachTool {
             conversation_id,
@@ -159,6 +160,12 @@ async fn main() -> Result<()> {
 /// Starts Windie's local developer API server.
 async fn api() -> Result<()> {
     api::serve(api_address(), GATEWAY_URL, BASE_URL, MODEL).await
+}
+
+/// Runs the terminal-only onboarding wizard without opening a browser.
+async fn onboard() -> Result<()> {
+    let mut console = cli::TerminalOnboarding::new();
+    operation::run_onboarding(&mut console, gateway_url(), GATEWAY_URL, base_url()).await
 }
 
 /// Opens the local browser inspector with the API token already attached.

@@ -14,7 +14,8 @@ use serde_json::json;
 use super::provider::{McpProviderDefinition, McpProviderSetup};
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
-    ProviderDependency, ProviderManifest, ProviderPermission, ProviderPlatform,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
+    ProviderPlatform, ProviderScope,
 };
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
@@ -46,6 +47,17 @@ pub(super) fn definition() -> McpProviderDefinition {
             vec![
                 ProviderPermission::ExternalProcess,
                 ProviderPermission::Filesystem,
+            ],
+        )
+        .with_metadata(
+            ProviderScope::Local,
+            ProviderAuthentication::None,
+            "filesystem",
+            &["files", "local", "processes"],
+            None,
+            &[
+                "Install Desktop Commander.",
+                "Review filesystem permissions.",
             ],
         ),
         provider_id: "desktop-commander",

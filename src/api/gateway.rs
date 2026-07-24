@@ -43,6 +43,24 @@ pub(super) async fn list_models(
     }))
 }
 
+/// Lists Bifrost's complete provider catalog for onboarding clients.
+pub(super) async fn list_provider_catalog(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+) -> ApiResult<crate::llm::ProviderCatalog> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    Ok(Json(client.provider_catalog().await?))
+}
+
+/// Creates one Bifrost-managed provider key from an onboarding client.
+pub(super) async fn create_provider_key(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path(provider): Path<String>,
+    Json(request): Json<crate::llm::CreateProviderKey>,
+) -> ApiResult<crate::llm::ProviderKey> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    Ok(Json(client.create_provider_key(&provider, &request).await?))
+}
+
 #[derive(Debug, Deserialize)]
 /// Query parameters for model-parameter metadata lookup.
 pub(super) struct ModelParametersQuery {
