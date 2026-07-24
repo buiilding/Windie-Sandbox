@@ -1,228 +1,128 @@
+<!-- Uncomment once a banner image is added to assets/
+<p align="center">
+  <img src="assets/banner.png" alt="Windie" width="100%">
+</p>
+-->
+
 # Windie
+<p align="center">
+  <a href="https://github.com/buiilding/Windie-Sandbox">Windie</a> | <a href="https://windie.sh">Website</a>
+</p>
+<p align="center">
+  <a href="https://github.com/buiilding/Windie-Sandbox/releases"><img src="https://img.shields.io/badge/Release-GitHub-blue?style=for-the-badge" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://discord.gg/windie"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="AGENTS.md"><img src="https://img.shields.io/badge/Agents-AGENTS.md-lightgrey?style=for-the-badge" alt="Agents: AGENTS.md"></a>
+</p>
 
-**Build AI that can use a computer.**
+**AI that lives on your computer.**
 
-Windie is a local runtime for AI agents. It gives an assistant durable state,
-exact context, explicit tools, and a way to pause for approval and resume
-without losing the thread.
-
-Windie is not a personal assistant or messaging gateway. It is the small
-runtime underneath one.
-
-- [Website](https://windieos.com)
-- [GitHub](https://github.com/buiilding/Windie-Sandbox)
-
-<!-- Add the inspector screenshot at docs/inspector-preview.png. -->
-![Windie inspector preview](docs/inspector-preview.png)
-
-## What Windie gives an agent
-
-An agent running on Windie can:
-
-- branch a conversation from any message
-- inspect the exact context sent to the model
-- expose only the tools attached to the current conversation
-- wait for approval before using a sensitive capability
-- queue new work while a session is running
-- resume after an approval, interruption, or client disconnect
-- show the assistant response, reasoning, tool calls, and results as they happen
-
-The result is an agent whose state and actions remain visible to the person
-running it.
-
-## One run, end to end
-
-Suppose an agent needs to inspect a Blender scene. Windie stores the request in
-a conversation tree, builds the model context for the selected branch, exposes
-the attached Blender tool, and sends the request to the model. When the model
-asks to call Blender, Windie applies its approval policy, pauses if approval is
-needed, stores the result, and continues the run from the new message head.
-
-```text
-input
-  → session
-  → conversation head
-  → model context
-  → assistant response or tool call
-  → approval policy
-  → extension execution
-  → stored result
-  → next model turn
-```
-
-## Conversations are trees
-
-Windie stores messages as a durable tree instead of a flat transcript. Every
-run starts from an explicit message head, and the model sees the path from the
-root to that head.
-
-That makes branching a first-class runtime operation:
-
-- fork at any message
-- insert a new child under a selected head
-- inspect every branch
-- truncate descendants
-- remove or replace messages
-- run separate sessions from different heads
-
-The complete tree stays in SQLite. The model receives only the context resolved
-for the selected head, including the system prompt, attached tools, and any
-applicable compaction checkpoint.
-
-## Extensions
-
-Extensions are how agents gain capabilities.
-
-Windie treats an extension as a provider-backed capability, not just a prompt
-file or a name in a catalog. A provider can declare its tools, launch command,
-dependencies, secrets, platforms, permissions, scope, authentication, setup
-instructions, and health state.
-
-The capability boundary is explicit:
-
-```text
-provider installed
-  → provider enabled
-  → tools discovered
-  → tool attached to a conversation
-  → schema exposed to the model
-  → tool call checked by policy
-  → execution approved or denied
-```
-
-Provider availability does not grant the model access to every tool. Windie also
-provides two built-in control tools for discovering and attaching providers:
-
-- `windie__list_providers`
-- `windie__attach_provider`
-
-The current extension catalog is MCP-based. Plugin and skill provider families
-are future extension surfaces.
-
-### Current providers
-
-| Provider | Capability | Scope |
-| --- | --- | --- |
-| [CUA Driver](https://github.com/trycua/cua) | Computer control | Local |
-| [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) | Filesystem and process control | Local |
-| [Blender MCP](https://github.com/ahujasid/blender-mcp) | Blender and 3D workflows | Local |
-| [Basic Memory](https://github.com/basicmachines-co/basic-memory) | Local memory and notes | Local |
-| [Bright Data](https://github.com/brightdata/brightdata-mcp) | Live web and data access | Cloud |
-
-## Local by design
-
-Windie keeps the runtime, conversation state, sessions, provider state, and
-approval decisions on the user's machine.
-
-Model inference can be local or remote. Windie talks to [Bifrost](https://github.com/maximhq/bifrost)
-through one OpenAI-compatible Responses path at:
-
-```text
-http://localhost:8080/v1
-```
-
-Bifrost handles routing for OpenAI, Anthropic, Ollama, vLLM, and other supported
-providers. The Windie runtime does not need a separate code path for each model
-provider.
-
-## Run Windie
-
-Install the latest release:
+Windie is a quiet, foundational harness that runs beside your operating system — not inside a browser tab, not behind someone else's API wall, not locked into a single cloud provider. One line to install. No bloat. No cloud lock-in.
 
 ```bash
-curl -fsSL https://github.com/buiilding/Windie-Sandbox/releases/latest/download/install.sh | sh
+curl -sL https://windie.sh/install | sh
 ```
 
-Configure model providers and approved extensions:
+---
+
+## What Windie Is
+
+Windie is a **layer, not a lock-in**. It's the minimal local harness that other software — agents, tools, workflows — builds on top of. Think of it as the quiet ground floor of an ambient AI operating layer, sitting on your machine, doing exactly what you tell it to and nothing you don't.
+
+Three principles guide everything Windie does:
+
+- **Foundational** — A minimal local harness other software builds upon. Not a platform trying to own your workflow — the ground floor underneath it.
+- **Transparent** — You always know what your agent is doing and why. No hidden calls, no black boxes. Every capability is legible, inspectable, and yours to revoke.
+- **Yours** — Your harness, your data, your agent, your behavior. It lives on your computer and adapts to you — never the other way around.
+
+---
+
+## Full Control Over Context
+
+Conversations in Windie aren't flat chat logs — they're **trees**.
+
+Every conversation is made up of **sessions**, and each session is a **branch**: a specific path through the tree that defines exactly what context gets sent to the LLM. Branch off at any point, explore a different direction, and come back — nothing is overwritten, nothing is lost.
+
+And because you can see the whole tree, you can edit it:
+
+- Modify or delete any message — yours, the assistant's, even tool calls and tool outputs
+- Rewrite history to steer a conversation without starting over
+- Curate exactly what context the model sees, message by message
+
+No black-box context window. You control what the AI knows, every step of the way.
+
+---
+
+## Self-Extending Tool Use
+
+Windie doesn't ship with a fixed toolbox — it can **give itself tools based on the context of your task** in order to get the job done.
+
+Two built-in tools drive this:
+
+| Tool | Purpose |
+|---|---|
+| `list_providers` | Discover which tool providers are available |
+| `attach_provider` | Attach a provider on demand, mid-conversation |
+
+When a task needs a capability Windie doesn't currently have attached, it looks, finds it, and attaches it — live, in front of you.
+
+---
+
+## Extensions for the Harness
+
+Windie's capabilities come from a growing **registry** of MCPs, plugins, and skills.
+
+### MCPs (5)
+
+| Provider | Author | Description |
+|---|---|---|
+| **Cua Driver** | trycua | Native computer-use driver — click, type, and navigate your desktop like a human would |
+| **Blender** | ahujasid | Model, light, and render from a prompt |
+| **Desktop Commander** | wonderwhy-er | Filesystem, shell, and process control |
+| **Basic Memory** | basicmachines-co | Portable, plain-text, persistent knowledge |
+| **Brightdata** | brightdata | Fetch the live web, at scale |
+
+### Plugins (0)
+*Coming soon.*
+
+### Skills (0)
+*Coming soon.*
+
+The registry is open — anyone can build and publish new MCPs, plugins, and skills for the harness.
+
+---
+
+## Model Providers
+
+Windie is model-agnostic. Bring your own key, run locally, or use whatever provider fits your workflow. Currently supported:
+
+Anthropic · Azure · Bedrock · Bedrock Mantle · Cerebras · Cohere · Deepseek · Elevenlabs · Fireworks · Gemini · Groq · Huggingface · Mistral · Nebius · Ollama · OpenAI · Opencode Go · Opencode Zen · OpenRouter · Parasail · Perplexity · Replicate · Runware · Runway · Sarvam · SGL · Vertex · vLLM · Wafer · xAI
+
+Configure any provider with a simple API key — or run fully local with Ollama, SGLang, or vLLM.
+
+> **Recommended setup:** Kimi K2, via a Kimi Code subscription (not the raw Moonshot API). Kimi Code is subscription-based rather than usage-metered, so you get significantly more usage for the price — and Kimi K2 holds up well against much more expensive frontier models at a fraction of the cost.
+
+---
+
+## Why Windie
+
+- **No cloud lock-in** — swap models and providers freely
+- **No black boxes** — inspect every tool call, every context change, every decision
+- **No fixed toolbox** — Windie extends itself as your tasks demand
+- **No bloat** — one install script, one quiet harness
+
+---
+
+## Get Started
 
 ```bash
-windie onboard
+curl -sL https://windie.sh/install | sh
 ```
 
-Start the localhost API:
+- [Documentation](#)
+- [Registry](#)
+- [GitHub](#)
 
-```bash
-windie api
-```
+---
 
-Open the developer inspector:
-
-```bash
-windie inspector
-```
-
-Windie keeps its local runtime data under `~/.windie`. The API listens on
-`http://127.0.0.1:8787` and uses a per-process API token.
-
-## Developer surfaces
-
-Windie has four local clients:
-
-- **Rust CLI** for conversations, trees, sessions, approvals, tools, providers,
-  gateway control, and benchmarks.
-- **Localhost JSON API** for applications and test harnesses.
-- **React inspector** for conversation trees, model context, sessions,
-  approvals, providers, and extension state.
-- **Plain browser client** under `dev/windie-ui` for a smaller chat and tool
-  surface.
-
-The clients call runtime operations. They do not own persistence, context
-construction, provider execution, or approval policy.
-
-## Current scope
-
-Windie is early foundation code. The current focus is reliable local runtime
-primitives and a localhost developer harness.
-
-Implemented today:
-
-- durable conversation trees and explicit execution heads
-- session supervision, queued inputs, approvals, and event streaming
-- SQLite persistence for messages, images, sessions, tools, and provider state
-- provider-backed MCP tools with lifecycle and health management
-- computer, filesystem, Blender, memory, and web-data integrations
-- model-context inspection and compaction checkpoints
-- typed CLI, API, runtime, storage, and provider boundaries
-
-Not currently part of the runtime:
-
-- messaging-channel integrations
-- scheduled or file-event wakeups
-- a dynamic public extension marketplace
-- plugin and skill packages
-- self-improving agent behavior
-- remote worker orchestration
-
-## Development
-
-From the repository root:
-
-```bash
-cargo fmt
-cargo check
-cargo test
-```
-
-Read [commands.md](commands.md) for the concrete CLI reference, [dev/README.md](dev/README.md)
-for the local developer clients, and [AGENTS.md](AGENTS.md) for ownership
-boundaries and project rules.
-
-The runtime is organized by responsibility:
-
-- `src/conversation/` — messages, roles, IDs, parts, and assistant metadata
-- `src/context.rs` — model-facing context construction
-- `src/runtime/` — model turns and tool execution flow
-- `src/session/` — durable session state and live supervision
-- `src/tool/` — tool schemas, providers, results, and approval data
-- `src/tool_provider/` — provider discovery, lifecycle, and execution
-- `src/store/` — SQLite persistence
-- `src/api/` — localhost routes, authentication, JSON, and SSE
-- `src/llm/` — Bifrost HTTP and provider wire serialization
-
-## Contributing
-
-Windie is foundation code. Prefer one clear primitive at a time.
-
-Keep runtime actions explicit, typed, inspectable, and replaceable. Add tests
-before expanding the product surface, and keep provider-specific behavior at
-the provider boundary.
+*Put AI where your computer is.*
