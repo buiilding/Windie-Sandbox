@@ -316,7 +316,7 @@ function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
   );
 }
 
-export default function ExtensionsPanel() {
+export default function ExtensionsPanel({ hideHeader = false }) {
   const {
     theme,
     providerInstallations,
@@ -365,6 +365,7 @@ export default function ExtensionsPanel() {
 
   return (
     <div className="flex flex-col">
+      {!hideHeader && (
       <div className="border-b border-border bg-surface/25 px-5 py-5">
         <div className="flex items-start gap-3">
           <div className="grid size-10 shrink-0 place-items-center border border-accent/50 bg-accent/10 text-accent">
@@ -382,6 +383,7 @@ export default function ExtensionsPanel() {
           </div>
         </div>
       </div>
+      )}
 
       <div className="p-5">
         <div className="mb-5 flex items-center gap-1 border-b border-border pb-3" role="tablist" aria-label="extension catalogs">

@@ -71,6 +71,15 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
           tools{approvals.length > 0 ? ` · ${approvals.length}` : ""}
         </button>
 
+        <button
+          type="button"
+          data-testid="topbar-open-onboarding"
+          onClick={() => onOverlayChange(overlay === "onboarding" ? null : "onboarding")}
+          className={`pointer-events-auto h-6 px-1.5 border border-border bg-background font-mono text-[10px] uppercase tracking-widest text-foreground hover:bg-surface-hover transition-colors ${overlay === "onboarding" ? "bg-surface-hover" : ""}`}
+        >
+          setup
+        </button>
+
         <div className="h-4 w-px bg-border mx-1" />
 
         <span className="uppercase tracking-widest">tokens</span>

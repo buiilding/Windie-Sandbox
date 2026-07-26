@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import TopBar from "@/components/windie/TopBar";
 import Sidebar from "@/components/windie/Sidebar";
 import ChatPanel from "@/components/windie/ChatPanel";
 import InspectorPanel from "@/components/windie/InspectorPanel";
 import { useWindie } from "@/context/WindieContext";
+import { listLlmProviders } from "@/lib/windieApi";
 
 export default function Windie() {
   const [overlay, setOverlay] = useState(null);
+  const onboardingCheckedRef = useRef(false);
   const [treeCollapsed, setTreeCollapsed] = useState(() => {
     try {
       const value = window.localStorage.getItem("windie.treeCollapsed");
@@ -15,6 +17,25 @@ export default function Windie() {
       return false;
     }
   });
+
+  // First-run setup: if no LLM provider is configured in Bifrost, open the
+  // onboarding overlay once. No persisted flag — configuration state itself is
+  // the signal, so CLI-onboarded users never see this.
+  useEffect(() => {
+    if (onboardingCheckedRef.current) return;
+    onboardingCheckedRef.current = true;
+    listLlmProviders()
+      .then((providers) => {
+        const configured = providers.some(
+          (provider) => provider.configured || provider.authentication === "none"
+        );
+        if (!configured) setOverlay("onboarding");
+      })
+      .catch(() => {
+        // The API may still be starting; skipping the auto-show is safer than
+        // showing setup to an already-configured user.
+      });
+  }, []);
 
   useEffect(() => {
     try {
