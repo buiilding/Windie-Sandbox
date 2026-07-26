@@ -39,6 +39,10 @@ Three principles guide everything Windie does:
 
 ## Full Control Over Context
 
+<p align="center">
+  <img src="assets/Inspector-preview.png" alt="Windie Inspector" width="100%">
+</p>
+
 Conversations in Windie aren't flat chat logs — they're **trees**.
 
 Every conversation is made up of **sessions**, and each session is a **branch**: a specific path through the tree that defines exactly what context gets sent to the LLM. Branch off at any point, explore a different direction, and come back — nothing is overwritten, nothing is lost.
@@ -53,7 +57,13 @@ No black-box context window. You control what the AI knows, every step of the wa
 
 ---
 
-## Self-Extending Tool Use
+## Extensions for the Harness
+
+<p align="center">
+  <img src="assets/extension-lib-preview.png" alt="Windie Extensions Library" width="100%">
+</p>
+
+Windie's capabilities come from a growing **registry** of MCPs, plugins, and skills.
 
 Windie doesn't ship with a fixed toolbox — it can **give itself tools based on the context of your task** in order to get the job done.
 
@@ -66,12 +76,6 @@ Two built-in tools drive this:
 
 When a task needs a capability Windie doesn't currently have attached, it looks, finds it, and attaches it — live, in front of you.
 
----
-
-## Extensions for the Harness
-
-Windie's capabilities come from a growing **registry** of MCPs, plugins, and skills.
-
 ### MCPs (5)
 
 | Provider | Author | Description |
@@ -81,6 +85,24 @@ Windie's capabilities come from a growing **registry** of MCPs, plugins, and ski
 | **Desktop Commander** | wonderwhy-er | Filesystem, shell, and process control |
 | **Basic Memory** | basicmachines-co | Portable, plain-text, persistent knowledge |
 | **Brightdata** | brightdata | Fetch the live web, at scale |
+
+#### Cua Preview
+
+<p align="center">
+  <img src="assets/cua-preview.gif" alt="Cua Preview" width="100%">
+</p>
+
+#### Blender Preview
+
+<p align="center">
+  <img src="assets/blender-preview.gif" alt="Blender Preview" width="100%">
+</p>
+
+#### Desktop Commander Preview
+
+<p align="center">
+  <img src="assets/DC-preview.png" alt="Desktop Commander Preview" width="100%">
+</p>
 
 ### Plugins (0)
 *Coming soon.*
