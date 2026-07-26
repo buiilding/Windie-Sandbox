@@ -213,6 +213,13 @@ export async function createLlmProviderKey(provider, { name, value }) {
   });
 }
 
+export async function setEnvValues(assignments) {
+  return apiRequest("/api/env", {
+    method: "PUT",
+    body: JSON.stringify({ assignments }),
+  });
+}
+
 export async function setupProvider(providerId) {
   return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/setup`, {
     method: "POST",

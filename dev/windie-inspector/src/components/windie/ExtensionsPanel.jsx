@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Download,
   ExternalLink,
+  KeyRound,
   Loader2,
   PackageOpen,
   Power,
@@ -13,6 +14,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
+import { setEnvValues } from "@/lib/windieApi";
 import { useWindie } from "@/context/WindieContext";
 import cuaDarkLogo from "@/assets/provider-icons/cua-dark.svg";
 import cuaLightLogo from "@/assets/provider-icons/cua-light.svg";
@@ -84,6 +86,97 @@ function providerIconPresentation(providerId) {
   return { size: "size-7", scale: 1 };
 }
 
+function ProviderSecretsForm({ providerId, secrets, disabled }) {
+  const [values, setValues] = useState(() =>
+    Object.fromEntries(secrets.map((secret) => [secret.env_key, ""]))
+  );
+  const [pending, setPending] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const filled = secrets.filter((secret) => values[secret.env_key]?.trim());
+  const missingRequired = secrets.some(
+    (secret) => secret.required && !values[secret.env_key]?.trim()
+  );
+
+  const save = async () => {
+    if (pending || filled.length === 0 || missingRequired) return;
+    setPending(true);
+    try {
+      await setEnvValues(
+        Object.fromEntries(
+          filled.map((secret) => [secret.env_key, values[secret.env_key].trim()])
+        )
+      );
+      setSaved(true);
+      setValues(Object.fromEntries(secrets.map((secret) => [secret.env_key, ""])));
+      toast.message("provider secret saved", { description: providerId });
+    } catch (error) {
+      toast.error("failed to save provider secret", {
+        description: error?.message || String(error),
+      });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+        <KeyRound className="size-3" strokeWidth={1.75} />
+        credentials · stored in ~/.windie/.env
+      </div>
+      {secrets.map((secret) => (
+        <div key={secret.env_key} className="space-y-1">
+          <label
+            htmlFor={`secret-${providerId}-${secret.env_key}`}
+            className="block font-mono text-[9px] uppercase tracking-widest text-muted-foreground"
+          >
+            {secret.description}
+            {secret.required ? "" : " · optional"}
+          </label>
+          <input
+            id={`secret-${providerId}-${secret.env_key}`}
+            type="password"
+            data-testid={`secret-input-${providerId}-${secret.env_key}`}
+            value={values[secret.env_key]}
+            disabled={disabled || pending}
+            onChange={(event) => {
+              setValues((current) => ({
+                ...current,
+                [secret.env_key]: event.target.value,
+              }));
+              setSaved(false);
+            }}
+            placeholder={secret.env_key}
+            autoComplete="new-password"
+            data-1p-ignore
+            data-lpignore="true"
+            className="h-8 w-full border border-border bg-background px-2 font-mono text-[11px] outline-none focus:border-foreground disabled:opacity-50"
+          />
+        </div>
+      ))}
+      <div className="flex items-center justify-end">
+        <button
+          type="button"
+          data-testid={`secret-save-${providerId}`}
+          disabled={disabled || pending || filled.length === 0 || missingRequired}
+          onClick={save}
+          className="inline-flex h-7 items-center gap-1.5 border border-foreground bg-foreground px-3 font-mono text-[10px] uppercase tracking-widest text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {pending ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : saved ? (
+            <CheckCircle2 className="size-3" />
+          ) : (
+            <Check className="size-3" />
+          )}
+          {pending ? "saving" : saved ? "saved" : "save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
   const providerIcon = provider.providerId === "cua-driver"
     ? theme === "dark" ? cuaDarkLogo : cuaLightLogo
@@ -143,6 +236,14 @@ function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
             </a>
           ) : null}
         </div>
+
+        {(provider.secrets || []).length > 0 && (
+          <ProviderSecretsForm
+            providerId={provider.providerId}
+            secrets={provider.secrets}
+            disabled={pending}
+          />
+        )}
       </div>
 
       <div className="flex min-h-12 items-center gap-2 border-t border-border bg-surface/25 px-4 py-2">
