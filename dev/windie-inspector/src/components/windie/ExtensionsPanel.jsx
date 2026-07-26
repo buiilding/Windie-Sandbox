@@ -99,7 +99,7 @@ function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
   const repositoryUrl = providerRepositories[provider.providerId];
 
   return (
-    <article className="group flex min-h-[250px] flex-col border border-border bg-card/60 transition-colors hover:border-muted-foreground/50 hover:bg-card">
+    <article className="group flex flex-col border border-border bg-card/60 transition-colors hover:border-muted-foreground/50 hover:bg-card">
       <div className="flex items-start gap-3 border-b border-border p-4">
         <div className="grid size-12 shrink-0 place-items-center overflow-hidden border border-border bg-surface text-foreground shadow-sm">
           {providerIcon ? (
@@ -126,7 +126,7 @@ function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
       </div>
 
       <div className="flex flex-1 flex-col gap-4 p-4">
-        <p className="min-h-[42px] text-[12px] leading-relaxed text-muted-foreground">{provider.description}</p>
+        <p className="text-[12px] leading-relaxed text-muted-foreground">{provider.description}</p>
 
         <div className="mt-auto flex items-center justify-between gap-3 border-t border-border pt-3 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           <span>{provider.kind || "mcp"}</span>
@@ -263,7 +263,7 @@ export default function ExtensionsPanel() {
   };
 
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex flex-col">
       <div className="border-b border-border bg-surface/25 px-5 py-5">
         <div className="flex items-start gap-3">
           <div className="grid size-10 shrink-0 place-items-center border border-accent/50 bg-accent/10 text-accent">
@@ -282,7 +282,7 @@ export default function ExtensionsPanel() {
         </div>
       </div>
 
-      <div className="flex-1 p-5">
+      <div className="p-5">
         <div className="mb-5 flex items-center gap-1 border-b border-border pb-3" role="tablist" aria-label="extension catalogs">
           {catalogs.map((entry) => (
             <button

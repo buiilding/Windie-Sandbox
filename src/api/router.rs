@@ -14,7 +14,13 @@ pub(super) fn router(state: ApiState) -> Router {
             HeaderValue::from_static("http://localhost:5173"),
             HeaderValue::from_static("http://127.0.0.1:5173"),
         ])
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([CONTENT_TYPE, HeaderName::from_static(API_TOKEN_HEADER)]);
 
     Router::new()
@@ -23,9 +29,14 @@ pub(super) fn router(state: ApiState) -> Router {
         .route("/api/models", get(list_models))
         .route("/api/llm/providers", get(list_provider_catalog))
         .route(
+            "/api/llm/providers/{provider}/ensure",
+            post(ensure_provider),
+        )
+        .route(
             "/api/llm/providers/{provider}/keys",
             post(create_provider_key),
         )
+        .route("/api/env", axum::routing::put(set_env_values_handler))
         .route("/api/model-parameters", get(model_parameters))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))

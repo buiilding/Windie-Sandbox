@@ -51,6 +51,26 @@ pub(super) async fn list_provider_catalog(
     Ok(Json(client.provider_catalog().await?))
 }
 
+#[derive(Debug, Serialize)]
+/// Result of ensuring a Bifrost provider configuration exists.
+pub(super) struct EnsureProviderResponse {
+    pub(super) ensured: bool,
+}
+
+/// Creates Bifrost's default provider configuration before its first key.
+///
+/// Onboarding clients call this before submitting a key for a provider that
+/// has not been configured yet. Bifrost treats an existing provider as a
+/// no-op, so clients may call this unconditionally.
+pub(super) async fn ensure_provider(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path(provider): Path<String>,
+) -> ApiResult<EnsureProviderResponse> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    client.ensure_provider(&provider).await?;
+    Ok(Json(EnsureProviderResponse { ensured: true }))
+}
+
 /// Creates one Bifrost-managed provider key from an onboarding client.
 pub(super) async fn create_provider_key(
     axum::extract::State(state): axum::extract::State<ApiState>,

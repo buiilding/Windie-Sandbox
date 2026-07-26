@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import ExtensionsPanel from "@/components/windie/ExtensionsPanel";
+import LlmProvidersPanel from "@/components/windie/LlmProvidersPanel";
 
 function Section({ title, children, defaultOpen = true, right, testId, resetKey }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -53,6 +54,7 @@ export default function InspectorPanel({ mode, onClose }) {
   const [pendingToolActionKeys, setPendingToolActionKeys] = useState([]);
   const [collapsedToolProviderIds, setCollapsedToolProviderIds] = useState(null);
   const [toolsView, setToolsView] = useState("attached");
+  const [systemView, setSystemView] = useState("prompt");
   const pendingRef = useRef(new Set());
   const initRef = useRef(new Set());
 
@@ -60,6 +62,10 @@ export default function InspectorPanel({ mode, onClose }) {
 
   useEffect(() => {
     if (mode !== "tools") setToolsView("attached");
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== "system") setSystemView("prompt");
   }, [mode]);
 
   const attachedNames = useMemo(() => new Set(toolSchemas.map((s) => s.name)), [toolSchemas]);
@@ -140,7 +146,7 @@ export default function InspectorPanel({ mode, onClose }) {
 
   return (
     <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center px-6 pt-12 pb-6 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
-      <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl min-h-[70vh]" : "max-w-4xl max-h-[calc(100vh-7rem)]"}`}>
+      <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl h-[77vh] self-start" : "max-w-4xl max-h-[calc(100vh-7rem)]"} ${mode === "tools" && toolsView === "extensions" ? "h-[77vh] self-start" : ""}`}>
         <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system prompt" : "tools"}</span>
           <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
@@ -170,21 +176,48 @@ export default function InspectorPanel({ mode, onClose }) {
             </span>
           </div>
         )}
+        {mode === "system" && (
+          <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-surface/20 px-3">
+            <button
+              type="button"
+              data-testid="system-tab-prompt"
+              onClick={() => setSystemView("prompt")}
+              className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${systemView === "prompt" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"}`}
+            >
+              prompt
+            </button>
+            <button
+              type="button"
+              data-testid="system-tab-providers"
+              onClick={() => setSystemView("providers")}
+              className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${systemView === "providers" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"}`}
+            >
+              providers
+            </button>
+            <span className="ml-auto font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
+              {systemView === "providers" ? "model access" : "conversation-wide"}
+            </span>
+          </div>
+        )}
         <div className="flex-1 min-h-0 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
           {mode === "system" ? (
-            <div className="min-h-[calc(70vh-2.5rem)] flex flex-col p-6 gap-4">
+            systemView === "providers" ? (
+              <LlmProvidersPanel />
+            ) : (
+            <div className="min-h-full flex flex-col p-6 gap-4">
               <textarea
                 data-testid="inspector-sysprompt-textarea"
                 value={sysDraft}
                 onChange={(e) => setSysDraft(e.target.value)}
                 placeholder="Write the system prompt..."
-                className="flex-1 min-h-[55vh] w-full resize-none bg-transparent border border-border p-4 font-mono text-sm leading-relaxed outline-none focus:border-foreground"
+                className="flex-1 w-full resize-none bg-transparent border border-border p-4 font-mono text-sm leading-relaxed outline-none focus:border-foreground"
               />
               <div className="flex items-center justify-between">
                 <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">conversation-wide</span>
                 <button data-testid="inspector-sysprompt-commit" onClick={saveSystemPrompt} className="text-[10px] uppercase px-3 py-1.5 border border-foreground bg-foreground text-background font-mono">save</button>
               </div>
             </div>
+            )
           ) : toolsView === "extensions" ? (
             <ExtensionsPanel />
           ) : (

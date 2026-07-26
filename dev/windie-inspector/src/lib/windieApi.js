@@ -187,6 +187,32 @@ export async function listProviderInstallations() {
   return Array.isArray(body) ? body : body.providers || [];
 }
 
+export async function listLlmProviders() {
+  const body = await apiRequest("/api/llm/providers");
+  return body.providers || [];
+}
+
+export async function ensureLlmProvider(provider) {
+  return apiRequest(`/api/llm/providers/${encodeURIComponent(provider)}/ensure`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function createLlmProviderKey(provider, { name, value }) {
+  return apiRequest(`/api/llm/providers/${encodeURIComponent(provider)}/keys`, {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      value,
+      models: ["*"],
+      blacklisted_models: [],
+      weight: 1.0,
+      enabled: true,
+    }),
+  });
+}
+
 export async function setupProvider(providerId) {
   return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/setup`, {
     method: "POST",

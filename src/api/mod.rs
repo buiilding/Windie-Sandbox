@@ -45,6 +45,7 @@ use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
 
 mod auth;
 mod conversation;
+mod env;
 mod error;
 mod gateway;
 mod health;
@@ -60,6 +61,7 @@ mod tool;
 
 use auth::*;
 use conversation::*;
+use env::*;
 use error::*;
 use gateway::*;
 use health::*;
