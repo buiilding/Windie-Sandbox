@@ -2,6 +2,15 @@ export function currentSessionHead(session) {
   return session?.currentHeadMessageId || null;
 }
 
+export function sessionAtHead(sessions, conversationId, headMessageId) {
+  if (!conversationId || !headMessageId) return null;
+  return (sessions || []).find(
+    (session) =>
+      session?.conversationId === conversationId &&
+      currentSessionHead(session) === headMessageId
+  ) || null;
+}
+
 export function resolveSessionTarget({
   session,
   conversationId,

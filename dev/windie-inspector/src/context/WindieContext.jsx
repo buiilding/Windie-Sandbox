@@ -29,6 +29,7 @@ import {
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
 } from "@/lib/windieMappers";
+import { sessionAtHead } from "@/lib/sessionTarget";
 import { useSessionRuntime } from "@/hooks/useSessionRuntime";
 
 const WindieCtx = createContext(null);
@@ -115,7 +116,6 @@ export function WindieProvider({ children }) {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [viewHeadId, setViewHeadId] = useState(null);
   const [theme, setTheme] = useState("dark");
-  const [treeOverlayOpen, setTreeOverlayOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
@@ -374,6 +374,12 @@ export function WindieProvider({ children }) {
   const setPathHead = useCallback(
     async (nodeId) => {
       if (!activeConvId || !activeConv?.nodes?.[nodeId]) return null;
+      const matchingSession = sessionAtHead(Object.values(sessionsById), activeConvId, nodeId);
+      if (matchingSession) {
+        await selectSession(matchingSession.id);
+        return nodeId;
+      }
+
       const sessionHead = selectedSession?.currentHeadMessageId || null;
       setViewHeadId(nodeId === sessionHead ? null : nodeId);
       setSelectedNodeId(nodeId);
@@ -383,7 +389,7 @@ export function WindieProvider({ children }) {
       });
       return nodeId;
     },
-    [activeConv, activeConvId, loadConversation, selectedSession]
+    [activeConv, activeConvId, loadConversation, selectSession, selectedSession, sessionsById]
   );
   const activeContextSignatures = useMemo(
     () => contextSignatureParts(activeConv, activeModelId, selectedPathNodes),
@@ -655,7 +661,6 @@ export function WindieProvider({ children }) {
     viewHeadId,
     selectedPathNodes,
     theme,
-    treeOverlayOpen,
     contextPreviewOpen,
     streaming,
     pendingAssistant,
@@ -683,7 +688,6 @@ export function WindieProvider({ children }) {
     setPathHead,
     setSelectedNodeId,
     setTheme,
-    setTreeOverlayOpen,
     setContextPreviewOpen,
     setSearchQuery,
     refreshModels,

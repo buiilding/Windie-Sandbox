@@ -1,4 +1,4 @@
-import { resolveSessionTarget } from "../lib/sessionTarget";
+import { resolveSessionTarget, sessionAtHead } from "../lib/sessionTarget";
 
 describe("resolveSessionTarget", () => {
   const session = {
@@ -48,5 +48,14 @@ describe("resolveSessionTarget", () => {
       kind: "create",
       headMessageId: "head-9",
     });
+  });
+
+  test("finds the existing session whose current head is selected", () => {
+    const existing = { ...session, id: "session-existing" };
+    expect(sessionAtHead([existing], "conversation-1", "head-2")).toBe(existing);
+  });
+
+  test("does not match a session from another conversation", () => {
+    expect(sessionAtHead([session], "conversation-2", "head-2")).toBeNull();
   });
 });
