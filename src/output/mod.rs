@@ -73,10 +73,16 @@ impl TerminalOutput {
     }
 
     /// Prints the local API address and generated access token at startup.
+    ///
+    /// The inspector is embedded in the API server, so its URL shares the API
+    /// origin rather than a separate dev-server port.
     pub fn api_started(&self, address: &SocketAddr, api_token: &str) {
         println!("windie api listening on http://{address}");
         println!("windie api token: {api_token}");
-        println!("windie inspector: {}", inspector_url(api_token));
+        println!(
+            "windie inspector: http://{address}/?windie_token={}",
+            encode_query_value(api_token)
+        );
     }
 
     /// Prints the browser inspector URL opened by `windie inspector`.
@@ -1281,14 +1287,6 @@ fn format_duration(duration: std::time::Duration) -> String {
     } else {
         format!("{}us", duration.as_micros())
     }
-}
-
-/// Builds the local inspector URL with one query-encoded token.
-fn inspector_url(api_token: &str) -> String {
-    format!(
-        "http://localhost:3000?windie_token={}",
-        encode_query_value(api_token)
-    )
 }
 
 /// Percent-encodes one URL query value without adding another dependency.

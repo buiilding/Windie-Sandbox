@@ -58,6 +58,7 @@ mod session_approval;
 mod sse;
 mod state;
 mod tool;
+mod ui;
 
 use auth::*;
 use conversation::*;

@@ -1,0 +1,4 @@
+[submodule "vendor/bifrost"]
+	path = vendor/bifrost
+	url = https://github.com/buiilding/bifrost.git
+	branch = dev

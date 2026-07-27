@@ -7,6 +7,25 @@ use super::*;
 /// Handlers translate HTTP requests into shared operations and map returned
 /// values into JSON responses. The router only owns HTTP mapping.
 pub(super) fn router(state: ApiState) -> Router {
+    Router::new()
+        // Embedded inspector UI and its static assets are served without the
+        // API token so the browser can load the app before it has a token.
+        // The CRA build references assets with absolute `/static/...` paths,
+        // so the UI is served from the server root rather than a subpath.
+        .route("/", get(ui::index))
+        .route("/static/{*path}", get(ui::static_asset))
+        .route("/asset-manifest.json", get(ui::asset_manifest))
+        .route("/favicon.ico", get(ui::favicon))
+        .route("/manifest.json", get(ui::manifest))
+        .merge(api_router(state))
+}
+
+/// Builds the authenticated `/api/*` route table.
+///
+/// CORS stays scoped to the API so browser clients served from the webpack dev
+/// server (ports 3000/5173) keep working, while the same-origin embedded UI
+/// needs no cross-origin allowance.
+fn api_router(state: ApiState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin([
             HeaderValue::from_static("http://localhost:3000"),
