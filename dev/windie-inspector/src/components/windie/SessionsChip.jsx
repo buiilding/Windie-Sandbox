@@ -63,8 +63,7 @@ export default function SessionsChip({ dropUp = false }) {
 
   if (!activeConv || sessions.length === 0) return null;
 
-  const resolving = sessionResolution?.status === "resolving";
-  const selected = viewHeadId || resolving
+  const selected = viewHeadId
     ? null
     : sessions.find((session) => session.id === selectedSessionId) || null;
   const showingNewSession = Boolean(viewHeadId && sessionResolution?.kind === "none");
@@ -83,11 +82,11 @@ export default function SessionsChip({ dropUp = false }) {
         data-testid="topbar-sessions-chip"
         onClick={() => setOpen((current) => !current)}
         className={`flex items-center gap-1.5 h-7 px-2 border border-border bg-background hover:bg-surface-hover transition-colors min-w-[160px] ${open ? "bg-surface-hover" : ""}`}
-        title={resolving ? "resolving session" : selected ? `session ${selected.id}` : showingNewSession ? "new session at selected path" : "choose a session"}
+        title={selected ? `session ${selected.id}` : showingNewSession ? "new session at selected path" : "choose a session"}
       >
         {selected && <span className={`size-1.5 rounded-full ${statusDot(selected.status)}`} />}
         <span className="truncate font-mono text-[11px]">
-          {resolving ? "resolving session…" : selected ? `session ${shortId(selected.id)}` : showingNewSession ? "new session" : "choose session"}
+          {selected ? `session ${shortId(selected.id)}` : showingNewSession ? "new session" : "choose session"}
         </span>
         <ChevronDown className="size-3 ml-auto" strokeWidth={1.75} />
       </button>
