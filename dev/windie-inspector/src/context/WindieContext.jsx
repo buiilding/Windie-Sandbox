@@ -4,30 +4,19 @@ import {
   useMemo,
   useState,
   useCallback,
-  useEffect,
 } from "react";
 import { toast } from "sonner";
 import {
   apiRequest,
-  fetchModelParameters,
-  listModels,
   setConversationModel as setConversationModelApi,
   setConversationReasoning as setConversationReasoningApi,
-  listProviderInstallations,
-  setupProvider as setupProviderApi,
-  enableProvider as enableProviderApi,
-  disableProvider as disableProviderApi,
-  repairProvider as repairProviderApi,
-  uninstallProvider as uninstallProviderApi,
 } from "@/lib/windieApi";
-import {
-  providerInstallationsFromApi,
-  toolCatalogFromApi,
-  toolProviderStatusesFromApi,
-} from "@/lib/windieMappers";
 import { useConversationStore } from "@/hooks/useConversationStore";
+import { useGatewayStore } from "@/hooks/useGatewayStore";
 import { useInspectorState } from "@/hooks/useInspectorState";
+import { useModelCatalog } from "@/hooks/useModelCatalog";
 import { useSessionRuntime } from "@/hooks/useSessionRuntime";
+import { useToolCatalog } from "@/hooks/useToolCatalog";
 import {
   contextSignatureParts,
   pathNodesForConversation,
@@ -79,17 +68,7 @@ export function WindieProvider({ children }) {
     setSearchQuery,
     setApiError,
   } = useInspectorState();
-  const [gatewayRunning, setGatewayRunning] = useState(false);
   const [approvals, setApprovals] = useState([]);
-  const [availableToolSchemas, setAvailableToolSchemas] = useState([]);
-  const [availableToolsLoading, setAvailableToolsLoading] = useState(false);
-  const [toolProviderStatuses, setToolProviderStatuses] = useState([]);
-  const [providerInstallations, setProviderInstallations] = useState([]);
-  const [providerInstallationsLoading, setProviderInstallationsLoading] = useState(false);
-  const [models, setModels] = useState([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsError, setModelsError] = useState(null);
-  const [modelParametersById, setModelParametersById] = useState({});
 
   const {
     conversations,
@@ -108,93 +87,41 @@ export function WindieProvider({ children }) {
     selectConversation,
   } = useConversationStore({ setApiError, setApprovals });
 
-  const refreshGateway = useCallback(async () => {
-    const body = await apiRequest("/api/status");
-    setGatewayRunning(Boolean(body.gateway_running));
-    return body.gateway_running;
-  }, []);
-
-  const refreshModels = useCallback(async () => {
-    setModelsLoading(true);
-    try {
-      const nextModels = await listModels();
-      setModels(nextModels);
-      setModelsError(null);
-      return nextModels;
-    } catch (error) {
-      setModels([]);
-      setModelsError(error.message);
-      throw error;
-    } finally {
-      setModelsLoading(false);
-    }
-  }, []);
-
-  const loadModelParameters = useCallback(
-    async (modelId) => {
-      if (!modelId) return null;
-      if (!gatewayRunning || modelsLoading || modelsError) return null;
-      if (!models.some((model) => model.id === modelId)) return null;
-      const existing = modelParametersById[modelId];
-      if (existing?.status === "ready") return existing.data;
-      if (existing?.status === "loading" || existing?.status === "error") return null;
-      setModelParametersById((prev) => ({
-        ...prev,
-        [modelId]: { status: "loading", data: prev[modelId]?.data || null, error: null },
-      }));
-      try {
-        const data = await fetchModelParameters(modelId);
-        setModelParametersById((prev) => ({ ...prev, [modelId]: { status: "ready", data, error: null } }));
-        return data;
-      } catch (error) {
-        setModelParametersById((prev) => ({ ...prev, [modelId]: { status: "error", data: null, error: error.message } }));
-        return null;
-      }
-    },
-    [gatewayRunning, modelParametersById, models, modelsError, modelsLoading]
-  );
-
-  const refreshAvailableTools = useCallback(async () => {
-    setAvailableToolsLoading(true);
-    try {
-      const body = await apiRequest("/api/tools");
-      setAvailableToolSchemas(toolCatalogFromApi(body));
-      setToolProviderStatuses(toolProviderStatusesFromApi(body));
-      return toolCatalogFromApi(body);
-    } finally {
-      setAvailableToolsLoading(false);
-    }
-  }, []);
-
-  const refreshProviderInstallations = useCallback(async () => {
-    setProviderInstallationsLoading(true);
-    try {
-      const nextProviders = providerInstallationsFromApi(await listProviderInstallations());
-      setProviderInstallations(nextProviders);
-      return nextProviders;
-    } finally {
-      setProviderInstallationsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    refreshGateway().catch((e) => setApiError(e.message));
-  }, [refreshGateway, setApiError]);
-
-  useEffect(() => {
-    refreshModels().catch(() => {});
-  }, [refreshModels]);
-
-  useEffect(() => {
-    refreshAvailableTools().catch((e) => setApiError(e.message));
-  }, [refreshAvailableTools, setApiError]);
-
-  useEffect(() => {
-    refreshProviderInstallations().catch((e) => setApiError(e.message));
-  }, [refreshProviderInstallations, setApiError]);
-
   const activeModelId = activeConv?.model || null;
   const activeReasoning = activeConv?.reasoning || null;
+  const handleResourceError = useCallback(
+    (error) => setApiError(error.message),
+    [setApiError]
+  );
+  const { gatewayRunning, refreshGateway } = useGatewayStore({
+    onError: handleResourceError,
+  });
+  const {
+    models,
+    modelsLoading,
+    modelsError,
+    modelParametersById,
+    activeCatalogModel,
+    activeModelParameters,
+    refreshModels,
+    loadModelParameters,
+  } = useModelCatalog({ gatewayRunning, activeModelId });
+  const {
+    availableToolSchemas,
+    availableToolsLoading,
+    toolProviderStatuses,
+    providerInstallations,
+    providerInstallationsLoading,
+    refreshAvailableTools,
+    refreshProviderInstallations,
+    setupProvider,
+    enableProvider,
+    disableProvider,
+    repairProvider,
+    uninstallProvider,
+  } = useToolCatalog({
+    onError: handleResourceError,
+  });
   const sessionRuntime = useSessionRuntime({
     conversationId: activeConvId,
     viewHeadId,
@@ -263,7 +190,6 @@ export function WindieProvider({ children }) {
     () => contextSignatureParts(activeConv, activeModelId, selectedPathNodes),
     [activeConv, activeModelId, selectedPathNodes]
   );
-  const activeCatalogModel = useMemo(() => models.find((m) => m.id === activeModelId) || null, [activeModelId, models]);
   const tokenMeter = useMemo(() => {
     const max = activeCatalogModel?.contextLength ?? activeCatalogModel?.maxInputTokens ?? null;
     const ic = inputTokenCounts[tokenCountKey(activeConv?.id, activeModelId)] || null;
@@ -279,13 +205,6 @@ export function WindieProvider({ children }) {
       source: cur?.inputTokens != null ? cur?.source || null : unavailable ? cur.source : used != null ? "postquery_total" : null,
     };
   }, [activeConv?.id, selectedPathNodes, activeContextSignatures.fullSignature, activeCatalogModel, activeModelId, inputTokenCounts]);
-
-  useEffect(() => {
-    if (!activeCatalogModel) return;
-    loadModelParameters(activeModelId);
-  }, [activeCatalogModel, activeModelId, loadModelParameters]);
-
-  const activeModelParameters = useMemo(() => modelParametersById[activeModelId] || null, [activeModelId, modelParametersById]);
 
   const runMutation = useCallback(
     async (op, options = {}) => {
@@ -394,44 +313,6 @@ export function WindieProvider({ children }) {
         for (const n of names) await apiRequest(`/api/conversations/${convId}/tools/${encodeURIComponent(n)}`, { method: "DELETE" });
       }),
     [runMutation]
-  );
-
-  const runProviderAction = useCallback(
-    async (action, providerId) => {
-      try {
-        const result = await action(providerId);
-        setApiError(null);
-        await refreshProviderInstallations();
-        await refreshAvailableTools();
-        return result;
-      } catch (error) {
-        setApiError(error.message);
-        toast.error(error.message);
-        throw error;
-      }
-    },
-    [refreshAvailableTools, refreshProviderInstallations, setApiError]
-  );
-
-  const setupProvider = useCallback(
-    (providerId) => runProviderAction(setupProviderApi, providerId),
-    [runProviderAction]
-  );
-  const enableProvider = useCallback(
-    (providerId) => runProviderAction(enableProviderApi, providerId),
-    [runProviderAction]
-  );
-  const disableProvider = useCallback(
-    (providerId) => runProviderAction(disableProviderApi, providerId),
-    [runProviderAction]
-  );
-  const repairProvider = useCallback(
-    (providerId) => runProviderAction(repairProviderApi, providerId),
-    [runProviderAction]
-  );
-  const uninstallProvider = useCallback(
-    (providerId) => runProviderAction(uninstallProviderApi, providerId),
-    [runProviderAction]
   );
 
   const inspectNode = useCallback(
