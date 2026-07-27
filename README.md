@@ -4,7 +4,7 @@
 
 # Windie
 <p align="center">
-  <a href="https://github.com/buiilding/Windie-Sandbox">Windie</a> | <a href="https://windie.sh">Website</a>
+  <a href="https://github.com/buiilding/Windie-Sandbox">Windie</a> | <a href="https://windieos.com">Website</a>
 </p>
 <p align="center">
   <a href="https://github.com/buiilding/Windie-Sandbox/releases"><img src="https://img.shields.io/badge/Release-GitHub-blue?style=for-the-badge" alt="Release"></a>
@@ -20,7 +20,7 @@
 Windie is a quiet, foundational harness that runs beside your operating system — not inside a browser tab, not behind someone else's API wall, not locked into a single cloud provider. One line to install. No bloat. No cloud lock-in.
 
 ```bash
-curl -sL https://windie.sh/install | sh
+curl -sL https://windieos.com/install | sh
 ```
 
 ---
@@ -138,7 +138,7 @@ Configure any provider with a simple API key — or run fully local with Ollama,
 ## Get Started
 
 ```bash
-curl -sL https://windie.sh/install | sh
+curl -sL https://windieos.com/install | sh
 ```
 
 - [Documentation](#)
