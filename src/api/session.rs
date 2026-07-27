@@ -42,6 +42,7 @@ pub(super) struct SessionResponse {
     pub(super) queued: bool,
     pub(super) queue_depth: usize,
     pub(super) queue_id: Option<String>,
+    pub(super) latest_event_id: Option<i64>,
 }
 
 impl SessionResponse {
@@ -68,24 +69,29 @@ impl SessionResponse {
             queued: false,
             queue_depth,
             queue_id: None,
+            latest_event_id: None,
         }
     }
 
-    fn from_query(result: crate::session::SessionQueryResult) -> Self {
+    fn from_query(
+        result: crate::session::SessionQueryResult,
+        latest_event_id: Option<i64>,
+    ) -> Self {
         let mut response = Self::from_session(result.session);
         response.queued = result.queued;
         response.queue_depth = result.queue_depth;
         response.queue_id = result.input_id.map(|id| id.as_str().to_string());
+        response.latest_event_id = latest_event_id;
         response
     }
 }
 
 pub(super) fn response_with_queue(store: &Store, session: Session) -> Result<SessionResponse> {
     let queue_depth = store.session_input_count(&session.id)?;
-    Ok(SessionResponse::from_session_with_queue(
-        session,
-        queue_depth,
-    ))
+    let latest_event_id = store.latest_session_event_id(&session.id)?;
+    let mut response = SessionResponse::from_session_with_queue(session, queue_depth);
+    response.latest_event_id = latest_event_id;
+    Ok(response)
 }
 
 #[derive(Debug, Serialize)]
@@ -118,7 +124,8 @@ pub(super) async fn create_session_branch(
         request.reasoning(),
     )?;
 
-    Ok(Json(SessionResponse::from_session(session)))
+    let store = open_store(&state)?;
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 /// Lists all selectable sessions belonging to one conversation.
@@ -146,8 +153,10 @@ pub(super) async fn query_session(
     let result = state
         .session_manager
         .query_session(&SessionId::new(session_id), &parts)?;
+    let store = open_store(&state)?;
+    let latest_event_id = store.latest_session_event_id(&result.session.id)?;
 
-    Ok(Json(SessionResponse::from_query(result)))
+    Ok(Json(SessionResponse::from_query(result, latest_event_id)))
 }
 
 /// Continues one selected session from its current head.

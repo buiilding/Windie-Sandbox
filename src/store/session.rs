@@ -591,6 +591,24 @@ impl Store {
             .context("failed to decode runtime events")
     }
 
+    /// Loads the latest persisted event cursor for one session.
+    ///
+    /// The cursor is a snapshot boundary for clients that already hydrated a
+    /// session. A client can subscribe after this ID to receive only events
+    /// that happened after its snapshot instead of replaying the session's
+    /// entire historical event log as new UI activity.
+    pub fn latest_session_event_id(&self, session_id: &SessionId) -> Result<Option<i64>> {
+        self.ensure_session_exists(session_id)?;
+
+        self.connection
+            .query_row(
+                "SELECT MAX(id) FROM session_events WHERE session_id = ?1",
+                params![session_id.as_str()],
+                |row| row.get(0),
+            )
+            .context("failed to load latest runtime event cursor")
+    }
+
     /// Returns an error instead of silently ignoring missing sessions.
     fn ensure_session_exists(&self, session_id: &SessionId) -> Result<()> {
         let exists = self

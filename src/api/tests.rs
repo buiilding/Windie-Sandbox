@@ -12,7 +12,7 @@ use tower::ServiceExt;
 
 use crate::conversation::{MessageMetadata, MessagePart, ToolCall};
 use crate::mcp::McpCommand;
-use crate::session::{SessionId, SessionStatus};
+use crate::session::{SessionEvent, SessionId, SessionStatus};
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
 use crate::tool_provider::ProviderInstallState;
 
@@ -896,6 +896,48 @@ async fn create_session_records_gateway_error() {
         session.error.as_deref(),
         Some("Bifrost is not running. Start it with: windie gateway start")
     );
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn session_responses_include_latest_event_cursor() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    drop(store);
+
+    let created = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/sessions"),
+                Some(json!({"model":"openai/test"})),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(created["latest_event_id"].is_null());
+    let session_id = SessionId::new(created["id"].as_str().unwrap());
+
+    let event_id = Store::open_at(&db_path)
+        .unwrap()
+        .append_session_event(&session_id, SessionEvent::Completed { message_id: None })
+        .unwrap()
+        .id;
+    let listed = response_json(
+        app.oneshot(authed_request(
+            Method::GET,
+            &format!("/api/conversations/{conversation_id}/sessions"),
+            None,
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+
+    assert_eq!(listed["sessions"][0]["latest_event_id"], event_id);
     let _ = fs::remove_file(db_path);
 }
 

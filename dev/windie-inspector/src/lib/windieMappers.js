@@ -70,6 +70,7 @@ export function sessionFromApi(session) {
     queued: Boolean(session.queued),
     queueDepth: session.queue_depth || 0,
     queueId: session.queue_id || null,
+    latestEventId: session.latest_event_id ?? null,
     createdAt: session.created_at,
     updatedAt: session.updated_at,
   };

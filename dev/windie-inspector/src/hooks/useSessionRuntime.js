@@ -13,6 +13,8 @@ import {
   stopSession as stopSessionApi,
 } from "@/lib/windieApi";
 import { streamSessionEvents } from "@/lib/sessionStream";
+import { nextSessionEventCursor } from "@/lib/sessionEventCursor";
+import { currentSessionHead, resolveSessionTarget } from "@/lib/sessionTarget";
 import { sessionFromApi } from "@/lib/windieMappers";
 
 function fileToBase64(file) {
@@ -51,6 +53,30 @@ function isLiveSession(session) {
 
 function isAbortError(error) {
   return error?.name === "AbortError";
+}
+
+const SELECTED_SESSION_STORAGE_PREFIX = "windie.selected-session:";
+
+function selectedSessionStorageKey(conversationId) {
+  return `${SELECTED_SESSION_STORAGE_PREFIX}${conversationId || ""}`;
+}
+
+function readSelectedSessionId(conversationId) {
+  if (!conversationId) return null;
+  try {
+    return window.localStorage.getItem(selectedSessionStorageKey(conversationId));
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeSelectedSessionId(conversationId, sessionId) {
+  if (!conversationId || !sessionId) return;
+  try {
+    window.localStorage.setItem(selectedSessionStorageKey(conversationId), sessionId);
+  } catch (_) {
+    // Browser storage is optional; in-memory selection still works.
+  }
 }
 
 function emptyPending(session) {
@@ -218,12 +244,44 @@ export function useSessionRuntime({
 
   const rememberSession = useCallback((session) => {
     if (!session) return null;
-    setSessionsById((current) => ({ ...current, [session.id]: session }));
-    sessionsRef.current = { ...sessionsRef.current, [session.id]: session };
-    if (selectedSessionRef.current?.id === session.id) {
-      selectedSessionRef.current = session;
+    const existing = sessionsRef.current[session.id];
+    const merged = existing?.latestEventId != null &&
+      (session.latestEventId == null || session.latestEventId < existing.latestEventId)
+      ? { ...session, latestEventId: existing.latestEventId }
+      : session;
+    setSessionsById((current) => ({ ...current, [merged.id]: merged }));
+    sessionsRef.current = { ...sessionsRef.current, [merged.id]: merged };
+    if (selectedSessionRef.current?.id === merged.id) {
+      selectedSessionRef.current = merged;
     }
-    return session;
+    return merged;
+  }, []);
+
+  const hydrateSessionEventCursor = useCallback((session) => {
+    if (!session || session.latestEventId == null) return;
+    const current = lastEventIdRef.current[session.id];
+    if (current == null || session.latestEventId > current) {
+      lastEventIdRef.current[session.id] = session.latestEventId;
+    }
+  }, []);
+
+  const advanceSessionEventCursor = useCallback((sessionId, eventId) => {
+    if (!sessionId) return false;
+    const currentCursor = lastEventIdRef.current[sessionId];
+    const next = nextSessionEventCursor(currentCursor, eventId);
+    if (!next.accepted) return false;
+    if (next.cursor != null) lastEventIdRef.current[sessionId] = next.cursor;
+
+    const current = sessionsRef.current[sessionId];
+    if (!current) return true;
+    if (next.cursor == null) return true;
+    const updated = { ...current, latestEventId: next.cursor };
+    sessionsRef.current = { ...sessionsRef.current, [sessionId]: updated };
+    if (selectedSessionRef.current?.id === sessionId) {
+      selectedSessionRef.current = updated;
+    }
+    setSessionsById((sessions) => ({ ...sessions, [sessionId]: updated }));
+    return true;
   }, []);
 
   const abortAllSubscriptions = useCallback(() => {
@@ -336,7 +394,7 @@ export function useSessionRuntime({
 
       const latest = await getSession(session.id).catch(() => null);
       const normalized = latest ? sessionFromApi(latest) : null;
-      const head = data.message_id || normalized?.currentHeadMessageId || normalized?.startHeadMessageId || null;
+      const head = data.message_id || normalized?.currentHeadMessageId || null;
 
       if (
         session.conversationId !== conversationIdRef.current ||
@@ -374,9 +432,11 @@ export function useSessionRuntime({
         normalized.id,
         lastEventIdRef.current[normalized.id] ?? null,
         async ({ id, data }) => {
-          await handleEvent(normalized, data);
           const eventId = id ?? data?.event_id ?? null;
-          if (eventId != null) lastEventIdRef.current[normalized.id] = eventId;
+          const accepted = advanceSessionEventCursor(normalized.id, eventId);
+          if (eventId != null && !accepted) return;
+          const current = sessionsRef.current[normalized.id] || normalized;
+          await handleEvent(current, data);
         },
         { signal: controller.signal }
       )
@@ -393,7 +453,7 @@ export function useSessionRuntime({
         });
       return normalized;
     },
-    [handleEvent, rememberSession, setApiError]
+    [advanceSessionEventCursor, handleEvent, rememberSession, setApiError]
   );
 
   const reconcileSubscriptions = useCallback(() => {
@@ -414,6 +474,7 @@ export function useSessionRuntime({
 
   const refreshSessions = useCallback(async () => {
     const sessions = (await listSessions()).map(sessionFromApi).filter(Boolean);
+    sessions.forEach(hydrateSessionEventCursor);
     const next = Object.fromEntries(sessions.map((session) => [session.id, session]));
     setSessionsById(next);
     sessionsRef.current = next;
@@ -421,7 +482,7 @@ export function useSessionRuntime({
     selectedSessionRef.current = selectedId ? next[selectedId] || null : null;
     reconcileSubscriptions();
     return sessions;
-  }, [reconcileSubscriptions]);
+  }, [hydrateSessionEventCursor, reconcileSubscriptions]);
 
   useEffect(() => {
     refreshSessions().catch((error) => setApiError(error.message));
@@ -440,15 +501,21 @@ export function useSessionRuntime({
       const sessions = (await listConversationSessions(conversationId))
         .map(sessionFromApi)
         .filter(Boolean);
+      sessions.forEach(hydrateSessionEventCursor);
       const byId = Object.fromEntries(sessions.map((session) => [session.id, session]));
       setSessionsById((current) => ({ ...current, ...byId }));
       sessionsRef.current = { ...sessionsRef.current, ...byId };
 
-      const selected = sessions.find(isLiveSession) || sessions[0] || null;
+      const rememberedId = readSelectedSessionId(conversationId);
+      const remembered = rememberedId
+        ? sessions.find((session) => session.id === rememberedId)
+        : null;
+      const selected = remembered || sessions.find(isLiveSession) || sessions[0] || null;
       setSelectedSessionId(selected?.id || null);
       selectedSessionRef.current = selected;
+      if (selected) writeSelectedSessionId(conversationId, selected.id);
       await loadConversation(conversationId, {
-        headMessageId: selected?.currentHeadMessageId || selected?.startHeadMessageId || null,
+        headMessageId: currentSessionHead(selected),
       });
       if (!cancelled) setApiError(null);
     })().catch((error) => {
@@ -458,7 +525,7 @@ export function useSessionRuntime({
     return () => {
       cancelled = true;
     };
-  }, [conversationId, loadConversation, setApiError, setViewHeadId]);
+  }, [conversationId, hydrateSessionEventCursor, loadConversation, setApiError, setViewHeadId]);
 
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessionsById[selectedSessionId] || null : null),
@@ -472,7 +539,9 @@ export function useSessionRuntime({
       setViewHeadId(null);
       setSelectedSessionId(session.id);
       selectedSessionRef.current = session;
-      const head = session.currentHeadMessageId || session.startHeadMessageId || null;
+      hydrateSessionEventCursor(session);
+      writeSelectedSessionId(conversationId, session.id);
+      const head = currentSessionHead(session);
       setSelectedNodeId(head);
       await loadConversation(conversationId, {
         headMessageId: head,
@@ -481,7 +550,7 @@ export function useSessionRuntime({
       if (isLiveSession(session)) subscribeToSession(session);
       return session;
     },
-    [conversationId, loadConversation, setSelectedNodeId, setViewHeadId, subscribeToSession]
+    [conversationId, hydrateSessionEventCursor, loadConversation, setSelectedNodeId, setViewHeadId, subscribeToSession]
   );
 
   const sendMessage = useCallback(
@@ -493,13 +562,17 @@ export function useSessionRuntime({
       try {
         const parts = await messagePartsForSend(text, attachments);
         let session = selectedSessionRef.current;
-        const sessionHead = session?.currentHeadMessageId || session?.startHeadMessageId || null;
-        const queryHead = viewHeadId || sessionHead || selectedNodeId || null;
-        const needsNewSession = viewHeadId && viewHeadId !== sessionHead;
-        if (!session || session.conversationId !== conversationId || needsNewSession) {
+        const target = resolveSessionTarget({
+          session,
+          conversationId,
+          viewHeadId,
+          fallbackHead: selectedNodeId,
+          action: "query",
+        });
+        if (target.kind === "create") {
           session = sessionFromApi(
             await createSessionApi(conversationId, {
-              headMessageId: queryHead,
+              headMessageId: target.headMessageId,
               model: conversationModel || null,
               reasoning,
             })
@@ -507,12 +580,14 @@ export function useSessionRuntime({
           rememberSession(session);
           setSelectedSessionId(session.id);
           selectedSessionRef.current = session;
+          writeSelectedSessionId(conversationId, session.id);
         }
-        const parentHead = session.currentHeadMessageId || session.startHeadMessageId || null;
+        const parentHead = currentSessionHead(session);
         const updated = sessionFromApi(await querySessionApi(session.id, parts));
         rememberSession(updated);
         setSelectedSessionId(updated.id);
         selectedSessionRef.current = updated;
+        writeSelectedSessionId(conversationId, updated.id);
         if (!updated.queued) {
           setPendingAssistantBySessionId((current) => ({
             ...current,
@@ -544,13 +619,17 @@ export function useSessionRuntime({
 
   const continueConversation = useCallback(async () => {
     let selected = selectedSessionRef.current;
-    const selectedHead = selected?.currentHeadMessageId || selected?.startHeadMessageId || null;
-    const needsNewSession = viewHeadId && viewHeadId !== selectedHead;
     try {
-      if (!selected || selected.conversationId !== conversationId || needsNewSession) {
+      const target = resolveSessionTarget({
+        session: selected,
+        conversationId,
+        viewHeadId,
+        action: "continue",
+      });
+      if (target.kind === "create") {
         selected = sessionFromApi(
           await createSessionApi(conversationId, {
-            headMessageId: viewHeadId || selectedHead || null,
+            headMessageId: target.headMessageId,
             model: conversationModel || null,
             reasoning,
           })
@@ -558,6 +637,7 @@ export function useSessionRuntime({
         rememberSession(selected);
         setSelectedSessionId(selected.id);
         selectedSessionRef.current = selected;
+        writeSelectedSessionId(conversationId, selected.id);
       }
       if (isLiveSession(selected)) return;
       const session = sessionFromApi(await continueSessionApi(selected.id));
@@ -658,11 +738,10 @@ export function useSessionRuntime({
             )[0] || null;
           setSelectedSessionId(replacement?.id || null);
           selectedSessionRef.current = replacement;
+          if (replacement) writeSelectedSessionId(conversationId, replacement.id);
           setViewHeadId(null);
           const head =
-            replacement?.currentHeadMessageId ||
-            replacement?.startHeadMessageId ||
-            null;
+            currentSessionHead(replacement);
           setSelectedNodeId(head);
           await loadConversation(conversationId, {
             headMessageId: head,
@@ -672,8 +751,7 @@ export function useSessionRuntime({
           await loadConversation(conversationId, {
             headMessageId:
               viewHeadId ||
-              selectedSessionRef.current?.currentHeadMessageId ||
-              selectedSessionRef.current?.startHeadMessageId ||
+              currentSessionHead(selectedSessionRef.current) ||
               null,
             countTokens: false,
           });
@@ -707,8 +785,7 @@ export function useSessionRuntime({
     getSelectedSession,
     selectedPathHead:
       viewHeadId ||
-      selectedSession?.currentHeadMessageId ||
-      selectedSession?.startHeadMessageId ||
+      currentSessionHead(selectedSession) ||
       selectedNodeId ||
       null,
     pendingAssistant: selectedSessionId ? pendingAssistantBySessionId[selectedSessionId] || null : null,

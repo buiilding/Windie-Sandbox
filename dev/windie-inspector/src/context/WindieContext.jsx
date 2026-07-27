@@ -374,7 +374,7 @@ export function WindieProvider({ children }) {
   const setPathHead = useCallback(
     async (nodeId) => {
       if (!activeConvId || !activeConv?.nodes?.[nodeId]) return null;
-      const sessionHead = selectedSession?.currentHeadMessageId || selectedSession?.startHeadMessageId || null;
+      const sessionHead = selectedSession?.currentHeadMessageId || null;
       setViewHeadId(nodeId === sessionHead ? null : nodeId);
       setSelectedNodeId(nodeId);
       await loadConversation(activeConvId, {
@@ -584,7 +584,7 @@ export function WindieProvider({ children }) {
       const selected = getSelectedSession();
       const head =
         (selected?.conversationId === convId
-          ? selected.currentHeadMessageId || selected.startHeadMessageId
+          ? selected.currentHeadMessageId
           : null) || nodeId;
       await loadConversation(convId, {
         headMessageId: head,
@@ -603,7 +603,6 @@ export function WindieProvider({ children }) {
         viewHeadId ||
         selectedNodeRef.current ||
         selectedSession?.currentHeadMessageId ||
-        selectedSession?.startHeadMessageId ||
         null;
       const nextHead = currentHead === nodeId ? parentHead : currentHead;
 

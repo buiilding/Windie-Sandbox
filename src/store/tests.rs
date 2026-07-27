@@ -4,7 +4,7 @@ use super::*;
 use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
-use crate::session::{SessionId, SessionStatus};
+use crate::session::{SessionEvent, SessionId, SessionStatus};
 use crate::tool::ToolProviderId;
 use crate::tool::{ToolApprovalMode, ToolSchema, ToolSchemaName};
 use crate::tool_provider::ProviderInstallState;
@@ -2643,6 +2643,36 @@ fn queues_and_materializes_inputs_in_fifo_order() {
         .unwrap();
     assert_eq!(messages[1].content, "first queued");
     assert_eq!(messages[2].content, "second queued");
+}
+
+#[test]
+fn loads_latest_session_event_cursor() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("session-event-cursor");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    assert_eq!(store.latest_session_event_id(&session_id).unwrap(), None);
+
+    let first = store
+        .append_session_event(
+            &session_id,
+            SessionEvent::AssistantDelta {
+                text: "one".to_string(),
+            },
+        )
+        .unwrap();
+    let second = store
+        .append_session_event(&session_id, SessionEvent::Completed { message_id: None })
+        .unwrap();
+
+    assert!(second.id > first.id);
+    assert_eq!(
+        store.latest_session_event_id(&session_id).unwrap(),
+        Some(second.id)
+    );
 }
 
 #[test]

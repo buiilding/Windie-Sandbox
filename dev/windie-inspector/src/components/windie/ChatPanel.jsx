@@ -92,7 +92,7 @@ export default function ChatPanel() {
   // Streaming previews belong to a session's active path, not to whichever
   // historical path is currently being inspected. Keep the session's
   // transient state alive in the hook, but hide it from alternate paths.
-  const sessionHead = selectedSession?.currentHeadMessageId || selectedSession?.startHeadMessageId || null;
+  const sessionHead = selectedSession?.currentHeadMessageId || null;
   const displayedHead = selectedPathNodes[selectedPathNodes.length - 1]?.id || null;
   const isViewingSessionHead = Boolean(
     activeConv?.id &&
