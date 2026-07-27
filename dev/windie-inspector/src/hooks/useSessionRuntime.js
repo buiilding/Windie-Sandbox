@@ -12,6 +12,7 @@ import {
   stopSession as stopSessionApi,
 } from "@/lib/windieApi";
 import { currentSessionHead } from "@/lib/sessionTarget";
+import { projectSessionEvent } from "@/lib/sessionEvent";
 import { sessionFromApi } from "@/lib/windieMappers";
 import { messagePartsForSend } from "@/lib/sessionInput";
 import {
@@ -20,6 +21,7 @@ import {
   writeSelectedSessionId,
 } from "@/lib/sessionState";
 import { useSessionPreview } from "@/hooks/useSessionPreview";
+import { useSessionStore } from "@/hooks/useSessionStore";
 import { useSessionTransport } from "@/hooks/useSessionTransport";
 
 /**
@@ -39,7 +41,6 @@ export function useSessionRuntime({
   applySessionMessage,
   setApiError,
 }) {
-  const [sessionsById, setSessionsById] = useState({});
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [sessionResolution, setSessionResolution] = useState({
     status: "idle",
@@ -56,24 +57,24 @@ export function useSessionRuntime({
     removeSession: removePreview,
   } = useSessionPreview();
 
-  const sessionsRef = useRef({});
+  const {
+    sessionsById,
+    sessionsRef,
+    rememberSession: rememberStoredSession,
+    rememberSessions,
+    replaceSessions,
+    removeSession: removeStoredSession,
+  } = useSessionStore();
   const selectedSessionRef = useRef(null);
   const conversationIdRef = useRef(conversationId);
 
   const rememberSession = useCallback((session) => {
-    if (!session) return null;
-    const existing = sessionsRef.current[session.id];
-    const merged = existing?.latestEventId != null &&
-      (session.latestEventId == null || session.latestEventId < existing.latestEventId)
-      ? { ...session, latestEventId: existing.latestEventId }
-      : session;
-    setSessionsById((current) => ({ ...current, [merged.id]: merged }));
-    sessionsRef.current = { ...sessionsRef.current, [merged.id]: merged };
-    if (selectedSessionRef.current?.id === merged.id) {
+    const merged = rememberStoredSession(session);
+    if (merged && selectedSessionRef.current?.id === merged.id) {
       selectedSessionRef.current = merged;
     }
     return merged;
-  }, []);
+  }, [rememberStoredSession]);
 
   useEffect(() => {
     conversationIdRef.current = conversationId;
@@ -81,58 +82,44 @@ export function useSessionRuntime({
 
   const handleEvent = useCallback(
     (session, data) => {
-      if (!data?.type) return;
-      const snapshot = data.session ? sessionFromApi(data.session) : null;
-      const currentSession = snapshot || session;
-      if (snapshot) rememberSession(snapshot);
+      const projection = projectSessionEvent(session, data);
+      if (!projection) return;
+      const currentSession = projection.session;
+      if (data.session) rememberSession(currentSession);
       const selected =
         currentSession.conversationId === conversationIdRef.current &&
         selectedSessionRef.current?.id === currentSession.id;
 
-      if (data.type === "input_queued") {
-        if (!snapshot) {
-          rememberSession({
-            ...currentSession,
-            queueDepth: data.queue_depth ?? currentSession.queueDepth ?? 0,
-          });
+      if (projection.type === "input_queued") return;
+      if (projection.type === "input_started") {
+        if (projection.message) {
+          applySessionMessage(currentSession, projection.message, selected);
         }
         return;
       }
-      if (data.type === "input_started") {
-        if (data.message) {
-          applySessionMessage(currentSession, data.message, selected);
-        }
-        return;
-      }
-      if (["assistant_delta", "reasoning_delta", "tool_call_delta"].includes(data.type)) {
+      if (projection.isDelta) {
         applyDelta(currentSession, data);
         return;
       }
 
-      if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
-        if (data.message) {
-          applySessionMessage(currentSession, data.message, selected);
+      if (projection.isSavedMessage) {
+        if (projection.message) {
+          applySessionMessage(currentSession, projection.message, selected);
         }
-        applySavedMessage(currentSession, data.type);
+        applySavedMessage(currentSession, projection.type);
         return;
       }
 
-      if (!["completed", "failed", "cancelled", "waiting_for_approval"].includes(data.type)) {
-        return;
-      }
-
-      const normalized = currentSession;
+      if (!projection.isTerminal) return;
 
       if (
         currentSession.conversationId !== conversationIdRef.current ||
         selectedSessionRef.current?.id !== currentSession.id
       ) {
-        if (normalized) rememberSession(normalized);
         clearPreview(currentSession.id);
         return;
       }
 
-      if (normalized) rememberSession(normalized);
       clearPreview(currentSession.id);
     },
     [applyDelta, applySavedMessage, applySessionMessage, clearPreview, rememberSession]
@@ -162,14 +149,12 @@ export function useSessionRuntime({
   const refreshSessions = useCallback(async () => {
     const sessions = (await listSessions()).map(sessionFromApi).filter(Boolean);
     sessions.forEach(hydrateSessionEventCursor);
-    const next = Object.fromEntries(sessions.map((session) => [session.id, session]));
-    setSessionsById(next);
-    sessionsRef.current = next;
+    const next = replaceSessions(sessions);
     const selectedId = selectedSessionRef.current?.id;
     selectedSessionRef.current = selectedId ? next[selectedId] || null : null;
     reconcileSubscriptions();
     return sessions;
-  }, [hydrateSessionEventCursor, reconcileSubscriptions]);
+  }, [hydrateSessionEventCursor, reconcileSubscriptions, replaceSessions]);
 
   useEffect(() => {
     refreshSessions().catch((error) => setApiError(error.message));
@@ -192,8 +177,7 @@ export function useSessionRuntime({
         .filter(Boolean);
       sessions.forEach(hydrateSessionEventCursor);
       const byId = Object.fromEntries(sessions.map((session) => [session.id, session]));
-      setSessionsById((current) => ({ ...current, ...byId }));
-      sessionsRef.current = { ...sessionsRef.current, ...byId };
+      rememberSessions(Object.values(byId));
 
       const rememberedId = readSelectedSessionId(conversationId);
       const remembered = rememberedId
@@ -214,7 +198,7 @@ export function useSessionRuntime({
     return () => {
       cancelled = true;
     };
-  }, [conversationId, hydrateSessionEventCursor, loadConversation, setApiError, setViewHeadId]);
+  }, [conversationId, hydrateSessionEventCursor, loadConversation, rememberSessions, setApiError, setViewHeadId]);
 
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessionsById[selectedSessionId] || null : null),
@@ -240,7 +224,7 @@ export function useSessionRuntime({
       if (isLiveSession(session)) subscribeToSession(session);
       return session;
     },
-    [conversationId, hydrateSessionEventCursor, loadConversation, rememberSession, setSelectedNodeId, setViewHeadId, subscribeToSession]
+    [conversationId, hydrateSessionEventCursor, loadConversation, rememberSession, sessionsRef, setSelectedNodeId, setViewHeadId, subscribeToSession]
   );
 
   const resolvePathHead = useCallback(
@@ -375,15 +359,12 @@ export function useSessionRuntime({
 
         clearTransportSession(sessionId);
 
-        const next = { ...sessionsRef.current };
-        delete next[sessionId];
-        sessionsRef.current = next;
-        setSessionsById(next);
+        removeStoredSession(sessionId);
         removePreview(sessionId);
         reconcileSubscriptions();
 
         if (selectedSessionRef.current?.id === sessionId) {
-          const replacement = Object.values(next)
+          const replacement = Object.values(sessionsRef.current)
             .filter((session) => session.conversationId === conversationId)
             .sort(
               (a, b) =>
@@ -424,7 +405,9 @@ export function useSessionRuntime({
       loadConversation,
       clearTransportSession,
       reconcileSubscriptions,
+      removeStoredSession,
       removePreview,
+      sessionsRef,
       setApiError,
       setSelectedNodeId,
       setViewHeadId,
