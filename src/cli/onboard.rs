@@ -140,7 +140,7 @@ impl OnboardingPrompter for TerminalOnboarding {
         println!();
         println!("{}", manifest.display_name);
         println!("{description}");
-        let value = prompt_password(&format!("{secret}: "))?;
+        let value = prompt_password(format!("{secret}: "))?;
         if value.trim().is_empty() {
             return Err(anyhow!("{secret} cannot be empty"));
         }

@@ -70,10 +70,10 @@ pub fn enabled_provider_statuses(
 ) -> Result<Vec<ToolProviderStatus>> {
     let mut statuses = Vec::new();
     for manifest in registry.provider_manifests() {
-        if store.provider_is_enabled(&manifest.provider_id)? {
-            if let Some(status) = registry.provider_status(&manifest.provider_id) {
-                statuses.push(status);
-            }
+        if store.provider_is_enabled(&manifest.provider_id)?
+            && let Some(status) = registry.provider_status(&manifest.provider_id)
+        {
+            statuses.push(status);
         }
     }
     Ok(statuses)
@@ -152,7 +152,7 @@ pub fn enable_provider(
             )));
         }
         ProviderInstallState::Enabled => {
-            return Ok(provider_installation(store, registry, provider_id)?);
+            return provider_installation(store, registry, provider_id);
         }
         ProviderInstallState::Installed | ProviderInstallState::Disabled => {}
     }

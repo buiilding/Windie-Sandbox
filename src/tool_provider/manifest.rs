@@ -32,6 +32,7 @@ pub struct ProviderManifest {
 
 impl ProviderManifest {
     /// Builds the initial manifest shape for an MCP stdio provider.
+    #[allow(clippy::too_many_arguments)]
     pub fn mcp_stdio(
         provider_id: impl Into<String>,
         display_name: impl Into<String>,
