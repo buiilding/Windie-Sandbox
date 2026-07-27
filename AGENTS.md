@@ -31,6 +31,14 @@ Conversation storage is a tree. Runtime execution uses an explicit selected
 message head through that tree. Model context is the flattened path to that
 head.
 
+Sessions are durable branch objects over the shared conversation tree. The
+backend owns session-head resolution: the browser sends a conversation ID and
+selected message head, and SQLite determines whether one existing session
+matches, no session matches, or the request is ambiguous. Query and continue
+routes resolve-or-create the branch in the store and reject stale-head or
+ambiguous requests. The frontend displays that result and never infers session
+ownership from its cached session list.
+
 ## Collaboration Rule
 
 Only give your opinion when asked. Your job is to read code and provide facts. Do not modify codebase unless explicitly told so.
@@ -105,6 +113,7 @@ Keep boundaries strict:
 - Only `dev/` should own local developer helper launchers such as the inspector.
 - Only `tool_provider/` should own provider catalog and execution dispatch across code-approved MCP providers and future plugins.
 - Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.
+- Only `store/` and the session operation/manager boundary should resolve or create a session branch for a conversation head; the frontend session cache is presentation state only.
 - Only `tool/` should own tool provider, attachment, approval, and execution result data shared across runtime, output, policy, store, and executors.
 - `main.rs` should stay small and only wire components together.
 

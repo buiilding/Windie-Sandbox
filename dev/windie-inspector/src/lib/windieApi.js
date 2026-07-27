@@ -131,6 +131,34 @@ export async function listConversationSessions(conversationId) {
   return body.sessions || [];
 }
 
+export async function resolveSessionAtHead(conversationId, headMessageId = null) {
+  return apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/sessions/resolve`,
+    {
+      method: "POST",
+      body: JSON.stringify({ head_message_id: headMessageId || null }),
+    }
+  );
+}
+
+export async function queryConversation(conversationId, body = {}) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/query`, {
+    method: "POST",
+    body: JSON.stringify({
+      head_message_id: body.headMessageId || null,
+      text: body.text || null,
+      parts: body.parts || [],
+    }),
+  });
+}
+
+export async function continueConversation(conversationId, headMessageId = null) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/continue`, {
+    method: "POST",
+    body: JSON.stringify({ head_message_id: headMessageId || null }),
+  });
+}
+
 export async function querySession(sessionId, parts) {
   return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/query`, {
     method: "POST",

@@ -153,6 +153,18 @@ fn api_router(state: ApiState) -> Router {
             "/api/conversations/{conversation_id}/sessions",
             get(list_conversation_sessions).post(create_session_branch),
         )
+        .route(
+            "/api/conversations/{conversation_id}/sessions/resolve",
+            post(resolve_session_at_head),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/query",
+            post(query_conversation),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/continue",
+            post(continue_conversation),
+        )
         .route("/api/sessions/{session_id}/query", post(query_session))
         .route(
             "/api/sessions/{session_id}/continue",

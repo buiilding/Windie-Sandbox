@@ -29,7 +29,6 @@ import {
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
 } from "@/lib/windieMappers";
-import { sessionAtHead } from "@/lib/sessionTarget";
 import { useSessionRuntime } from "@/hooks/useSessionRuntime";
 
 const WindieCtx = createContext(null);
@@ -355,11 +354,13 @@ export function WindieProvider({ children }) {
     sessionsById,
     selectedSession,
     selectedSessionId,
+    sessionResolution,
     getSelectedSession,
     pendingAssistant,
     streaming,
     refreshSessions,
     selectSession,
+    resolvePathHead,
     sendMessage,
     continueConversation,
     stopStreaming,
@@ -374,22 +375,24 @@ export function WindieProvider({ children }) {
   const setPathHead = useCallback(
     async (nodeId) => {
       if (!activeConvId || !activeConv?.nodes?.[nodeId]) return null;
-      const matchingSession = sessionAtHead(Object.values(sessionsById), activeConvId, nodeId);
-      if (matchingSession) {
-        await selectSession(matchingSession.id);
-        return nodeId;
-      }
-
-      const sessionHead = selectedSession?.currentHeadMessageId || null;
-      setViewHeadId(nodeId === sessionHead ? null : nodeId);
       setSelectedNodeId(nodeId);
-      await loadConversation(activeConvId, {
-        headMessageId: nodeId,
-        countTokens: false,
-      });
-      return nodeId;
+      try {
+        const resolution = await resolvePathHead(nodeId);
+        if (resolution.kind === "existing") return nodeId;
+
+        setViewHeadId(nodeId);
+        await loadConversation(activeConvId, {
+          headMessageId: nodeId,
+          countTokens: false,
+        });
+        return nodeId;
+      } catch (error) {
+        setApiError(error.message);
+        toast.error(error.message);
+        return null;
+      }
     },
-    [activeConv, activeConvId, loadConversation, selectSession, selectedSession, sessionsById]
+    [activeConv, activeConvId, loadConversation, resolvePathHead, setApiError, setSelectedNodeId, setViewHeadId]
   );
   const activeContextSignatures = useMemo(
     () => contextSignatureParts(activeConv, activeModelId, selectedPathNodes),
@@ -667,6 +670,7 @@ export function WindieProvider({ children }) {
     sessionsById,
     selectedSession,
     selectedSessionId,
+    sessionResolution,
     searchQuery,
     models,
     modelsLoading,

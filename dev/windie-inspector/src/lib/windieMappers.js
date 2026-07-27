@@ -71,6 +71,7 @@ export function sessionFromApi(session) {
     queueDepth: session.queue_depth || 0,
     queueId: session.queue_id || null,
     latestEventId: session.latest_event_id ?? null,
+    nodeCount: session.node_count ?? 0,
     createdAt: session.created_at,
     updatedAt: session.updated_at,
   };

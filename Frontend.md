@@ -151,12 +151,12 @@ wrappers. They contain no Windie runtime or persistence rules:
 - `src/context/WindieContext.jsx`: shared frontend state and workflow boundary;
   loads API snapshots, exposes mutations, derives the active path/token meter,
   and composes `useSessionRuntime`.
-- `src/hooks/useSessionRuntime.js`: session lifecycle adapter; creates and
-  selects sessions, sends/continues/stops queries, subscribes to SSE, reduces
-  live events, handles cursors, commits saved messages, and handles approvals.
-- `src/hooks/useSessionRuntime.test.js`: tests session-target decisions for
-  current-head reuse, historical-branch session creation, and cross-
-  conversation isolation.
+- `src/hooks/useSessionRuntime.js`: session lifecycle adapter; asks the backend
+  to resolve/create conversation-head branches, selects returned sessions,
+  sends/continues/stops queries, subscribes to SSE, reduces live events,
+  handles cursors, commits saved messages, and handles approvals.
+- `src/hooks/useSessionRuntime.test.js`: tests session-head projection helpers
+  used alongside backend-owned session resolution.
 - `src/hooks/use-toast.js`: standalone reducer/store for the older reusable
   toast hook; keeps toast state in memory and schedules delayed removal.
 
@@ -172,8 +172,8 @@ wrappers. They contain no Windie runtime or persistence rules:
   helper used during replay and live streaming.
 - `src/lib/sessionEventCursor.test.js`: tests acceptance of new event IDs,
   rejection of duplicate/stale/invalid IDs, and ID-less event handling.
-- `src/lib/sessionTarget.js`: resolves whether query/continue should reuse a
-  session or create a new session at the currently viewed branch head.
+- `src/lib/sessionTarget.js`: contains presentation helpers for reading the
+  currently selected session head; it does not decide session ownership.
 - `src/lib/windieMappers.js`: maps API summaries, inspection reports, messages,
   assistant metadata, sessions, tools, providers, and installations into
   frontend shapes.
@@ -254,9 +254,11 @@ The frontend keeps these concepts separate:
   session sends a message or continues.
 
 `selectedPathNodes` is derived from the active conversation and the effective
-  path head. The chat transcript and tree render this path, while a session
-  operation decides whether a new session is required when the user acts from a
-  different branch.
+path head. The chat transcript and tree render this path. When a tree node is
+clicked, `useSessionRuntime` asks the backend to resolve that conversation/head
+pair; only the typed response can select an existing session or expose a new
+session view. While that request is pending, `sessionResolution` keeps the UI
+in a resolving state instead of presenting a false `new session` state.
 
 ### Local browser state
 
@@ -321,6 +323,7 @@ session
 ├── model, reasoning
 ├── queued, queueDepth, queueId
 ├── latestEventId
+├── nodeCount
 ├── error
 └── createdAt, updatedAt
 ```
@@ -352,15 +355,16 @@ treated as durable history.
 
 - `lib/windieApi.js`: the only general HTTP client. It resolves the API base
   URL, adds `X-Windie-Api-Token`, parses JSON errors, and exposes typed-ish
-  frontend operations for conversations, sessions, models, tools, providers,
-  gateway actions, approvals, and image assets.
+  frontend operations for conversations, backend-owned session-head
+  resolution/query/continue, sessions, models, tools, providers, gateway
+  actions, approvals, and image assets.
 - `lib/sessionStream.js`: the SSE client for one session's event stream. It
   parses SSE framing and JSON payloads, but does not decide how events affect
   application state.
 - `lib/sessionEventCursor.js`: accepts only newer numeric event IDs so replayed
   or duplicated events do not get applied twice.
-- `lib/sessionTarget.js`: resolves whether a user action can continue the
-  selected session or must create a new session at a branch head.
+- `lib/sessionTarget.js`: exposes only small selected-session-head helpers;
+  backend APIs decide whether a branch is reused or created.
 - `lib/windieMappers.js`: converts API response shapes into frontend models.
   Components consume mapped data rather than backend field names.
 - `lib/treeProjection.js`: groups persisted assistant tool-call and tool-result
@@ -381,15 +385,19 @@ view.
 1. Load all sessions and hydrate each session's latest event cursor.
 2. Load sessions for the active conversation and restore the remembered
    selected session when possible.
-3. Subscribe to `/api/sessions/:id/events?after=<cursor>` for every running or
+3. Resolve tree-selected heads through
+   `/api/conversations/:id/sessions/resolve` before changing branch/session
+   presentation state. The hook shows a resolving state while the request is
+   pending.
+4. Subscribe to `/api/sessions/:id/events?after=<cursor>` for every running or
    approval-waiting session.
-4. Reduce `assistant_delta`, `reasoning_delta`, and `tool_call_delta` events
+5. Reduce `assistant_delta`, `reasoning_delta`, and `tool_call_delta` events
    into a transient pending preview.
-5. On `input_started`, `assistant_message_saved`, or `tool_result_saved`, reload
+6. On `input_started`, `assistant_message_saved`, or `tool_result_saved`, reload
    the relevant conversation head and advance the session head.
-6. On `completed`, `failed`, `cancelled`, or `waiting_for_approval`, reconcile
+7. On `completed`, `failed`, `cancelled`, or `waiting_for_approval`, reconcile
    the durable session record, pending preview, and subscription.
-7. Abort subscriptions when a session is no longer live, is deleted, or the
+8. Abort subscriptions when a session is no longer live, is deleted, or the
    provider unmounts.
 
 The hook keeps async resources in refs: active `AbortController` instances,
@@ -424,21 +432,21 @@ replacing a newer selection.
 then calls `sendMessage`:
 
 1. Convert text and attachments to API message parts.
-2. Resolve the target session and branch head.
-3. Create a session if the current branch differs from the session head.
-4. Query the session.
-5. Add an optimistic user node when the input starts immediately.
-6. Subscribe to session events and show the pending assistant preview.
-7. Reload persisted nodes as save events arrive.
+2. Send the conversation ID, selected head, and parts to the backend.
+3. Let the backend resolve-or-create the durable branch atomically and append
+   or queue the input against that branch.
+4. Add an optimistic user node when the input starts immediately.
+5. Subscribe to session events and show the pending assistant preview.
+6. Reload persisted nodes as save events arrive.
 
 The optimistic node exists only to keep the UI responsive. The next inspection
 response replaces it with the backend representation.
 
 ### Continue a conversation
 
-Continue uses the selected session head, or creates a session at the inspected
-branch head when the user is viewing a different path. It does not mutate the
-tree until the backend run produces a saved message.
+Continue sends the conversation ID and requested head to the backend. The
+backend resolves-or-creates the durable branch and continues it. It does not
+mutate the tree until the backend run produces a saved message.
 
 ### Inspect or mutate a tree node
 

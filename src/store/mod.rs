@@ -28,7 +28,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef};
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
+use rusqlite::{
+    Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
+};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -38,7 +40,9 @@ use crate::conversation::{
 };
 use crate::error;
 use crate::llm::ReasoningRequest;
-use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId, SessionStatus};
+use crate::session::{
+    Session, SessionEvent, SessionEventRecord, SessionId, SessionResolution, SessionStatus,
+};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,

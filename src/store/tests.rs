@@ -4,7 +4,7 @@ use super::*;
 use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
-use crate::session::{SessionEvent, SessionId, SessionStatus};
+use crate::session::{SessionEvent, SessionId, SessionResolution, SessionStatus};
 use crate::tool::ToolProviderId;
 use crate::tool::{ToolApprovalMode, ToolSchema, ToolSchemaName};
 use crate::tool_provider::ProviderInstallState;
@@ -544,6 +544,121 @@ fn loads_path_to_message() {
     assert_eq!(path[0].id.as_deref(), Some(root_id.as_str()));
     assert_eq!(path[1].id.as_deref(), Some(first_branch_id.as_str()));
     assert_ne!(path[1].id.as_deref(), Some(second_branch_id.as_str()));
+}
+
+#[test]
+fn session_node_count_includes_inherited_path() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let branch_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::Assistant,
+            "branch",
+            None,
+        )
+        .unwrap();
+    let current_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&branch_id),
+            Role::User,
+            "current",
+            None,
+        )
+        .unwrap();
+    let session_id = SessionId::new("session-count-inherited");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&branch_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_head(&session_id, Some(&current_id))
+        .unwrap();
+    let session = store.load_session(&session_id).unwrap();
+
+    assert_eq!(session.start_head_message_id.as_ref(), Some(&branch_id));
+    assert_eq!(session.current_head_message_id.as_ref(), Some(&current_id));
+    assert_eq!(store.session_node_count(&session).unwrap(), 3);
+}
+
+#[test]
+fn resolves_existing_missing_and_ambiguous_session_heads() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let head_id = store
+        .insert_message(&conversation_id, None, Role::User, "head", None)
+        .unwrap();
+    let session_id = SessionId::new("session-resolution-one");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&head_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+
+    assert!(matches!(
+        store
+            .resolve_session_at_head(&conversation_id, Some(&head_id))
+            .unwrap(),
+        SessionResolution::Existing(session) if session.id == session_id
+    ));
+    assert!(matches!(
+        store
+            .resolve_session_at_head(&conversation_id, None)
+            .unwrap(),
+        SessionResolution::NoSessionAtHead
+    ));
+
+    let second_id = SessionId::new("session-resolution-two");
+    store
+        .create_session(
+            &second_id,
+            &conversation_id,
+            Some(&head_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    assert!(matches!(
+        store
+            .resolve_session_at_head(&conversation_id, Some(&head_id))
+            .unwrap(),
+        SessionResolution::Ambiguous(sessions) if sessions.len() == 2
+    ));
+}
+
+#[test]
+fn resolve_or_create_session_reuses_existing_head() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first = store
+        .resolve_or_create_session(&conversation_id, None, "openai/test", None)
+        .unwrap();
+    let second = store
+        .resolve_or_create_session(&conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    assert_eq!(first.id, second.id);
+    assert_eq!(
+        store
+            .list_conversation_sessions(&conversation_id)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]

@@ -22,7 +22,7 @@ Mental model:
 - store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
 - store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
 - store/schema.rs: database shape, schema version checks, table creation, indexes, and unsupported database version rejection.
-- store/session.rs: stores sessions, update current heads/status, store/replays session events.
+- store/session.rs: stores sessions, updates current heads/status, resolves session branches at conversation heads, atomically resolves-or-creates branches, and stores/replays session events.
 - store/system_prompt.rs: store path-scoped system prompt messages.
 - store/tool_schema.rs: store path-scoped tool schema rows.
 - store/tests.rs:
@@ -34,7 +34,7 @@ Mental model:
 - operation/inspection.rs: Read-only inspection snapshots for a conversation/head, including tree, selected path, model context, prompt, tools, and compaction.
 - operation/message.rs: message and system prompts mutations workflows.
 - operation/tool.rs: tool catalog, attachments, mutations workflows.
-- operation/session.rs: session lifecycle and runtime advancement workflows.
+- operation/session.rs: session lifecycle, backend-owned branch resolution, and runtime advancement workflows.
 - operation/session_approval.rs: session-owned tool approval workflows.
 - operation/session_cli.rs: CLI adapter over session workflows.
 - operation/provider.rs:
@@ -53,7 +53,7 @@ Mental model:
 - api/inspection.rs: conversation inspection HTTP route.
 - api/message.rs: message and system prompt HTTP routes.
 - api/tool.rs: tool catalog, attachment, and tool mutation HTTP routes.
-- api/session.rs: session lifecycle and event HTTP routes.
+- api/session.rs: session lifecycle, conversation-head resolution/query/continue, and event HTTP routes.
 - api/session_approval.rs: session approval HTTP routes.
 - api/provider.rs: 
 - api/env.rs:
@@ -139,6 +139,20 @@ Conversations are durable message trees:
 - update: replace node content.
 - session/query: run from a selected head and append assistant/tool nodes as results.
 - show/tree/inspect: inspect the tree, path, and model-facing context.
+
+Sessions are durable branch objects over a conversation tree. A session stores
+the branch's base/current message heads, runtime status, queued inputs,
+approvals, and event history; it does not copy messages. The conversation owns
+the shared tree and a session owns serialized execution from one selected head.
+
+Session identity is always the durable session ID. The current head is only the
+session's position in the conversation tree. Store operations resolve a
+conversation/head pair against SQLite and return an existing branch, no branch,
+or an explicit ambiguity result. Query and continue requests that target a
+conversation head use the store's immediate transaction to resolve-or-create
+the branch, then verify that the requested head is still current before
+starting execution. Multiple sessions at one current head are rejected as a
+conflict rather than selected by order.
 
 Session queries are serialized per session. A query received while the agent
 loop is running is stored as a durable FIFO session input rather than inserted
