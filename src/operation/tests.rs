@@ -3,6 +3,7 @@
 use super::*;
 use crate::mcp::McpCommand;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
+use crate::tool_provider::ProviderInstallState;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -274,10 +275,16 @@ fn inspection_snapshot_includes_runtime_state() {
     assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
-    assert_eq!(value["messages"][0]["role"], "system");
-    assert_eq!(value["messages"][1]["id"], user_id.as_str());
+    // Tree-wide: system prompt is stored in conversations table, not as a message in the tree.
+    assert_eq!(value["messages"][0]["id"], user_id.as_str());
     assert_eq!(value["path"][0]["id"], user_id.as_str());
+    // model_context = [system_prompt, compaction] when compaction is through the head
     assert_eq!(value["model_context"][0]["role"], "system");
+    assert_eq!(value["model_context"][0]["content"], "You are concise.");
+    assert_eq!(
+        value["model_context"][1]["content"],
+        "Previous conversation summary:\nhello happened"
+    );
     assert_eq!(value["latest_compaction"]["content"], "hello happened");
 }
 
@@ -286,6 +293,7 @@ fn attaches_available_provider_tool() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
     let registry = registry_with_cached_test_tool();
+    enable_test_provider(&store);
     let read_file = registry
         .find_tool(
             &ToolProviderId::new("desktop-commander"),
@@ -320,6 +328,7 @@ fn batch_attaches_available_provider_tools() {
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
 
     let registry = registry_with_cached_test_tool();
+    enable_test_provider(&store);
     let schema_names = attach_tools_with_registry(
         &mut store,
         &conversation_id,
@@ -340,6 +349,107 @@ fn batch_attaches_available_provider_tools() {
         "desktop-commander"
     );
     assert_eq!(attached_tools[0].provider.tool_name.as_str(), "read_file");
+}
+
+#[test]
+fn provider_manager_persists_lifecycle_transitions_and_health() {
+    let store = Store::open_memory().unwrap();
+    let registry = registry_with_cached_test_tool();
+    let provider_id = ToolProviderId::new("desktop-commander");
+
+    let installed = install_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        installed.installation.unwrap().state,
+        ProviderInstallState::Installed
+    );
+
+    let enabled = enable_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        enabled.installation.unwrap().state,
+        ProviderInstallState::Enabled
+    );
+
+    let healthy = health_check_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        healthy.installation.unwrap().state,
+        ProviderInstallState::Enabled
+    );
+
+    let disabled = disable_provider(&store, &registry, &provider_id).unwrap();
+    assert_eq!(
+        disabled.installation.unwrap().state,
+        ProviderInstallState::Disabled
+    );
+
+    uninstall_provider(&store, &registry, &provider_id).unwrap();
+    assert!(
+        store
+            .load_installed_provider(&provider_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn desktop_commander_setup_verifies_and_enables_provider() {
+    let store = Store::open_memory().unwrap();
+    let registry = registry_with_cached_test_tool();
+    let provider_id = ToolProviderId::new("desktop-commander");
+
+    let setup = setup_provider(&store, &registry, &provider_id).unwrap();
+    let installation = setup.installation.unwrap();
+
+    assert_eq!(installation.state, ProviderInstallState::Enabled);
+    assert!(installation.error.is_none());
+    assert!(installation.last_health_check_at.is_some());
+
+    let tools = available_tools_with_registry(&store, &registry).unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].provider.provider_id, provider_id);
+    assert_eq!(
+        enabled_provider_statuses(&store, &registry).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn uninstalled_provider_is_not_exposed_to_tool_catalog_or_attachment() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let registry = registry_with_cached_test_tool();
+    let provider_id = ToolProviderId::new("desktop-commander");
+
+    assert!(
+        available_tools_with_registry(&store, &registry)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        enabled_provider_statuses(&store, &registry)
+            .unwrap()
+            .is_empty()
+    );
+
+    let error = attach_tool_with_registry(
+        &mut store,
+        &conversation_id,
+        &provider_id,
+        &ProviderToolName::new("read_file"),
+        &registry,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("provider is not installed"));
+}
+
+#[test]
+fn one_click_setup_rejects_unknown_provider() {
+    let store = Store::open_memory().unwrap();
+    let registry = ToolProviderRegistry::new();
+
+    let error =
+        setup_provider(&store, &registry, &ToolProviderId::new("unknown-provider")).unwrap_err();
+
+    assert!(error.to_string().contains("provider does not exist"));
 }
 
 #[test]
@@ -373,7 +483,7 @@ fn shared_operations_match_direct_store_state() {
 }
 
 #[test]
-fn start_session_from_wakeup_captures_requested_head() {
+fn create_session_branch_captures_requested_head() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
     let user_id = insert_message(
@@ -385,22 +495,21 @@ fn start_session_from_wakeup_captures_requested_head() {
     )
     .unwrap();
 
-    let session = start_session_from_wakeup(
-        &mut store,
-        crate::wakeup::ContinueWakeup {
-            conversation_id: conversation_id.clone(),
-            head_message_id: Some(user_id.clone()),
-            model: None,
-            reasoning: None,
-        },
-    )
-    .unwrap();
+    let session = store
+        .create_session(
+            &SessionId::fresh(),
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
 
     assert_eq!(session.conversation_id, conversation_id);
     assert_eq!(session.start_head_message_id.as_ref(), Some(&user_id));
     assert_eq!(session.current_head_message_id.as_ref(), Some(&user_id));
     assert_eq!(session.model, "openai/test");
-    assert_eq!(session.status, SessionStatus::Running);
+    assert_eq!(session.status, SessionStatus::Ready);
 }
 
 #[test]
@@ -509,6 +618,14 @@ fn registry_with_cached_test_tool() -> ToolProviderRegistry {
         },
         vec![desktop_commander_read_file_definition()],
     )
+}
+
+fn enable_test_provider(store: &Store) {
+    let provider_id = ToolProviderId::new("desktop-commander");
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
 }
 
 fn desktop_commander_read_file_definition() -> ToolDefinition {

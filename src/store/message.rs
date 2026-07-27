@@ -1,7 +1,6 @@
 //! Message tree, message part, image asset, and fork persistence.
 
 use super::compaction::delete_compactions_for_conversation;
-use super::tool_schema::insert_tool_schema_row_in_transaction;
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -50,24 +49,6 @@ impl Store {
             .context("failed to load path parts")?;
 
         Ok(path)
-    }
-
-    /// Loads message IDs from root to the explicit head for context resolution.
-    pub(super) fn context_path_ids(
-        &self,
-        conversation_id: &ConversationId,
-        head_message_id: Option<&MessageId>,
-    ) -> Result<Vec<String>> {
-        let Some(message_id) = head_message_id else {
-            self.ensure_conversation_exists(conversation_id)?;
-            return Ok(Vec::new());
-        };
-
-        Ok(self
-            .load_path_to_message_rows(conversation_id, message_id)?
-            .into_iter()
-            .filter_map(|message| message.id.map(|id| id.as_str().to_string()))
-            .collect())
     }
 
     /// Loads message rows for one conversation without attaching ordered parts.
@@ -684,13 +665,8 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after message delete")?;
-        delete_context_for_deleted_messages(
-            &transaction,
-            conversation_id,
-            &splice_delete.deleted_message_ids,
-        )
-        .context("failed to delete path context after message delete")?;
-        detach_sessions_from_deleted_messages(
+        // Tree-wide tools: deleting a branch message never deletes tools.
+        repair_sessions_after_deleted_messages(
             &transaction,
             conversation_id,
             &splice_delete.deleted_message_ids,
@@ -827,9 +803,7 @@ impl Store {
 
         delete_compactions_for_conversation(&transaction, conversation_id)
             .context("failed to delete compactions after conversation truncate")?;
-        delete_context_for_deleted_messages(&transaction, conversation_id, &descendant_ids)
-            .context("failed to delete path context after conversation truncate")?;
-        detach_sessions_from_deleted_messages(&transaction, conversation_id, &descendant_ids, now)
+        repair_sessions_after_deleted_messages(&transaction, conversation_id, &descendant_ids, now)
             .context("failed to detach runtime sessions after conversation truncate")?;
         transaction
             .execute(
@@ -866,8 +840,8 @@ impl Store {
     /// Creates a new conversation copied from the source conversation through a
     /// checkpoint message.
     ///
-    /// Messages receive new IDs in the fork so both conversations can diverge
-    /// independently after creation.
+    /// Tree-wide: the forked conversation inherits the whole conversation's
+    /// system prompt and tool set, and receives new message IDs for the selected path.
     pub fn fork_conversation_at_message(
         &mut self,
         conversation_id: &ConversationId,
@@ -879,13 +853,8 @@ impl Store {
         let source_messages = self
             .load_path_to_message(conversation_id, message_id)
             .context("failed to load messages for conversation fork")?;
-        let source_path_ids = source_messages
-            .iter()
-            .filter_map(|message| message.id.as_ref())
-            .map(|message_id| message_id.as_str().to_string())
-            .collect::<HashSet<_>>();
-        let source_tool_schema_rows =
-            self.tool_schema_rows_for_path(conversation_id, &source_path_ids)?;
+        let source_system_prompt = self.system_prompt(conversation_id)?;
+        let source_attached_tools = self.load_attached_tools(conversation_id)?;
         let source_model = self.conversation_model(conversation_id)?;
         let source_reasoning_effort = self.conversation_reasoning_effort(conversation_id)?;
         let source_tool_approval_mode = self.tool_approval_mode(conversation_id)?;
@@ -906,16 +875,18 @@ impl Store {
                     model,
                     reasoning_effort,
                     tool_approval_mode,
+                    system_prompt,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?5)
+                VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?6)
                 ",
                 params![
                     forked_conversation_id.as_str(),
                     source_model,
                     source_reasoning_effort,
                     source_tool_approval_mode.as_storage(),
+                    source_system_prompt.as_deref(),
                     now
                 ],
             )
@@ -969,18 +940,47 @@ impl Store {
             message_id_map.insert(source_message_id.as_str().to_string(), forked_message_id);
         }
 
-        for row in source_tool_schema_rows {
-            let forked_parent_message_id = row
-                .parent_message_id
-                .as_ref()
-                .and_then(|message_id| message_id_map.get(message_id));
-            insert_tool_schema_row_in_transaction(
-                &transaction,
-                &forked_conversation_id,
-                forked_parent_message_id,
-                &row,
-            )
-            .context("failed to copy forked tool schema")?;
+        // Tree-wide tools: copy whole tool set, no parent filtering.
+        for attached_tool in source_attached_tools {
+            let parameters_json = serde_json::to_string(&attached_tool.parameters)
+                .context("failed to serialize forked tool parameters")?;
+            let permissions_json = serde_json::to_string(&attached_tool.permissions)
+                .context("failed to serialize forked tool permissions")?;
+            let annotations_json = serde_json::to_string(&attached_tool.annotations)
+                .context("failed to serialize forked tool annotations")?;
+
+            transaction
+                .execute(
+                    "
+                    INSERT INTO tool_schemas (
+                        conversation_id,
+                        name,
+                        description,
+                        parameters_json,
+                        provider_id,
+                        provider_tool_name,
+                        provider_kind,
+                        permissions_json,
+                        annotations_json,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                    ",
+                    params![
+                        forked_conversation_id.as_str(),
+                        attached_tool.schema_name.as_str(),
+                        attached_tool.description.as_str(),
+                        parameters_json.as_str(),
+                        attached_tool.provider.provider_id.as_str(),
+                        attached_tool.provider.tool_name.as_str(),
+                        attached_tool.provider.kind.as_storage(),
+                        permissions_json.as_str(),
+                        annotations_json.as_str(),
+                        now
+                    ],
+                )
+                .context("failed to copy forked tool schema")?;
         }
 
         transaction
@@ -1254,6 +1254,72 @@ impl Store {
         Ok(ids)
     }
 
+    /// Returns every root-to-leaf path inside one conversation tree.
+    ///
+    /// Each path is an ordered list of message IDs starting at a root
+    /// (`parent_message_id IS NULL`) and ending at a leaf (no children). The
+    /// outer vector's order is depth-first from roots by stable insertion
+    /// order. This is used by the inspection snapshot to expose all possible
+    /// conversation histories the model could ever see.
+    pub fn root_to_leaf_paths(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<Vec<MessageId>>> {
+        self.ensure_conversation_exists(conversation_id)?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT id, parent_message_id
+                FROM messages
+                WHERE conversation_id = ?1
+                ORDER BY created_at, rowid
+                ",
+            )
+            .context("failed to prepare path enumeration load")?;
+
+        let rows = statement
+            .query_map(params![conversation_id.as_str()], |row| {
+                Ok((
+                    MessageId::new(row.get::<_, String>(0)?),
+                    row.get::<_, Option<String>>(1)?.map(MessageId::new),
+                ))
+            })
+            .context("failed to load messages for path enumeration")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read messages for path enumeration")?;
+
+        let mut children_by_parent: HashMap<Option<MessageId>, Vec<MessageId>> = HashMap::new();
+        for (id, parent) in rows {
+            children_by_parent.entry(parent).or_default().push(id);
+        }
+
+        let mut roots = children_by_parent.remove(&None).unwrap_or_default();
+        roots.sort_by_key(|id| id.as_str().to_string());
+
+        let mut paths: Vec<Vec<MessageId>> = Vec::new();
+        let mut stack: Vec<(MessageId, Vec<MessageId>)> =
+            roots.into_iter().rev().map(|id| (id, Vec::new())).collect();
+
+        while let Some((current_id, mut prefix)) = stack.pop() {
+            prefix.push(current_id.clone());
+            let mut children = children_by_parent
+                .remove(&Some(current_id.clone()))
+                .unwrap_or_default();
+            if children.is_empty() {
+                paths.push(prefix);
+                continue;
+            }
+            children.sort_by_key(|id| id.as_str().to_string());
+            for child_id in children.into_iter().rev() {
+                stack.push((child_id, prefix.clone()));
+            }
+        }
+
+        Ok(paths)
+    }
+
     /// Finds which conversation owns a message ID.
     fn message_conversation_id(&self, message_id: &MessageId) -> Result<Option<ConversationId>> {
         self.connection
@@ -1335,7 +1401,7 @@ fn read_message_part_row(row: &Row<'_>) -> rusqlite::Result<(String, MessagePart
 }
 
 /// Inserts ordered message parts for one new message row.
-fn insert_unsaved_message_parts_in_transaction(
+pub(super) fn insert_unsaved_message_parts_in_transaction(
     transaction: &Transaction<'_>,
     message_id: &MessageId,
     parts: &[UnsavedMessagePart],
@@ -1564,46 +1630,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-/// Deletes path-scoped context records attached to messages being removed.
-fn delete_context_for_deleted_messages(
-    transaction: &Transaction<'_>,
-    conversation_id: &ConversationId,
-    deleted_message_ids: &HashSet<String>,
-) -> Result<()> {
-    if deleted_message_ids.is_empty() {
-        return Ok(());
-    }
-
-    let placeholders = std::iter::repeat_n("?", deleted_message_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut deleted_ids = deleted_message_ids.iter().cloned().collect::<Vec<_>>();
-    deleted_ids.sort();
-
-    let tool_sql = format!(
-        "
-        DELETE FROM tool_schemas
-        WHERE conversation_id = ?
-          AND parent_message_id IN ({placeholders})
-        "
-    );
-    let mut tool_params = Vec::with_capacity(deleted_ids.len() + 1);
-    tool_params.push(Value::Text(conversation_id.as_str().to_string()));
-    tool_params.extend(deleted_ids.into_iter().map(Value::Text));
-    transaction
-        .execute(&tool_sql, params_from_iter(tool_params))
-        .context("failed to delete tool schemas for removed messages")?;
-
-    Ok(())
-}
-
-/// Clears run message references that would otherwise point at deleted rows.
+/// Repairs session pointers after message rows are removed.
 ///
-/// Deleting a conversation branch is a storage operation, but sessions own
-/// execution heads. If the deleted set contains a run's current head, that run
-/// can no longer be resumed safely, so it is cancelled and its current head is
-/// cleared before message deletion enforces foreign keys.
-fn detach_sessions_from_deleted_messages(
+/// Sessions are durable execution records independent of individual message
+/// rows. A message mutation can therefore change a session's selected path,
+/// but must not cascade-delete every session that referenced the message. Each
+/// deleted pointer is moved to its nearest surviving ancestor. Affected
+/// sessions are removed only when both pointers have no surviving message path.
+fn repair_sessions_after_deleted_messages(
     transaction: &Transaction<'_>,
     conversation_id: &ConversationId,
     deleted_message_ids: &HashSet<String>,
@@ -1613,52 +1647,124 @@ fn detach_sessions_from_deleted_messages(
         return Ok(());
     }
 
-    let placeholders = std::iter::repeat_n("?", deleted_message_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut deleted_ids = deleted_message_ids.iter().cloned().collect::<Vec<_>>();
-    deleted_ids.sort();
+    let mut parent_by_message = HashMap::with_capacity(deleted_message_ids.len());
+    for message_id in deleted_message_ids {
+        let parent = transaction
+            .query_row(
+                "
+                SELECT parent_message_id
+                FROM messages
+                WHERE conversation_id = ?1 AND id = ?2
+                ",
+                params![conversation_id.as_str(), message_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .context("failed to load deleted message parent")?;
+        parent_by_message.insert(message_id.clone(), parent);
+    }
 
-    let start_sql = format!(
-        "
-        UPDATE sessions
-        SET start_head_message_id = NULL,
-            updated_at = ?
-        WHERE conversation_id = ?
-          AND start_head_message_id IN ({placeholders})
-        "
-    );
-    let mut start_params = Vec::with_capacity(deleted_ids.len() + 2);
-    start_params.push(Value::Integer(updated_at));
-    start_params.push(Value::Text(conversation_id.as_str().to_string()));
-    start_params.extend(deleted_ids.iter().cloned().map(Value::Text));
-    transaction
-        .execute(&start_sql, params_from_iter(start_params))
-        .context("failed to clear deleted runtime session start heads")?;
+    let mut statement = transaction
+        .prepare(
+            "
+            SELECT id, start_head_message_id, current_head_message_id, status
+            FROM sessions
+            WHERE conversation_id = ?1
+            ",
+        )
+        .context("failed to prepare affected session load")?;
+    let sessions = statement
+        .query_map(params![conversation_id.as_str()], |row| {
+            Ok((
+                SessionId::new(row.get::<_, String>(0)?),
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .context("failed to load sessions affected by message delete")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to decode sessions affected by message delete")?;
+    drop(statement);
 
-    let current_sql = format!(
-        "
-        UPDATE sessions
-        SET current_head_message_id = NULL,
-            status = CASE
-                WHEN status IN ('running', 'waiting_for_approval') THEN ?
-                ELSE status
-            END,
-            updated_at = ?
-        WHERE conversation_id = ?
-          AND current_head_message_id IN ({placeholders})
-        "
-    );
-    let mut current_params = Vec::with_capacity(deleted_ids.len() + 3);
-    current_params.push(Value::Text(
-        SessionStatus::Cancelled.as_storage().to_string(),
-    ));
-    current_params.push(Value::Integer(updated_at));
-    current_params.push(Value::Text(conversation_id.as_str().to_string()));
-    current_params.extend(deleted_ids.into_iter().map(Value::Text));
-    transaction
-        .execute(&current_sql, params_from_iter(current_params))
-        .context("failed to clear deleted runtime session current heads")?;
+    for (session_id, start_head, current_head, status) in sessions {
+        let start_was_deleted = start_head
+            .as_ref()
+            .is_some_and(|message_id| deleted_message_ids.contains(message_id));
+        let current_was_deleted = current_head
+            .as_ref()
+            .is_some_and(|message_id| deleted_message_ids.contains(message_id));
+        if !start_was_deleted && !current_was_deleted {
+            continue;
+        }
+
+        let repaired_start =
+            surviving_ancestor(start_head.as_ref(), deleted_message_ids, &parent_by_message);
+        let repaired_current = surviving_ancestor(
+            current_head.as_ref(),
+            deleted_message_ids,
+            &parent_by_message,
+        );
+
+        if repaired_start.is_none() && repaired_current.is_none() {
+            transaction
+                .execute(
+                    "DELETE FROM session_events WHERE session_id = ?1",
+                    params![session_id.as_str()],
+                )
+                .context("failed to delete empty session events")?;
+            transaction
+                .execute(
+                    "DELETE FROM sessions WHERE id = ?1",
+                    params![session_id.as_str()],
+                )
+                .context("failed to delete empty session")?;
+            continue;
+        }
+
+        let repaired_status = if current_was_deleted
+            && matches!(status.as_str(), "running" | "waiting_for_approval")
+        {
+            SessionStatus::Cancelled.as_storage()
+        } else {
+            status.as_str()
+        };
+        transaction
+            .execute(
+                "
+                UPDATE sessions
+                SET start_head_message_id = ?1,
+                    current_head_message_id = ?2,
+                    status = ?3,
+                    updated_at = ?4
+                WHERE id = ?5
+                ",
+                params![
+                    repaired_start,
+                    repaired_current,
+                    repaired_status,
+                    updated_at,
+                    session_id.as_str()
+                ],
+            )
+            .context("failed to repair session heads after message delete")?;
+    }
 
     Ok(())
+}
+
+/// Walks through deleted ancestors until a surviving message or tree root is
+/// reached. The map is built before deletion while parent links still exist.
+fn surviving_ancestor(
+    message_id: Option<&String>,
+    deleted_message_ids: &HashSet<String>,
+    parent_by_message: &HashMap<String, Option<String>>,
+) -> Option<String> {
+    let mut candidate = message_id.cloned();
+    while let Some(message_id) = candidate.as_ref() {
+        if !deleted_message_ids.contains(message_id) {
+            return candidate;
+        }
+        candidate = parent_by_message.get(message_id).cloned().flatten();
+    }
+    None
 }

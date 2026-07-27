@@ -61,6 +61,7 @@ impl std::fmt::Display for ProviderToolName {
 #[serde(rename_all = "snake_case")]
 /// Kind of execution provider behind an attached tool.
 pub enum ToolProviderKind {
+    Builtin,
     Mcp,
     Plugin,
 }
@@ -69,6 +70,7 @@ impl ToolProviderKind {
     /// Converts persisted provider kind text into the typed enum.
     pub fn from_storage(value: &str) -> Option<Self> {
         match value {
+            "builtin" => Some(Self::Builtin),
             "mcp" => Some(Self::Mcp),
             "plugin" => Some(Self::Plugin),
             _ => None,
@@ -78,6 +80,7 @@ impl ToolProviderKind {
     /// Returns the stable storage representation.
     pub fn as_storage(self) -> &'static str {
         match self {
+            Self::Builtin => "builtin",
             Self::Mcp => "mcp",
             Self::Plugin => "plugin",
         }

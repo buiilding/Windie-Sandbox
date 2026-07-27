@@ -17,6 +17,8 @@ use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
+use crate::tool_provider::manifest::ProviderTransport;
+use crate::tool_provider::{ProviderManifest, ProviderSecret};
 
 fn approved_cua_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("cua-driver").unwrap())
@@ -32,6 +34,88 @@ fn approved_blender_mcp_provider() -> McpToolProvider {
 
 fn approved_brightdata_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("brightdata").unwrap())
+}
+
+fn approved_basic_memory_provider() -> McpToolProvider {
+    McpToolProvider::new(approved_mcp_provider("basic-memory").unwrap())
+}
+
+#[test]
+fn approved_provider_manifests_describe_their_runtime_requirements() {
+    let providers = [
+        approved_cua_provider(),
+        approved_desktop_commander_provider(),
+        approved_blender_mcp_provider(),
+        approved_brightdata_provider(),
+        approved_basic_memory_provider(),
+    ];
+
+    let ids = providers
+        .iter()
+        .map(|provider| provider.manifest().provider_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![
+            "cua-driver",
+            "desktop-commander",
+            "blender-mcp",
+            "brightdata",
+            "basic-memory"
+        ]
+    );
+
+    for provider in providers {
+        let manifest = provider.manifest();
+        assert_eq!(manifest.kind, ToolProviderKind::Mcp);
+        assert_eq!(manifest.transport, ProviderTransport::Stdio);
+        assert!(!manifest.description.is_empty());
+        assert!(!manifest.launch.program.is_empty());
+        assert!(!manifest.platforms.is_empty());
+        assert!(!manifest.permissions.is_empty());
+    }
+}
+
+#[test]
+fn basic_memory_manifest_declares_local_runtime_requirements() {
+    let provider = approved_basic_memory_provider();
+    let manifest = provider.manifest();
+
+    assert_eq!(manifest.launch.program, "uvx");
+    assert_eq!(
+        manifest.launch.args,
+        vec![
+            "basic-memory".to_string(),
+            "mcp".to_string(),
+            "--project".to_string(),
+            "windie-memory".to_string(),
+        ]
+    );
+    assert!(
+        manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.executable == "uvx")
+    );
+    assert!(
+        manifest
+            .permissions
+            .contains(&crate::tool_provider::ProviderPermission::Filesystem)
+    );
+}
+
+#[test]
+fn brightdata_manifest_declares_required_secret() {
+    let provider = approved_brightdata_provider();
+    let manifest = provider.manifest();
+
+    assert_eq!(
+        manifest.secrets,
+        vec![ProviderSecret::required(
+            "BRIGHTDATA_API_TOKEN",
+            "Bright Data API token",
+        )]
+    );
 }
 
 fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {
@@ -334,6 +418,17 @@ fn registry_finds_tools_from_cached_provider_catalog() {
         .insert(provider_id.clone(), vec![tool.clone()]);
     let registry = ToolProviderRegistry {
         mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+            manifest: ProviderManifest::mcp_stdio(
+                "missing-mcp",
+                "Missing MCP",
+                "Test MCP provider.",
+                "windie-missing-mcp-provider",
+                &[],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
             provider_id: "missing-mcp",
             schema_prefix: "missing_mcp",
             display_name: "Missing MCP",
@@ -368,6 +463,17 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
     let registry = ToolProviderRegistry {
         mcp_providers: vec![
             McpToolProvider::new(McpProviderDefinition {
+                manifest: ProviderManifest::mcp_stdio(
+                    "available-mcp",
+                    "Available MCP",
+                    "Test MCP provider.",
+                    "windie-missing-mcp-provider",
+                    &[],
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 provider_id: "available-mcp",
                 schema_prefix: "available_mcp",
                 display_name: "Available MCP",
@@ -380,6 +486,17 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
                 setup: None,
             }),
             McpToolProvider::new(McpProviderDefinition {
+                manifest: ProviderManifest::mcp_stdio(
+                    "missing-mcp",
+                    "Missing MCP",
+                    "Test MCP provider.",
+                    "windie-missing-mcp-provider",
+                    &[],
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 provider_id: "missing-mcp",
                 schema_prefix: "missing_mcp",
                 display_name: "Missing MCP",

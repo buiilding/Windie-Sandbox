@@ -99,8 +99,8 @@ Mental model:
 - store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
 - store/schema.rs: database shape, schema version checks, table creation, indexes, and unsupported database version rejection.
 - store/session.rs: stores sessions, update current heads/status, store/replays session events.
-- store/system_prompt.rs: store path-scoped system prompt messages.
-- store/tool_schema.rs: store path-scoped tool schema rows.
+- store/system_prompt.rs: store tree-wide system prompt (conversations.system_prompt column).
+- store/tool_schema.rs: store tree-wide tool schema rows (conversation_id, name) primary key.
 - operation/: shared workflow layer between clients and core systems.
 - operation/mod.rs: Public boundary and re-exports for operation folder.
 - operation/conversation.rs: conversation workflows.

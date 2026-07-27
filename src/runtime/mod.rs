@@ -1,14 +1,15 @@
 //! Runtime flow coordination.
 //!
 //! Coordinates runtime flows across output, store, context, and LLM components.
-//! Session-owned execution advances from explicit message heads so clients do not
-//! query from the mutable conversation path.
+//! Tree-wide: system prompt and tool schemas are conversation-wide, same for any head.
 
 use std::collections::HashSet;
 
 use anyhow::Result;
 
-use crate::context::ContextBuilder;
+use serde_json::Value;
+
+use crate::context::{ContextBuilder, ModelContext};
 use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, ToolCallId};
 use crate::error;
 use crate::llm::{LlmStreamEvent, PromptCacheRequest, ReasoningRequest, RuntimeLlm};
@@ -16,38 +17,28 @@ use crate::output::RuntimeOutput;
 use crate::store::Store;
 use crate::tool::{
     AttachedTool, PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy,
-    ToolSchemaName,
+    ToolProviderKind, ToolSchemaName,
 };
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool_provider::{
+    ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME, ToolProviderRegistry,
+};
 
-/// Receives durable runtime state changes during run execution.
-///
-/// Runtime emits these events only after data has been persisted. HTTP clients
-/// can stream them to a UI, while CLI callers use the no-op sink and keep the
-/// existing blocking behavior.
 pub(crate) trait RuntimeEventSink {
     fn assistant_message_saved(&self, _message_id: &MessageId) {}
     fn tool_result_saved(&self, _message_id: &MessageId) {}
 }
 
-/// Runtime event sink used by existing blocking callers.
 pub(crate) struct NoopRuntimeEventSink;
 
 impl RuntimeEventSink for NoopRuntimeEventSink {}
 
 #[derive(Clone, Copy)]
-/// Optional model-request controls used for one provider turn.
-///
-/// Runtime does not interpret these controls. It only carries them from the
-/// operation layer to the LLM boundary so provider-specific serialization stays
-/// in `llm.rs`.
 pub(crate) struct RuntimeModelRequest<'a> {
     reasoning: Option<&'a ReasoningRequest>,
     prompt_cache: Option<&'a PromptCacheRequest>,
 }
 
 impl<'a> RuntimeModelRequest<'a> {
-    /// Groups optional reasoning and prompt-cache controls for one query.
     pub(crate) fn new(
         reasoning: Option<&'a ReasoningRequest>,
         prompt_cache: Option<&'a PromptCacheRequest>,
@@ -60,10 +51,6 @@ impl<'a> RuntimeModelRequest<'a> {
 }
 
 #[derive(Clone, Copy)]
-/// Inputs for one explicit-head runtime execution.
-///
-/// The head is captured by run admission. Runtime never reads the
-/// conversation's active UI selection when this input is used.
 pub(crate) struct RuntimeInput<'a> {
     pub(crate) conversation_id: &'a ConversationId,
     pub(crate) head_message_id: Option<&'a MessageId>,
@@ -72,13 +59,11 @@ pub(crate) struct RuntimeInput<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Result of advancing a runtime session.
 pub(crate) enum RuntimeOutcome {
     Completed { head_message_id: Option<MessageId> },
     WaitingForApproval { head_message_id: MessageId },
 }
 
-/// Sessions one assistant inference turn from an explicit message head.
 pub(crate) async fn advance_turn<O, L, E>(
     output: &O,
     llm: &L,
@@ -100,10 +85,11 @@ where
         events,
     )?;
 
-    let model_context = ContextBuilder::build_model_context(
+    let model_context = build_model_context(
         store,
         input.conversation_id,
         head_message_id.as_ref(),
+        input.tools,
     )?;
 
     output.start_assistant_message();
@@ -160,7 +146,6 @@ where
     })
 }
 
-/// Sessions from an explicit head until completion or a manual approval boundary.
 pub(crate) async fn advance_until_blocked<O, L, E>(
     output: &O,
     llm: &L,
@@ -217,6 +202,7 @@ where
 }
 
 /// Lists approval-required tool calls at an explicit runtime head.
+/// Tree-wide: tool lookup is conversation-wide.
 pub(crate) fn pending_approvals_at_head(
     store: &Store,
     input: RuntimeInput<'_>,
@@ -229,18 +215,14 @@ pub(crate) fn pending_approvals_at_head(
         return Ok(Vec::new());
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(
-        store,
-        input.conversation_id,
-        input.head_message_id,
-        &tool_call,
-    )?;
+    let attached_tool =
+        load_attached_tool_for_call(store, input.conversation_id, &tool_call, input.tools)?;
     let approval_mode = store.tool_approval_mode(input.conversation_id)?;
 
     if let PolicyDecision::Ask { reason } = policy.decide(
         &tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(input.tools, attached_tool.as_ref()),
+        attached_tool_can_execute(store, input.tools, attached_tool.as_ref()),
         approval_mode,
     ) {
         return Ok(vec![ToolApprovalRequest {
@@ -253,7 +235,6 @@ pub(crate) fn pending_approvals_at_head(
     Ok(Vec::new())
 }
 
-/// Prepares an explicit runtime head for a model request.
 pub(crate) fn prepare_head_turn(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -271,7 +252,6 @@ pub(crate) fn prepare_head_turn(
     validate_run_head_availability(store, conversation_id, head_message_id.as_ref())
 }
 
-/// Rejects provider queries while an explicit head is waiting for tool results.
 fn validate_run_head_availability(
     store: &Store,
     conversation_id: &ConversationId,
@@ -291,7 +271,6 @@ fn validate_run_head_availability(
     )))
 }
 
-/// Loads the root-to-head path for an explicit runtime head.
 fn load_path_at_head(
     store: &Store,
     conversation_id: &ConversationId,
@@ -303,7 +282,6 @@ fn load_path_at_head(
     }
 }
 
-/// Stores policy-denied tool results at an explicit runtime head.
 fn store_policy_denied_tool_results_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -321,18 +299,13 @@ fn store_policy_denied_tool_results_at_head(
         let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
             return Ok(());
         };
-        let attached_tool = load_attached_tool_for_call(
-            store,
-            conversation_id,
-            head_message_id.as_ref(),
-            &tool_call,
-        )?;
+        let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call, tools)?;
         let approval_mode = store.tool_approval_mode(conversation_id)?;
 
         let PolicyDecision::Deny { reason } = policy.decide(
             &tool_call,
             attached_tool.as_ref(),
-            attached_tool_can_execute(tools, attached_tool.as_ref()),
+            attached_tool_can_execute(store, tools, attached_tool.as_ref()),
             approval_mode,
         ) else {
             return Ok(());
@@ -353,14 +326,12 @@ fn store_policy_denied_tool_results_at_head(
     }
 }
 
-/// Result of trying to resolve one pending tool call without user input.
 enum AutomaticToolResolution {
     Idle,
     WaitingForApproval,
     Resolved,
 }
 
-/// Resolves one pending tool call at an explicit runtime head.
 async fn resolve_next_automatic_tool_call_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -381,17 +352,13 @@ async fn resolve_next_automatic_tool_call_at_head(
         tool_call,
     };
     let policy = ToolPolicy;
-    let attached_tool = load_attached_tool_for_call(
-        store,
-        conversation_id,
-        head_message_id.as_ref(),
-        &pending.tool_call,
-    )?;
+    let attached_tool =
+        load_attached_tool_for_call(store, conversation_id, &pending.tool_call, tools)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
     let result = match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(tools, attached_tool.as_ref()),
+        attached_tool_can_execute(store, tools, attached_tool.as_ref()),
         approval_mode,
     ) {
         PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
@@ -400,7 +367,14 @@ async fn resolve_next_automatic_tool_call_at_head(
             reason,
         ),
         PolicyDecision::Allow => {
-            execute_provider_tool_call(&pending, attached_tool.as_ref(), tools).await?
+            execute_provider_tool_call(
+                store,
+                conversation_id,
+                &pending,
+                attached_tool.as_ref(),
+                tools,
+            )
+            .await?
         }
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
@@ -412,19 +386,16 @@ async fn resolve_next_automatic_tool_call_at_head(
     Ok(AutomaticToolResolution::Resolved)
 }
 
-/// One pending tool call plus the message that should parent its result.
 pub(crate) struct PendingToolCall {
     pub(crate) result_parent_message_id: MessageId,
     pub(crate) tool_call: ToolCall,
 }
 
-/// Prepared result of policy evaluation for one pending tool call.
 pub(crate) enum PendingToolExecution {
     Finished(ToolExecutionResult),
     Execute(AttachedTool),
 }
 
-/// Path state for the latest assistant tool execution.
 struct ActiveToolExecution {
     assistant_message_id: MessageId,
     result_parent_message_id: MessageId,
@@ -433,31 +404,23 @@ struct ActiveToolExecution {
 }
 
 impl ActiveToolExecution {
-    /// Returns the first requested tool call that has no path result.
     fn next_pending_tool_call(&self) -> Option<&ToolCall> {
         self.requested_tool_calls
             .iter()
             .find(|tool_call| !self.resolved_tool_call_ids.contains(tool_call.id.as_str()))
     }
 
-    /// Returns whether this assistant requested the given provider tool-call ID.
     fn has_requested_tool_call(&self, tool_call_id: &ToolCallId) -> bool {
         self.requested_tool_calls
             .iter()
             .any(|tool_call| &tool_call.id == tool_call_id)
     }
 
-    /// Returns whether the given provider tool-call ID already has a result.
     fn has_tool_result(&self, tool_call_id: &ToolCallId) -> bool {
         self.resolved_tool_call_ids.contains(tool_call_id.as_str())
     }
 }
 
-/// Finds the latest assistant tool execution on a message path.
-///
-/// Only contiguous `role: tool` messages after that assistant are treated as
-/// results for that execution. If all calls have results, callers may safely
-/// query the model again and append the next assistant message.
 fn active_tool_execution(messages: &[Message]) -> Option<ActiveToolExecution> {
     let (assistant_index, assistant) = messages.iter().enumerate().rev().find(|(_, message)| {
         message.role == Role::Assistant
@@ -503,28 +466,22 @@ fn active_tool_execution(messages: &[Message]) -> Option<ActiveToolExecution> {
     })
 }
 
-/// Evaluates policy and provider availability for one pending tool call.
-///
-/// This stays synchronous so SQLite store references never cross an async
-/// provider boundary. If policy denies the call, the returned execution is a
-/// finished failed result. If policy allows or asks, the caller receives the
-/// attached provider mapping needed for execution.
+/// Tree-wide: tool lookup ignores head, same tool set for any branch.
 pub(crate) fn prepare_pending_tool_execution(
     store: &Store,
     conversation_id: &ConversationId,
-    head_message_id: Option<&MessageId>,
     pending: &PendingToolCall,
     registry: &ToolProviderRegistry,
 ) -> Result<PendingToolExecution> {
     let policy = ToolPolicy;
     let attached_tool =
-        load_attached_tool_for_call(store, conversation_id, head_message_id, &pending.tool_call)?;
+        load_attached_tool_for_call(store, conversation_id, &pending.tool_call, registry)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
 
     match policy.decide(
         &pending.tool_call,
         attached_tool.as_ref(),
-        attached_tool_can_execute(registry, attached_tool.as_ref()),
+        attached_tool_can_execute(store, registry, attached_tool.as_ref()),
         approval_mode,
     ) {
         PolicyDecision::Deny { reason } => Ok(PendingToolExecution::Finished(
@@ -546,17 +503,23 @@ pub(crate) fn prepare_pending_tool_execution(
     }
 }
 
-/// Executes one prepared pending tool call through its attached provider.
 pub(crate) async fn execute_pending_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
     pending: &PendingToolCall,
     attached_tool: &AttachedTool,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolExecutionResult> {
+    if attached_tool.provider.kind == ToolProviderKind::Builtin {
+        return execute_builtin_tool_call(store, conversation_id, pending, attached_tool, registry);
+    }
+
     registry.call_tool(attached_tool, &pending.tool_call).await
 }
 
-/// Executes one pending tool call through its attached provider mapping.
 async fn execute_provider_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
     pending: &PendingToolCall,
     attached_tool: Option<&AttachedTool>,
     registry: &ToolProviderRegistry,
@@ -568,10 +531,9 @@ async fn execute_provider_tool_call(
         )));
     };
 
-    execute_pending_tool_call(pending, attached_tool, registry).await
+    execute_pending_tool_call(store, conversation_id, pending, attached_tool, registry).await
 }
 
-/// Builds the failed result for an explicit user denial.
 pub(crate) fn deny_pending_tool_call(pending: &PendingToolCall) -> ToolExecutionResult {
     ToolExecutionResult::failure(
         pending.tool_call.id.clone(),
@@ -580,7 +542,6 @@ pub(crate) fn deny_pending_tool_call(pending: &PendingToolCall) -> ToolExecution
     )
 }
 
-/// Finds one pending tool call by provider tool-call ID at an explicit head.
 pub(crate) fn load_pending_tool_call_at_head(
     store: &Store,
     conversation_id: &ConversationId,
@@ -622,30 +583,206 @@ pub(crate) fn load_pending_tool_call_at_head(
     })
 }
 
-/// Loads the attached tool matching one model-requested function name.
 fn load_attached_tool_for_call(
     store: &Store,
     conversation_id: &ConversationId,
-    head_message_id: Option<&MessageId>,
     tool_call: &ToolCall,
+    registry: &ToolProviderRegistry,
 ) -> Result<Option<AttachedTool>> {
-    store.load_attached_tool_for_head(
-        conversation_id,
-        head_message_id,
-        &ToolSchemaName::new(tool_call.name()),
-    )
+    let schema_name = ToolSchemaName::new(tool_call.name());
+    if let Some(attached_tool) = store.load_attached_tool(conversation_id, &schema_name)? {
+        return Ok(Some(attached_tool));
+    }
+
+    Ok(registry
+        .builtin_tool(&schema_name)
+        .map(|definition| definition.attached_tool()))
 }
 
-/// Returns whether a loaded attached tool has an executor in the current
-/// provider registry.
 fn attached_tool_can_execute(
+    store: &Store,
     registry: &ToolProviderRegistry,
     attached_tool: Option<&AttachedTool>,
 ) -> bool {
-    attached_tool.is_some_and(|attached_tool| registry.can_execute(attached_tool))
+    attached_tool.is_some_and(|attached_tool| {
+        if attached_tool.provider.kind == ToolProviderKind::Builtin {
+            return registry.can_execute(attached_tool);
+        }
+
+        store
+            .provider_is_enabled(&attached_tool.provider.provider_id)
+            .unwrap_or(false)
+            && registry.can_execute(attached_tool)
+    })
 }
 
-/// Saves one session-owned tool execution result without changing UI selection.
+/// Builds runtime model context and adds Windie's implicit control tools.
+///
+/// Built-in tools are intentionally added only on the model-facing runtime
+/// path. They do not enter conversation inspection or conversation tool-schema
+/// persistence, so clients cannot detach or mistake them for providers.
+fn build_model_context(
+    store: &Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    registry: &ToolProviderRegistry,
+) -> Result<ModelContext> {
+    let mut context = ContextBuilder::build_model_context(store, conversation_id, head_message_id)?;
+    let mut names = context
+        .tool_schemas
+        .iter()
+        .map(|tool| tool.name.as_str().to_string())
+        .collect::<HashSet<_>>();
+
+    for definition in registry.builtin_tools() {
+        if names.insert(definition.schema_name.as_str().to_string()) {
+            context
+                .tool_schemas
+                .push(definition.attached_tool().schema());
+        }
+    }
+
+    Ok(context)
+}
+
+/// Executes one Windie-owned control tool and returns its compact model result.
+fn execute_builtin_tool_call(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    pending: &PendingToolCall,
+    attached_tool: &AttachedTool,
+    registry: &ToolProviderRegistry,
+) -> Result<ToolExecutionResult> {
+    if attached_tool.provider.provider_id.as_str() != BUILTIN_PROVIDER_ID {
+        return Ok(ToolExecutionResult::failure(
+            pending.tool_call.id.clone(),
+            pending.tool_call.name(),
+            "unknown built-in tool",
+        ));
+    }
+
+    match attached_tool.provider.tool_name.as_str() {
+        LIST_PROVIDERS_TOOL_NAME => Ok(ToolExecutionResult {
+            tool_call_id: pending.tool_call.id.clone(),
+            tool_name: pending.tool_call.name().to_string(),
+            content: list_attachable_providers(store, registry)?,
+            parts: Vec::new(),
+            success: true,
+        }),
+        ATTACH_PROVIDER_TOOL_NAME => {
+            let arguments = match serde_json::from_str::<Value>(pending.tool_call.arguments()) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    return Ok(ToolExecutionResult::failure(
+                        pending.tool_call.id.clone(),
+                        pending.tool_call.name(),
+                        format!("invalid tool arguments: {error}"),
+                    ));
+                }
+            };
+            let Some(provider_id) = arguments.get("provider_id").and_then(Value::as_str) else {
+                return Ok(ToolExecutionResult::failure(
+                    pending.tool_call.id.clone(),
+                    pending.tool_call.name(),
+                    "provider_id is required",
+                ));
+            };
+
+            let attachment = attach_provider_to_conversation(
+                store,
+                conversation_id,
+                &crate::tool::ToolProviderId::new(provider_id),
+                registry,
+            );
+
+            let Err(error) = attachment else {
+                return Ok(ToolExecutionResult {
+                    tool_call_id: pending.tool_call.id.clone(),
+                    tool_name: pending.tool_call.name().to_string(),
+                    content: "provider attached".to_string(),
+                    parts: Vec::new(),
+                    success: true,
+                });
+            };
+
+            Ok(ToolExecutionResult::failure(
+                pending.tool_call.id.clone(),
+                pending.tool_call.name(),
+                error.to_string(),
+            ))
+        }
+        _ => Ok(ToolExecutionResult::failure(
+            pending.tool_call.id.clone(),
+            pending.tool_call.name(),
+            "unknown built-in tool",
+        )),
+    }
+}
+
+/// Formats the attachable provider list exactly as model-facing plain text.
+fn list_attachable_providers(store: &Store, registry: &ToolProviderRegistry) -> Result<String> {
+    let mut lines = vec!["provider_id, description".to_string()];
+    for manifest in registry.provider_manifests() {
+        if !store.provider_is_enabled(&manifest.provider_id)? {
+            continue;
+        }
+        let Some(status) = registry.provider_status(&manifest.provider_id) else {
+            continue;
+        };
+        if status.available {
+            lines.push(format!(
+                "{}, {}",
+                manifest.provider_id.as_str(),
+                manifest.description
+            ));
+        }
+    }
+
+    Ok(lines.join("\n"))
+}
+
+/// Validates and attaches every tool from one enabled, healthy provider.
+fn attach_provider_to_conversation(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    provider_id: &crate::tool::ToolProviderId,
+    registry: &ToolProviderRegistry,
+) -> Result<()> {
+    if registry.provider_manifest(provider_id).is_none() {
+        return Err(error::not_found(format!(
+            "provider does not exist: {provider_id}"
+        )));
+    }
+    if !store.provider_is_enabled(provider_id)? {
+        return Err(error::invalid_request(format!(
+            "provider is not installed, enabled, and healthy: {provider_id}"
+        )));
+    }
+    let Some(status) = registry.provider_status(provider_id) else {
+        return Err(error::not_found(format!(
+            "provider does not exist: {provider_id}"
+        )));
+    };
+    if !status.available {
+        return Err(error::invalid_request(format!(
+            "provider is not healthy: {provider_id}"
+        )));
+    }
+
+    let existing_names = store
+        .load_attached_tools(conversation_id)?
+        .into_iter()
+        .map(|tool| tool.schema_name)
+        .collect::<HashSet<_>>();
+    let new_tools = registry
+        .list_provider_tools(provider_id)?
+        .into_iter()
+        .filter(|tool| !existing_names.contains(&tool.schema_name))
+        .map(|tool| tool.attached_tool())
+        .collect::<Vec<_>>();
+    store.insert_attached_tools(conversation_id, &new_tools)
+}
+
 pub(crate) fn store_pending_tool_result_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,

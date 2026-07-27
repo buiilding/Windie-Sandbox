@@ -124,8 +124,35 @@ export async function listSessions() {
   return body.sessions || [];
 }
 
+export async function listConversationSessions(conversationId) {
+  const body = await apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/sessions`
+  );
+  return body.sessions || [];
+}
+
+export async function querySession(sessionId, parts) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/query`, {
+    method: "POST",
+    body: JSON.stringify({ parts }),
+  });
+}
+
+export async function continueSession(sessionId) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/continue`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function getSession(sessionId) {
   return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export async function deleteSession(sessionId) {
+  return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function stopSession(sessionId) {
@@ -153,6 +180,78 @@ export async function denySessionTool(sessionId, toolCallId) {
       body: JSON.stringify({}),
     }
   );
+}
+
+export async function listProviderInstallations() {
+  const body = await apiRequest("/api/providers");
+  return Array.isArray(body) ? body : body.providers || [];
+}
+
+export async function listLlmProviders() {
+  const body = await apiRequest("/api/llm/providers");
+  return body.providers || [];
+}
+
+export async function ensureLlmProvider(provider) {
+  return apiRequest(`/api/llm/providers/${encodeURIComponent(provider)}/ensure`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function createLlmProviderKey(provider, { name, value }) {
+  return apiRequest(`/api/llm/providers/${encodeURIComponent(provider)}/keys`, {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      value,
+      models: ["*"],
+      blacklisted_models: [],
+      weight: 1.0,
+      enabled: true,
+    }),
+  });
+}
+
+export async function setEnvValues(assignments) {
+  return apiRequest("/api/env", {
+    method: "PUT",
+    body: JSON.stringify({ assignments }),
+  });
+}
+
+export async function setupProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/setup`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function enableProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/enable`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function disableProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function repairProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}/repair`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function uninstallProvider(providerId) {
+  return apiRequest(`/api/providers/${encodeURIComponent(providerId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function setConversationModel(conversationId, model) {

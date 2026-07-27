@@ -3,19 +3,27 @@
 use super::*;
 
 #[derive(Debug, Deserialize)]
-/// Request body for starting a backend-owned session.
-pub(super) struct CreateSessionRequest {
+/// Request body for creating a selectable session branch.
+pub(super) struct CreateSessionBranchRequest {
     pub(super) head_message_id: Option<String>,
     pub(super) model: Option<String>,
     pub(super) reasoning: Option<ReasoningRequest>,
 }
 
-impl CreateSessionRequest {
+impl CreateSessionBranchRequest {
     fn reasoning(&self) -> Option<ReasoningRequest> {
         self.reasoning
             .clone()
             .filter(|reasoning| !reasoning.is_empty())
     }
+}
+
+#[derive(Debug, Deserialize)]
+/// One user query to append to a selected session branch.
+pub(super) struct SessionQueryRequest {
+    pub(super) text: Option<String>,
+    #[serde(default)]
+    pub(super) parts: Vec<InsertMessagePart>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,10 +39,18 @@ pub(super) struct SessionResponse {
     pub(super) error: Option<String>,
     pub(super) created_at: i64,
     pub(super) updated_at: i64,
+    pub(super) queued: bool,
+    pub(super) queue_depth: usize,
+    pub(super) queue_id: Option<String>,
+    pub(super) latest_event_id: Option<i64>,
 }
 
 impl SessionResponse {
     pub(super) fn from_session(session: Session) -> Self {
+        Self::from_session_with_queue(session, 0)
+    }
+
+    pub(super) fn from_session_with_queue(session: Session, queue_depth: usize) -> Self {
         Self {
             id: session.id.as_str().to_string(),
             conversation_id: session.conversation_id.as_str().to_string(),
@@ -50,8 +66,32 @@ impl SessionResponse {
             error: session.error,
             created_at: session.created_at,
             updated_at: session.updated_at,
+            queued: false,
+            queue_depth,
+            queue_id: None,
+            latest_event_id: None,
         }
     }
+
+    fn from_query(
+        result: crate::session::SessionQueryResult,
+        latest_event_id: Option<i64>,
+    ) -> Self {
+        let mut response = Self::from_session(result.session);
+        response.queued = result.queued;
+        response.queue_depth = result.queue_depth;
+        response.queue_id = result.input_id.map(|id| id.as_str().to_string());
+        response.latest_event_id = latest_event_id;
+        response
+    }
+}
+
+pub(super) fn response_with_queue(store: &Store, session: Session) -> Result<SessionResponse> {
+    let queue_depth = store.session_input_count(&session.id)?;
+    let latest_event_id = store.latest_session_event_id(&session.id)?;
+    let mut response = SessionResponse::from_session_with_queue(session, queue_depth);
+    response.latest_event_id = latest_event_id;
+    Ok(response)
 }
 
 #[derive(Debug, Serialize)]
@@ -60,25 +100,76 @@ pub(super) struct SessionListResponse {
     pub(super) sessions: Vec<SessionResponse>,
 }
 
-/// Starts a backend-owned session from an explicit conversation head.
-pub(super) async fn create_session(
+/// Creates a selectable session branch without starting model execution.
+pub(super) async fn create_session_branch(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
-    Json(request): Json<CreateSessionRequest>,
+    Json(request): Json<CreateSessionBranchRequest>,
 ) -> ApiResult<SessionResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let head_message_id = request.head_message_id.clone().map(MessageId::new);
-    let reasoning = request.reasoning();
+    let model = match request.model.clone() {
+        Some(model) => model,
+        None => {
+            let store = open_store(&state)?;
+            operation::conversation_model(&store, &conversation_id)?
+                .as_str()
+                .to_string()
+        }
+    };
+    let session = state.session_manager.create_session_branch(
+        conversation_id,
+        head_message_id,
+        model,
+        request.reasoning(),
+    )?;
+
+    let store = open_store(&state)?;
+    Ok(Json(response_with_queue(&store, session)?))
+}
+
+/// Lists all selectable sessions belonging to one conversation.
+pub(super) async fn list_conversation_sessions(
+    State(state): State<ApiState>,
+    Path(conversation_id): Path<String>,
+) -> ApiResult<SessionListResponse> {
+    let store = open_store(&state)?;
+    let sessions = store
+        .list_conversation_sessions(&ConversationId::new(conversation_id))?
+        .into_iter()
+        .map(|session| response_with_queue(&store, session))
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(Json(SessionListResponse { sessions }))
+}
+
+/// Appends a user message to one session branch and starts its runtime.
+pub(super) async fn query_session(
+    State(state): State<ApiState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<SessionQueryRequest>,
+) -> ApiResult<SessionResponse> {
+    let parts = normalize_insert_parts(request.text, request.parts)?;
+    let result = state
+        .session_manager
+        .query_session(&SessionId::new(session_id), &parts)?;
+    let store = open_store(&state)?;
+    let latest_event_id = store.latest_session_event_id(&result.session.id)?;
+
+    Ok(Json(SessionResponse::from_query(result, latest_event_id)))
+}
+
+/// Continues one selected session from its current head.
+pub(super) async fn continue_session(
+    State(state): State<ApiState>,
+    Path(session_id): Path<String>,
+) -> ApiResult<SessionResponse> {
     let session = state
         .session_manager
-        .start_continue_wakeup(ContinueWakeup {
-            conversation_id,
-            head_message_id,
-            model: request.model.map(ModelName::new),
-            reasoning,
-        })?;
+        .continue_session(&SessionId::new(session_id))?;
 
-    Ok(Json(SessionResponse::from_session(session)))
+    let store = open_store(&state)?;
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 /// Lists persisted sessions.
@@ -87,8 +178,8 @@ pub(super) async fn list_sessions(State(state): State<ApiState>) -> ApiResult<Se
     let sessions = store
         .list_sessions()?
         .into_iter()
-        .map(SessionResponse::from_session)
-        .collect();
+        .map(|session| response_with_queue(&store, session))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(Json(SessionListResponse { sessions }))
 }
@@ -100,8 +191,20 @@ pub(super) async fn get_run(
 ) -> ApiResult<SessionResponse> {
     let store = open_store(&state)?;
     let session = store.load_session(&SessionId::new(session_id))?;
+    Ok(Json(response_with_queue(&store, session)?))
+}
 
-    Ok(Json(SessionResponse::from_session(session)))
+/// Removes one terminal session and its exclusive conversation-tree suffix.
+pub(super) async fn remove_session(
+    State(state): State<ApiState>,
+    Path(session_id): Path<String>,
+) -> ApiResult<DeletedResponse> {
+    state
+        .session_manager
+        .remove_session(&SessionId::new(session_id))
+        .await?;
+
+    Ok(Json(DeletedResponse { deleted: true }))
 }
 
 /// Stops one live session explicitly.
@@ -114,7 +217,7 @@ pub(super) async fn stop_run(
     let store = open_store(&state)?;
     let session = store.load_session(&session_id)?;
 
-    Ok(Json(SessionResponse::from_session(session)))
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 #[derive(Debug, Deserialize)]

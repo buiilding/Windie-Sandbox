@@ -5,7 +5,7 @@
 //! individual tools before their schemas are sent to the model.
 
 use super::McpProviderDefinition;
-use super::{blender, brightdata, cua, desktop_commander};
+use super::{basic_memory, blender, brightdata, cua, desktop_commander};
 
 /// Returns the MCP providers Windie is willing to start and execute.
 pub(in crate::tool_provider) fn approved_mcp_providers() -> Vec<McpProviderDefinition> {
@@ -14,6 +14,7 @@ pub(in crate::tool_provider) fn approved_mcp_providers() -> Vec<McpProviderDefin
         desktop_commander::definition(),
         blender::definition(),
         brightdata::definition(),
+        basic_memory::definition(),
     ]
 }
 

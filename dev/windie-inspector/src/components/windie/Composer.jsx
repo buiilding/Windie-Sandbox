@@ -7,10 +7,10 @@ import {
   ChevronDown,
   Square,
   Play,
-  RefreshCw,
   Image as ImageIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import SessionsChip from "@/components/windie/SessionsChip";
 
 function attachmentId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -33,7 +33,6 @@ export default function Composer() {
     models,
     modelsLoading,
     modelsError,
-    refreshModels,
     loadModelParameters,
     activeModelParameters,
     activeReasoning,
@@ -45,6 +44,7 @@ export default function Composer() {
   const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   const taRef = useRef(null);
+  const modelFilterRef = useRef(null);
   const attachmentsRef = useRef([]);
 
   useEffect(() => {
@@ -57,6 +57,14 @@ export default function Composer() {
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return undefined;
+    const frame = requestAnimationFrame(() => {
+      modelFilterRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [modelMenuOpen]);
 
   useEffect(
     () => () => {
@@ -76,7 +84,7 @@ export default function Composer() {
   const selectedReasoningLabel = useMemo(
     () =>
       reasoningOptions.find((option) => option.value === selectedReasoningEffort)?.label ||
-      "model",
+      "default",
     [reasoningOptions, selectedReasoningEffort]
   );
   const filteredModels = models.filter((model) =>
@@ -145,16 +153,12 @@ export default function Composer() {
     const sentAttachments = attachments;
     setText("");
     clearAttachments();
-    await sendMessage(activeConv.id, sentText, { attachments: sentAttachments });
+    await sendMessage(sentText, { attachments: sentAttachments });
   };
 
   const continueQuery = () => {
     if (!activeConv) return;
-    continueConversation(activeConv.id);
-  };
-
-  const refreshModelList = () => {
-    refreshModels().catch((error) => toast.error(error.message));
+    continueConversation();
   };
 
   return (
@@ -261,27 +265,13 @@ export default function Composer() {
                     onClick={() => setModelMenuOpen(false)}
                   />
                   <div className="absolute bottom-full mb-1 left-0 z-20 w-[420px] max-w-[calc(100vw-3rem)] bg-popover border border-border shadow-md">
-                    <div className="px-2.5 py-1.5 border-b border-border font-mono text-[10px] uppercase tracking-widest text-muted-foreground flex items-center justify-between gap-2">
-                      <span>model</span>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          refreshModelList();
-                        }}
-                        className="size-6 inline-flex items-center justify-center border border-transparent hover:border-border hover:bg-surface-hover text-muted-foreground"
-                        title="refresh models"
-                        aria-label="refresh models"
-                      >
-                        <RefreshCw className={`size-3.5 ${modelsLoading ? "animate-spin" : ""}`} strokeWidth={1.75} />
-                      </button>
-                    </div>
                     <div className="p-2 border-b border-border">
                       <input
+                        ref={modelFilterRef}
                         data-testid="composer-model-filter"
                         value={modelSearch}
                         onChange={(event) => setModelSearch(event.target.value)}
-                        placeholder="filter models"
+                        placeholder="search model"
                         className="h-8 w-full bg-background border border-border px-2 font-mono text-xs outline-none placeholder:text-muted-foreground/60 focus:border-[hsl(var(--accent))]"
                       />
                     </div>
@@ -313,7 +303,6 @@ export default function Composer() {
                               );
                             }
                             setModelMenuOpen(false);
-                            setModelSearch("");
                           }}
                           className={`w-full text-left px-2.5 py-1.5 text-xs font-mono hover:bg-surface-hover flex items-center justify-between gap-3 ${
                             currentModel === m.id ? "bg-surface" : ""
@@ -330,6 +319,8 @@ export default function Composer() {
                 </>
               )}
             </div>
+
+            <SessionsChip dropUp />
 
             {reasoningOptions.length > 0 && (
               <div className="relative">
@@ -405,7 +396,7 @@ export default function Composer() {
 
           <button
             data-testid="composer-send"
-            onClick={streaming && !hasSendContent ? stopStreaming : submit}
+          onClick={streaming && !hasSendContent ? () => stopStreaming() : submit}
             disabled={!streaming && !hasSendContent}
             className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
               streaming && !hasSendContent

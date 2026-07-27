@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
 
+use super::builtin;
 #[cfg(test)]
 use super::mcp::McpProviderDefinition;
 use super::mcp::{McpToolProvider, approved_mcp_providers};
@@ -19,7 +20,7 @@ use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolDefinition, ToolExecutionResult, ToolProviderId,
-    ToolProviderKind,
+    ToolProviderKind, ToolSchemaName,
 };
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,7 @@ use crate::tool::{
 pub struct ToolProviderStatus {
     pub provider_id: ToolProviderId,
     pub display_name: String,
+    pub manifest: super::manifest::ProviderManifest,
     pub available: bool,
     pub tool_count: usize,
     pub error: Option<String>,
@@ -54,6 +56,18 @@ impl ToolProviderRegistry {
         Self::default()
     }
 
+    /// Returns Windie-owned control tools that are always model-visible.
+    pub fn builtin_tools(&self) -> Vec<ToolDefinition> {
+        builtin::definitions()
+    }
+
+    /// Finds one Windie-owned control tool by its model-facing schema name.
+    pub fn builtin_tool(&self, schema_name: &ToolSchemaName) -> Option<ToolDefinition> {
+        self.builtin_tools()
+            .into_iter()
+            .find(|tool| tool.schema_name == *schema_name)
+    }
+
     /// Builds a registry whose MCP tool calls reuse persistent provider
     /// sessions.
     ///
@@ -73,6 +87,7 @@ impl ToolProviderRegistry {
     /// returned definition before the model sees the function schema. Provider
     /// catalogs loaded here are cached for later attachment requests in the same
     /// process.
+    #[cfg(test)]
     pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
         let mut tools = Vec::new();
         for provider in &self.mcp_providers {
@@ -84,28 +99,51 @@ impl ToolProviderRegistry {
         Ok(tools)
     }
 
-    /// Lists every approved provider with either a loaded tool count or a
-    /// concrete availability error.
-    pub fn list_provider_statuses(&self) -> Vec<ToolProviderStatus> {
+    /// Returns one provider's live catalog status without probing other
+    /// providers.
+    ///
+    /// Lifecycle filtering belongs to the operation/store boundary. This
+    /// method only asks the executable provider whether its catalog is
+    /// reachable after the caller has decided that the provider is eligible.
+    pub fn provider_status(&self, provider_id: &ToolProviderId) -> Option<ToolProviderStatus> {
+        let provider = self.mcp_provider(provider_id)?;
+        match self.list_provider_tools(provider.id()) {
+            Ok(tools) => Some(ToolProviderStatus {
+                provider_id: provider.provider_id.clone(),
+                display_name: provider.display_name.to_string(),
+                manifest: provider.manifest().clone(),
+                available: true,
+                tool_count: tools.len(),
+                error: None,
+            }),
+            Err(error) => Some(ToolProviderStatus {
+                provider_id: provider.provider_id.clone(),
+                display_name: provider.display_name.to_string(),
+                manifest: provider.manifest().clone(),
+                available: false,
+                tool_count: 0,
+                error: Some(error.to_string()),
+            }),
+        }
+    }
+
+    /// Returns manifests for every provider known to this registry.
+    pub fn provider_manifests(&self) -> Vec<super::manifest::ProviderManifest> {
         self.mcp_providers
             .iter()
-            .map(|provider| match self.list_provider_tools(provider.id()) {
-                Ok(tools) => ToolProviderStatus {
-                    provider_id: provider.provider_id.clone(),
-                    display_name: provider.display_name.to_string(),
-                    available: true,
-                    tool_count: tools.len(),
-                    error: None,
-                },
-                Err(error) => ToolProviderStatus {
-                    provider_id: provider.provider_id.clone(),
-                    display_name: provider.display_name.to_string(),
-                    available: false,
-                    tool_count: 0,
-                    error: Some(error.to_string()),
-                },
-            })
+            .map(|provider| provider.manifest().clone())
             .collect()
+    }
+
+    /// Returns one known provider manifest by stable provider ID.
+    pub fn provider_manifest(
+        &self,
+        provider_id: &ToolProviderId,
+    ) -> Option<super::manifest::ProviderManifest> {
+        self.mcp_providers
+            .iter()
+            .find(|provider| provider.id() == provider_id)
+            .map(|provider| provider.manifest().clone())
     }
 
     /// Lists available tools for one provider ID.
@@ -144,6 +182,7 @@ impl ToolProviderRegistry {
     /// tool.
     pub fn can_execute(&self, attached_tool: &AttachedTool) -> bool {
         match attached_tool.provider.kind {
+            ToolProviderKind::Builtin => true,
             ToolProviderKind::Mcp => self
                 .mcp_provider(&attached_tool.provider.provider_id)
                 .is_some(),
@@ -158,6 +197,9 @@ impl ToolProviderRegistry {
         tool_call: &ToolCall,
     ) -> Result<ToolExecutionResult> {
         match attached_tool.provider.kind {
+            ToolProviderKind::Builtin => Err(error::invalid_request(
+                "built-in tools must be executed by the Windie runtime",
+            )),
             ToolProviderKind::Mcp => {
                 let Some(provider) = self.mcp_provider(&attached_tool.provider.provider_id) else {
                     return Err(error::invalid_request(format!(
@@ -231,6 +273,17 @@ impl ToolProviderRegistry {
 
         Self {
             mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
+                manifest: crate::tool_provider::ProviderManifest::mcp_stdio(
+                    provider_id,
+                    display_name,
+                    "Test MCP provider.",
+                    command.program,
+                    command.args,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 provider_id,
                 schema_prefix,
                 display_name,

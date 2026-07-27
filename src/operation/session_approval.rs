@@ -1,4 +1,5 @@
 //! Session tool-approval operation workflows.
+//! Tree-wide tools: tool lookup is conversation-wide.
 
 use super::*;
 
@@ -29,7 +30,6 @@ pub fn list_session_tool_approvals_with_registry(
     )
 }
 
-/// Lists pending approval requests for one session.
 pub fn list_session_approvals_with_registry(
     store: &Store,
     session: &Session,
@@ -54,7 +54,6 @@ pub fn list_session_approvals_with_registry(
         .collect())
 }
 
-/// Lists pending session-owned approval requests for a conversation.
 pub fn list_conversation_session_approvals_with_registry(
     store: &Store,
     conversation_id: &ConversationId,
@@ -74,7 +73,6 @@ pub fn list_conversation_session_approvals_with_registry(
     Ok(approvals)
 }
 
-/// Executes one approved session-scoped tool call and continues that session.
 pub async fn approve_session_tool<O, E>(
     output: &O,
     events: &E,
@@ -90,17 +88,19 @@ where
 {
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
-    let execution = prepare_pending_tool_execution(
-        store,
-        conversation_id,
-        head_message_id,
-        &pending,
-        runtime.tools,
-    )?;
+    let execution =
+        prepare_pending_tool_execution(store, conversation_id, &pending, runtime.tools)?;
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            execute_pending_tool_call(&pending, &attached_tool, runtime.tools).await?
+            execute_pending_tool_call(
+                store,
+                conversation_id,
+                &pending,
+                &attached_tool,
+                runtime.tools,
+            )
+            .await?
         }
     };
     let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
@@ -110,7 +110,6 @@ where
         .await
 }
 
-/// Stores one denied session-scoped tool result and continues that session.
 pub async fn deny_session_tool<O, E>(
     output: &O,
     events: &E,
@@ -134,7 +133,6 @@ where
         .await
 }
 
-/// Continues a run after a stored tool result only when no manual approval remains.
 async fn continue_session_after_tool_result<O, E>(
     output: &O,
     events: &E,

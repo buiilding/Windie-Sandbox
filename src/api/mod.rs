@@ -42,29 +42,33 @@ use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
 };
 use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
-use crate::wakeup::ContinueWakeup;
 
 mod auth;
 mod conversation;
+mod env;
 mod error;
 mod gateway;
 mod health;
 mod inspection;
 mod message;
+mod provider;
 mod router;
 mod session;
 mod session_approval;
 mod sse;
 mod state;
 mod tool;
+mod ui;
 
 use auth::*;
 use conversation::*;
+use env::*;
 use error::*;
 use gateway::*;
 use health::*;
 use inspection::*;
 use message::*;
+use provider::*;
 use router::router;
 use session::*;
 use session_approval::*;
@@ -106,6 +110,7 @@ pub async fn serve(
         base_url.to_string(),
         tool_registry.clone(),
     ));
+    session_manager.recover_interrupted_sessions()?;
     let state = ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),

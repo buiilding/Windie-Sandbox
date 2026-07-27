@@ -11,6 +11,8 @@ mod gateway;
 mod input;
 mod inspection;
 mod message;
+mod onboarding;
+mod provider;
 mod session;
 mod session_approval;
 mod session_cli;
@@ -18,9 +20,11 @@ mod tool;
 
 pub use conversation::*;
 pub use gateway::*;
-pub use input::MessageInputPart;
+pub use input::{MessageInputPart, PreparedMessageInput, prepare_message_input};
 pub use inspection::*;
 pub use message::*;
+pub use onboarding::*;
+pub use provider::*;
 pub use session::*;
 pub use session_approval::*;
 pub use session_cli::*;
@@ -63,7 +67,7 @@ use crate::tool::{
     ToolSchema, ToolSchemaName,
 };
 use crate::tool_provider::ToolProviderRegistry;
-use crate::wakeup::{ContinueWakeup, Wakeup};
+use crate::wakeup::Wakeup;
 
 #[cfg(test)]
 mod tests;

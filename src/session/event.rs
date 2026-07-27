@@ -8,6 +8,14 @@ use super::SessionId;
 #[serde(tag = "type", rename_all = "snake_case")]
 /// Durable event emitted by one session.
 pub enum SessionEvent {
+    InputQueued {
+        input_id: String,
+        queue_depth: usize,
+    },
+    InputStarted {
+        input_id: String,
+        message_id: String,
+    },
     AssistantDelta {
         text: String,
     },
@@ -41,6 +49,8 @@ impl SessionEvent {
     /// Returns the SSE event name matching the JSON `type`.
     pub fn event_name(&self) -> &'static str {
         match self {
+            Self::InputQueued { .. } => "input_queued",
+            Self::InputStarted { .. } => "input_started",
             Self::AssistantDelta { .. } => "assistant_delta",
             Self::ReasoningDelta { .. } => "reasoning_delta",
             Self::ToolCallDelta { .. } => "tool_call_delta",

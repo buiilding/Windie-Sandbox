@@ -19,6 +19,26 @@ const API_TOKEN_FILE_NAME: &str = "api-token";
 const BIFROST_DIR: &str = "bifrost";
 const BENCHMARK_DIR: &str = "benchmarks";
 const INSPECTOR_LOG_FILE_NAME: &str = "windie-inspector.log";
+const LLM_ENV_KEYS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "MISTRAL_API_KEY",
+    "COHERE_API_KEY",
+    "GROQ_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "CEREBRAS_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "XAI_API_KEY",
+    "FIREWORKS_API_KEY",
+    "TOGETHERAI_API_KEY",
+    "AZURE_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+];
 const CUA_DRIVER_INSTALL_URL: &str =
     "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh";
 
@@ -165,18 +185,21 @@ pub fn unset_env_values(keys: &[String]) -> Result<PathBuf> {
     Ok(layout.env_file)
 }
 
+/// Returns whether a key belongs to an LLM provider and therefore must be
+/// managed by Bifrost instead of Windie's MCP environment file.
+pub fn is_llm_env_key(key: &str) -> bool {
+    LLM_ENV_KEYS.contains(&key)
+}
+
 /// Installs or verifies one approved Windie runtime dependency.
 pub fn install_target(target: &str) -> Result<InstallReport> {
     ensure_windie_layout()?;
 
     match target {
-        "bifrost" => {
-            require_command("npx")?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Bifrost will run through public npx package @maximhq/bifrost".to_string(),
-            })
-        }
+        "bifrost" => Ok(InstallReport {
+            target: target.to_string(),
+            message: "Bifrost is provided by the Windie-owned bundled binary".to_string(),
+        }),
         "cua-driver" => install_cua_driver(),
         "desktop-commander" => {
             require_command("npx")?;
@@ -199,6 +222,14 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
             Ok(InstallReport {
                 target: target.to_string(),
                 message: "Bright Data MCP will run through public npx package @brightdata/mcp"
+                    .to_string(),
+            })
+        }
+        "basic-memory" => {
+            require_command("uvx")?;
+            Ok(InstallReport {
+                target: target.to_string(),
+                message: "Basic Memory will run through public uvx package basic-memory"
                     .to_string(),
             })
         }
@@ -279,6 +310,11 @@ fn validate_env_key(key: &str) -> Result<()> {
         .bytes()
         .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
     {
+        if LLM_ENV_KEYS.contains(&key) {
+            return Err(anyhow!(
+                "LLM provider keys are managed by Bifrost; use `windie onboard`: {key}"
+            ));
+        }
         return Ok(());
     }
 
@@ -425,5 +461,12 @@ mod tests {
         let error = validate_env_key("openai_api_key").unwrap_err();
 
         assert!(error.to_string().contains("uppercase"));
+    }
+
+    #[test]
+    fn rejects_llm_provider_env_key() {
+        let error = validate_env_key("OPENAI_API_KEY").unwrap_err();
+
+        assert!(error.to_string().contains("managed by Bifrost"));
     }
 }

@@ -12,8 +12,9 @@ use tower::ServiceExt;
 
 use crate::conversation::{MessageMetadata, MessagePart, ToolCall};
 use crate::mcp::McpCommand;
-use crate::session::{SessionId, SessionStatus};
+use crate::session::{SessionEvent, SessionId, SessionStatus};
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
+use crate::tool_provider::ProviderInstallState;
 
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -282,6 +283,7 @@ async fn conversation_image_route_returns_scoped_image_bytes() {
     let app = test_app(db_path.clone());
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::GET,
             &format!("/api/conversations/{conversation_id}/images/{asset_id}"),
@@ -312,6 +314,7 @@ async fn insert_tool_role_message_returns_raw_error() {
     let conversation_id = created["conversation_id"].as_str().unwrap();
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::POST,
             &format!("/api/conversations/{conversation_id}/messages"),
@@ -586,7 +589,7 @@ async fn update_remove_and_schema_routes_share_operations() {
 }
 
 #[tokio::test]
-async fn context_mutation_routes_can_target_explicit_heads() {
+async fn system_prompt_and_tools_are_tree_wide() {
     let db_path = temp_database_path();
     let app = test_app(db_path.clone());
     let mut store = Store::open_at(&db_path).unwrap();
@@ -594,28 +597,18 @@ async fn context_mutation_routes_can_target_explicit_heads() {
     let root_id = store
         .insert_message(&conversation_id, None, Role::User, "root", None)
         .unwrap();
-    let shared_id = store
-        .insert_message(&conversation_id, Some(&root_id), Role::User, "shared", None)
-        .unwrap();
     let branch_id = store
-        .insert_message(
-            &conversation_id,
-            Some(&shared_id),
-            Role::User,
-            "branch",
-            None,
-        )
+        .insert_message(&conversation_id, Some(&root_id), Role::User, "branch", None)
         .unwrap();
     let sibling_id = store
         .insert_message(
             &conversation_id,
-            Some(&shared_id),
+            Some(&root_id),
             Role::User,
             "sibling",
             None,
         )
         .unwrap();
-    let _ = sibling_id;
     drop(store);
 
     let prompt_response = response_json(
@@ -624,8 +617,7 @@ async fn context_mutation_routes_can_target_explicit_heads() {
                 Method::PATCH,
                 &format!("/api/conversations/{conversation_id}/system-prompt"),
                 Some(json!({
-                    "text": "branch prompt",
-                    "head_message_id": branch_id.as_str()
+                    "text": "global prompt"
                 })),
             ))
             .await
@@ -633,53 +625,50 @@ async fn context_mutation_routes_can_target_explicit_heads() {
     )
     .await;
     let tool_response = response_json(
-        app.oneshot(authed_request(
-            Method::POST,
-            &format!("/api/conversations/{conversation_id}/tool-schemas"),
-            Some(json!({
-                "name": "branch_tool",
-                "description": "Branch tool",
-                "parameters": {"type": "object"},
-                "head_message_id": branch_id.as_str()
-            })),
-        ))
-        .await
-        .unwrap(),
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/tool-schemas"),
+                Some(json!({
+                    "name": "global_tool",
+                    "description": "Global tool",
+                    "parameters": {"type": "object"}
+                })),
+            ))
+            .await
+            .unwrap(),
     )
     .await;
 
-    assert_eq!(prompt_response["system_prompt"], "branch prompt");
-    assert_eq!(tool_response["name"], "branch_tool");
+    assert_eq!(prompt_response["system_prompt"], "global prompt");
+    assert_eq!(tool_response["name"], "global_tool");
 
     let store = Store::open_at(&db_path).unwrap();
-    let prompt_message_id = MessageId::new(prompt_response["message_id"].as_str().unwrap());
 
     assert_eq!(
-        store
-            .effective_system_prompt_for_head(&conversation_id, Some(&prompt_message_id))
-            .unwrap()
-            .as_deref(),
-        Some("branch prompt")
-    );
-    assert!(
-        store
-            .effective_system_prompt_for_head(&conversation_id, Some(&sibling_id))
-            .unwrap()
-            .is_none()
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
+        Some("global prompt")
     );
     assert_eq!(
-        store
-            .load_tool_schemas_for_head(&conversation_id, Some(&prompt_message_id))
-            .unwrap()[0]
+        store.load_tool_schemas(&conversation_id).unwrap()[0]
             .name
             .as_str(),
-        "branch_tool"
+        "global_tool"
+    );
+    // Tree-wide: both branches see same
+    assert!(
+        store
+            .load_path_to_message(&conversation_id, &branch_id)
+            .is_ok()
     );
     assert!(
         store
-            .load_tool_schemas_for_head(&conversation_id, Some(&sibling_id))
-            .unwrap()
-            .is_empty()
+            .load_path_to_message(&conversation_id, &sibling_id)
+            .is_ok()
+    );
+    assert_eq!(
+        store.system_prompt(&conversation_id).unwrap().as_deref(),
+        Some("global prompt")
     );
     let _ = fs::remove_file(db_path);
 }
@@ -697,6 +686,12 @@ async fn batch_attach_tools_route_attaches_provider_tools() {
     )
     .await;
     let conversation_id = created["conversation_id"].as_str().unwrap();
+    let provider_id = crate::tool::ToolProviderId::new("desktop-commander");
+    let store = Store::open_at(&db_path).unwrap();
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
 
     let attached = response_json(
         app.clone()
@@ -868,6 +863,7 @@ async fn create_session_records_gateway_error() {
     drop(store);
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::POST,
             &format!("/api/conversations/{conversation_id}/sessions"),
@@ -877,11 +873,25 @@ async fn create_session_records_gateway_error() {
         .unwrap();
     let status = response.status();
     let body = response_json_body(response).await;
+    assert_eq!(body["status"], "ready");
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
     let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(session.status, SessionStatus::Failed);
+    assert_ne!(
+        session.current_head_message_id.as_ref(),
+        Some(&head_message_id)
+    );
     assert_eq!(
         session.error.as_deref(),
         Some("Bifrost is not running. Start it with: windie gateway start")
@@ -890,7 +900,49 @@ async fn create_session_records_gateway_error() {
 }
 
 #[tokio::test]
-async fn query_wakeup_starts_session_from_requested_head() {
+async fn session_responses_include_latest_event_cursor() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    drop(store);
+
+    let created = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/sessions"),
+                Some(json!({"model":"openai/test"})),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(created["latest_event_id"].is_null());
+    let session_id = SessionId::new(created["id"].as_str().unwrap());
+
+    let event_id = Store::open_at(&db_path)
+        .unwrap()
+        .append_session_event(&session_id, SessionEvent::Completed { message_id: None })
+        .unwrap()
+        .id;
+    let listed = response_json(
+        app.oneshot(authed_request(
+            Method::GET,
+            &format!("/api/conversations/{conversation_id}/sessions"),
+            None,
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+
+    assert_eq!(listed["sessions"][0]["latest_event_id"], event_id);
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn query_session_advances_branch_from_requested_head() {
     let db_path = temp_database_path();
     let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
     let mut store = Store::open_at(&db_path).unwrap();
@@ -901,9 +953,10 @@ async fn query_wakeup_starts_session_from_requested_head() {
     drop(store);
 
     let response = app
+        .clone()
         .oneshot(authed_request(
             Method::POST,
-            &format!("/api/conversations/{conversation_id}/wakeups/query"),
+            &format!("/api/conversations/{conversation_id}/sessions"),
             Some(json!({
                 "head_message_id": head_message_id.as_str(),
                 "model":"openai/test"
@@ -913,7 +966,17 @@ async fn query_wakeup_starts_session_from_requested_head() {
         .unwrap();
     let status = response.status();
     let body = response_json_body(response).await;
+    assert_eq!(body["status"], "ready");
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
     let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -921,7 +984,9 @@ async fn query_wakeup_starts_session_from_requested_head() {
         session.start_head_message_id.as_ref(),
         Some(&head_message_id)
     );
-    assert_eq!(
+    // The query appended a user message under the requested head and advanced
+    // the branch head, so the current head moved past the requested head.
+    assert_ne!(
         session.current_head_message_id.as_ref(),
         Some(&head_message_id)
     );
@@ -951,6 +1016,16 @@ async fn session_events_replay_gateway_errors_as_sse_events() {
         .unwrap();
     let body = response_json_body(response).await;
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
     let _run = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
 
     let response = app
@@ -979,6 +1054,82 @@ async fn session_events_replay_gateway_errors_as_sse_events() {
 }
 
 #[tokio::test]
+async fn query_while_running_is_accepted_and_drained_fifo() {
+    let db_path = temp_database_path();
+    let mock = spawn_mock_bifrost(Duration::from_millis(150)).await;
+    let app = test_app_with_urls(db_path.clone(), &mock.gateway_url, &mock.base_url);
+    let store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    drop(store);
+
+    let session = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/sessions"),
+                Some(json!({"model":"openai/test"})),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let session_id = SessionId::new(session["id"].as_str().unwrap());
+
+    let first = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"first"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"second"})),
+        ))
+        .await
+        .unwrap();
+    let second_body = response_json_body(second).await;
+    assert_eq!(second_body["queued"], true);
+    assert_eq!(second_body["queue_depth"], 1);
+    assert!(second_body["queue_id"].as_str().is_some());
+
+    let finished = wait_for_session_status(&db_path, &session_id, SessionStatus::Completed).await;
+    assert_eq!(finished.status, SessionStatus::Completed);
+    let messages = Store::open_at(&db_path)
+        .unwrap()
+        .load_messages(&conversation_id)
+        .unwrap();
+    let history = messages
+        .iter()
+        .map(|message| (message.role, message.content.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        history,
+        vec![
+            (Role::User, "first"),
+            (Role::Assistant, "after disconnect"),
+            (Role::User, "second"),
+            (Role::Assistant, "after disconnect"),
+        ]
+    );
+    assert_eq!(
+        Store::open_at(&db_path)
+            .unwrap()
+            .session_input_count(&session_id)
+            .unwrap(),
+        0
+    );
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn session_survives_event_stream_client_disconnect() {
     let db_path = temp_database_path();
     let mock = spawn_mock_bifrost(Duration::from_millis(100)).await;
@@ -1001,6 +1152,16 @@ async fn session_survives_event_stream_client_disconnect() {
         .unwrap();
     let body = response_json(response).await;
     let session_id = SessionId::new(body["id"].as_str().unwrap());
+    let query = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/query"),
+            Some(json!({"text":"hello"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
 
     let response = app
         .oneshot(authed_request(
@@ -1336,6 +1497,11 @@ fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationI
     let mut store = Store::open_at(db_path).unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let registry = registry_with_cached_test_tool();
+    let provider_id = crate::tool::ToolProviderId::new("desktop-commander");
+    store.install_provider(&provider_id).unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
     operation::attach_tool_with_registry(
         &mut store,
         &conversation_id,

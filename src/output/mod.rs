@@ -73,10 +73,16 @@ impl TerminalOutput {
     }
 
     /// Prints the local API address and generated access token at startup.
+    ///
+    /// The inspector is embedded in the API server, so its URL shares the API
+    /// origin rather than a separate dev-server port.
     pub fn api_started(&self, address: &SocketAddr, api_token: &str) {
         println!("windie api listening on http://{address}");
         println!("windie api token: {api_token}");
-        println!("windie inspector: {}", inspector_url(api_token));
+        println!(
+            "windie inspector: http://{address}/?windie_token={}",
+            encode_query_value(api_token)
+        );
     }
 
     /// Prints the browser inspector URL opened by `windie inspector`.
@@ -604,6 +610,14 @@ impl TerminalOutput {
     /// Prints one persisted session event.
     pub fn session_event(&self, event: &SessionEventRecord) {
         match &event.event {
+            SessionEvent::InputQueued {
+                input_id,
+                queue_depth,
+            } => println!("input queued {input_id} (depth {queue_depth})"),
+            SessionEvent::InputStarted {
+                input_id,
+                message_id,
+            } => println!("input started {input_id} as message {message_id}"),
             SessionEvent::AssistantDelta { text } => print!("{text}"),
             SessionEvent::ReasoningDelta { text } => print!("{text}"),
             SessionEvent::ToolCallDelta {
@@ -706,8 +720,9 @@ fn help_lines() -> Vec<String> {
         "  windie",
         "  windie api",
         "  windie inspector",
+        "  windie onboard",
         "  windie install <target>",
-        "  windie env KEY=value",
+        "  windie env MCP_KEY=value",
         "  windie env list",
         "  windie env unset <KEY>",
         "  windie env path",
@@ -761,6 +776,7 @@ fn help_lines() -> Vec<String> {
         "  windie exits successfully without runtime action.",
         "  windie api starts the localhost developer API server and prints the inspector URL.",
         "  windie inspector opens the browser inspector with the current API token.",
+        "  windie onboard configures Bifrost providers and Windie MCP extensions through stdin.",
         "  windie install verifies or installs approved public runtime dependencies.",
         "  windie env edits only ~/.windie/.env and never prints secret values.",
         "  windie tools lists provider tools available to attach to conversations.",
@@ -771,7 +787,7 @@ fn help_lines() -> Vec<String> {
         "  windie compare baseline compares the current benchmark run with ~/.windie/benchmarks/baseline.json.",
         "  windie update baseline replaces ~/.windie/benchmarks/baseline.json with the current session.",
         "  windie inspect <conversation_id> --json prints full read-only runtime state.",
-        "  windie gateway start starts local Bifrost, or public npx/Docker Bifrost.",
+        "  windie gateway start starts the Windie-owned local Bifrost binary.",
         "  windie gateway stop stops the local Bifrost gateway.",
         "  windie models requires the local Bifrost gateway to be running.",
         "  windie run start requires the local Bifrost gateway to be running.",
@@ -1271,14 +1287,6 @@ fn format_duration(duration: std::time::Duration) -> String {
     } else {
         format!("{}us", duration.as_micros())
     }
-}
-
-/// Builds the local inspector URL with one query-encoded token.
-fn inspector_url(api_token: &str) -> String {
-    format!(
-        "http://localhost:3000?windie_token={}",
-        encode_query_value(api_token)
-    )
 }
 
 /// Percent-encodes one URL query value without adding another dependency.

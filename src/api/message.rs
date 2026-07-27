@@ -156,23 +156,15 @@ pub(super) async fn get_conversation_image(
 }
 
 #[derive(Debug, Deserialize)]
-/// Request body for setting a system prompt on the active or requested path.
+/// Request body for setting the conversation-wide system prompt (tree-wide).
 pub(super) struct SystemPromptRequest {
     pub(super) text: String,
-    pub(super) head_message_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-/// Response for system prompt mutation.
+/// Response for system prompt mutation (tree-wide).
 pub(super) struct SystemPromptResponse {
     pub(super) system_prompt: Option<String>,
-    pub(super) message_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-/// Optional query parameters for path-scoped context mutations.
-pub(super) struct ContextMutationQuery {
-    pub(super) head_message_id: Option<String>,
 }
 
 /// Converts an optional API head string into a typed message ID.
@@ -180,7 +172,7 @@ pub(super) fn requested_head_message_id(head_message_id: Option<String>) -> Opti
     head_message_id.map(MessageId::new)
 }
 
-/// Sets or clears the system prompt on the active or requested path.
+/// Sets or clears the conversation-wide system prompt.
 pub(super) async fn set_system_prompt(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
@@ -189,46 +181,24 @@ pub(super) async fn set_system_prompt(
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
 
-    let head_message_id = requested_head_message_id(request.head_message_id);
-    let system_message_id = match head_message_id.as_ref() {
-        Some(head_message_id) => operation::set_system_prompt_at_head(
-            &mut store,
-            &conversation_id,
-            Some(head_message_id),
-            &request.text,
-        )?,
-        None => operation::set_system_prompt(&mut store, &conversation_id, &request.text)?,
-    };
+    operation::set_system_prompt(&mut store, &conversation_id, &request.text)?;
 
     Ok(Json(SystemPromptResponse {
-        system_prompt: store
-            .effective_system_prompt_for_head(&conversation_id, Some(&system_message_id))?,
-        message_id: system_message_id.as_str().to_string(),
+        system_prompt: store.system_prompt(&conversation_id)?,
     }))
 }
 
-/// Removes the system prompt on the active or requested path.
+/// Removes the conversation-wide system prompt.
 pub(super) async fn remove_system_prompt(
     State(state): State<ApiState>,
     Path(conversation_id): Path<String>,
-    Query(query): Query<ContextMutationQuery>,
 ) -> ApiResult<SystemPromptResponse> {
     let conversation_id = ConversationId::new(conversation_id);
     let mut store = open_store(&state)?;
 
-    let head_message_id = requested_head_message_id(query.head_message_id);
-    let system_message_id = match head_message_id.as_ref() {
-        Some(head_message_id) => operation::remove_system_prompt_at_head(
-            &mut store,
-            &conversation_id,
-            Some(head_message_id),
-        )?,
-        None => operation::remove_system_prompt(&mut store, &conversation_id)?,
-    };
+    operation::remove_system_prompt(&mut store, &conversation_id)?;
 
     Ok(Json(SystemPromptResponse {
-        system_prompt: store
-            .effective_system_prompt_for_head(&conversation_id, Some(&system_message_id))?,
-        message_id: system_message_id.as_str().to_string(),
+        system_prompt: None,
     }))
 }

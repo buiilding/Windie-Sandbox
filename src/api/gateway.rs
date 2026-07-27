@@ -43,6 +43,44 @@ pub(super) async fn list_models(
     }))
 }
 
+/// Lists Bifrost's complete provider catalog for onboarding clients.
+pub(super) async fn list_provider_catalog(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+) -> ApiResult<crate::llm::ProviderCatalog> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    Ok(Json(client.provider_catalog().await?))
+}
+
+#[derive(Debug, Serialize)]
+/// Result of ensuring a Bifrost provider configuration exists.
+pub(super) struct EnsureProviderResponse {
+    pub(super) ensured: bool,
+}
+
+/// Creates Bifrost's default provider configuration before its first key.
+///
+/// Onboarding clients call this before submitting a key for a provider that
+/// has not been configured yet. Bifrost treats an existing provider as a
+/// no-op, so clients may call this unconditionally.
+pub(super) async fn ensure_provider(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path(provider): Path<String>,
+) -> ApiResult<EnsureProviderResponse> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    client.ensure_provider(&provider).await?;
+    Ok(Json(EnsureProviderResponse { ensured: true }))
+}
+
+/// Creates one Bifrost-managed provider key from an onboarding client.
+pub(super) async fn create_provider_key(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path(provider): Path<String>,
+    Json(request): Json<crate::llm::CreateProviderKey>,
+) -> ApiResult<crate::llm::ProviderKey> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    Ok(Json(client.create_provider_key(&provider, &request).await?))
+}
+
 #[derive(Debug, Deserialize)]
 /// Query parameters for model-parameter metadata lookup.
 pub(super) struct ModelParametersQuery {
@@ -140,7 +178,7 @@ impl InputTokensResponse {
                 input_tokens: None,
                 total_tokens: None,
                 model: None,
-                source: None,
+                source,
                 raw: None,
             },
         }
@@ -166,6 +204,7 @@ pub(super) async fn count_input_tokens(
         &conversation_id,
         head_message_id.as_ref(),
     )?;
+    let had_context = context.is_some();
     let source = context
         .as_ref()
         .map(|context| context.source().as_str().to_string());
@@ -177,6 +216,12 @@ pub(super) async fn count_input_tokens(
         context,
     )
     .await?;
+
+    let source = if count.is_none() && had_context {
+        Some("unsupported".to_string())
+    } else {
+        source
+    };
 
     Ok(Json(InputTokensResponse::from_count(count, source)))
 }

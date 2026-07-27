@@ -31,6 +31,31 @@ export function toolProviderStatusesFromApi(body) {
   }));
 }
 
+export function providerInstallationsFromApi(body) {
+  const providers = Array.isArray(body) ? body : body.providers || [];
+  return providers.map((provider) => ({
+    providerId: provider.manifest?.provider_id || "unknown",
+    displayName: provider.manifest?.display_name || provider.manifest?.provider_id || "Unknown extension",
+    description: provider.manifest?.description || "",
+    kind: provider.manifest?.kind || "mcp",
+    transport: provider.manifest?.transport || "stdio",
+    launch: provider.manifest?.launch || null,
+    platforms: provider.manifest?.platforms || [],
+    dependencies: provider.manifest?.dependencies || [],
+    secrets: provider.manifest?.secrets || [],
+    permissions: provider.manifest?.permissions || [],
+    installation: provider.installation
+      ? {
+          state: provider.installation.state,
+          error: provider.installation.error || null,
+          installedAt: provider.installation.installed_at,
+          updatedAt: provider.installation.updated_at,
+          lastHealthCheckAt: provider.installation.last_health_check_at,
+        }
+      : null,
+  }));
+}
+
 export function sessionFromApi(session) {
   if (!session) return null;
   return {
@@ -42,6 +67,10 @@ export function sessionFromApi(session) {
     model: session.model,
     reasoning: session.reasoning || null,
     error: session.error || null,
+    queued: Boolean(session.queued),
+    queueDepth: session.queue_depth || 0,
+    queueId: session.queue_id || null,
+    latestEventId: session.latest_event_id ?? null,
     createdAt: session.created_at,
     updatedAt: session.updated_at,
   };
@@ -92,6 +121,12 @@ export function conversationFromInspection(report, fallback) {
     toolSchemas: (report.tool_schemas || []).map(toolSchemaFromApi),
     modelContext: report.model_context || [],
     latestCompaction: report.latest_compaction || null,
+    paths: (report.paths || []).map((path) => ({
+      messageIds: Array.isArray(path.message_ids) ? path.message_ids : [],
+      leafMessageId: path.leaf_message_id || null,
+      depth: typeof path.depth === "number" ? path.depth : 0,
+      leafPreview: path.leaf_preview || "",
+    })),
   };
 }
 

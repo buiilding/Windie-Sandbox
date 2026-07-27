@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 15;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 18;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -37,6 +37,7 @@ impl Store {
                     model TEXT NOT NULL,
                     reasoning_effort TEXT,
                     tool_approval_mode TEXT NOT NULL,
+                    system_prompt TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -101,11 +102,24 @@ impl Store {
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS session_inputs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    parts_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_sessions_conversation
                 ON sessions(conversation_id);
 
                 CREATE INDEX IF NOT EXISTS idx_session_events_run_id_id
                 ON session_events(session_id, id);
+
+                CREATE INDEX IF NOT EXISTS idx_session_inputs_session_created
+                ON session_inputs(session_id, created_at);
 
                 CREATE TABLE IF NOT EXISTS compactions (
                     id TEXT PRIMARY KEY,
@@ -119,22 +133,29 @@ impl Store {
                 );
 
                 CREATE TABLE IF NOT EXISTS tool_schemas (
-                    id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
-                    parent_message_id TEXT,
                     name TEXT NOT NULL,
-                    description TEXT,
-                    parameters_json TEXT,
-                    provider_id TEXT,
-                    provider_tool_name TEXT,
-                    provider_kind TEXT,
-                    permissions_json TEXT,
-                    annotations_json TEXT,
-                    state TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    provider_tool_name TEXT NOT NULL,
+                    provider_kind TEXT NOT NULL,
+                    permissions_json TEXT NOT NULL,
+                    annotations_json TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
 
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id),
-                    FOREIGN KEY (parent_message_id) REFERENCES messages(id)
+                    PRIMARY KEY (conversation_id, name),
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS installed_providers (
+                    provider_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    error TEXT,
+                    installed_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    last_health_check_at INTEGER
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
@@ -158,8 +179,8 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS tool_schemas_conversation_created_idx
                 ON tool_schemas(conversation_id, created_at);
 
-                CREATE INDEX IF NOT EXISTS tool_schemas_parent_idx
-                ON tool_schemas(conversation_id, parent_message_id);
+                CREATE INDEX IF NOT EXISTS installed_providers_updated_idx
+                ON installed_providers(updated_at);
                 ",
             )
             .context("failed to migrate database")?;

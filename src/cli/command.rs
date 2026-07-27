@@ -11,6 +11,8 @@ pub enum Command {
     Api,
     /// Open the local developer inspector with the current API token.
     Inspector,
+    /// Run the terminal-only first-run onboarding wizard.
+    Onboard,
     /// Attach one provider tool to a conversation.
     AttachTool {
         conversation_id: ConversationId,

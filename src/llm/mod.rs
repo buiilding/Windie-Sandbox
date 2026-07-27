@@ -7,12 +7,16 @@
 //! types.
 
 mod client;
+mod management;
 mod model;
 mod responses;
 mod serialization;
 mod stream;
 
 pub use client::BifrostClient;
+pub use management::{
+    BifrostManagementClient, CreateProviderKey, ProviderCatalog, ProviderCatalogEntry, ProviderKey,
+};
 pub use model::{
     BaseUrl, ModelInfo, ModelName, ModelParameter, ModelParameterOption, list_models,
     model_parameters,

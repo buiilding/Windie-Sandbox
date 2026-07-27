@@ -14,6 +14,13 @@ pub enum MessageInputPart {
     ImageBytes { mime_type: String, bytes: Vec<u8> },
 }
 
+#[derive(Debug, Clone)]
+/// Input prepared for durable storage or later session execution.
+pub struct PreparedMessageInput {
+    pub content: String,
+    pub parts: Vec<UnsavedMessagePart>,
+}
+
 /// Loaded version of one insert part.
 pub(super) enum LoadedInsertPart {
     Text(String),
@@ -33,6 +40,30 @@ pub(super) fn load_insert_part(part: &MessageInputPart) -> Result<LoadedInsertPa
             }))
         }
     }
+}
+
+/// Validates and loads user input before it is inserted or queued.
+pub fn prepare_message_input(parts: &[MessageInputPart]) -> Result<PreparedMessageInput> {
+    validate_insert_parts(parts)?;
+    let loaded_parts = parts
+        .iter()
+        .map(load_insert_part)
+        .collect::<Result<Vec<_>>>()?;
+    let prepared_parts = loaded_parts
+        .iter()
+        .map(|part| match part {
+            LoadedInsertPart::Text(text) => UnsavedMessagePart::Text(text.clone()),
+            LoadedInsertPart::Image(image) => UnsavedMessagePart::Image(UnsavedImagePart {
+                mime_type: image.mime_type.clone(),
+                bytes: image.bytes.clone(),
+            }),
+        })
+        .collect();
+
+    Ok(PreparedMessageInput {
+        content: insert_content(parts),
+        parts: prepared_parts,
+    })
 }
 
 /// Validates that an insert carries at least one meaningful user input.

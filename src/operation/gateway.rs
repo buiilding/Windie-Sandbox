@@ -236,5 +236,4 @@ pub async fn count_input_tokens_for_context(
     client
         .count_input_tokens(&context.model_messages, &context.tool_schemas)
         .await
-        .map(Some)
 }

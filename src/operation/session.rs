@@ -49,28 +49,11 @@ impl<'a> RuntimeDependencies<'a> {
     }
 }
 
-/// Creates a durable session from a wakeup and captures the head/model used.
-pub fn start_session_from_wakeup(store: &mut Store, wakeup: ContinueWakeup) -> Result<Session> {
-    let head_message_id = wakeup.head_message_id;
-    let model = match wakeup.model {
-        Some(model) => model,
-        None => conversation_model(store, &wakeup.conversation_id)?,
-    };
-    let session_id = SessionId::fresh();
-
-    store.create_session(
-        &session_id,
-        &wakeup.conversation_id,
-        head_message_id.as_ref(),
-        model.as_str(),
-        wakeup.reasoning.as_ref(),
-    )
-}
-
 /// Resolves a session-targeted wakeup into the persisted session and action.
 ///
-/// Conversation wakeups create new sessions through `start_session_from_wakeup`.
-/// This helper is only for wakeups that target an already durable session.
+/// Sessions are created as selectable branches through the store and started
+/// through the session manager. This helper is only for wakeups that target an
+/// already durable session: approving or denying a tool call, or stopping.
 pub fn resume_session_from_wakeup(store: &Store, wakeup: Wakeup) -> Result<Option<SessionResume>> {
     let (session_id, action) = match wakeup {
         Wakeup::ApproveTool(decision) => (
@@ -82,9 +65,6 @@ pub fn resume_session_from_wakeup(store: &Store, wakeup: Wakeup) -> Result<Optio
             SessionResumeAction::DenyTool(decision.tool_call_id),
         ),
         Wakeup::Stop(stop) => (stop.session_id, SessionResumeAction::Stop),
-        Wakeup::Query(_) | Wakeup::Continue(_) => {
-            anyhow::bail!("conversation wakeups create sessions instead of resuming them")
-        }
     };
     let session = store.load_session(&session_id)?;
 
@@ -118,6 +98,11 @@ pub fn finish_session(
             store.append_session_event(session_id, SessionEvent::WaitingForApproval)
         }
     }
+}
+
+/// Removes one terminal session and its exclusive conversation-tree suffix.
+pub fn remove_session(store: &mut Store, session_id: &SessionId) -> Result<()> {
+    store.remove_session(session_id)
 }
 
 /// Persists a failed session status and replayable failure event.

@@ -98,6 +98,8 @@ POST   /api/conversations/{conversation_id}/input-tokens
 POST   /api/conversations/{conversation_id}/sessions
 POST   /api/conversations/{conversation_id}/wakeups/query
 POST   /api/conversations/{conversation_id}/wakeups/continue
+POST   /api/sessions/{session_id}/query
+POST   /api/sessions/{session_id}/continue
 GET    /api/sessions
 GET    /api/sessions/{session_id}
 GET    /api/sessions/{session_id}/approvals
@@ -147,6 +149,13 @@ Run events use server-sent events. `approve` executes and stores the pending
 tool result for that run, then continues the run when no later manual approval
 is waiting. `deny` stores a rejected tool result and follows the same
 continuation rule. Conversations store state; runs own execution and approvals.
+If `POST /api/sessions/{session_id}/query` arrives while the session is already
+running, Windie accepts it into a durable FIFO input queue instead of returning
+an error. The response includes `queued: true`, `queue_id`, and `queue_depth`.
+The queued input is inserted into the conversation tree only when the current
+run completes, under the run's latest message head. Inputs remain queued while
+tool approval is pending and are resumed by `continue` after an interrupted or
+cancelled run.
 The `/runs` routes are compatibility aliases for the primary `/sessions`
 routes.
 
@@ -156,7 +165,7 @@ routes.
 windie install <target>
 ```
 
-Install or verify one approved public runtime dependency. Supported targets:
+Install or verify one approved runtime dependency. Supported targets:
 
 ```text
 bifrost
@@ -166,9 +175,10 @@ blender-mcp
 brightdata
 ```
 
-`bifrost`, `desktop-commander`, and `brightdata` use public `npx` packages.
-`blender-mcp` uses public `uvx blender-mcp`. `cua-driver` uses the public
-trycua installer when `cua-driver` is not already on `PATH`.
+`bifrost` is provided by the bundled Windie release binary.
+`desktop-commander` and `brightdata` use public `npx` packages. `blender-mcp`
+uses public `uvx blender-mcp`. `cua-driver` uses the public trycua installer
+when `cua-driver` is not already on `PATH`.
 
 ```text
 windie env OPENAI_API_KEY=<key>
@@ -590,12 +600,15 @@ a duplicate process.
 Launcher order:
 
 ```text
-1. public npx package: npx -y @maximhq/bifrost
-2. public Docker image: maximhq/bifrost:latest
+1. WINDIE_BIFROST_BIN, when set
+2. bundled sibling binary beside windie: bifrost or bifrost-http
+3. local development binary: bifrost/tmp/bifrost-http
+4. sibling development checkout: ../bifrost/tmp/bifrost-http
 ```
 
-Windie does not use a sibling Bifrost checkout as a runtime dependency. The
-workspace Bifrost source is reference material only.
+Release installs place the bundled Bifrost binary beside `windie`. Running
+`windie api` can start the gateway without Node, npm, Docker, or a separate
+Bifrost checkout.
 
 When Windie starts Bifrost, provider keys come from a Windie `.env` file.
 Windie only reads:
@@ -606,8 +619,7 @@ Windie only reads:
 
 Use `.env.example` as the non-secret template for `~/.windie/.env`. Do not
 commit real provider keys.
-For `npx`, Windie also passes `PATH` and `HOME` so Node/npm can launch. These
-are process-launch variables, not provider keys.
+The Bifrost child process receives only the variables loaded from this file.
 
 Detached Bifrost process logs are written to one of:
 

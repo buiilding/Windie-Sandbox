@@ -28,9 +28,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
