@@ -5,12 +5,10 @@ import {
   useState,
   useCallback,
   useEffect,
-  useRef,
 } from "react";
 import { toast } from "sonner";
 import {
   apiRequest,
-  countConversationInputTokens,
   fetchModelParameters,
   listModels,
   setConversationModel as setConversationModelApi,
@@ -23,14 +21,17 @@ import {
   uninstallProvider as uninstallProviderApi,
 } from "@/lib/windieApi";
 import {
-  conversationFromInspection,
-  conversationSummaryFromApi,
   providerInstallationsFromApi,
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
-  upsertConversationMessage,
 } from "@/lib/windieMappers";
+import { useConversationStore } from "@/hooks/useConversationStore";
+import { useInspectorState } from "@/hooks/useInspectorState";
 import { useSessionRuntime } from "@/hooks/useSessionRuntime";
+import {
+  contextSignatureParts,
+  pathNodesForConversation,
+} from "@/lib/conversationContext";
 
 const WindieCtx = createContext(null);
 
@@ -40,11 +41,6 @@ function tokenCountKey(conversationId, modelId) {
 
 function isAbortError(error) {
   return error?.name === "AbortError";
-}
-
-function pathNodesForConversation(conversation) {
-  if (!conversation) return [];
-  return (conversation.selectedPath || []).map((id) => conversation.nodes[id]).filter(Boolean);
 }
 
 function pathNodesToNode(conversation, nodeId) {
@@ -72,53 +68,17 @@ function latestAssistantTotalTokens(pathNodes) {
   return null;
 }
 
-function stableJson(value) {
-  return JSON.stringify(value);
-}
-
-function contextSignatureParts(conversation, modelId, pathNodesOverride = null) {
-  if (!conversation) {
-    return { pathSignature: "", setupSignature: "", fullSignature: "" };
-  }
-  const pathNodes = pathNodesOverride || pathNodesForConversation(conversation);
-  const path = pathNodes.map((node) => ({
-    id: node.id,
-    role: node.message.role,
-    parts: node.message.parts || [],
-    metadata: {
-      toolCalls: node.message.metadata?.toolCalls || [],
-      toolCallId: node.message.metadata?.toolCallId || null,
-    },
-  }));
-  const setup = {
-    conversationId: conversation.id,
-    model: modelId || conversation.model || null,
-    systemPrompt: conversation.systemPrompt || "",
-    toolSchemas: (conversation.toolSchemas || []).map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-      providerId: tool.providerId,
-      providerToolName: tool.providerToolName,
-    })),
-    latestCompaction: conversation.latestCompaction || null,
-  };
-  return {
-    pathSignature: stableJson(path),
-    setupSignature: stableJson(setup),
-    fullSignature: stableJson({ setup, path }),
-  };
-}
-
 export function WindieProvider({ children }) {
-  const [conversations, setConversations] = useState([]);
-  const [activeConvId, setActiveConvId] = useState(null);
-  const [selectedNodeId, setSelectedNodeId] = useState(null);
-  const [viewHeadId, setViewHeadId] = useState(null);
-  const [theme, setTheme] = useState("dark");
-  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [apiError, setApiError] = useState(null);
+  const {
+    theme,
+    contextPreviewOpen,
+    searchQuery,
+    apiError,
+    setTheme,
+    setContextPreviewOpen,
+    setSearchQuery,
+    setApiError,
+  } = useInspectorState();
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [approvals, setApprovals] = useState([]);
   const [availableToolSchemas, setAvailableToolSchemas] = useState([]);
@@ -129,44 +89,24 @@ export function WindieProvider({ children }) {
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(null);
-  const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
 
-  const applySessionMessage = useCallback((session, message, updatePath) => {
-    if (!session?.conversationId || !message?.id) return;
-    setConversations((current) => current.map((conversation) => {
-      if (conversation.id !== session.conversationId) return conversation;
-      return upsertConversationMessage(conversation, message, session.model, updatePath);
-    }));
-  }, []);
-
-  // The selection ref is only an async load anchor. The rendered selection
-  // remains selectedNodeId; the session runtime owns session selection.
-  const selectedNodeRef = useRef(null);
-  const loadSeqRef = useRef({});
-  const inputTokenSupportRef = useRef({});
-
-  useEffect(() => {
-    selectedNodeRef.current = selectedNodeId;
-  }, [selectedNodeId]);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "dark") root.classList.add("dark");
-    else root.classList.remove("dark");
-  }, [theme]);
-
-  const refreshConversations = useCallback(async () => {
-    const body = await apiRequest("/api/conversations");
-    const summaries = body.conversations.map(conversationSummaryFromApi);
-    setConversations((prev) =>
-      summaries.map((summary) => {
-        const existing = prev.find((conv) => conv.id === summary.id);
-        return existing ? { ...summary, ...existing, model: summary.model, messageCount: summary.messageCount } : summary;
-      })
-    );
-    return summaries;
-  }, []);
+  const {
+    conversations,
+    activeConv,
+    activeConvId,
+    selectedNodeId,
+    viewHeadId,
+    inputTokenCounts,
+    setActiveConvId,
+    setSelectedNodeId,
+    setViewHeadId,
+    applySessionMessage,
+    updateConversation,
+    refreshConversations,
+    loadConversation,
+    selectConversation,
+  } = useConversationStore({ setApiError, setApprovals });
 
   const refreshGateway = useCallback(async () => {
     const body = await apiRequest("/api/status");
@@ -237,100 +177,9 @@ export function WindieProvider({ children }) {
     }
   }, []);
 
-  const loadConversation = useCallback(
-    async (convId, options = {}) => {
-      if (!convId) return null;
-      const hasHead = Object.prototype.hasOwnProperty.call(options, "headMessageId");
-      const headMessageId = hasHead
-        ? options.headMessageId
-        : selectedNodeRef.current;
-      const q = headMessageId ? `?head_message_id=${encodeURIComponent(headMessageId)}` : "";
-      // Latest-wins guard: bump this conversation's load sequence and only apply
-      // the result if no newer load started while we were awaiting.
-      const seq = (loadSeqRef.current[convId] || 0) + 1;
-      loadSeqRef.current[convId] = seq;
-      const [report, approvalBody] = await Promise.all([
-        apiRequest(`/api/conversations/${convId}${q}`),
-        apiRequest(`/api/conversations/${convId}/run-approvals`),
-      ]);
-      if (loadSeqRef.current[convId] !== seq) {
-        // A newer load started; discard this stale response.
-        return null;
-      }
-      const loaded = conversationFromInspection(report, null);
-      setConversations((prev) => {
-        const fallback = prev.find((conv) => conv.id === convId);
-        const withFallback = conversationFromInspection(report, fallback);
-        return prev.some((c) => c.id === convId) ? prev.map((c) => (c.id === convId ? withFallback : c)) : [withFallback, ...prev];
-      });
-      const last = loaded?.selectedPath?.[loaded.selectedPath.length - 1] || loaded?.rootId || null;
-      setSelectedNodeId((cur) => (cur && loaded?.nodes?.[cur] ? cur : last));
-      setApprovals(approvalBody.approvals || []);
-
-      if (options.countTokens !== false && loaded?.id) {
-        const mid = loaded?.model || null;
-        const sig = contextSignatureParts(loaded, mid).fullSignature;
-        const key = tokenCountKey(loaded?.id, mid);
-        if (mid && inputTokenSupportRef.current[mid] === "unsupported") {
-          setInputTokenCounts((p) => ({
-            ...p,
-            [key]: {
-              inputTokens: null,
-              totalTokens: null,
-              model: mid,
-              raw: null,
-              source: "unsupported",
-              signature: sig,
-              measuredAt: Date.now(),
-            },
-          }));
-          return loaded;
-        }
-        const rid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        setInputTokenCounts((p) => ({ ...p, [key]: { ...(p[key] || {}), latestRequestId: rid } }));
-        countConversationInputTokens(loaded.id, null, headMessageId || null)
-          .then((count) => {
-            if (mid && count.source === "unsupported") {
-              inputTokenSupportRef.current[mid] = "unsupported";
-            } else if (mid && count.inputTokens != null) {
-              inputTokenSupportRef.current[mid] = "supported";
-            }
-            setInputTokenCounts((p) => {
-              if (p[key]?.latestRequestId !== rid) return p;
-              return { ...p, [key]: { ...count, source: count.source || "prequery_input", signature: sig, latestRequestId: rid, measuredAt: Date.now() } };
-            });
-          })
-          .catch(() => {
-            setInputTokenCounts((p) => {
-              if (p[key]?.latestRequestId !== rid) return p;
-              return { ...p, [key]: { inputTokens: null, totalTokens: null, model: mid, raw: null, source: "unavailable", signature: sig, latestRequestId: rid, measuredAt: Date.now() } };
-            });
-          });
-      }
-      return loaded;
-    },
-    []
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    refreshConversations()
-      .then((s) => {
-        if (cancelled) return;
-        setApiError(null);
-        setActiveConvId((c) => c || s[0]?.id || null);
-      })
-      .catch((e) => {
-        if (!cancelled) setApiError(e.message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshConversations]);
-
   useEffect(() => {
     refreshGateway().catch((e) => setApiError(e.message));
-  }, [refreshGateway]);
+  }, [refreshGateway, setApiError]);
 
   useEffect(() => {
     refreshModels().catch(() => {});
@@ -338,13 +187,12 @@ export function WindieProvider({ children }) {
 
   useEffect(() => {
     refreshAvailableTools().catch((e) => setApiError(e.message));
-  }, [refreshAvailableTools]);
+  }, [refreshAvailableTools, setApiError]);
 
   useEffect(() => {
     refreshProviderInstallations().catch((e) => setApiError(e.message));
-  }, [refreshProviderInstallations]);
+  }, [refreshProviderInstallations, setApiError]);
 
-  const activeConv = useMemo(() => conversations.find((c) => c.id === activeConvId) || null, [conversations, activeConvId]);
   const activeModelId = activeConv?.model || null;
   const activeReasoning = activeConv?.reasoning || null;
   const sessionRuntime = useSessionRuntime({
@@ -457,7 +305,7 @@ export function WindieProvider({ children }) {
         throw e;
       }
     },
-    [activeConvId, loadConversation, refreshConversations]
+    [activeConvId, loadConversation, refreshConversations, setApiError]
   );
 
   const setConversationReasoningEffort = useCallback(
@@ -466,20 +314,17 @@ export function WindieProvider({ children }) {
       return runMutation(
         async () => {
           const result = await setConversationReasoningApi(convId, effort || null);
-          setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, reasoning: result.reasoning || null } : c)));
+          updateConversation(convId, (conversation) => ({
+            ...conversation,
+            reasoning: result.reasoning || null,
+          }));
           return result;
         },
         { convId, reload: false, refreshList: false }
       );
     },
-    [runMutation]
+    [runMutation, updateConversation]
   );
-
-  const selectConversation = useCallback((convId) => {
-    setViewHeadId(null);
-    setSelectedNodeId(null);
-    setActiveConvId(convId);
-  }, []);
 
   const createConversation = useCallback(async () => {
     const body = await runMutation(
@@ -565,7 +410,7 @@ export function WindieProvider({ children }) {
         throw error;
       }
     },
-    [refreshAvailableTools, refreshProviderInstallations]
+    [refreshAvailableTools, refreshProviderInstallations, setApiError]
   );
 
   const setupProvider = useCallback(
@@ -595,7 +440,7 @@ export function WindieProvider({ children }) {
       // source of truth for the chat path and query target.
       setSelectedNodeId(nodeId);
     },
-    []
+    [setSelectedNodeId]
   );
 
   const truncateAfter = useCallback(
@@ -627,7 +472,7 @@ export function WindieProvider({ children }) {
       const parentHead = node?.parentId || null;
       const currentHead =
         viewHeadId ||
-        selectedNodeRef.current ||
+        selectedNodeId ||
         selectedSession?.currentHeadMessageId ||
         null;
       const nextHead = currentHead === nodeId ? parentHead : currentHead;
@@ -652,7 +497,9 @@ export function WindieProvider({ children }) {
       loadConversation,
       refreshSessions,
       runMutation,
+      selectedNodeId,
       selectedSession,
+      setSelectedNodeId,
       setViewHeadId,
       viewHeadId,
     ]
@@ -668,7 +515,7 @@ export function WindieProvider({ children }) {
       setActiveConvId(body.conversation_id);
       return body.conversation_id;
     },
-    [runMutation]
+    [runMutation, setActiveConvId, setSelectedNodeId]
   );
 
   const startGateway = useCallback(() => runMutation(async () => { const r = await apiRequest("/api/gateway/start", { method: "POST" }); await refreshGateway(); await refreshModels().catch(() => {}); return r; }, { reload: false }), [refreshGateway, refreshModels, runMutation]);
