@@ -13,10 +13,11 @@ Mental model:
 - llm/responses.rs: provider JSON structs, typed mirror of the provider's Responses API JSON.
 - llm/serialization.rs: turn Windie types into provider wire types. Message + ToolSchema -> ResponsesRequest.
 - llm/stream.rs: turn provider stream events into Windie assistant stream. SSE events -> AssitantResponse.
-- llm/management.rs:
-- llm/tests.rs:
+- llm/management.rs: Talks to Bifrost's provider-management API. Lists llm providers, creates provider configurations, submits provider API keys. Does not own inference.
+- llm/tests.rs: tests the llm boundary: request serialization, model urls, image handling, tool calls, token counts, and streamed response parsing.
 - store/mod.rs: Public boundary and re-exports for store folder.
-- store/provider.rs:
+- store/provider.rs: Persist Windie's tool provider lifecycle records in SQLite:
+installed, enabled, disabled, broken, or updating, does not install these packages.
 - store/compaction.rs: summary checkpoint store, saves and loads compaction checkpoints.
 - store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
 - store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
@@ -24,7 +25,7 @@ Mental model:
 - store/session.rs: stores sessions, updates current heads/status, resolves session branches at conversation heads, atomically resolves-or-creates branches, and stores/replays session events.
 - store/system_prompt.rs: store path-scoped system prompt messages.
 - store/tool_schema.rs: store path-scoped tool schema rows.
-- store/tests.rs:
+- store/tests.rs: integration tests for SQLite storage, including conversations, messages, images, tools, sessions, queues, compaction, provider state, branching, deletion and schema safety.
 - operation/: shared workflow layer between clients and core systems.
 - operation/mod.rs: Public boundary and re-exports for operation folder.
 - operation/conversation.rs: conversation workflows.
@@ -36,9 +37,9 @@ Mental model:
 - operation/session.rs: session lifecycle, backend-owned branch resolution, and runtime advancement workflows.
 - operation/session_approval.rs: session-owned tool approval workflows.
 - operation/session_cli.rs: CLI adapter over session workflows.
-- operation/provider.rs:
-- operation/onboarding.rs:
-- operation/tests.rs:
+- operation/provider.rs: coordinates provider lifecycle workflows: setup, installation, health checks, enabling, disabling, repairing and uninstalling.
+- operation/onboarding.rs: shared onboarding workflow. configures bifrost llm providers, stores mcp secrets, sets up mcp providers, check health, enables health.
+- operation/tests.rs: tests cross-component workflows built on top of storage, providers, tools, input handling, inspection, and sessions.
 - api/: localhost HTTP interface for clients to access Windie runtime primitives.
 - api/mod.rs: Public boundary and re-exports for api folder.
 - api/router.rs: maps HTTP URLs to API handlers and applies shared request rules.
@@ -54,10 +55,10 @@ Mental model:
 - api/tool.rs: tool catalog, attachment, and tool mutation HTTP routes.
 - api/session.rs: session lifecycle, conversation-head resolution/query/continue, and event HTTP routes.
 - api/session_approval.rs: session approval HTTP routes.
-- api/provider.rs: 
-- api/env.rs:
-- api/tests.rs:
-- api/ui.rs:
+- api/provider.rs: http handlers for listing and managing windie tool providers
+- api/env.rs: securely writes declared provider secretes to ~/.windie/.env. refuses arbitrary environment keys
+- api/tests.rs: test http routes, authentication, error mapping, sse/session behavior, conversation operating, tools, and mock bifrost responses
+- api/ui.rs: serves the compiled browser inspector and its static assets directly from the windie api server.
 - cli/: parses terminal arguments into typed CLI commands.
 - cli/mod.rs: Public boundary and re-exports for cli folder.
 - cli/command.rs: Contract between cli parse and main.rs. Defines parse CLI command types.
@@ -67,8 +68,8 @@ Mental model:
 - cli/tool_schema.rs: Parses tool schema commands, `windie insert <conversation_id> toolschema ... `, etc.
 - cli/bench.rs: Parses benchmark commands, `windie bench`, etc.
 - cli/env.rs: Parses environment variable commands, `windie env KEY=value`, etc.
-- cli/onboard.rs:
-- cli/tests.rs:
+- cli/onboard.rs: terminal input/output adapter for onboarding. it prompts for provider choices, api keys, mcp secrets, and displays progress
+- cli/tests.rs: test cli command parsing and validation
 - tool/: common tool schema Windie uses for all tool systems.
 - tool/mod.rs: Public boundary and re-exports for tool folder.
 - tool/approval.rs: Approval data types: approval mode and pending approval request.
@@ -78,9 +79,9 @@ Mental model:
 - tool/result.rs: Tool output execution result shape.
 - tool/schema.rs: Model-facing tool schema.
 - tool_provider/: Manages executable tools.
-- tool_provider/builtin.rs:
-- tool_provider/lifecycle.rs:
-- tool_provider/manifest.rs:
+- tool_provider/builtin.rs: defines windie-owned tools that are always visible to the model, currently provider discovering and provider attachment.
+- tool_provider/lifecycle.rs: defines the persisted lifecycle states for tool providers
+- tool_provider/manifest.rs: defines the metadata contract for a provider: identity, launch command, platform, dependencies, secrets, permissions, scope and setup information.
 - tool_provider/mod.rs: Public boundary and re-exports for tool_provider folder.
 - tool_provider/registry.rs: The provider-neutral registry, for mcps, builtins, skills, plugins, returns them as available tools. organize and route across catalog families.
 - tool_provider/mcp/mod.rs: Public boundary and re-exports for tool_provider/mcp folder.
@@ -89,7 +90,7 @@ Mental model:
 - tool_provider/mcp/brightdata.rs: Brightdata MCP definition.
 - tool_provider/mcp/cua.rs: Cua Driver MCP definition.
 - tool_provider/mcp/desktop_commander.rs: Desktop Commander MCP definition.
-- tool_provider/mcp/basic_memory.rs: 
+- tool_provider/mcp/basic_memory.rs: basic memory mcp provider definition and creates windie's isolated local memory project.
 - tool_provider/mcp/provider.rs: Generic MCP backend adapter; list MCP tools, converts them into Windie ToolDefinition.
 - tool_provider/mcp/executor.rs: Executes already-approved MCP tool calls.
 - tool_provider/mcp/result.rs: MCP result normalization, errors into output, text, image to message parts, build the visible preview stored on the tool message row.
@@ -101,7 +102,7 @@ Mental model:
 - session/manager.rs: manages live background session tasks, approvals, cancellation, and publishes session events.
 - session/model.rs: durable session record and lifecycle status. Exists so a session can outlive any one client and can be inspected, resumed, approved, or replayed later.
 - perf/:
-- perf/runtime.rs:
+- perf/runtime.rs: builds local sqlite/runtime fixtures and measures runtime operations such as path loading, context building, tool approval, deletion, truncation, and mcp calls.
 - perf/mod.rs: Public boundary and re-exports for perf folder.
 - perf/mode.rs: benchmark mode, category and option types.
 - perf/report.rs: benchmark result data and duration summaries.
@@ -117,7 +118,7 @@ Mental model:
 - local/mod.rs: Public boundary and re-exports for local folder.
 - local/setup.rs: user-local Windie setup, ~/.windie/.env editing, API token storage, and approved dependency installs.
 - output/:
-- output/mod.rs:
+- output/mod.rs: public boundary and re-exports for output folder
 - output/tests.rs:
 - runtime/:
 - runtime/mod.rs:
