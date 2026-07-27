@@ -14,6 +14,8 @@ Mental model:
 - llm/responses.rs: provider JSON structs, typed mirror of the provider's Responses API JSON.
 - llm/serialization.rs: turn Windie types into provider wire types. Message + ToolSchema -> ResponsesRequest.
 - llm/stream.rs: turn provider stream events into Windie assistant stream. SSE events -> AssitantResponse.
+- llm/management.rs:
+- llm/tests.rs:
 - store/mod.rs: Public boundary and re-exports for store folder.
 - store/provider.rs:
 - store/compaction.rs: summary checkpoint store, saves and loads compaction checkpoints.
@@ -23,6 +25,7 @@ Mental model:
 - store/session.rs: stores sessions, update current heads/status, store/replays session events.
 - store/system_prompt.rs: store path-scoped system prompt messages.
 - store/tool_schema.rs: store path-scoped tool schema rows.
+- store/tests.rs:
 - operation/: shared workflow layer between clients and core systems.
 - operation/mod.rs: Public boundary and re-exports for operation folder.
 - operation/conversation.rs: conversation workflows.
@@ -35,6 +38,8 @@ Mental model:
 - operation/session_approval.rs: session-owned tool approval workflows.
 - operation/session_cli.rs: CLI adapter over session workflows.
 - operation/provider.rs:
+- operation/onboarding.rs:
+- operation/tests.rs:
 - api/: localhost HTTP interface for clients to access Windie runtime primitives.
 - api/mod.rs: Public boundary and re-exports for api folder.
 - api/router.rs: maps HTTP URLs to API handlers and applies shared request rules.
@@ -51,6 +56,9 @@ Mental model:
 - api/session.rs: session lifecycle and event HTTP routes.
 - api/session_approval.rs: session approval HTTP routes.
 - api/provider.rs: 
+- api/env.rs:
+- api/tests.rs:
+- api/ui.rs:
 - cli/: parses terminal arguments into typed CLI commands.
 - cli/mod.rs: Public boundary and re-exports for cli folder.
 - cli/command.rs: Contract between cli parse and main.rs. Defines parse CLI command types.
@@ -60,14 +68,18 @@ Mental model:
 - cli/tool_schema.rs: Parses tool schema commands, `windie insert <conversation_id> toolschema ... `, etc.
 - cli/bench.rs: Parses benchmark commands, `windie bench`, etc.
 - cli/env.rs: Parses environment variable commands, `windie env KEY=value`, etc.
+- cli/onboard.rs:
+- cli/tests.rs:
 - tool/: common tool schema Windie uses for all tool systems.
 - tool/mod.rs: Public boundary and re-exports for tool folder.
 - tool/approval.rs: Approval data types: approval mode and pending approval request.
 - tool/policy/mod.rs: Approval decision rules: allow, ask, or deny a pending tool call.
+- tool/policy/tests.rs:
 - tool/provider.rs: Provider identity types: typed references from Windie tools to executable backends.
 - tool/result.rs: Tool output execution result shape.
 - tool/schema.rs: Model-facing tool schema.
 - tool_provider/: Manages executable tools.
+- tool_provider/builtin.rs:
 - tool_provider/lifecycle.rs:
 - tool_provider/manifest.rs:
 - tool_provider/mod.rs: Public boundary and re-exports for tool_provider folder.
@@ -82,6 +94,7 @@ Mental model:
 - tool_provider/mcp/provider.rs: Generic MCP backend adapter; list MCP tools, converts them into Windie ToolDefinition.
 - tool_provider/mcp/executor.rs: Executes already-approved MCP tool calls.
 - tool_provider/mcp/result.rs: MCP result normalization, errors into output, text, image to message parts, build the visible preview stored on the tool message row.
+- tool_provider/tests.rs:
 - session/: session domain types and live session supervision.
 - session/mod.rs: Public boundary and re-exports for session folder.
 - session/event.rs: event types for obsrvable session activity. Records observable events from a running session/agent loop such as streamed assistant text, tool calls, approvals, completion, failure, and cancellation.
@@ -97,15 +110,21 @@ Mental model:
 - perf/runner.rs: benchmark execution entry points.
 - perf/fixture.rs: temporary benchmark conversation creation/setup.
 - perf/storage.rs: reads and writes benchmark report files.
+- perf/tests.rs:
 - dev/: local developer tooling.
 - dev/mod.rs: Public boundary and re-exports for dev folder.
 - dev/inspector.rs: launch the local browser inspector UI and passes it the API token.
 - local/: user-local Windie environment setup.
 - local/mod.rs: Public boundary and re-exports for local folder.
 - local/setup.rs: user-local Windie setup, ~/.windie/.env editing, API token storage, and approved dependency installs.
+- output/:
+- output/mod.rs:
+- output/tests.rs:
+- runtime/:
+- runtime/mod.rs:
+- runtime/tests.rs:
 - main.rs: front desk for the windie binary.
 - context.rs: model-facing context finalizer, resolve system prompt, tool schema, messages, compaction summary given one explicit message head.
-- runtime.rs: simple input/output engine for the LLM. query the path, llm returns the message.
 - mcp.rs: starts the mcp stdio client.
 - gateway.rs: manages the Bifrost LLM gateway.
 - wakeup.rs: why the llm is queried.
