@@ -119,9 +119,13 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/setup.rs: user-local Windie setup, ~/.windie/.env editing, API token storage, and approved dependency installs.
 - output/:
 - output/mod.rs: public boundary and re-exports for output folder
+- output/terminal.rs:
+- output/formatting.rs:
 - output/tests.rs:
 - runtime/:
 - runtime/mod.rs:
+- runtime/turn.rs:
+- runtime/tool_execution.rs:
 - runtime/tests.rs:
 - main.rs: front desk for the windie binary.
 - context.rs: model-facing context finalizer, resolve system prompt, tool schema, messages, compaction summary given one explicit message head.
