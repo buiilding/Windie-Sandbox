@@ -60,6 +60,51 @@ fn tool_call_delta_event_uses_matching_sse_name_and_json_type() {
     assert_eq!(body["arguments_delta"], r#"{"command""#);
 }
 
+#[test]
+fn saved_sse_event_includes_authoritative_message_and_session_snapshots() {
+    let db_path = temp_database_path();
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let message_id = store
+        .insert_message(&conversation_id, None, Role::Assistant, "saved", None)
+        .unwrap();
+    let session_id = SessionId::new("session-sse-snapshot");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Running, None)
+        .unwrap();
+    let record = store
+        .append_session_event(
+            &session_id,
+            SessionEvent::AssistantMessageSaved {
+                message_id: message_id.as_str().to_string(),
+            },
+        )
+        .unwrap();
+
+    let body: serde_json::Value =
+        serde_json::from_str(&session_event_data(Some(db_path.as_path()), &record)).unwrap();
+
+    assert_eq!(body["type"], "assistant_message_saved");
+    assert_eq!(body["message"]["id"], message_id.as_str());
+    assert_eq!(body["message"]["content"], "saved");
+    assert_eq!(body["session"]["id"], session_id.as_str());
+    assert_eq!(
+        body["session"]["current_head_message_id"],
+        message_id.as_str()
+    );
+
+    let _ = fs::remove_file(db_path);
+}
+
 #[tokio::test]
 async fn health_does_not_require_token() {
     let app = test_app(temp_database_path());

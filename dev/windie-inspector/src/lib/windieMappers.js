@@ -72,6 +72,8 @@ export function sessionFromApi(session) {
     queueId: session.queue_id || null,
     latestEventId: session.latest_event_id ?? null,
     nodeCount: session.node_count ?? 0,
+    protectedMessageIds: session.protected_message_ids || [],
+    deletionAllowed: session.deletion_allowed !== false,
     createdAt: session.created_at,
     updatedAt: session.updated_at,
   };
@@ -129,6 +131,55 @@ export function conversationFromInspection(report, fallback) {
       leafPreview: path.leaf_preview || "",
     })),
   };
+}
+
+export function upsertConversationMessage(conversation, message, model, updatePath = false) {
+  if (!conversation || !message?.id) return conversation;
+
+  const existing = conversation.nodes?.[message.id];
+  const node = {
+    ...(existing || {}),
+    id: message.id,
+    parentId: message.parent_message_id || null,
+    childrenIds: existing?.childrenIds || [],
+    message: messageFromApi(message, model, conversation.id),
+  };
+  const nodes = { ...(conversation.nodes || {}), [node.id]: node };
+
+  if (node.parentId && nodes[node.parentId]) {
+    nodes[node.parentId] = {
+      ...nodes[node.parentId],
+      childrenIds: Array.from(new Set([
+        ...(nodes[node.parentId].childrenIds || []),
+        node.id,
+      ])),
+    };
+  }
+
+  const rootIds = node.parentId
+    ? (conversation.rootIds || (conversation.rootId ? [conversation.rootId] : []))
+    : Array.from(new Set([...(conversation.rootIds || []), node.id]));
+  const next = {
+    ...conversation,
+    nodes,
+    rootIds,
+    rootId: conversation.rootId || (!node.parentId ? node.id : null),
+    messageCount: Object.keys(nodes).length,
+  };
+
+  if (updatePath) {
+    const path = [];
+    const seen = new Set();
+    let current = next.nodes[node.id];
+    while (current && !seen.has(current.id)) {
+      path.push(current.id);
+      seen.add(current.id);
+      current = current.parentId ? next.nodes[current.parentId] : null;
+    }
+    next.selectedPath = path.reverse();
+  }
+
+  return next;
 }
 
 function messageFromApi(message, model, conversationId) {

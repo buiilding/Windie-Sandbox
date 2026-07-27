@@ -17,7 +17,13 @@ export function treeContextMenuPosition(clientX, clientY) {
 }
 
 export default function TreeNodeContextMenu({ nodeId, position, onClose }) {
-  const { activeConv, forkFromMessage, truncateAfter, removeMessage } = useWindie();
+  const {
+    activeConv,
+    forkFromMessage,
+    truncateAfter,
+    removeMessage,
+    protectedMessageIds,
+  } = useWindie();
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -38,14 +44,16 @@ export default function TreeNodeContextMenu({ nodeId, position, onClose }) {
 
   if (!nodeId || !position || !activeConv) return null;
 
-  const run = (action, message) => {
+  const isProtected = protectedMessageIds.has(nodeId);
+
+  const run = async (action, message) => {
     onClose();
     try {
-      Promise.resolve(action(activeConv.id, nodeId)).catch(() => {});
+      await action(activeConv.id, nodeId);
+      toast.message(message);
     } catch (_) {
       // The mutation already reports its own error through the runtime context.
     }
-    toast.message(message);
   };
 
   return createPortal(
@@ -59,7 +67,7 @@ export default function TreeNodeContextMenu({ nodeId, position, onClose }) {
       <button
         type="button"
         data-testid="tree-node-context-fork"
-        onClick={() => run(forkFromMessage, "forked")}
+        onClick={() => void run(forkFromMessage, "forked")}
         className="w-full px-3 py-2 flex items-center gap-2 text-left font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"
       >
         <GitBranch className="size-3" />
@@ -68,8 +76,10 @@ export default function TreeNodeContextMenu({ nodeId, position, onClose }) {
       <button
         type="button"
         data-testid="tree-node-context-truncate"
-        onClick={() => run(truncateAfter, "truncated")}
-        className="w-full px-3 py-2 flex items-center gap-2 text-left font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"
+        onClick={() => void run(truncateAfter, "truncated")}
+        disabled={isProtected}
+        title={isProtected ? "cannot truncate an active session path" : "truncate"}
+        className="w-full px-3 py-2 flex items-center gap-2 text-left font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Scissors className="size-3" />
         truncate
@@ -77,8 +87,10 @@ export default function TreeNodeContextMenu({ nodeId, position, onClose }) {
       <button
         type="button"
         data-testid="tree-node-context-remove"
-        onClick={() => run(removeMessage, "removed")}
-        className="w-full px-3 py-2 flex items-center gap-2 text-left font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))] hover:bg-surface-hover"
+        onClick={() => void run(removeMessage, "removed")}
+        disabled={isProtected}
+        title={isProtected ? "cannot remove an active session path" : "remove"}
+        className="w-full px-3 py-2 flex items-center gap-2 text-left font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))] hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Trash2 className="size-3" />
         remove

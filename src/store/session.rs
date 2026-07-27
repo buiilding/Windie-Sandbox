@@ -15,6 +15,73 @@ pub struct QueuedSessionInput {
 }
 
 impl Store {
+    /// Returns the message IDs on a live session's current inference path.
+    ///
+    /// This is the persisted protection set exposed to API clients. Keeping
+    /// the path calculation here prevents clients from reconstructing session
+    /// safety rules from a conversation tree that may already be stale.
+    pub fn protected_message_ids_for_session(&self, session: &Session) -> Result<Vec<String>> {
+        if !matches!(
+            session.status,
+            SessionStatus::Running | SessionStatus::WaitingForApproval
+        ) {
+            return Ok(Vec::new());
+        }
+
+        let Some(head_message_id) = session.current_head_message_id.as_ref() else {
+            return Ok(Vec::new());
+        };
+
+        self.load_path_to_message_rows(&session.conversation_id, head_message_id)
+            .map(|path| {
+                path.into_iter()
+                    .filter_map(|message| message.id.map(|id| id.as_str().to_string()))
+                    .collect()
+            })
+    }
+
+    /// Rejects destructive message mutations that would change the model path
+    /// owned by an active session.
+    ///
+    /// Running and approval-waiting sessions both retain an execution branch:
+    /// running sessions may still be using the path for inference, while
+    /// approval-waiting sessions still have a pending tool call whose parent
+    /// path must remain valid. New children and copied forks do not call this
+    /// guard because they leave the protected messages unchanged.
+    pub(super) fn ensure_message_mutation_allowed(
+        &self,
+        conversation_id: &ConversationId,
+        affected_message_ids: &HashSet<String>,
+    ) -> Result<()> {
+        if affected_message_ids.is_empty() {
+            return Ok(());
+        }
+
+        for session in self.list_conversation_sessions(conversation_id)? {
+            if !matches!(
+                session.status,
+                SessionStatus::Running | SessionStatus::WaitingForApproval
+            ) {
+                continue;
+            }
+
+            let protected_message_id = self
+                .protected_message_ids_for_session(&session)?
+                .into_iter()
+                .find(|message_id| affected_message_ids.contains(message_id));
+            let Some(protected_message_id) = protected_message_id else {
+                continue;
+            };
+
+            return Err(error::conflict(format!(
+                "cannot modify message {protected_message_id}; it is part of active session {}",
+                session.id
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Persists one prepared user input for FIFO execution by a session.
     pub fn enqueue_session_input(
         &mut self,

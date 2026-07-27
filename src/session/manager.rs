@@ -896,21 +896,21 @@ impl SessionEvents {
 
 impl RuntimeEventSink for SessionEvents {
     fn assistant_message_saved(&self, message_id: &MessageId) {
+        self.update_head(message_id);
         if let Err(error) = self.record(SessionEvent::AssistantMessageSaved {
             message_id: message_id.as_str().to_string(),
         }) {
             eprintln!("failed to append runtime event: {error}");
         }
-        self.update_head(message_id);
     }
 
     fn tool_result_saved(&self, message_id: &MessageId) {
+        self.update_head(message_id);
         if let Err(error) = self.record(SessionEvent::ToolResultSaved {
             message_id: message_id.as_str().to_string(),
         }) {
             eprintln!("failed to append runtime event: {error}");
         }
-        self.update_head(message_id);
     }
 }
 

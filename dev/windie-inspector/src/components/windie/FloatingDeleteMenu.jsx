@@ -17,6 +17,8 @@ export default function FloatingDeleteMenu({
   testId,
   onDelete,
   label,
+  disabled = false,
+  disabledTitle = "delete unavailable",
 }) {
   if (!open || !position) return null;
 
@@ -30,7 +32,9 @@ export default function FloatingDeleteMenu({
       <button
         type="button"
         onClick={onDelete}
-        className="w-full px-3 py-2 flex items-center gap-2 text-left font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))] hover:bg-surface-hover"
+        disabled={disabled}
+        title={disabled ? disabledTitle : label}
+        className="w-full px-3 py-2 flex items-center gap-2 text-left font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--destructive))] hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Trash2 className="size-3" />
         {label}

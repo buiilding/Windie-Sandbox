@@ -174,6 +174,10 @@ export default function SessionsChip({ dropUp = false }) {
             : "topbar-session-delete"
         }
         label="delete session"
+        disabled={
+          sessions.find((session) => session.id === menuSession?.id)?.deletionAllowed === false
+        }
+        disabledTitle="stop the session before deleting it"
         onDelete={(event) =>
           handleDelete(
             event,

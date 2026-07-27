@@ -51,6 +51,8 @@ pub(super) struct SessionResponse {
     pub(super) queue_id: Option<String>,
     pub(super) latest_event_id: Option<i64>,
     pub(super) node_count: usize,
+    pub(super) protected_message_ids: Vec<String>,
+    pub(super) deletion_allowed: bool,
 }
 
 impl SessionResponse {
@@ -63,6 +65,10 @@ impl SessionResponse {
         queue_depth: usize,
         node_count: usize,
     ) -> Self {
+        let deletion_allowed = !matches!(
+            session.status,
+            SessionStatus::Running | SessionStatus::WaitingForApproval
+        );
         Self {
             id: session.id.as_str().to_string(),
             conversation_id: session.conversation_id.as_str().to_string(),
@@ -83,6 +89,8 @@ impl SessionResponse {
             queue_id: None,
             latest_event_id: None,
             node_count,
+            protected_message_ids: Vec::new(),
+            deletion_allowed,
         }
     }
 
@@ -101,11 +109,25 @@ impl SessionResponse {
 }
 
 pub(super) fn response_with_queue(store: &Store, session: Session) -> Result<SessionResponse> {
+    let protected_message_ids = store.protected_message_ids_for_session(&session)?;
     let queue_depth = store.session_input_count(&session.id)?;
     let latest_event_id = store.latest_session_event_id(&session.id)?;
     let node_count = store.session_node_count(&session)?;
     let mut response = SessionResponse::from_session_with_queue(session, queue_depth, node_count);
     response.latest_event_id = latest_event_id;
+    response.protected_message_ids = protected_message_ids;
+    Ok(response)
+}
+
+fn response_from_query(
+    store: &Store,
+    result: crate::session::SessionQueryResult,
+    latest_event_id: Option<i64>,
+    node_count: usize,
+) -> Result<SessionResponse> {
+    let protected_message_ids = store.protected_message_ids_for_session(&result.session)?;
+    let mut response = SessionResponse::from_query(result, latest_event_id, node_count);
+    response.protected_message_ids = protected_message_ids;
     Ok(response)
 }
 
@@ -217,11 +239,12 @@ pub(super) async fn query_session(
     let latest_event_id = store.latest_session_event_id(&result.session.id)?;
     let node_count = store.session_node_count(&result.session)?;
 
-    Ok(Json(SessionResponse::from_query(
+    Ok(Json(response_from_query(
+        &store,
         result,
         latest_event_id,
         node_count,
-    )))
+    )?))
 }
 
 /// Resolves or creates a session at a conversation head, then appends input.
@@ -242,11 +265,12 @@ pub(super) async fn query_conversation(
     let latest_event_id = store.latest_session_event_id(&result.session.id)?;
     let node_count = store.session_node_count(&result.session)?;
 
-    Ok(Json(SessionResponse::from_query(
+    Ok(Json(response_from_query(
+        &store,
         result,
         latest_event_id,
         node_count,
-    )))
+    )?))
 }
 
 /// Continues one selected session from its current head.
@@ -346,6 +370,7 @@ pub(super) async fn session_events(
         SessionSseState {
             replay: replay.into(),
             subscription,
+            store_path: state.store_path.clone(),
         },
         |mut state| async move {
             let record = if let Some(record) = state.replay.pop_front() {
@@ -358,7 +383,7 @@ pub(super) async fn session_events(
                 }
             };
             let event_name = record.event.event_name();
-            let data = session_event_data(&record);
+            let data = session_event_data(state.store_path.as_deref(), &record);
             let sse = Event::default()
                 .id(record.id.to_string())
                 .event(event_name)

@@ -28,6 +28,7 @@ import {
   providerInstallationsFromApi,
   toolCatalogFromApi,
   toolProviderStatusesFromApi,
+  upsertConversationMessage,
 } from "@/lib/windieMappers";
 import { useSessionRuntime } from "@/hooks/useSessionRuntime";
 
@@ -130,6 +131,14 @@ export function WindieProvider({ children }) {
   const [modelsError, setModelsError] = useState(null);
   const [inputTokenCounts, setInputTokenCounts] = useState({});
   const [modelParametersById, setModelParametersById] = useState({});
+
+  const applySessionMessage = useCallback((session, message, updatePath) => {
+    if (!session?.conversationId || !message?.id) return;
+    setConversations((current) => current.map((conversation) => {
+      if (conversation.id !== session.conversationId) return conversation;
+      return upsertConversationMessage(conversation, message, session.model, updatePath);
+    }));
+  }, []);
 
   // The selection ref is only an async load anchor. The rendered selection
   // remains selectedNodeId; the session runtime owns session selection.
@@ -340,14 +349,12 @@ export function WindieProvider({ children }) {
   const activeReasoning = activeConv?.reasoning || null;
   const sessionRuntime = useSessionRuntime({
     conversationId: activeConvId,
-    conversationModel: activeModelId,
-    reasoning: activeReasoning,
     viewHeadId,
     setViewHeadId,
     selectedNodeId,
     setSelectedNodeId,
-    setConversations,
     loadConversation,
+    applySessionMessage,
     setApiError,
   });
   const {
@@ -372,6 +379,16 @@ export function WindieProvider({ children }) {
     () => pathNodesToNode(activeConv, sessionRuntime.selectedPathHead),
     [activeConv, sessionRuntime.selectedPathHead]
   );
+  const protectedMessageIds = useMemo(() => {
+    const protectedIds = new Set();
+    Object.values(sessionsById).forEach((session) => {
+      if (session?.conversationId !== activeConv?.id) return;
+      for (const messageId of session.protectedMessageIds || []) {
+        protectedIds.add(messageId);
+      }
+    });
+    return protectedIds;
+  }, [activeConv?.id, sessionsById]);
   const setPathHead = useCallback(
     async (nodeId) => {
       if (!activeConvId || !activeConv?.nodes?.[nodeId]) return null;
@@ -663,6 +680,7 @@ export function WindieProvider({ children }) {
     selectedNodeId,
     viewHeadId,
     selectedPathNodes,
+    protectedMessageIds,
     theme,
     contextPreviewOpen,
     streaming,

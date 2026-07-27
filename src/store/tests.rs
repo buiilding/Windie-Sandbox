@@ -2935,6 +2935,137 @@ fn refuses_to_remove_live_session() {
 }
 
 #[test]
+fn active_session_path_rejects_message_replacement() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let message_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let session_id = SessionId::new("session-protect-update");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Running, None)
+        .unwrap();
+
+    let error = store
+        .replace_message(&conversation_id, &message_id, "changed")
+        .unwrap_err();
+
+    assert!(error.to_string().contains("part of active session"));
+    assert_eq!(
+        store.load_messages(&conversation_id).unwrap()[0].content,
+        "hello"
+    );
+}
+
+#[test]
+fn active_session_path_rejects_message_removal_and_truncation() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let root_id = store
+        .insert_message(&conversation_id, None, Role::User, "root", None)
+        .unwrap();
+    let child_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&root_id),
+            Role::Assistant,
+            "child",
+            None,
+        )
+        .unwrap();
+    let session_id = SessionId::new("session-protect-delete");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&root_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_head(&session_id, Some(&child_id))
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::WaitingForApproval, None)
+        .unwrap();
+
+    let remove_error = store
+        .remove_message(&conversation_id, &root_id)
+        .unwrap_err();
+    assert!(remove_error.to_string().contains("part of active session"));
+
+    let truncate_error = store
+        .truncate_after_message(&conversation_id, &root_id)
+        .unwrap_err();
+    assert!(
+        truncate_error
+            .to_string()
+            .contains("part of active session")
+    );
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 2);
+}
+
+#[test]
+fn active_session_allows_inserting_a_new_branch_child() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let head_id = store
+        .insert_message(&conversation_id, None, Role::User, "head", None)
+        .unwrap();
+    let session_id = SessionId::new("session-allow-branch");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&head_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Running, None)
+        .unwrap();
+
+    let branch_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&head_id),
+            Role::User,
+            "new branch",
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .load_path_to_message(&conversation_id, &branch_id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .content,
+        "new branch"
+    );
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .current_head_message_id
+            .as_ref(),
+        Some(&head_id)
+    );
+}
+
+#[test]
 fn rejects_deleting_missing_conversation() {
     let mut store = Store::open_memory().unwrap();
 

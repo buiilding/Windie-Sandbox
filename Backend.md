@@ -4,7 +4,6 @@ Mental model:
 - conversation/assistant_metadata.rs: Assitant message Metadata; toolcall, reasoning, assistant audio, assistant annotation, assistant citation, assistant token usage, assistant refusal. Also includes toolcallid to link with tool output message.
 - conversation/mod.rs: Module boundary and re-exports for conversation types.
 - conversation/user_part.rs: User input message parts, including image part and text part.
-- conversation/branch.rs: 
 - input/: concrete user input loading before conversation storage.
 - input/mod.rs: Public boundary and re-exports for input folder.
 - input/image.rs: reads and validates user-provided local image files before they are copied into conversation storage.

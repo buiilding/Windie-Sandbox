@@ -155,60 +155,6 @@ function resetPendingTurn(pending) {
   };
 }
 
-function optimisticParts(conversationId, parts) {
-  return parts.map((part) => {
-    if (part.type === "text") return { type: "text", text: part.text || "" };
-    return {
-      type: "image",
-      alt: part.path || "attachment",
-      assetId: null,
-      conversationId,
-      mimeType: part.mime_type || null,
-      byteCount: null,
-    };
-  });
-}
-
-function addOptimisticUserMessage(setConversations, conversationId, messageId, parentId, parts) {
-  if (!conversationId || !messageId) return;
-  const messageParts = optimisticParts(conversationId, parts);
-
-  setConversations((current) => current.map((conversation) => {
-    if (conversation.id !== conversationId || conversation.nodes?.[messageId]) return conversation;
-
-    const node = {
-      id: messageId,
-      parentId: parentId || null,
-      childrenIds: [],
-      message: {
-        role: "user",
-        parts: messageParts,
-        metadata: null,
-        timestamp: new Date().toISOString(),
-      },
-    };
-    const nodes = { ...(conversation.nodes || {}), [messageId]: node };
-    if (parentId && nodes[parentId]) {
-      nodes[parentId] = {
-        ...nodes[parentId],
-        childrenIds: Array.from(new Set([...(nodes[parentId].childrenIds || []), messageId])),
-      };
-    }
-
-    const rootIds = parentId
-      ? (conversation.rootIds || (conversation.rootId ? [conversation.rootId] : []))
-      : Array.from(new Set([...(conversation.rootIds || []), messageId]));
-
-    return {
-      ...conversation,
-      nodes,
-      rootIds,
-      rootId: conversation.rootId || (!parentId ? messageId : null),
-      messageCount: Object.keys(nodes).length,
-    };
-  }));
-}
-
 /**
  * Owns durable session selection and live session execution.
  *
@@ -218,14 +164,12 @@ function addOptimisticUserMessage(setConversations, conversationId, messageId, p
  */
 export function useSessionRuntime({
   conversationId,
-  conversationModel,
-  reasoning,
   viewHeadId,
   setViewHeadId,
   selectedNodeId,
   setSelectedNodeId,
-  setConversations,
   loadConversation,
+  applySessionMessage,
   setApiError,
 }) {
   const [sessionsById, setSessionsById] = useState({});
@@ -245,7 +189,6 @@ export function useSessionRuntime({
   const sessionsRef = useRef({});
   const selectedSessionRef = useRef(null);
   const conversationIdRef = useRef(conversationId);
-  const renderedHeadRef = useRef({});
 
   const rememberSession = useCallback((session) => {
     if (!session) return null;
@@ -294,18 +237,6 @@ export function useSessionRuntime({
     subscriptionsRef.current.clear();
   }, []);
 
-  const advanceSessionHead = useCallback((sessionId, headMessageId) => {
-    if (!sessionId || !headMessageId) return;
-    const current = sessionsRef.current[sessionId];
-    if (!current) return;
-    const updated = { ...current, currentHeadMessageId: headMessageId };
-    sessionsRef.current = { ...sessionsRef.current, [sessionId]: updated };
-    if (selectedSessionRef.current?.id === sessionId) {
-      selectedSessionRef.current = updated;
-    }
-    setSessionsById((sessions) => ({ ...sessions, [sessionId]: updated }));
-  }, []);
-
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
@@ -315,60 +246,29 @@ export function useSessionRuntime({
     [abortAllSubscriptions]
   );
 
-  const refreshActiveConversation = useCallback(
-    async (sessionId, headMessageId) => {
-      const activeConversationId = conversationIdRef.current;
-      if (!activeConversationId || selectedSessionRef.current?.id !== sessionId) return false;
-      const loaded = await loadConversation(activeConversationId, {
-        headMessageId: headMessageId || null,
-        countTokens: false,
-      });
-      if (!loaded) return false;
-      renderedHeadRef.current[sessionId] = headMessageId || null;
-      return true;
-    },
-    [loadConversation]
-  );
-
-  const commitMessage = useCallback(
-    async (session, headMessageId) => {
-      if (!headMessageId) return false;
-      const active =
-        session.conversationId === conversationIdRef.current &&
-        selectedSessionRef.current?.id === session.id;
-      if (!active) {
-        advanceSessionHead(session.id, headMessageId);
-        return true;
-      }
-
-      try {
-        const reloaded = await refreshActiveConversation(session.id, headMessageId);
-        if (!reloaded) return false;
-        advanceSessionHead(session.id, headMessageId);
-        setSelectedNodeId(headMessageId);
-        return true;
-      } catch (_) {
-        return false;
-      }
-    },
-    [advanceSessionHead, refreshActiveConversation, setSelectedNodeId]
-  );
-
   const handleEvent = useCallback(
     async (session, data) => {
       if (!data?.type) return;
+      const snapshot = data.session ? sessionFromApi(data.session) : null;
+      const currentSession = snapshot || session;
+      if (snapshot) rememberSession(snapshot);
+      const selected =
+        currentSession.conversationId === conversationIdRef.current &&
+        selectedSessionRef.current?.id === currentSession.id;
+
       if (data.type === "input_queued") {
-        rememberSession({
-          ...session,
-          queueDepth: data.queue_depth ?? session.queueDepth ?? 0,
-        });
+        if (!snapshot) {
+          rememberSession({
+            ...currentSession,
+            queueDepth: data.queue_depth ?? currentSession.queueDepth ?? 0,
+          });
+        }
         return;
       }
       if (data.type === "input_started") {
-        const head = data.message_id || null;
-        if (head) await commitMessage(session, head);
-        const latest = await getSession(session.id).catch(() => null);
-        if (latest) rememberSession(sessionFromApi(latest));
+        if (data.message) {
+          applySessionMessage(currentSession, data.message, selected);
+        }
         return;
       }
       if (["assistant_delta", "reasoning_delta", "tool_call_delta"].includes(data.type)) {
@@ -377,18 +277,18 @@ export function useSessionRuntime({
       }
 
       if (data.type === "assistant_message_saved" || data.type === "tool_result_saved") {
-        const head = data.message_id || null;
-        if (!head) return;
-        await commitMessage(session, head);
+        if (data.message) {
+          applySessionMessage(currentSession, data.message, selected);
+        }
         setPendingAssistantBySessionId((current) => {
-          const pending = current[session.id];
+          const pending = current[currentSession.id];
           if (!pending) return current;
 
           if (data.type === "tool_result_saved" || Object.keys(pending.toolCalls || {}).length > 0) {
-            return { ...current, [session.id]: resetPendingTurn(pending) };
+            return { ...current, [currentSession.id]: resetPendingTurn(pending) };
           }
 
-          return { ...current, [session.id]: null };
+          return { ...current, [currentSession.id]: null };
         });
         return;
       }
@@ -397,32 +297,22 @@ export function useSessionRuntime({
         return;
       }
 
-      const latest = await getSession(session.id).catch(() => null);
-      const normalized = latest ? sessionFromApi(latest) : null;
-      const head = data.message_id || normalized?.currentHeadMessageId || null;
+      const latest = snapshot ? null : await getSession(currentSession.id).catch(() => null);
+      const normalized = latest ? sessionFromApi(latest) : currentSession;
 
       if (
-        session.conversationId !== conversationIdRef.current ||
-        selectedSessionRef.current?.id !== session.id
+        currentSession.conversationId !== conversationIdRef.current ||
+        selectedSessionRef.current?.id !== currentSession.id
       ) {
         if (normalized) rememberSession(normalized);
-        setPendingAssistantBySessionId((current) => ({ ...current, [session.id]: null }));
+        setPendingAssistantBySessionId((current) => ({ ...current, [currentSession.id]: null }));
         return;
       }
 
-      try {
-        let committed = renderedHeadRef.current[session.id] === head;
-        if (renderedHeadRef.current[session.id] !== head) {
-          committed = await commitMessage(session, head);
-        }
-        if (!committed) return;
-        if (normalized) rememberSession(normalized);
-        setPendingAssistantBySessionId((current) => ({ ...current, [session.id]: null }));
-      } catch (_) {
-        // Keep the preview if the authoritative tree reload failed.
-      }
+      if (normalized) rememberSession(normalized);
+      setPendingAssistantBySessionId((current) => ({ ...current, [currentSession.id]: null }));
     },
-    [commitMessage, rememberSession]
+    [applySessionMessage, rememberSession]
   );
 
   const subscribeToSession = useCallback(
@@ -611,14 +501,10 @@ export function useSessionRuntime({
             ...current,
             [updated.id]: emptyPending(updated),
           }));
-          setSelectedNodeId(updated.currentHeadMessageId);
-          addOptimisticUserMessage(
-            setConversations,
-            conversationId,
-            updated.currentHeadMessageId,
-            parentHead,
-            parts
-          );
+          await loadConversation(conversationId, {
+            headMessageId: updated.currentHeadMessageId,
+            countTokens: false,
+          });
         } else {
           toast.message("message queued", {
             description: `${updated.queueDepth} message${updated.queueDepth === 1 ? "" : "s"} waiting`,
@@ -632,7 +518,7 @@ export function useSessionRuntime({
         toast.error(error.message);
       }
     },
-    [conversationId, selectedNodeId, setSelectedNodeId, setConversations, setApiError, rememberSession, setViewHeadId, subscribeToSession, viewHeadId]
+    [conversationId, loadConversation, selectedNodeId, setApiError, rememberSession, setViewHeadId, subscribeToSession, viewHeadId]
   );
 
   const continueConversation = useCallback(async () => {
