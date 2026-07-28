@@ -202,7 +202,7 @@ export default function InspectorPanel({ mode, onClose }) {
               <div className="border-b border-border bg-surface/25 px-5 py-5">
                 <div className="font-sans text-lg font-medium tracking-tight">Welcome to Windie</div>
                 <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-muted-foreground">
-                  Connect a model provider and enable local extensions. Keys are stored locally — model keys by Bifrost, extension secrets in ~/.windie/.env.
+                  Connect a model provider and install local curated extensions.
                 </p>
               </div>
               <div className="border-b border-border">
