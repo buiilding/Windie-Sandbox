@@ -7,13 +7,14 @@ mod tool_execution;
 mod turn;
 
 pub(crate) use tool_execution::{
-    deny_pending_tool_call, execute_pending_tool_call, load_pending_tool_call_at_head,
-    prepare_pending_tool_execution, store_pending_tool_result_at_head,
+    PendingToolExecution, deny_pending_tool_call, execute_pending_tool_call,
+    load_pending_tool_call_at_head, prepare_pending_tool_execution,
+    store_pending_tool_result_at_head,
 };
 pub(crate) use turn::{advance_until_blocked, pending_approvals_at_head, prepare_head_turn};
 
 #[cfg(test)]
-pub(crate) use tool_execution::{PendingToolCall, PendingToolExecution, active_tool_execution};
+pub(crate) use tool_execution::{PendingToolCall, active_tool_execution};
 #[cfg(test)]
 pub(crate) use turn::{advance_turn, build_model_context};
 

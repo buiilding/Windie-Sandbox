@@ -11,7 +11,7 @@ use crate::tool_provider::{
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "uvx",
-        args: &["blender-mcp"],
+        args: &["--with", "mcp<2", "blender-mcp"],
         env: &[
             McpEnv {
                 key: "DISABLE_TELEMETRY",

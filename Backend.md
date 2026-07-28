@@ -119,13 +119,13 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/setup.rs: user-local Windie setup, ~/.windie/.env editing, API token storage, and approved dependency installs.
 - output/:
 - output/mod.rs: public boundary and re-exports for output folder
-- output/terminal.rs:
-- output/formatting.rs:
+- output/terminal.rs: owns terminal behavior, printing assistant streaming text, tool calls, help, errors, conversations, sessions, models, benchmark reports, and JSON output. It implements the RuntimeOutput interface used by the runtime.
+- output/formatting.rs: Converts data into displayable strings or JSON shapes: message previews, trees, help lines, model lists, conversation lists, durations, and performance reports. It contains presentation formatting, not runtime decisions.
 - output/tests.rs:
 - runtime/:
-- runtime/mod.rs:
-- runtime/turn.rs:
-- runtime/tool_execution.rs:
+- runtime/mod.rs: public boundary and re-exports for runtime folder.
+- runtime/turn.rs: Runs model turns. Loads the selected conversation head, builds model context, stream assistant response, saves assistant message, and continues through automatic tool calls until completion or approval is needed. 
+- runtime/tool_execution.rs: handles tool calls. identifies pending calls, enforeces tool policy, executes approved provider or built-in tools, enforces tool-call order, and save tool results
 - runtime/tests.rs:
 - main.rs: front desk for the windie binary.
 - context.rs: model-facing context finalizer, resolve system prompt, tool schema, messages, compaction summary given one explicit message head.
