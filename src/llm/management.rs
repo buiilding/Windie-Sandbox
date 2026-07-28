@@ -33,6 +33,8 @@ pub struct ProviderKey {
     pub id: String,
     pub name: String,
     pub enabled: Option<bool>,
+    pub status: Option<String>,
+    pub description: Option<String>,
 }
 
 /// Redacted provider keys returned by Bifrost for one provider.

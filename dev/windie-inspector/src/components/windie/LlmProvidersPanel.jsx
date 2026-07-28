@@ -17,7 +17,7 @@ import {
   listLlmProviders,
 } from "@/lib/windieApi";
 
-function providerState(provider) {
+function providerState(provider, keys = []) {
   if (provider.authentication === "none") {
     return { kind: "ready", label: "ready · no key needed" };
   }
@@ -25,6 +25,16 @@ function providerState(provider) {
     return { kind: "unsupported", label: "structured setup required" };
   }
   if (provider.key_count > 0) {
+    const invalidKeyCount = keys.filter((key) => key.status === "list_models_failed").length;
+    if (invalidKeyCount === keys.length && invalidKeyCount > 0) {
+      return { kind: "invalid", label: "invalid key · check key" };
+    }
+    if (invalidKeyCount > 0) {
+      return {
+        kind: "ready",
+        label: `ready · ${provider.key_count} key${provider.key_count === 1 ? "" : "s"} · ${invalidKeyCount} invalid`,
+      };
+    }
     return {
       kind: "ready",
       label: `ready · ${provider.key_count} key${provider.key_count === 1 ? "" : "s"}`,
@@ -33,8 +43,8 @@ function providerState(provider) {
   return { kind: "needs-key", label: "needs API key" };
 }
 
-function ProviderRow({ provider, expanded, onToggle }) {
-  const state = providerState(provider);
+function ProviderRow({ provider, keys, expanded, onToggle }) {
+  const state = providerState(provider, keys);
   const disabled = state.kind === "unsupported";
 
   return (
@@ -63,7 +73,7 @@ function ProviderRow({ provider, expanded, onToggle }) {
             className={`block font-mono text-[9px] uppercase tracking-widest ${
               state.kind === "ready"
                 ? "text-[hsl(var(--tool-call))]"
-                : state.kind === "needs-key"
+                : state.kind === "needs-key" || state.kind === "invalid"
                   ? "text-[hsl(var(--destructive))]"
                   : "text-muted-foreground"
             }`}
@@ -79,7 +89,7 @@ function ProviderRow({ provider, expanded, onToggle }) {
   );
 }
 
-function ProviderKeyForm({ provider, onSaved, onCancel }) {
+function ProviderKeyForm({ provider, onSaved, onModelsChanged, onCancel }) {
   const [keyName, setKeyName] = useState("");
   const [keyValue, setKeyValue] = useState("");
   const [pending, setPending] = useState(false);
@@ -102,6 +112,7 @@ function ProviderKeyForm({ provider, onSaved, onCancel }) {
       setKeyValue("");
       toast.message("provider key saved", { description: provider.display_name });
       await onSaved();
+      await onModelsChanged?.();
     } catch (error) {
       toast.error("failed to save provider key", {
         description: error?.message || String(error),
@@ -177,9 +188,20 @@ function ProviderKeyForm({ provider, onSaved, onCancel }) {
   );
 }
 
-function ProviderManagement({ provider, keys, keysLoaded, keysError, onRefresh }) {
+function ProviderManagement({ provider, keys, keysLoaded, keysError, onRefresh, onModelsChanged }) {
   const [showAddKey, setShowAddKey] = useState(provider.key_count === 0);
   const [pendingKeyId, setPendingKeyId] = useState(null);
+
+  const refreshProviderState = async () => {
+    try {
+      await onModelsChanged?.();
+    } catch (error) {
+      toast.error("failed to refresh model catalog", {
+        description: error?.message || String(error),
+      });
+    }
+    await onRefresh();
+  };
 
   const deleteKey = async (key) => {
     if (pendingKeyId || !window.confirm(`Delete the ${key.name} API key?`)) return;
@@ -187,7 +209,7 @@ function ProviderManagement({ provider, keys, keysLoaded, keysError, onRefresh }
     try {
       await deleteLlmProviderKey(provider.name, key.id);
       toast.message("provider key deleted", { description: provider.display_name });
-      await onRefresh();
+      await refreshProviderState();
     } catch (error) {
       toast.error("failed to delete provider key", {
         description: error?.message || String(error),
@@ -253,7 +275,11 @@ function ProviderManagement({ provider, keys, keysLoaded, keysError, onRefresh }
                   {key.name || key.id}
                 </div>
                 <div className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-                  {key.enabled === false ? "disabled" : "active"}
+                  {key.status === "list_models_failed"
+                    ? "invalid · check key"
+                    : key.enabled === false
+                      ? "disabled"
+                      : "active"}
                 </div>
               </div>
               <button
@@ -281,6 +307,7 @@ function ProviderManagement({ provider, keys, keysLoaded, keysError, onRefresh }
             await onRefresh();
             setShowAddKey(false);
           }}
+          onModelsChanged={refreshProviderState}
           onCancel={() => setShowAddKey(false)}
         />
       )}
@@ -288,7 +315,7 @@ function ProviderManagement({ provider, keys, keysLoaded, keysError, onRefresh }
   );
 }
 
-export default function LlmProvidersPanel() {
+export default function LlmProvidersPanel({ onModelsChanged }) {
   const [providers, setProviders] = useState([]);
   const [keysByProvider, setKeysByProvider] = useState({});
   const [loading, setLoading] = useState(true);
@@ -310,9 +337,10 @@ export default function LlmProvidersPanel() {
           }
         })
       );
+      const nextKeysByProvider = Object.fromEntries(keyEntries);
       const sortedCatalog = [...catalog].sort((left, right) => {
         const rank = (provider) => {
-          const kind = providerState(provider).kind;
+          const kind = providerState(provider, nextKeysByProvider[provider.name] || []).kind;
           return kind === "ready" ? 0 : kind === "needs-key" ? 1 : 2;
         };
         const leftRank = rank(left);
@@ -320,7 +348,7 @@ export default function LlmProvidersPanel() {
         return leftRank - rightRank || left.display_name.localeCompare(right.display_name);
       });
       setProviders(sortedCatalog);
-      setKeysByProvider(Object.fromEntries(keyEntries));
+      setKeysByProvider(nextKeysByProvider);
     } catch (error) {
       toast.error("failed to load llm providers", {
         description: error?.message || String(error),
@@ -366,7 +394,12 @@ export default function LlmProvidersPanel() {
           const providerKeys = keysByProvider[provider.name];
           return (
             <div key={provider.name}>
-              <ProviderRow provider={provider} expanded={expanded} onToggle={toggle} />
+              <ProviderRow
+                provider={provider}
+                keys={providerKeys || []}
+                expanded={expanded}
+                onToggle={toggle}
+              />
               {expanded && (
                 <ProviderManagement
                   provider={provider}
@@ -374,6 +407,7 @@ export default function LlmProvidersPanel() {
                   keysLoaded={providerKeys !== undefined && providerKeys !== null}
                   keysError={providerKeys === null}
                   onRefresh={refresh}
+                  onModelsChanged={onModelsChanged}
                 />
               )}
             </div>

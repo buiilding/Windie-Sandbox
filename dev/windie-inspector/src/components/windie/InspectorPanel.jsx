@@ -43,6 +43,7 @@ export default function InspectorPanel({ mode, onClose }) {
     denyToolCall,
     availableToolSchemas,
     availableToolsLoading,
+    refreshModels,
     addToolSchema,
     addToolSchemas,
     removeToolSchema,
@@ -209,7 +210,7 @@ export default function InspectorPanel({ mode, onClose }) {
                 <div className="px-3 pt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                   1 · model providers
                 </div>
-                <LlmProvidersPanel />
+                <LlmProvidersPanel onModelsChanged={refreshModels} />
               </div>
               <div>
                 <div className="px-3 pt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -230,7 +231,7 @@ export default function InspectorPanel({ mode, onClose }) {
             </div>
           ) : mode === "system" ? (
             systemView === "providers" ? (
-              <LlmProvidersPanel />
+              <LlmProvidersPanel onModelsChanged={refreshModels} />
             ) : (
             <div className="min-h-full flex flex-col p-6 gap-4">
               <textarea
