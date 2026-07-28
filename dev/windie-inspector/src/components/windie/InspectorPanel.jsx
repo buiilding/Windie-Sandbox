@@ -218,7 +218,7 @@ export default function InspectorPanel({ mode, onClose }) {
                 <div className="px-3 pt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                   2 · extensions
                 </div>
-                <ExtensionsPanel hideHeader />
+                <ExtensionsPanel />
               </div>
               <div className="mt-auto flex items-center justify-end gap-2 border-t border-border bg-surface/25 px-5 py-3">
                 <button
