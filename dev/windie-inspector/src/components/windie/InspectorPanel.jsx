@@ -194,9 +194,6 @@ export default function InspectorPanel({ mode, onClose }) {
             >
               providers
             </button>
-            <span className="ml-auto font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-              {systemView === "providers" ? "model access" : "conversation-wide"}
-            </span>
           </div>
         )}
         <div className="flex-1 min-h-0 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
@@ -244,7 +241,6 @@ export default function InspectorPanel({ mode, onClose }) {
                 className="flex-1 w-full resize-none bg-transparent border border-border p-4 font-mono text-sm leading-relaxed outline-none focus:border-foreground"
               />
               <div className="flex items-center justify-between">
-                <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">conversation-wide</span>
                 <button data-testid="inspector-sysprompt-commit" onClick={saveSystemPrompt} className="text-[10px] uppercase px-3 py-1.5 border border-foreground bg-foreground text-background font-mono">save</button>
               </div>
             </div>
