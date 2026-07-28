@@ -115,33 +115,31 @@ pub(super) fn session_event_data(store_path: Option<&Path>, record: &SessionEven
             serde_json::json!(record.created_at),
         );
 
-        if includes_session_snapshot(&record.event) {
-            if let Ok(store) = open_event_store(store_path) {
-                if let Ok(session) = store.load_session(&record.session_id) {
-                    if let Ok(snapshot) = response_with_queue(&store, session) {
-                        if let Ok(snapshot) = serde_json::to_value(snapshot) {
-                            object.insert("session".to_string(), snapshot);
-                        }
-                    }
-                }
+        if includes_session_snapshot(&record.event)
+            && let Ok(store) = open_event_store(store_path)
+        {
+            if let Ok(session) = store.load_session(&record.session_id)
+                && let Ok(snapshot) = response_with_queue(&store, session)
+                && let Ok(snapshot) = serde_json::to_value(snapshot)
+            {
+                object.insert("session".to_string(), snapshot);
+            }
 
-                if let Some(message_id) = event_message_id(&record.event) {
-                    let session = store.load_session(&record.session_id).ok();
-                    let message = session
-                        .as_ref()
-                        .map(|session| {
-                            store
-                                .load_message(&session.conversation_id, &MessageId::new(message_id))
-                        })
-                        .transpose()
-                        .ok()
-                        .flatten()
-                        .and_then(SessionEventMessage::from_message);
-                    if let Some(message) =
-                        message.and_then(|message| serde_json::to_value(message).ok())
-                    {
-                        object.insert("message".to_string(), message);
-                    }
+            if let Some(message_id) = event_message_id(&record.event) {
+                let session = store.load_session(&record.session_id).ok();
+                let message = session
+                    .as_ref()
+                    .map(|session| {
+                        store.load_message(&session.conversation_id, &MessageId::new(message_id))
+                    })
+                    .transpose()
+                    .ok()
+                    .flatten()
+                    .and_then(SessionEventMessage::from_message);
+                if let Some(message) =
+                    message.and_then(|message| serde_json::to_value(message).ok())
+                {
+                    object.insert("message".to_string(), message);
                 }
             }
         }

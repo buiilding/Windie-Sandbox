@@ -141,7 +141,7 @@ pub(super) struct SessionListResponse {
 #[serde(tag = "type", rename_all = "snake_case")]
 /// Backend-owned result for resolving a conversation head to a session branch.
 pub(super) enum SessionResolutionResponse {
-    ExistingSession { session: SessionResponse },
+    ExistingSession { session: Box<SessionResponse> },
     NoSessionAtHead,
 }
 
@@ -203,7 +203,7 @@ pub(super) async fn resolve_session_at_head(
         crate::session::SessionResolution::Existing(session) => {
             let store = open_store(&state)?;
             SessionResolutionResponse::ExistingSession {
-                session: response_with_queue(&store, session)?,
+                session: Box::new(response_with_queue(&store, session)?),
             }
         }
         crate::session::SessionResolution::NoSessionAtHead => {
