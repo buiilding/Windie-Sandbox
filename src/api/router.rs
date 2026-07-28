@@ -48,12 +48,16 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/models", get(list_models))
         .route("/api/llm/providers", get(list_provider_catalog))
         .route(
+            "/api/llm/providers/{provider}/keys",
+            get(list_provider_keys).post(create_provider_key),
+        )
+        .route(
             "/api/llm/providers/{provider}/ensure",
             post(ensure_provider),
         )
         .route(
-            "/api/llm/providers/{provider}/keys",
-            post(create_provider_key),
+            "/api/llm/providers/{provider}/keys/{key_id}",
+            axum::routing::delete(delete_provider_key),
         )
         .route("/api/env", axum::routing::put(set_env_values_handler))
         .route("/api/model-parameters", get(model_parameters))

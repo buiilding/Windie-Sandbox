@@ -32,6 +32,14 @@ pub struct ProviderCatalog {
 pub struct ProviderKey {
     pub id: String,
     pub name: String,
+    pub enabled: Option<bool>,
+}
+
+/// Redacted provider keys returned by Bifrost for one provider.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ProviderKeyList {
+    pub keys: Vec<ProviderKey>,
+    pub total: usize,
 }
 
 /// Bifrost provider-key request for a simple API-key provider.
@@ -86,6 +94,24 @@ impl BifrostManagementClient {
                 .post(format!("{}/api/providers/{provider}/keys", self.base_url))
                 .json(request),
         )
+        .await
+    }
+
+    /// Lists the redacted keys currently stored for one Bifrost provider.
+    pub async fn provider_keys(&self, provider: &str) -> Result<ProviderKeyList> {
+        self.http_json(
+            self.http
+                .get(format!("{}/api/providers/{provider}/keys", self.base_url)),
+        )
+        .await
+    }
+
+    /// Deletes one Bifrost-managed provider key by its opaque key id.
+    pub async fn delete_provider_key(&self, provider: &str, key_id: &str) -> Result<ProviderKey> {
+        self.http_json(self.http.delete(format!(
+            "{}/api/providers/{provider}/keys/{key_id}",
+            self.base_url
+        )))
         .await
     }
 
