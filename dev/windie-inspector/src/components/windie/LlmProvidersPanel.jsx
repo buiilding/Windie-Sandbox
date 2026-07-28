@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Loader2,
   Plus,
+  Save,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -166,9 +167,9 @@ function ProviderKeyForm({ provider, onSaved, onCancel }) {
             ) : saved ? (
               <CheckCircle2 className="size-3" />
             ) : (
-              <Plus className="size-3" />
+              <Save className="size-3" />
             )}
-            {pending ? "saving" : saved ? "saved" : "save key"}
+            {pending ? "saving" : saved ? "saved" : "save"}
           </button>
         </div>
       </div>
@@ -214,9 +215,8 @@ function ProviderManagement({ provider, keys, keysLoaded, keysError, onRefresh }
         <button
           type="button"
           onClick={() => setShowAddKey((current) => !current)}
-          className="inline-flex h-7 items-center gap-1.5 border border-border px-2 font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"
+          className="inline-flex h-7 items-center border border-border px-2 font-mono text-[10px] uppercase tracking-widest hover:bg-surface-hover"
         >
-          <Plus className="size-3" />
           {showAddKey ? "close" : "add key"}
         </button>
       </div>
