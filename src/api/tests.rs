@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
-use crate::conversation::{MessageMetadata, MessagePart, ToolCall};
+use crate::conversation::{MessageMetadata, MessagePart, Role, ToolCall};
 use crate::mcp::McpCommand;
 use crate::session::{SessionEvent, SessionId, SessionStatus};
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
@@ -58,6 +58,51 @@ fn tool_call_delta_event_uses_matching_sse_name_and_json_type() {
     assert_eq!(body["id"], "call_123");
     assert_eq!(body["name"], "run_shell");
     assert_eq!(body["arguments_delta"], r#"{"command""#);
+}
+
+#[test]
+fn saved_sse_event_includes_authoritative_message_and_session_snapshots() {
+    let db_path = temp_database_path();
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let message_id = store
+        .insert_message(&conversation_id, None, Role::Assistant, "saved", None)
+        .unwrap();
+    let session_id = SessionId::new("session-sse-snapshot");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Running, None)
+        .unwrap();
+    let record = store
+        .append_session_event(
+            &session_id,
+            SessionEvent::AssistantMessageSaved {
+                message_id: message_id.as_str().to_string(),
+            },
+        )
+        .unwrap();
+
+    let body: serde_json::Value =
+        serde_json::from_str(&session_event_data(Some(db_path.as_path()), &record)).unwrap();
+
+    assert_eq!(body["type"], "assistant_message_saved");
+    assert_eq!(body["message"]["id"], message_id.as_str());
+    assert_eq!(body["message"]["content"], "saved");
+    assert_eq!(body["session"]["id"], session_id.as_str());
+    assert_eq!(
+        body["session"]["current_head_message_id"],
+        message_id.as_str()
+    );
+
+    let _ = fs::remove_file(db_path);
 }
 
 #[tokio::test]
@@ -938,6 +983,125 @@ async fn session_responses_include_latest_event_cursor() {
     .await;
 
     assert_eq!(listed["sessions"][0]["latest_event_id"], event_id);
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn resolve_session_route_uses_backend_head_resolution() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let head_message_id = store
+        .insert_message(&conversation_id, None, Role::User, "head", None)
+        .unwrap();
+    let first_session_id = SessionId::new("session-api-resolution-one");
+    store
+        .create_session(
+            &first_session_id,
+            &conversation_id,
+            Some(&head_message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    let existing = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/sessions/resolve"),
+                Some(json!({"head_message_id": head_message_id.as_str()})),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(existing["type"], "existing_session");
+    assert_eq!(existing["session"]["id"], first_session_id.as_str());
+
+    let no_session = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::POST,
+                &format!("/api/conversations/{conversation_id}/sessions/resolve"),
+                Some(json!({"head_message_id": null})),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(no_session["type"], "no_session_at_head");
+
+    let mut store = Store::open_at(&db_path).unwrap();
+    store
+        .create_session(
+            &SessionId::new("session-api-resolution-two"),
+            &conversation_id,
+            Some(&head_message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    let ambiguous = app
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/conversations/{conversation_id}/sessions/resolve"),
+            Some(json!({"head_message_id": head_message_id.as_str()})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ambiguous.status(), StatusCode::CONFLICT);
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn conversation_query_reuses_session_at_requested_head() {
+    let db_path = temp_database_path();
+    let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let head_message_id = store
+        .insert_message(&conversation_id, None, Role::User, "head", None)
+        .unwrap();
+    let session_id = SessionId::new("session-api-query-reuse");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&head_message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    let response = app
+        .oneshot(authed_request(
+            Method::POST,
+            &format!("/api/conversations/{conversation_id}/query"),
+            Some(json!({
+                "head_message_id": head_message_id.as_str(),
+                "text": "continue this branch"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json_body(response).await;
+    assert_eq!(body["id"], session_id.as_str());
+
+    let store = Store::open_at(&db_path).unwrap();
+    assert_eq!(
+        store
+            .list_conversation_sessions(&conversation_id)
+            .unwrap()
+            .len(),
+        1
+    );
     let _ = fs::remove_file(db_path);
 }
 

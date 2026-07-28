@@ -15,6 +15,73 @@ pub struct QueuedSessionInput {
 }
 
 impl Store {
+    /// Returns the message IDs on a live session's current inference path.
+    ///
+    /// This is the persisted protection set exposed to API clients. Keeping
+    /// the path calculation here prevents clients from reconstructing session
+    /// safety rules from a conversation tree that may already be stale.
+    pub fn protected_message_ids_for_session(&self, session: &Session) -> Result<Vec<String>> {
+        if !matches!(
+            session.status,
+            SessionStatus::Running | SessionStatus::WaitingForApproval
+        ) {
+            return Ok(Vec::new());
+        }
+
+        let Some(head_message_id) = session.current_head_message_id.as_ref() else {
+            return Ok(Vec::new());
+        };
+
+        self.load_path_to_message_rows(&session.conversation_id, head_message_id)
+            .map(|path| {
+                path.into_iter()
+                    .filter_map(|message| message.id.map(|id| id.as_str().to_string()))
+                    .collect()
+            })
+    }
+
+    /// Rejects destructive message mutations that would change the model path
+    /// owned by an active session.
+    ///
+    /// Running and approval-waiting sessions both retain an execution branch:
+    /// running sessions may still be using the path for inference, while
+    /// approval-waiting sessions still have a pending tool call whose parent
+    /// path must remain valid. New children and copied forks do not call this
+    /// guard because they leave the protected messages unchanged.
+    pub(super) fn ensure_message_mutation_allowed(
+        &self,
+        conversation_id: &ConversationId,
+        affected_message_ids: &HashSet<String>,
+    ) -> Result<()> {
+        if affected_message_ids.is_empty() {
+            return Ok(());
+        }
+
+        for session in self.list_conversation_sessions(conversation_id)? {
+            if !matches!(
+                session.status,
+                SessionStatus::Running | SessionStatus::WaitingForApproval
+            ) {
+                continue;
+            }
+
+            let protected_message_id = self
+                .protected_message_ids_for_session(&session)?
+                .into_iter()
+                .find(|message_id| affected_message_ids.contains(message_id));
+            let Some(protected_message_id) = protected_message_id else {
+                continue;
+            };
+
+            return Err(error::conflict(format!(
+                "cannot modify message {protected_message_id}; it is part of active session {}",
+                session.id
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Persists one prepared user input for FIFO execution by a session.
     pub fn enqueue_session_input(
         &mut self,
@@ -177,6 +244,108 @@ impl Store {
             reasoning,
             SessionStatus::Ready,
         )
+    }
+
+    /// Resolves the unique session branch currently ending at a conversation head.
+    pub fn resolve_session_at_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<SessionResolution> {
+        self.ensure_conversation_exists(conversation_id)?;
+        if let Some(message_id) = head_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
+
+        Ok(session_resolution_from_matches(sessions_at_head(
+            &self.connection,
+            conversation_id,
+            head_message_id,
+        )?))
+    }
+
+    /// Resolves or creates one session branch atomically at a conversation head.
+    ///
+    /// The immediate SQLite transaction serializes competing clients that are
+    /// both trying to create the first session at the same branch point. An
+    /// ambiguous existing head is rejected instead of silently selecting one.
+    pub fn resolve_or_create_session(
+        &mut self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+        model: &str,
+        reasoning: Option<&ReasoningRequest>,
+    ) -> Result<Session> {
+        self.ensure_conversation_exists(conversation_id)?;
+        if let Some(message_id) = head_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        }
+
+        let matches = {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("failed to start session resolution transaction")?;
+            let matches = sessions_at_head(&transaction, conversation_id, head_message_id)?;
+            match matches.len() {
+                0 => {
+                    let session_id = SessionId::fresh();
+                    let now = now_millis()?;
+                    let reasoning_json = reasoning
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .context("failed to encode run reasoning")?;
+                    transaction
+                        .execute(
+                            "
+                            INSERT INTO sessions (
+                                id,
+                                conversation_id,
+                                start_head_message_id,
+                                current_head_message_id,
+                                status,
+                                model,
+                                reasoning,
+                                error,
+                                created_at,
+                                updated_at
+                            )
+                            VALUES (?1, ?2, ?3, ?4, 'ready', ?5, ?6, NULL, ?7, ?7)
+                            ",
+                            params![
+                                session_id.as_str(),
+                                conversation_id.as_str(),
+                                head_message_id.map(MessageId::as_str),
+                                head_message_id.map(MessageId::as_str),
+                                model,
+                                reasoning_json.as_deref(),
+                                now,
+                            ],
+                        )
+                        .context("failed to atomically create runtime session")?;
+                    transaction
+                        .commit()
+                        .context("failed to commit resolved runtime session")?;
+                    return self.load_session(&session_id);
+                }
+                1 => {
+                    transaction
+                        .commit()
+                        .context("failed to commit existing session resolution")?;
+                    return Ok(matches.into_iter().next().expect("one session match"));
+                }
+                _ => matches,
+            }
+        };
+
+        let ids = matches
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(crate::error::conflict(format!(
+            "multiple sessions exist at conversation head: {ids}"
+        )))
     }
 
     fn create_session_with_status(
@@ -609,6 +778,22 @@ impl Store {
             .context("failed to load latest runtime event cursor")
     }
 
+    /// Counts every persisted message on a session's current root-to-head path.
+    ///
+    /// The count includes messages inherited from the session's branch point.
+    /// Sessions are pointers into one conversation tree, so this is the total
+    /// model-visible path length rather than only the messages appended after
+    /// `start_head_message_id`.
+    pub fn session_node_count(&self, session: &Session) -> Result<usize> {
+        let Some(head_message_id) = session.current_head_message_id.as_ref() else {
+            return Ok(0);
+        };
+
+        Ok(self
+            .load_path_to_message_rows(&session.conversation_id, head_message_id)?
+            .len())
+    }
+
     /// Returns an error instead of silently ignoring missing sessions.
     fn ensure_session_exists(&self, session_id: &SessionId) -> Result<()> {
         let exists = self
@@ -629,6 +814,57 @@ impl Store {
         }
 
         Ok(())
+    }
+}
+
+fn sessions_at_head(
+    connection: &Connection,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+) -> Result<Vec<Session>> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                id,
+                conversation_id,
+                start_head_message_id,
+                current_head_message_id,
+                status,
+                model,
+                reasoning,
+                error,
+                created_at,
+                updated_at
+            FROM sessions
+            WHERE conversation_id = ?1
+              AND (
+                  current_head_message_id = ?2
+                  OR (?2 IS NULL AND current_head_message_id IS NULL)
+              )
+            ORDER BY created_at, id
+            ",
+        )
+        .context("failed to prepare session head resolution")?;
+
+    statement
+        .query_map(
+            params![
+                conversation_id.as_str(),
+                head_message_id.map(MessageId::as_str)
+            ],
+            session_from_row,
+        )
+        .context("failed to resolve sessions at conversation head")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("failed to decode session head resolution")
+}
+
+fn session_resolution_from_matches(sessions: Vec<Session>) -> SessionResolution {
+    match sessions.len() {
+        0 => SessionResolution::NoSessionAtHead,
+        1 => SessionResolution::Existing(sessions.into_iter().next().expect("one session")),
+        _ => SessionResolution::Ambiguous(sessions),
     }
 }
 

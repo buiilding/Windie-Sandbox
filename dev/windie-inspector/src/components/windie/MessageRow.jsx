@@ -274,6 +274,7 @@ export default function MessageRow({ node, index, isLast }) {
     truncateAfter,
     removeMessage,
     editMessage,
+    protectedMessageIds,
   } = useWindie();
   const [editing, setEditing] = useState(false);
   const [userMessageExpanded, setUserMessageExpanded] = useState(false);
@@ -295,6 +296,7 @@ export default function MessageRow({ node, index, isLast }) {
       ? ""
       : "hover:bg-surface/40";
   const isStreaming = node.message.streaming;
+  const isProtected = protectedMessageIds.has(node.id);
   const textPart = node.message.parts.find((p) => p.type === "text");
   const imageParts = node.message.parts.filter((p) => p.type === "image");
   const siblings = node.parentId
@@ -312,10 +314,14 @@ export default function MessageRow({ node, index, isLast }) {
     ? `${toolOutput.slice(0, MESSAGE_PREVIEW_LENGTH).trimEnd()}…`
     : toolOutput;
 
-  const commitEdit = () => {
-    editMessage(activeConv.id, node.id, draft);
-    setEditing(false);
-    toast.message("message edited", { description: "created sibling on new path" });
+  const commitEdit = async () => {
+    try {
+      await editMessage(activeConv.id, node.id, draft);
+      setEditing(false);
+      toast.message("message edited");
+    } catch (_) {
+      // The backend remains authoritative if the session changed after render.
+    }
   };
 
   const copyMessage = async () => {
@@ -377,7 +383,7 @@ export default function MessageRow({ node, index, isLast }) {
                   data-testid={`msg-edit-commit-${node.id}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    commitEdit();
+                    void commitEdit();
                   }}
                   className="text-[11px] font-mono uppercase tracking-widest px-2 py-1 border border-foreground bg-foreground text-background hover:opacity-90"
                 >
@@ -393,7 +399,7 @@ export default function MessageRow({ node, index, isLast }) {
                   cancel
                 </button>
                 <span className="font-mono text-[10px] text-muted-foreground">
-                  edit mutates this stored message in place
+                  edits are blocked while this message is on an active session path
                 </span>
               </div>
             </div>
@@ -465,9 +471,11 @@ export default function MessageRow({ node, index, isLast }) {
               title="set path head"
               onClick={(e) => {
                 e.stopPropagation();
-                setPathHead(node.id);
-                toast.message("path set", {
-                  description: "the next query uses this path; a different path creates a new session",
+                void setPathHead(node.id).then((result) => {
+                  if (!result) return;
+                  toast.message("path set", {
+                    description: "the next query uses this path; a different path creates a new session",
+                  });
                 });
               }}
               className="p-1 border border-transparent hover:border-border hover:bg-surface-hover"
@@ -479,8 +487,9 @@ export default function MessageRow({ node, index, isLast }) {
               title="fork from this message"
               onClick={(e) => {
                 e.stopPropagation();
-                forkFromMessage(activeConv.id, node.id);
-                toast.message("forked", { description: "new conversation created" });
+                void forkFromMessage(activeConv.id, node.id).then(() => {
+                  toast.message("forked", { description: "new conversation created" });
+                }).catch(() => {});
               }}
               className="p-1 border border-transparent hover:border-border hover:bg-surface-hover"
             >
@@ -488,24 +497,27 @@ export default function MessageRow({ node, index, isLast }) {
             </button>
             <button
               data-testid={`msg-action-truncate-${node.id}`}
-              title="delete descendants after this message"
               onClick={(e) => {
                 e.stopPropagation();
-                truncateAfter(activeConv.id, node.id);
-                toast.message("truncated", { description: "descendants deleted" });
+                void truncateAfter(activeConv.id, node.id).then(() => {
+                  toast.message("truncated", { description: "descendants deleted" });
+                }).catch(() => {});
               }}
-              className="p-1 border border-transparent hover:border-border hover:bg-surface-hover"
+              disabled={isProtected}
+              title={isProtected ? "cannot truncate an active session path" : "delete descendants after this message"}
+              className="p-1 border border-transparent hover:border-border hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-30"
             >
               <Scissors className="size-3.5" strokeWidth={1.75} />
             </button>
             <button
               data-testid={`msg-action-edit-${node.id}`}
-              title="edit message"
               onClick={(e) => {
                 e.stopPropagation();
                 setEditing(true);
               }}
-              className="p-1 border border-transparent hover:border-border hover:bg-surface-hover"
+              disabled={isProtected}
+              title={isProtected ? "cannot edit an active session path" : "edit message"}
+              className="p-1 border border-transparent hover:border-border hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-30"
             >
               <Pencil className="size-3.5" strokeWidth={1.75} />
             </button>
@@ -523,14 +535,16 @@ export default function MessageRow({ node, index, isLast }) {
             {!isSystem && (
               <button
                 data-testid={`msg-action-remove-${node.id}`}
-                title="remove message"
                 onClick={(e) => {
                   e.stopPropagation();
                   if (!window.confirm("Are you sure you want to remove this message?")) return;
-                  void removeMessage(activeConv.id, node.id).catch(() => {});
-                  toast.message("message removed");
+                  void removeMessage(activeConv.id, node.id).then(() => {
+                    toast.message("message removed");
+                  }).catch(() => {});
                 }}
-                className="p-1 border border-transparent hover:border-border hover:bg-surface-hover text-[hsl(var(--destructive))]"
+                disabled={isProtected}
+                title={isProtected ? "cannot remove an active session path" : "remove message"}
+                className="p-1 border border-transparent hover:border-border hover:bg-surface-hover text-[hsl(var(--destructive))] disabled:cursor-not-allowed disabled:opacity-30"
               >
                 <Trash2 className="size-3.5" strokeWidth={1.75} />
               </button>

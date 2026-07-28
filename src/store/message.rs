@@ -25,6 +25,32 @@ struct MessageSpliceDelete {
 }
 
 impl Store {
+    /// Loads one persisted message with its ordered parts and image metadata.
+    pub fn load_message(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> Result<Message> {
+        self.ensure_conversation_exists(conversation_id)?;
+        self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+
+        let mut message = self
+            .connection
+            .query_row(
+                "
+                SELECT id, parent_message_id, role, content, metadata
+                FROM messages
+                WHERE conversation_id = ?1 AND id = ?2
+                ",
+                params![conversation_id.as_str(), message_id.as_str()],
+                read_message_row,
+            )
+            .context("failed to load message")?;
+        self.attach_message_parts(std::slice::from_mut(&mut message))
+            .context("failed to load message parts")?;
+        Ok(message)
+    }
+
     /// Loads all messages for one conversation in stable insertion order.
     pub fn load_messages(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         let mut messages = self.load_message_rows(conversation_id)?;
@@ -608,6 +634,10 @@ impl Store {
     ) -> Result<()> {
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
+        self.ensure_message_mutation_allowed(
+            conversation_id,
+            &HashSet::from([message_id.as_str().to_string()]),
+        )?;
 
         let now = now_millis()?;
         let transaction = self
@@ -657,6 +687,7 @@ impl Store {
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
         let splice_delete = self.message_splice_delete(conversation_id, message_id)?;
+        self.ensure_message_mutation_allowed(conversation_id, &splice_delete.deleted_message_ids)?;
         let now = now_millis()?;
         let transaction = self
             .connection
@@ -794,6 +825,7 @@ impl Store {
         let descendant_ids = self
             .descendant_message_ids(conversation_id, message_id, false)
             .context("failed to load message descendants")?;
+        self.ensure_message_mutation_allowed(conversation_id, &descendant_ids)?;
 
         let now = now_millis()?;
         let transaction = self

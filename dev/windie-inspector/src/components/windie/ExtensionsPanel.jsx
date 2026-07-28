@@ -316,7 +316,7 @@ function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
   );
 }
 
-export default function ExtensionsPanel({ hideHeader = false }) {
+export default function ExtensionsPanel() {
   const {
     theme,
     providerInstallations,
@@ -365,26 +365,6 @@ export default function ExtensionsPanel({ hideHeader = false }) {
 
   return (
     <div className="flex flex-col">
-      {!hideHeader && (
-      <div className="border-b border-border bg-surface/25 px-5 py-5">
-        <div className="flex items-start gap-3">
-          <div className="grid size-10 shrink-0 place-items-center border border-accent/50 bg-accent/10 text-accent">
-            <PackageOpen className="size-5" strokeWidth={1.5} />
-          </div>
-          <div className="min-w-0">
-            <div className="font-sans text-lg font-medium tracking-tight">Extension library</div>
-            <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-muted-foreground">
-              Browse MCPs, skills, and plugins available to Windie.
-            </p>
-          </div>
-          <div className="ml-auto hidden shrink-0 text-right sm:block">
-            <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">{catalogLabel} catalog</div>
-            <div className="mt-1 font-mono text-sm text-foreground">{catalogs.find((entry) => entry.id === catalog)?.count || 0} {catalogLabel}</div>
-          </div>
-        </div>
-      </div>
-      )}
-
       <div className="p-5">
         <div className="mb-5 flex items-center gap-1 border-b border-border pb-3" role="tablist" aria-label="extension catalogs">
           {catalogs.map((entry) => (

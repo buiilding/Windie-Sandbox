@@ -21,7 +21,8 @@ use crate::operation::{self, MessageInputPart, RuntimeDependencies};
 use crate::output::RuntimeOutput;
 use crate::runtime::RuntimeEventSink;
 use crate::session::{
-    Session, SessionEvent, SessionEventRecord, SessionId, SessionQueryResult, SessionStatus,
+    Session, SessionEvent, SessionEventRecord, SessionId, SessionQueryResult, SessionResolution,
+    SessionStatus,
 };
 use crate::store::Store;
 use crate::tool_provider::ToolProviderRegistry;
@@ -187,10 +188,52 @@ impl SessionManager {
         )
     }
 
+    /// Resolves a conversation head to its backend-owned session branch.
+    pub fn resolve_session_at_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<SessionResolution> {
+        let store = self.open_store()?;
+        operation::resolve_session_at_head(&store, conversation_id, head_message_id)
+    }
+
+    /// Resolves or creates a branch, then accepts a query against that head.
+    pub fn query_conversation_at_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+        parts: &[MessageInputPart],
+    ) -> Result<SessionQueryResult> {
+        let mut store = self.open_store()?;
+        let model = operation::conversation_model(&store, conversation_id)?;
+        let reasoning = operation::conversation_reasoning(&store, conversation_id)?;
+        let session = operation::resolve_or_create_session(
+            &mut store,
+            conversation_id,
+            head_message_id,
+            &model,
+            reasoning.as_ref(),
+        )?;
+        drop(store);
+
+        self.query_session_at_head(&session.id, head_message_id, true, parts)
+    }
+
     /// Inserts one user query into a session branch and starts that session.
     pub fn query_session(
         &self,
         session_id: &SessionId,
+        parts: &[MessageInputPart],
+    ) -> Result<SessionQueryResult> {
+        self.query_session_at_head(session_id, None, false, parts)
+    }
+
+    fn query_session_at_head(
+        &self,
+        session_id: &SessionId,
+        expected_head_message_id: Option<&MessageId>,
+        enforce_expected_head: bool,
         parts: &[MessageInputPart],
     ) -> Result<SessionQueryResult> {
         let gate = self.session_gate(session_id);
@@ -203,6 +246,13 @@ impl SessionManager {
 
         let mut store = self.open_store()?;
         let session = store.load_session(session_id)?;
+        if enforce_expected_head
+            && session.current_head_message_id.as_ref() != expected_head_message_id
+        {
+            return Err(crate::error::conflict(
+                "conversation head changed while resolving session; reload and retry",
+            ));
+        }
         if session.status == SessionStatus::WaitingForApproval {
             return Err(crate::error::invalid_request(
                 "session is waiting for tool approval",
@@ -267,6 +317,36 @@ impl SessionManager {
 
     /// Starts one selected session from its current head without adding input.
     pub fn continue_session(&self, session_id: &SessionId) -> Result<Session> {
+        self.continue_session_at_head(session_id, None, false)
+    }
+
+    /// Resolves or creates a branch, then continues it from the requested head.
+    pub fn continue_conversation_at_head(
+        &self,
+        conversation_id: &ConversationId,
+        head_message_id: Option<&MessageId>,
+    ) -> Result<Session> {
+        let mut store = self.open_store()?;
+        let model = operation::conversation_model(&store, conversation_id)?;
+        let reasoning = operation::conversation_reasoning(&store, conversation_id)?;
+        let session = operation::resolve_or_create_session(
+            &mut store,
+            conversation_id,
+            head_message_id,
+            &model,
+            reasoning.as_ref(),
+        )?;
+        drop(store);
+
+        self.continue_session_at_head(&session.id, head_message_id, true)
+    }
+
+    fn continue_session_at_head(
+        &self,
+        session_id: &SessionId,
+        expected_head_message_id: Option<&MessageId>,
+        enforce_expected_head: bool,
+    ) -> Result<Session> {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
         if self
@@ -280,6 +360,13 @@ impl SessionManager {
 
         let mut store = self.open_store()?;
         let session = store.load_session(session_id)?;
+        if enforce_expected_head
+            && session.current_head_message_id.as_ref() != expected_head_message_id
+        {
+            return Err(crate::error::conflict(
+                "conversation head changed while resolving session; reload and retry",
+            ));
+        }
         if session.status == SessionStatus::WaitingForApproval {
             return Err(crate::error::invalid_request(
                 "session is waiting for tool approval",
@@ -809,21 +896,21 @@ impl SessionEvents {
 
 impl RuntimeEventSink for SessionEvents {
     fn assistant_message_saved(&self, message_id: &MessageId) {
+        self.update_head(message_id);
         if let Err(error) = self.record(SessionEvent::AssistantMessageSaved {
             message_id: message_id.as_str().to_string(),
         }) {
             eprintln!("failed to append runtime event: {error}");
         }
-        self.update_head(message_id);
     }
 
     fn tool_result_saved(&self, message_id: &MessageId) {
+        self.update_head(message_id);
         if let Err(error) = self.record(SessionEvent::ToolResultSaved {
             message_id: message_id.as_str().to_string(),
         }) {
             eprintln!("failed to append runtime event: {error}");
         }
-        self.update_head(message_id);
     }
 }
 

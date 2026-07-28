@@ -68,6 +68,17 @@ pub struct Session {
 }
 
 #[derive(Debug, Clone)]
+/// Backend-owned resolution of one conversation head to a durable session branch.
+pub enum SessionResolution {
+    /// Exactly one session currently ends at the requested head.
+    Existing(Session),
+    /// No session currently ends at the requested head.
+    NoSessionAtHead,
+    /// More than one session currently ends at the requested head.
+    Ambiguous(Vec<Session>),
+}
+
+#[derive(Debug, Clone)]
 /// Result of accepting one user query into a session.
 pub struct SessionQueryResult {
     pub session: Session,

@@ -27,7 +27,9 @@ export default function Windie() {
     listLlmProviders()
       .then((providers) => {
         const configured = providers.some(
-          (provider) => provider.configured || provider.authentication === "none"
+          (provider) =>
+            provider.authentication === "none" ||
+            (provider.configured && provider.key_count > 0)
         );
         if (!configured) setOverlay("onboarding");
       })

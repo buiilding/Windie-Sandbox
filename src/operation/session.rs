@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::session::SessionResolution;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Action a session manager should take for a session-targeted wakeup.
 pub enum SessionResumeAction {
@@ -103,6 +105,26 @@ pub fn finish_session(
 /// Removes one terminal session and its exclusive conversation-tree suffix.
 pub fn remove_session(store: &mut Store, session_id: &SessionId) -> Result<()> {
     store.remove_session(session_id)
+}
+
+/// Resolves a conversation head to its durable session branch.
+pub fn resolve_session_at_head(
+    store: &Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+) -> Result<SessionResolution> {
+    store.resolve_session_at_head(conversation_id, head_message_id)
+}
+
+/// Resolves or creates one durable session branch at a conversation head.
+pub fn resolve_or_create_session(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    model: &ModelName,
+    reasoning: Option<&ReasoningRequest>,
+) -> Result<Session> {
+    store.resolve_or_create_session(conversation_id, head_message_id, model.as_str(), reasoning)
 }
 
 /// Persists a failed session status and replayable failure event.

@@ -48,12 +48,16 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/models", get(list_models))
         .route("/api/llm/providers", get(list_provider_catalog))
         .route(
+            "/api/llm/providers/{provider}/keys",
+            get(list_provider_keys).post(create_provider_key),
+        )
+        .route(
             "/api/llm/providers/{provider}/ensure",
             post(ensure_provider),
         )
         .route(
-            "/api/llm/providers/{provider}/keys",
-            post(create_provider_key),
+            "/api/llm/providers/{provider}/keys/{key_id}",
+            axum::routing::delete(delete_provider_key),
         )
         .route("/api/env", axum::routing::put(set_env_values_handler))
         .route("/api/model-parameters", get(model_parameters))
@@ -152,6 +156,18 @@ fn api_router(state: ApiState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/sessions",
             get(list_conversation_sessions).post(create_session_branch),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/sessions/resolve",
+            post(resolve_session_at_head),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/query",
+            post(query_conversation),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/continue",
+            post(continue_conversation),
         )
         .route("/api/sessions/{session_id}/query", post(query_session))
         .route(

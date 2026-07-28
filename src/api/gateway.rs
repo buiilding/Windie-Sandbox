@@ -51,6 +51,15 @@ pub(super) async fn list_provider_catalog(
     Ok(Json(client.provider_catalog().await?))
 }
 
+/// Lists redacted keys for one Bifrost-managed LLM provider.
+pub(super) async fn list_provider_keys(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path(provider): Path<String>,
+) -> ApiResult<crate::llm::ProviderKeyList> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    Ok(Json(client.provider_keys(&provider).await?))
+}
+
 #[derive(Debug, Serialize)]
 /// Result of ensuring a Bifrost provider configuration exists.
 pub(super) struct EnsureProviderResponse {
@@ -79,6 +88,15 @@ pub(super) async fn create_provider_key(
 ) -> ApiResult<crate::llm::ProviderKey> {
     let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
     Ok(Json(client.create_provider_key(&provider, &request).await?))
+}
+
+/// Deletes one Bifrost-managed LLM provider key.
+pub(super) async fn delete_provider_key(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    Path((provider, key_id)): Path<(String, String)>,
+) -> ApiResult<crate::llm::ProviderKey> {
+    let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
+    Ok(Json(client.delete_provider_key(&provider, &key_id).await?))
 }
 
 #[derive(Debug, Deserialize)]

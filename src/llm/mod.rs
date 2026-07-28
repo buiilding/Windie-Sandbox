@@ -16,6 +16,7 @@ mod stream;
 pub use client::BifrostClient;
 pub use management::{
     BifrostManagementClient, CreateProviderKey, ProviderCatalog, ProviderCatalogEntry, ProviderKey,
+    ProviderKeyList,
 };
 pub use model::{
     BaseUrl, ModelInfo, ModelName, ModelParameter, ModelParameterOption, list_models,

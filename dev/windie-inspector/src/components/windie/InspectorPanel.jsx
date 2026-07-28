@@ -43,6 +43,7 @@ export default function InspectorPanel({ mode, onClose }) {
     denyToolCall,
     availableToolSchemas,
     availableToolsLoading,
+    refreshModels,
     addToolSchema,
     addToolSchemas,
     removeToolSchema,
@@ -148,7 +149,7 @@ export default function InspectorPanel({ mode, onClose }) {
     <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center px-6 pt-12 pb-6 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
       <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "system" ? "max-w-5xl h-[77vh] self-start" : "max-w-4xl max-h-[calc(100vh-7rem)]"} ${mode === "onboarding" || (mode === "tools" && toolsView === "extensions") ? "h-[77vh] self-start" : ""}`}>
         <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
-          <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system prompt" : mode === "onboarding" ? "setup" : "tools"}</span>
+          <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system" : mode === "onboarding" ? "setup" : "tools"}</span>
           <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
             <X className="size-3.5" strokeWidth={1.75} />
           </button>
@@ -194,9 +195,6 @@ export default function InspectorPanel({ mode, onClose }) {
             >
               providers
             </button>
-            <span className="ml-auto font-mono text-[9px] uppercase tracking-widest text-muted-foreground">
-              {systemView === "providers" ? "model access" : "conversation-wide"}
-            </span>
           </div>
         )}
         <div className="flex-1 min-h-0 overflow-y-auto windie-scroll" style={{ scrollbarGutter: "stable" }}>
@@ -205,20 +203,20 @@ export default function InspectorPanel({ mode, onClose }) {
               <div className="border-b border-border bg-surface/25 px-5 py-5">
                 <div className="font-sans text-lg font-medium tracking-tight">Welcome to Windie</div>
                 <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-muted-foreground">
-                  Connect a model provider and enable local extensions. Keys are stored locally — model keys by Bifrost, extension secrets in ~/.windie/.env.
+                  Connect a model provider and install local curated extensions.
                 </p>
               </div>
               <div className="border-b border-border">
                 <div className="px-3 pt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                   1 · model providers
                 </div>
-                <LlmProvidersPanel />
+                <LlmProvidersPanel onModelsChanged={refreshModels} />
               </div>
               <div>
                 <div className="px-3 pt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                   2 · extensions
                 </div>
-                <ExtensionsPanel hideHeader />
+                <ExtensionsPanel />
               </div>
               <div className="mt-auto flex items-center justify-end gap-2 border-t border-border bg-surface/25 px-5 py-3">
                 <button
@@ -233,7 +231,7 @@ export default function InspectorPanel({ mode, onClose }) {
             </div>
           ) : mode === "system" ? (
             systemView === "providers" ? (
-              <LlmProvidersPanel />
+              <LlmProvidersPanel onModelsChanged={refreshModels} />
             ) : (
             <div className="min-h-full flex flex-col p-6 gap-4">
               <textarea
@@ -244,7 +242,6 @@ export default function InspectorPanel({ mode, onClose }) {
                 className="flex-1 w-full resize-none bg-transparent border border-border p-4 font-mono text-sm leading-relaxed outline-none focus:border-foreground"
               />
               <div className="flex items-center justify-between">
-                <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">conversation-wide</span>
                 <button data-testid="inspector-sysprompt-commit" onClick={saveSystemPrompt} className="text-[10px] uppercase px-3 py-1.5 border border-foreground bg-foreground text-background font-mono">save</button>
               </div>
             </div>

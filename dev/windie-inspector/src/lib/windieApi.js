@@ -131,6 +131,34 @@ export async function listConversationSessions(conversationId) {
   return body.sessions || [];
 }
 
+export async function resolveSessionAtHead(conversationId, headMessageId = null) {
+  return apiRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/sessions/resolve`,
+    {
+      method: "POST",
+      body: JSON.stringify({ head_message_id: headMessageId || null }),
+    }
+  );
+}
+
+export async function queryConversation(conversationId, body = {}) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/query`, {
+    method: "POST",
+    body: JSON.stringify({
+      head_message_id: body.headMessageId || null,
+      text: body.text || null,
+      parts: body.parts || [],
+    }),
+  });
+}
+
+export async function continueConversation(conversationId, headMessageId = null) {
+  return apiRequest(`/api/conversations/${encodeURIComponent(conversationId)}/continue`, {
+    method: "POST",
+    body: JSON.stringify({ head_message_id: headMessageId || null }),
+  });
+}
+
 export async function querySession(sessionId, parts) {
   return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/query`, {
     method: "POST",
@@ -192,6 +220,13 @@ export async function listLlmProviders() {
   return body.providers || [];
 }
 
+export async function listLlmProviderKeys(provider) {
+  const body = await apiRequest(
+    `/api/llm/providers/${encodeURIComponent(provider)}/keys`
+  );
+  return body.keys || [];
+}
+
 export async function ensureLlmProvider(provider) {
   return apiRequest(`/api/llm/providers/${encodeURIComponent(provider)}/ensure`, {
     method: "POST",
@@ -211,6 +246,13 @@ export async function createLlmProviderKey(provider, { name, value }) {
       enabled: true,
     }),
   });
+}
+
+export async function deleteLlmProviderKey(provider, keyId) {
+  return apiRequest(
+    `/api/llm/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
+    { method: "DELETE" }
+  );
 }
 
 export async function setEnvValues(assignments) {

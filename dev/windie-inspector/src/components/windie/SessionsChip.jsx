@@ -21,27 +21,12 @@ function statusDot(status) {
   return "bg-muted-foreground";
 }
 
-function sessionNodeCount(session, nodes) {
-  const startId = session.startHeadMessageId;
-  let currentId = session.currentHeadMessageId || session.startHeadMessageId;
-  let count = 0;
-  const visited = new Set();
-
-  while (currentId && !visited.has(currentId)) {
-    visited.add(currentId);
-    if (currentId === startId) break;
-    count += 1;
-    currentId = nodes[currentId]?.parentId || null;
-  }
-
-  return count;
-}
-
 export default function SessionsChip({ dropUp = false }) {
   const {
     activeConv,
     sessionsById,
     selectedSessionId,
+    sessionResolution,
     viewHeadId,
     selectSession,
     deleteSession,
@@ -81,6 +66,7 @@ export default function SessionsChip({ dropUp = false }) {
   const selected = viewHeadId
     ? null
     : sessions.find((session) => session.id === selectedSessionId) || null;
+  const showingNewSession = Boolean(viewHeadId && sessionResolution?.kind === "none");
 
   const handleDelete = async (event, session) => {
     event.stopPropagation();
@@ -96,11 +82,11 @@ export default function SessionsChip({ dropUp = false }) {
         data-testid="topbar-sessions-chip"
         onClick={() => setOpen((current) => !current)}
         className={`flex items-center gap-1.5 h-7 px-2 border border-border bg-background hover:bg-surface-hover transition-colors min-w-[160px] ${open ? "bg-surface-hover" : ""}`}
-        title={selected ? `session ${selected.id}` : viewHeadId ? "new session at selected path" : "choose a session"}
+        title={selected ? `session ${selected.id}` : showingNewSession ? "new session at selected path" : "choose a session"}
       >
         {selected && <span className={`size-1.5 rounded-full ${statusDot(selected.status)}`} />}
         <span className="truncate font-mono text-[11px]">
-          {selected ? `session ${shortId(selected.id)}` : viewHeadId ? "new session" : "choose session"}
+          {selected ? `session ${shortId(selected.id)}` : showingNewSession ? "new session" : "choose session"}
         </span>
         <ChevronDown className="size-3 ml-auto" strokeWidth={1.75} />
       </button>
@@ -146,7 +132,7 @@ export default function SessionsChip({ dropUp = false }) {
                       </span>
                     )}
                     <span className="truncate flex-1 text-muted-foreground text-right text-[10px]">
-                      {sessionNodeCount(session, activeConv.nodes)} nodes
+                      {session.nodeCount} nodes
                     </span>
                     {!viewHeadId && session.id === selectedSessionId && <Check className="size-3 shrink-0" />}
                   </button>
@@ -188,6 +174,10 @@ export default function SessionsChip({ dropUp = false }) {
             : "topbar-session-delete"
         }
         label="delete session"
+        disabled={
+          sessions.find((session) => session.id === menuSession?.id)?.deletionAllowed === false
+        }
+        disabledTitle="stop the session before deleting it"
         onDelete={(event) =>
           handleDelete(
             event,
