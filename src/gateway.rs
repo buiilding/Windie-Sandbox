@@ -120,10 +120,7 @@ impl BifrostGateway {
         }
 
         for process_id in process_ids {
-            let status = Command::new("kill")
-                .arg(process_id.to_string())
-                .status()
-                .with_context(|| format!("failed to stop Bifrost process {process_id}"))?;
+            let status = stop_process(process_id)?;
             if !status.success() {
                 return Err(anyhow!("failed to stop Bifrost process {process_id}"));
             }
@@ -310,11 +307,7 @@ fn owned_bifrost_candidates() -> Vec<PathBuf> {
 
 /// Builds the owned Bifrost runtime paths under `~/.windie`.
 fn bifrost_paths() -> Result<BifrostPaths> {
-    let Some(home) = env::var_os("HOME") else {
-        return Err(anyhow!("HOME is not set"));
-    };
-
-    let dir = PathBuf::from(home).join(".windie").join(BIFROST_DIR);
+    let dir = local::windie_home_dir()?.join(BIFROST_DIR);
     let app_dir = dir.join(BIFROST_DATA_DIR);
     let log_file = dir.join(BIFROST_LOG_FILE);
     fs::create_dir_all(&app_dir)
@@ -344,6 +337,15 @@ fn gateway_log_file(path: &Path) -> Result<std::fs::File> {
 /// Finds Bifrost process IDs listening on a port and filters out unrelated
 /// processes that may also be reported by `lsof`.
 fn bifrost_process_ids_on_port(port: &str) -> Result<Vec<u32>> {
+    #[cfg(windows)]
+    return bifrost_process_ids_on_port_windows(port);
+
+    #[cfg(not(windows))]
+    bifrost_process_ids_on_port_unix(port)
+}
+
+#[cfg(not(windows))]
+fn bifrost_process_ids_on_port_unix(port: &str) -> Result<Vec<u32>> {
     let output = Command::new("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
         .output()
@@ -364,6 +366,46 @@ fn bifrost_process_ids_on_port(port: &str) -> Result<Vec<u32>> {
     Ok(process_ids.into_iter().collect())
 }
 
+#[cfg(windows)]
+fn bifrost_process_ids_on_port_windows(port: &str) -> Result<Vec<u32>> {
+    let script = format!(
+        "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .context("failed to inspect local gateway process")?;
+
+    let mut process_ids = BTreeSet::new();
+    for process_id in parse_process_ids(&String::from_utf8_lossy(&output.stdout)) {
+        let command = process_command(process_id)?;
+        if is_bifrost_command(&command) {
+            process_ids.insert(process_id);
+        }
+    }
+
+    Ok(process_ids.into_iter().collect())
+}
+
+/// Stops one owned Bifrost process using the platform's process command.
+fn stop_process(process_id: u32) -> Result<std::process::ExitStatus> {
+    #[cfg(windows)]
+    {
+        return Command::new("taskkill.exe")
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .status()
+            .with_context(|| format!("failed to stop Bifrost process {process_id}"));
+    }
+
+    #[cfg(not(windows))]
+    {
+        Command::new("kill")
+            .arg(process_id.to_string())
+            .status()
+            .with_context(|| format!("failed to stop Bifrost process {process_id}"))
+    }
+}
+
 /// Parses numeric process IDs from `lsof -t` output.
 fn parse_process_ids(output: &str) -> Vec<u32> {
     output
@@ -374,16 +416,32 @@ fn parse_process_ids(output: &str) -> Vec<u32> {
 
 /// Reads the full command line for one process ID.
 fn process_command(process_id: u32) -> Result<String> {
-    let output = Command::new("ps")
-        .args(["-p", &process_id.to_string(), "-o", "command="])
-        .output()
-        .with_context(|| format!("failed to inspect process {process_id}"))?;
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "(Get-CimInstance Win32_Process -Filter 'ProcessId = {process_id}').ExecutablePath"
+        );
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .with_context(|| format!("failed to inspect process {process_id}"))?;
 
-    if !output.status.success() {
-        return Ok(String::new());
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &process_id.to_string(), "-o", "command="])
+            .output()
+            .with_context(|| format!("failed to inspect process {process_id}"))?;
+
+        if !output.status.success() {
+            return Ok(String::new());
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 }
 
 /// Identifies whether a process command line belongs to Bifrost.
@@ -427,7 +485,9 @@ fn find_env_file_path() -> Option<PathBuf> {
 
 /// Returns the only supported provider-key environment file path.
 fn env_file_path() -> Option<PathBuf> {
-    env::var_os("HOME").map(|home| PathBuf::from(home).join(".windie").join(ENV_FILE_NAME))
+    local::windie_home_dir()
+        .ok()
+        .map(|home| home.join(ENV_FILE_NAME))
 }
 
 /// Parses simple KEY=VALUE lines from a `.env` file.
@@ -508,14 +568,10 @@ mod tests {
     }
 
     #[test]
-    fn env_file_path_uses_windie_home_only() {
-        let Some(home) = env::var_os("HOME") else {
-            return;
-        };
-
+    fn env_file_path_uses_windie_home() {
         assert_eq!(
             env_file_path(),
-            Some(PathBuf::from(home).join(".windie").join(ENV_FILE_NAME))
+            Some(local::windie_home_dir().unwrap().join(ENV_FILE_NAME))
         );
     }
 

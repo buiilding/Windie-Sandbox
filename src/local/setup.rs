@@ -42,6 +42,32 @@ const LLM_ENV_KEYS: &[&str] = &[
 const CUA_DRIVER_INSTALL_URL: &str =
     "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh";
 
+/// Returns the current user's home directory across supported operating
+/// systems. Unix environments conventionally expose `HOME`; native Windows
+/// exposes `USERPROFILE` instead.
+pub fn user_home_dir() -> Result<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| anyhow!("HOME or USERPROFILE is not set"))
+}
+
+/// Returns Windie's user-local data directory.
+///
+/// `WINDIE_HOME` is an explicit escape hatch for isolated installations and
+/// tests. Without it, Windie stores state under the platform user's home.
+pub fn windie_home_dir() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("WINDIE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        return Ok(path);
+    }
+
+    Ok(user_home_dir()?.join(".windie"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Result of one approved installation request.
 pub struct InstallReport {
@@ -239,10 +265,7 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
 
 /// Returns the current user-local Windie layout without creating directories.
 fn windie_layout() -> Result<WindieLayout> {
-    let Some(home) = env::var_os("HOME") else {
-        return Err(anyhow!("HOME is not set"));
-    };
-    let root = PathBuf::from(home).join(".windie");
+    let root = windie_home_dir()?;
 
     Ok(WindieLayout {
         env_file: root.join(ENV_FILE_NAME),

@@ -6,7 +6,6 @@
 //! globally installed and useful to other clients without letting Windie
 //! access their other memory projects.
 
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,6 +15,7 @@ use serde_json::Value;
 
 use super::McpProviderDefinition;
 use super::provider::McpProviderSetup;
+use crate::local;
 use crate::mcp::McpCommand;
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
@@ -169,8 +169,5 @@ fn command_error(stderr: &[u8]) -> String {
 
 /// Returns Windie's per-user data directory.
 fn windie_data_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".windie")
+    local::windie_home_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
