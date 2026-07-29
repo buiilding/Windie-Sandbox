@@ -8,7 +8,7 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
-The current development line after `v0.1.0`.
+The current development line after `v0.1.1`.
 
 ### Inspector and onboarding
 
@@ -37,6 +37,17 @@ The current development line after `v0.1.0`.
 - Added and expanded the backend and frontend ownership guides so the codebase
   documents its module boundaries directly.
 - Fixed the release workflow’s repository scope.
+
+## [0.1.1] - 2026-07-28
+
+Updated the application version, public documentation, and release packaging.
+
+### Documentation and distribution
+
+- Corrected the local API examples to use the current Inspector address and
+  session query route.
+- Published release assets for macOS and Linux on ARM64 and x86_64.
+- Aligned the installed binary version with the `v0.1.1` release tag.
 
 ## [0.1.0] - 2026-07-26
 
@@ -92,5 +103,6 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.1.1
 [0.1.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.1.0
