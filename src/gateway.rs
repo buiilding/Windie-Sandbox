@@ -29,6 +29,12 @@ const ENV_FILE_NAME: &str = ".env";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 
+#[cfg(windows)]
+const REQUIRED_PLATFORM_ENVIRONMENT: &[&str] = &["TEMP", "TMP", "SystemRoot", "WINDIR"];
+
+#[cfg(not(windows))]
+const REQUIRED_PLATFORM_ENVIRONMENT: &[&str] = &["TMPDIR"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the local Bifrost gateway health endpoint.
 pub struct GatewayUrl(String);
@@ -246,6 +252,7 @@ fn start_binary_process(
         .arg(BIFROST_PORT)
         .current_dir(&paths.dir)
         .env_clear()
+        .envs(required_platform_environment())
         .envs(environment)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -289,6 +296,11 @@ fn owned_bifrost_candidates() -> Vec<PathBuf> {
     {
         candidates.push(directory.join("bifrost"));
         candidates.push(directory.join("bifrost-http"));
+        #[cfg(windows)]
+        {
+            candidates.push(directory.join("bifrost.exe"));
+            candidates.push(directory.join("bifrost-http.exe"));
+        }
     }
 
     if let Ok(directory) = env::current_dir() {
@@ -300,9 +312,47 @@ fn owned_bifrost_candidates() -> Vec<PathBuf> {
                 .join("tmp")
                 .join("bifrost-http"),
         );
+        #[cfg(windows)]
+        {
+            candidates.push(
+                directory
+                    .join("bifrost")
+                    .join("tmp")
+                    .join("bifrost-http.exe"),
+            );
+            candidates.push(
+                directory
+                    .join("..")
+                    .join("bifrost")
+                    .join("tmp")
+                    .join("bifrost-http.exe"),
+            );
+        }
     }
 
     candidates
+}
+
+/// Returns the small set of host variables Bifrost and SQLite need at startup.
+///
+/// Bifrost is intentionally launched with a cleared environment so provider
+/// credentials and unrelated shell state are not inherited. Windows SQLite
+/// migrations still need the OS temporary-directory and system-root variables,
+/// so those variables are restored explicitly before the `.env` values are
+/// applied.
+fn required_platform_environment() -> Vec<(String, String)> {
+    platform_environment_from(REQUIRED_PLATFORM_ENVIRONMENT, |key| env::var(key).ok())
+}
+
+/// Selects platform variables from a lookup function so the allowlist can be
+/// tested without mutating the process-wide environment.
+fn platform_environment_from(
+    keys: &[&str],
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    keys.iter()
+        .filter_map(|key| lookup(key).map(|value| ((*key).to_string(), value)))
+        .collect()
 }
 
 /// Builds the owned Bifrost runtime paths under `~/.windie`.
@@ -580,6 +630,20 @@ mod tests {
         let error = parse_env_file("OPENAI_API_KEY").unwrap_err();
 
         assert!(error.to_string().contains("invalid .env line 1"));
+    }
+
+    #[test]
+    fn preserves_only_required_platform_environment() {
+        let values = platform_environment_from(REQUIRED_PLATFORM_ENVIRONMENT, |key| {
+            Some(format!("value-for-{key}"))
+        });
+        let expected = REQUIRED_PLATFORM_ENVIRONMENT
+            .iter()
+            .map(|key| ((*key).to_string(), format!("value-for-{key}")))
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, expected);
+        assert!(!values.iter().any(|(key, _)| key == "OPENAI_API_KEY"));
     }
 
     #[test]
