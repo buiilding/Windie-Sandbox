@@ -21,7 +21,6 @@ pub use provider::InstalledProvider;
 use schema::DATABASE_SCHEMA_VERSION;
 
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,6 +39,7 @@ use crate::conversation::{
 };
 use crate::error;
 use crate::llm::ReasoningRequest;
+use crate::local;
 use crate::session::{
     Session, SessionEvent, SessionEventRecord, SessionId, SessionResolution, SessionStatus,
 };
@@ -133,9 +133,7 @@ impl Store {
 
 /// Builds the default user database path.
 fn default_database_path() -> Result<PathBuf> {
-    let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-
-    Ok(PathBuf::from(home).join(".windie").join("windie.db"))
+    Ok(local::windie_home_dir()?.join("windie.db"))
 }
 
 /// Converts one SQLite message row into the runtime message type.

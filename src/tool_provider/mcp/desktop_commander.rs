@@ -4,7 +4,6 @@
 //! Windie starts the process with a provider-specific HOME and keeps this
 //! config separate from any user-level Desktop Commander install.
 
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,6 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::json;
 
 use super::provider::{McpProviderDefinition, McpProviderSetup};
+use crate::local;
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
@@ -107,10 +107,7 @@ fn desktop_commander_home() -> PathBuf {
 
 /// Returns Windie's per-user data directory.
 fn windie_data_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".windie")
+    local::windie_home_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Keeps Desktop Commander's default high-risk shell command blocklist.

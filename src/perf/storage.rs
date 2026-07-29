@@ -27,12 +27,7 @@ pub fn write_report(path: &Path, report: &PerformanceReport) -> Result<()> {
 
 /// Returns Windie's default persisted benchmark baseline path.
 pub fn default_baseline_path() -> Result<PathBuf> {
-    let Some(home) = env::var_os("HOME") else {
-        return Err(anyhow::anyhow!("HOME is not set"));
-    };
-
-    Ok(PathBuf::from(home)
-        .join(".windie")
+    Ok(crate::local::windie_home_dir()?
         .join("benchmarks")
         .join("baseline.json"))
 }

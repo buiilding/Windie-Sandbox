@@ -23,6 +23,12 @@ Windie is a quiet, foundational harness that runs beside your operating system â
 curl -sL https://windieos.com/install | sh
 ```
 
+On Windows PowerShell:
+
+```powershell
+irm https://windieos.com/install.ps1 | iex
+```
+
 ---
 
 ## What Windie Is
