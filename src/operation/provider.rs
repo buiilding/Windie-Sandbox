@@ -7,13 +7,15 @@
 
 use anyhow::Result;
 use serde::Serialize;
+use std::env;
 
 use crate::error;
 use crate::local;
 use crate::store::{InstalledProvider, Store};
 use crate::tool::ToolProviderId;
 use crate::tool_provider::{
-    ProviderInstallState, ProviderManifest, ToolProviderRegistry, ToolProviderStatus,
+    ProviderInstallState, ProviderManifest, ProviderReadiness, ToolProviderRegistry,
+    ToolProviderStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -92,38 +94,40 @@ pub fn install_provider(
 
 /// Installs, configures, verifies, and enables one approved MCP provider.
 ///
-/// The provider-specific dependency setup is owned by `local::install_target`.
-/// The subsequent catalog request is the health check: it catches failures to
-/// launch the MCP process, missing credentials, and failed MCP handshakes.
-/// A failed verification is retained as `broken` so the caller can show the
-/// actionable provider error.
+/// Provider provisioning and catalog discovery are one lifecycle operation.
+/// A failed provisioning or verification is retained as `broken` so clients
+/// can show the actionable error and offer repair without losing the record.
 pub fn setup_provider(
     store: &Store,
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
-    let desktop_commander_id = ToolProviderId::new("desktop-commander");
-    ensure_manifest(registry, provider_id)?;
-
-    // Desktop Commander is self-installing through its npx command and also
-    // needs its isolated configuration prepared by the provider adapter. The
-    // other approved MCPs have explicit local setup targets that verify their
-    // executable or run their upstream installer before the health check.
-    if provider_id != &desktop_commander_id {
-        local::install_target(provider_id.as_str())?;
-    }
+    let manifest = ensure_manifest(registry, provider_id)?;
 
     store.install_provider(provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
-    match registry.list_provider_tools(provider_id) {
+    let setup_result = prepare_provider(&manifest)
+        .and_then(|_| {
+            if manifest.dependencies.is_empty() {
+                Ok(())
+            } else {
+                local::install_target(provider_id.as_str()).map(|_| ())
+            }
+        })
+        .and_then(|_| registry.list_provider_tools(provider_id));
+
+    match setup_result {
         Ok(_) => {
             store.record_provider_health(provider_id, ProviderInstallState::Enabled, None)?;
         }
         Err(provider_error) => {
-            store.record_provider_health(
+            let readiness = readiness_for_provider_error(provider_id, &manifest, &provider_error);
+            store.record_provider_result(
                 provider_id,
                 ProviderInstallState::Broken,
+                readiness,
+                Some(next_action_for_readiness(readiness)),
                 Some(provider_error.to_string().as_str()),
             )?;
         }
@@ -185,7 +189,7 @@ pub fn health_check_provider(
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
-    ensure_manifest(registry, provider_id)?;
+    let manifest = ensure_manifest(registry, provider_id)?;
     let installation = require_installation(store, provider_id)?;
     if installation.state == ProviderInstallState::Updating {
         return Err(error::invalid_request(format!(
@@ -204,9 +208,12 @@ pub fn health_check_provider(
             store.record_provider_health(provider_id, state_after_check, None)?;
         }
         Err(provider_error) => {
-            store.record_provider_health(
+            let readiness = readiness_for_provider_error(provider_id, &manifest, &provider_error);
+            store.record_provider_result(
                 provider_id,
                 ProviderInstallState::Broken,
+                readiness,
+                Some(next_action_for_readiness(readiness)),
                 Some(provider_error.to_string().as_str()),
             )?;
         }
@@ -221,18 +228,31 @@ pub fn repair_provider(
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
-    ensure_manifest(registry, provider_id)?;
+    let manifest = ensure_manifest(registry, provider_id)?;
     require_installation(store, provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
-    match registry.list_provider_tools(provider_id) {
+    let repair_result = prepare_provider(&manifest)
+        .and_then(|_| {
+            if manifest.dependencies.is_empty() {
+                Ok(())
+            } else {
+                local::install_target(provider_id.as_str()).map(|_| ())
+            }
+        })
+        .and_then(|_| registry.list_provider_tools(provider_id));
+
+    match repair_result {
         Ok(_) => {
             store.record_provider_health(provider_id, ProviderInstallState::Installed, None)?;
         }
         Err(provider_error) => {
-            store.record_provider_health(
+            let readiness = readiness_for_provider_error(provider_id, &manifest, &provider_error);
+            store.record_provider_result(
                 provider_id,
                 ProviderInstallState::Broken,
+                readiness,
+                Some(next_action_for_readiness(readiness)),
                 Some(provider_error.to_string().as_str()),
             )?;
         }
@@ -271,6 +291,91 @@ fn require_installation(store: &Store, provider_id: &ToolProviderId) -> Result<I
     store
         .load_installed_provider(provider_id)?
         .ok_or_else(|| error::not_found(format!("provider is not installed: {provider_id}")))
+}
+
+/// Runs deterministic checks that can explain a setup failure before an MCP
+/// process is started. These checks intentionally read only the provider
+/// manifest and Windie's explicit environment file.
+fn prepare_provider(manifest: &ProviderManifest) -> Result<()> {
+    if !crate::tool_provider::ProviderPlatform::supports_current(&manifest.platforms) {
+        return Err(anyhow::anyhow!(
+            "provider does not support the current operating system"
+        ));
+    }
+
+    for secret in &manifest.secrets {
+        if secret.required {
+            let configured =
+                local::env_value(&secret.env_key)?.or_else(|| env::var(&secret.env_key).ok());
+            if configured.as_deref().is_none_or(str::is_empty) {
+                return Err(anyhow::anyhow!(
+                    "missing required provider secret {} ({})",
+                    secret.env_key,
+                    secret.description
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Maps a setup/health error to the stable UI-facing readiness category.
+fn readiness_for_provider_error(
+    provider_id: &ToolProviderId,
+    manifest: &ProviderManifest,
+    error: &anyhow::Error,
+) -> ProviderReadiness {
+    let message = error.to_string().to_ascii_lowercase();
+    if !crate::tool_provider::ProviderPlatform::supports_current(&manifest.platforms) {
+        return ProviderReadiness::UnsupportedPlatform;
+    }
+    if message.contains("missing required provider secret")
+        || message.contains("environment variable")
+        || message.contains("api token")
+    {
+        return ProviderReadiness::MissingSecret;
+    }
+    if provider_id.as_str() == "blender-mcp"
+        || message.contains("blender") && message.contains("bridge")
+        || message.contains("external application")
+    {
+        return ProviderReadiness::ExternalAppRequired;
+    }
+    if message.contains("permission")
+        || message.contains("access denied")
+        || message.contains("uac")
+        || message.contains("operation not permitted")
+    {
+        return ProviderReadiness::PermissionRequired;
+    }
+    if message.contains("runtime")
+        || message.contains("command not found")
+        || message.contains("no such file")
+        || message.contains("npx")
+        || message.contains("uvx")
+        || message.contains("node.js")
+        || message.contains("node runtime")
+    {
+        return ProviderReadiness::MissingRuntime;
+    }
+
+    ProviderReadiness::Broken
+}
+
+fn next_action_for_readiness(readiness: ProviderReadiness) -> &'static str {
+    match readiness {
+        ProviderReadiness::MissingRuntime => "repair provider to install its runtime",
+        ProviderReadiness::ExternalAppRequired => {
+            "start the required external application and repair"
+        }
+        ProviderReadiness::PermissionRequired => "grant the required OS permission and repair",
+        ProviderReadiness::MissingSecret => "configure the provider secret and repair",
+        ProviderReadiness::UnsupportedPlatform => "use this provider on a supported platform",
+        ProviderReadiness::Installing => "wait for provider setup to finish",
+        ProviderReadiness::Ready => "none",
+        ProviderReadiness::Broken => "inspect the error and repair the provider",
+    }
 }
 
 fn provider_installation(

@@ -7,7 +7,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-use crate::tool_provider::ProviderInstallState;
+use crate::tool_provider::{ProviderInstallState, ProviderReadiness};
 
 impl Store {
     /// Returns whether a provider is installed, enabled, and has no recorded
@@ -35,6 +35,8 @@ impl Store {
                 SELECT
                     provider_id,
                     state,
+                    readiness,
+                    next_action,
                     error,
                     installed_at,
                     updated_at,
@@ -61,20 +63,27 @@ impl Store {
                 INSERT INTO installed_providers (
                     provider_id,
                     state,
+                    readiness,
+                    next_action,
                     error,
                     installed_at,
                     updated_at,
                     last_health_check_at
                 )
-                VALUES (?1, ?2, NULL, ?3, ?3, NULL)
+                VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, NULL)
                 ON CONFLICT(provider_id) DO UPDATE SET
                     state = excluded.state,
+                    readiness = excluded.readiness,
+                    next_action = excluded.next_action,
                     error = NULL,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    last_health_check_at = NULL
                 ",
                 params![
                     provider_id.as_str(),
                     ProviderInstallState::Installed.as_storage(),
+                    ProviderReadiness::Installing.as_storage(),
+                    "provision provider runtime",
                     now
                 ],
             )
@@ -97,10 +106,21 @@ impl Store {
             .execute(
                 "
                 UPDATE installed_providers
-                SET state = ?1, error = ?2, updated_at = ?3
-                WHERE provider_id = ?4
+                SET state = ?1,
+                    readiness = ?2,
+                    next_action = ?3,
+                    error = ?4,
+                    updated_at = ?5
+                WHERE provider_id = ?6
                 ",
-                params![state.as_storage(), error, now, provider_id.as_str()],
+                params![
+                    state.as_storage(),
+                    readiness_for_state(state).as_storage(),
+                    next_action_for_state(state),
+                    error,
+                    now,
+                    provider_id.as_str()
+                ],
             )
             .context("failed to update provider lifecycle state")?;
         if changed == 0 {
@@ -120,6 +140,28 @@ impl Store {
         state: ProviderInstallState,
         error: Option<&str>,
     ) -> Result<InstalledProvider> {
+        self.record_provider_result(
+            provider_id,
+            state,
+            if error.is_none() {
+                ProviderReadiness::Ready
+            } else {
+                ProviderReadiness::Broken
+            },
+            None,
+            error,
+        )
+    }
+
+    /// Persists a provider health result together with its actionable readiness.
+    pub fn record_provider_result(
+        &self,
+        provider_id: &ToolProviderId,
+        state: ProviderInstallState,
+        readiness: ProviderReadiness,
+        next_action: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<InstalledProvider> {
         let now = now_millis()?;
         let changed = self
             .connection
@@ -127,12 +169,21 @@ impl Store {
                 "
                 UPDATE installed_providers
                 SET state = ?1,
-                    error = ?2,
-                    updated_at = ?3,
-                    last_health_check_at = ?3
-                WHERE provider_id = ?4
+                    readiness = ?2,
+                    next_action = ?3,
+                    error = ?4,
+                    updated_at = ?5,
+                    last_health_check_at = ?5
+                WHERE provider_id = ?6
                 ",
-                params![state.as_storage(), error, now, provider_id.as_str()],
+                params![
+                    state.as_storage(),
+                    readiness.as_storage(),
+                    next_action,
+                    error,
+                    now,
+                    provider_id.as_str()
+                ],
             )
             .context("failed to record provider health")?;
         if changed == 0 {
@@ -172,6 +223,8 @@ impl Store {
 pub struct InstalledProvider {
     pub provider_id: ToolProviderId,
     pub state: ProviderInstallState,
+    pub readiness: ProviderReadiness,
+    pub next_action: Option<String>,
     pub error: Option<String>,
     pub installed_at: i64,
     pub updated_at: i64,
@@ -187,13 +240,41 @@ fn read_installed_provider_row(row: &Row<'_>) -> rusqlite::Result<InstalledProvi
             format!("unknown provider install state: {state_text}").into(),
         )
     })?;
+    let readiness_text = row.get::<_, String>(2)?;
+    let readiness = ProviderReadiness::from_storage(&readiness_text).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            Type::Text,
+            format!("unknown provider readiness: {readiness_text}").into(),
+        )
+    })?;
 
     Ok(InstalledProvider {
         provider_id: ToolProviderId::new(row.get::<_, String>(0)?),
         state,
-        error: row.get(2)?,
-        installed_at: row.get(3)?,
-        updated_at: row.get(4)?,
-        last_health_check_at: row.get(5)?,
+        readiness,
+        next_action: row.get(3)?,
+        error: row.get(4)?,
+        installed_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        last_health_check_at: row.get(7)?,
     })
+}
+
+fn readiness_for_state(state: ProviderInstallState) -> ProviderReadiness {
+    match state {
+        ProviderInstallState::Updating => ProviderReadiness::Installing,
+        ProviderInstallState::Broken => ProviderReadiness::Broken,
+        ProviderInstallState::Installed | ProviderInstallState::Disabled => {
+            ProviderReadiness::Installing
+        }
+        ProviderInstallState::Enabled => ProviderReadiness::Ready,
+    }
+}
+
+fn next_action_for_state(state: ProviderInstallState) -> Option<&'static str> {
+    match state {
+        ProviderInstallState::Updating => Some("provision and verify provider"),
+        _ => None,
+    }
 }

@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -101,7 +102,13 @@ pub async fn serve(
 
     let api_token = match std::env::var("WINDIE_API_TOKEN") {
         Ok(token) => token,
-        Err(_) => local::ensure_api_token()?,
+        Err(_) => match local::ensure_api_token() {
+            Ok(token) => token,
+            Err(error) => {
+                cleanup_started_gateway(gateway_start, gateway_url).await;
+                return Err(error);
+            }
+        },
     };
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
     let session_manager = Arc::new(SessionManager::new(
@@ -110,7 +117,10 @@ pub async fn serve(
         base_url.to_string(),
         tool_registry.clone(),
     ));
-    session_manager.recover_interrupted_sessions()?;
+    if let Err(error) = session_manager.recover_interrupted_sessions() {
+        cleanup_started_gateway(gateway_start, gateway_url).await;
+        return Err(error);
+    }
     let state = ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
@@ -120,9 +130,30 @@ pub async fn serve(
         tool_registry,
         session_manager,
     };
-    let listener = TcpListener::bind(address)
-        .await
-        .with_context(|| format!("failed to bind API server at {address}"))?;
+    let listener = match TcpListener::bind(address).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            if gateway_start == crate::gateway::GatewayStart::Started
+                && let Err(cleanup_error) =
+                    operation::stop_gateway(GatewayUrl::new(gateway_url)).await
+            {
+                eprintln!("failed to clean up Bifrost after API bind failure: {cleanup_error}");
+            }
+            return Err(error).with_context(|| format!("failed to bind API server at {address}"));
+        }
+    };
+
+    let api_pid_file = match local::windie_home_dir() {
+        Ok(home) => home.join("windie-api.pid"),
+        Err(error) => {
+            cleanup_started_gateway(gateway_start, gateway_url).await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = write_process_pid_file(&api_pid_file) {
+        cleanup_started_gateway(gateway_start, gateway_url).await;
+        return Err(error);
+    }
 
     output.api_started(&address, &state.api_token);
     let server_result = axum::serve(listener, router(state))
@@ -138,7 +169,30 @@ pub async fn serve(
         }
     }
 
+    let _ = fs::remove_file(&api_pid_file);
+
     server_result
+}
+
+fn write_process_pid_file(path: &std::path::Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create API PID directory {}", parent.display()))?;
+    }
+    let temporary = path.with_extension("pid.tmp");
+    fs::write(&temporary, format!("{}\n", std::process::id()))
+        .with_context(|| format!("failed to write API PID file {}", path.display()))?;
+    fs::rename(&temporary, path)
+        .with_context(|| format!("failed to publish API PID file {}", path.display()))
+}
+
+/// Stops only the Bifrost process this API invocation started.
+async fn cleanup_started_gateway(gateway_start: crate::gateway::GatewayStart, gateway_url: &str) {
+    if gateway_start == crate::gateway::GatewayStart::Started
+        && let Err(error) = operation::stop_gateway(GatewayUrl::new(gateway_url)).await
+    {
+        eprintln!("failed to clean up Bifrost after API startup failure: {error}");
+    }
 }
 
 /// Waits for the process-level shutdown signal used by the API server.

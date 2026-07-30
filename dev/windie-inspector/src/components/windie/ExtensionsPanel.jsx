@@ -40,6 +40,7 @@ const providerRepositories = {
 
 function providerStatus(provider, toolStatus) {
   const state = provider.installation?.state;
+  const readiness = provider.installation?.readiness;
   if (!state) {
     return { label: "not installed", tone: "muted", icon: PackageOpen };
   }
@@ -50,7 +51,14 @@ function providerStatus(provider, toolStatus) {
     return { label: "disabled", tone: "muted", icon: Power };
   }
   if (state === "broken") {
-    return { label: "needs repair", tone: "bad", icon: AlertTriangle };
+    const labels = {
+      missing_runtime: "runtime missing",
+      external_app_required: "app required",
+      permission_required: "permission needed",
+      missing_secret: "credential needed",
+      unsupported_platform: "unsupported",
+    };
+    return { label: labels[readiness] || "needs repair", tone: "bad", icon: AlertTriangle };
   }
   if (state === "updating") {
     return { label: "installing", tone: "accent", icon: Loader2 };
@@ -220,6 +228,20 @@ function ProviderCard({ provider, toolStatus, pending, theme, onAction }) {
 
       <div className="flex flex-1 flex-col gap-4 p-4">
         <p className="text-[12px] leading-relaxed text-muted-foreground">{provider.description}</p>
+
+        {provider.installation?.nextAction ? (
+          <div className="border border-accent/30 bg-accent/8 px-3 py-2 text-[11px] leading-relaxed text-foreground">
+            <span className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground">next action</span>
+            <div className="mt-1">{provider.installation.nextAction}</div>
+          </div>
+        ) : null}
+
+        {provider.installation?.error ? (
+          <details className="border border-border bg-surface/30 px-3 py-2">
+            <summary className="cursor-pointer font-mono text-[9px] uppercase tracking-widest text-muted-foreground">setup detail</summary>
+            <p className="mt-2 break-words text-[11px] leading-relaxed text-muted-foreground">{provider.installation.error}</p>
+          </details>
+        ) : null}
 
         <div className="mt-auto flex items-center justify-between gap-3 border-t border-border pt-3 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           <span>{provider.kind || "mcp"}</span>

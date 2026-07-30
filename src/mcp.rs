@@ -422,8 +422,7 @@ struct McpSession {
 impl McpSession {
     /// Starts the provider process and completes the MCP initialize handshake.
     fn start(command: McpCommand) -> Result<Self> {
-        let mut process = Command::new(command.program);
-        configure_process(&mut process, command)?;
+        let mut process = configure_process(command)?;
         let mut child = process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -599,8 +598,7 @@ fn request_timeout_for_method(method: &str) -> Duration {
 
 /// Runs one shutdown command with a small timeout.
 fn run_shutdown_command(command: McpCommand) -> Result<()> {
-    let mut process = Command::new(command.program);
-    configure_process(&mut process, command)?;
+    let mut process = configure_process(command)?;
     let mut child = process
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -630,13 +628,48 @@ fn run_shutdown_command(command: McpCommand) -> Result<()> {
 }
 
 /// Applies the static command definition to a spawned provider process.
-fn configure_process(process: &mut Command, command: McpCommand) -> Result<()> {
-    process.args(command.args);
+fn configure_process(command: McpCommand) -> Result<Command> {
+    let program = local::resolve_command(command.program)?;
+    let command_path = local::path_with_command_parent(&program);
+    let mut process = windows_command(program, command.args);
+    if let Some(path) = command_path {
+        process.env("PATH", path);
+    }
     for variable in command.env {
         process.env(variable.key, resolve_env_value(variable.value)?);
     }
 
-    Ok(())
+    Ok(process)
+}
+
+/// Builds a process command that can launch both native executables and
+/// Windows command shims such as npm's `npx.cmd`.
+fn windows_command(program: PathBuf, args: &[&str]) -> Command {
+    #[cfg(target_os = "windows")]
+    if program
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+    {
+        let mut command_line = quote_windows_argument(&program.to_string_lossy());
+        for argument in args {
+            command_line.push(' ');
+            command_line.push_str(&quote_windows_argument(argument));
+        }
+        let mut process = Command::new("cmd.exe");
+        process.args(["/D", "/S", "/C"]);
+        process.arg(command_line);
+        return process;
+    }
+
+    let mut process = Command::new(program);
+    process.args(args);
+    process
+}
+
+/// Quotes one static argument for the `cmd.exe /C` command line.
+#[cfg(target_os = "windows")]
+fn quote_windows_argument(argument: &str) -> String {
+    format!("\"{}\"", argument.replace('"', "\\\""))
 }
 
 /// Resolves an MCP environment value at process-start time.

@@ -15,6 +15,7 @@
 # Tarball layout consumed by install.sh:
 #   windie            CLI + embedded API/inspector
 #   bifrost           owned Bifrost gateway binary (sibling of `windie`)
+#   release-manifest.txt  target/version metadata for installer diagnostics
 
 set -euo pipefail
 
@@ -27,6 +28,18 @@ INSPECTOR_DIR="$REPO_ROOT/dev/windie-inspector"
 BIFROST_DIR="$REPO_ROOT/vendor/bifrost"
 BIFROST_HTTP_DIR="$BIFROST_DIR/transports/bifrost-http"
 VERSION="${GITHUB_REF_NAME:-dev}"
+
+case "$RUST_TARGET" in
+  *-apple-darwin) RELEASE_OS="macos" ;;
+  *-linux-*) RELEASE_OS="linux" ;;
+  *-windows-*) RELEASE_OS="windows" ;;
+  *) RELEASE_OS="unknown" ;;
+esac
+case "$RUST_TARGET" in
+  x86_64-*) RELEASE_CPU="x86_64" ;;
+  aarch64-*) RELEASE_CPU="aarch64" ;;
+  *) RELEASE_CPU="unknown" ;;
+esac
 
 STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT
@@ -91,10 +104,24 @@ BIFROST_BIN="$BIFROST_DIR/tmp/bifrost-http"
 echo "==> assembling tarball"
 install -m 0755 "$WINDIE_BIN" "$STAGING_DIR/windie"
 install -m 0755 "$BIFROST_BIN" "$STAGING_DIR/bifrost"
+cat > "$STAGING_DIR/release-manifest.txt" <<EOF
+windie_version=$VERSION
+bifrost_version=$VERSION
+asset_label=$ASSET_LABEL
+rust_target=$RUST_TARGET
+os=$RELEASE_OS
+cpu=$RELEASE_CPU
+contents=windie,bifrost
+EOF
+
+"$WINDIE_BIN" --version >/dev/null
+"$BIFROST_BIN" --help >/dev/null 2>&1 || true
 
 mkdir -p "$DIST_DIR"
 TARBALL="$DIST_DIR/windie-$ASSET_LABEL.tar.gz"
-tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost
+tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost release-manifest.txt
+sha256sum "$TARBALL" > "$TARBALL.sha256"
 
 echo "==> wrote $TARBALL"
+echo "==> wrote $TARBALL.sha256"
 ls -lh "$TARBALL"

@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 18;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 19;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -152,6 +152,8 @@ impl Store {
                 CREATE TABLE IF NOT EXISTS installed_providers (
                     provider_id TEXT PRIMARY KEY,
                     state TEXT NOT NULL,
+                    readiness TEXT NOT NULL,
+                    next_action TEXT,
                     error TEXT,
                     installed_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,

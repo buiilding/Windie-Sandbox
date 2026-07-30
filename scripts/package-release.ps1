@@ -102,9 +102,21 @@ try {
 
     Copy-Item -LiteralPath $WindieBinary -Destination (Join-Path $StagingDir "windie.exe")
     Copy-Item -LiteralPath $BifrostBinary -Destination (Join-Path $StagingDir "bifrost.exe")
+    @(
+        "windie_version=$Version"
+        "bifrost_version=$Version"
+        "asset_label=$AssetLabel"
+        "rust_target=$RustTarget"
+        "os=windows"
+        "cpu=$(if ($RustTarget.StartsWith('aarch64')) { 'aarch64' } else { 'x86_64' })"
+        "contents=windie.exe,bifrost.exe"
+    ) | Set-Content -LiteralPath (Join-Path $StagingDir "release-manifest.txt") -Encoding utf8
+    Invoke-Native $WindieBinary @("--version")
+    & $BifrostBinary --help *> $null
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
     $Archive = Join-Path $DistDir "windie-$AssetLabel.zip"
-    Compress-Archive -Path (Join-Path $StagingDir "windie.exe"), (Join-Path $StagingDir "bifrost.exe") -DestinationPath $Archive -Force
+    Compress-Archive -Path (Join-Path $StagingDir "windie.exe"), (Join-Path $StagingDir "bifrost.exe"), (Join-Path $StagingDir "release-manifest.txt") -DestinationPath $Archive -Force
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant() + "  " + (Split-Path $Archive -Leaf) | Set-Content -LiteralPath "$Archive.sha256" -Encoding ascii
     Write-Host "==> wrote $Archive"
     Get-Item -LiteralPath $Archive | Select-Object FullName, Length
 }

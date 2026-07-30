@@ -35,3 +35,15 @@ jobs:
           cache-dependency-path: dev/windie-inspector/package-lock.json
       - run: npm ci --legacy-peer-deps
       - run: npm run build
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: x86_64-pc-windows-msvc
+      - run: cargo fmt --check
+      - run: cargo check --target x86_64-pc-windows-msvc
+      - run: cargo test --target x86_64-pc-windows-msvc

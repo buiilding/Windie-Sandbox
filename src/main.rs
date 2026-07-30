@@ -40,7 +40,6 @@ use crate::store::Store;
 use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
 use crate::tool_provider::ToolProviderRegistry;
 
-const BASE_URL: &str = "http://localhost:8080/v1";
 const GATEWAY_URL: &str = "http://localhost:8080";
 const API_ADDRESS: &str = "127.0.0.1:8787";
 const MODEL: &str = "openai/gpt-4o-mini";
@@ -159,7 +158,15 @@ async fn main() -> Result<()> {
 
 /// Starts Windie's local developer API server.
 async fn api() -> Result<()> {
-    api::serve(api_address(), GATEWAY_URL, BASE_URL, MODEL).await
+    let gateway_url = gateway_url();
+    let base_url = base_url();
+    api::serve(
+        api_address(),
+        gateway_url.as_str(),
+        base_url.as_str(),
+        MODEL,
+    )
+    .await
 }
 
 /// Runs the terminal-only onboarding wizard without opening a browser.
@@ -727,12 +734,15 @@ async fn stop_gateway() -> Result<()> {
 
 /// Centralizes the gateway health base URL.
 fn gateway_url() -> GatewayUrl {
-    GatewayUrl::new(GATEWAY_URL)
+    GatewayUrl::new(std::env::var("WINDIE_GATEWAY_URL").unwrap_or_else(|_| GATEWAY_URL.to_string()))
 }
 
 /// Centralizes the OpenAI-compatible API base URL.
 fn base_url() -> BaseUrl {
-    BaseUrl::new(BASE_URL)
+    BaseUrl::new(
+        std::env::var("WINDIE_BASE_URL")
+            .unwrap_or_else(|_| format!("{}/v1", gateway_url().as_str())),
+    )
 }
 
 /// Centralizes the default model while config is intentionally not in scope.
@@ -742,7 +752,8 @@ fn model_name() -> ModelName {
 
 /// Centralizes the local developer API bind address.
 fn api_address() -> SocketAddr {
-    API_ADDRESS
+    std::env::var("WINDIE_API_ADDRESS")
+        .unwrap_or_else(|_| API_ADDRESS.to_string())
         .parse()
-        .expect("hardcoded API address must be valid")
+        .expect("WINDIE_API_ADDRESS must be a valid socket address")
 }

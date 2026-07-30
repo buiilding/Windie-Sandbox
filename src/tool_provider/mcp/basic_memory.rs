@@ -86,7 +86,12 @@ pub(super) fn prepare() -> Result<()> {
         )
     })?;
 
-    let projects = Command::new("uvx")
+    let uvx = local::resolve_command("uvx")?;
+    let mut projects_command = Command::new(&uvx);
+    if let Some(path) = local::path_with_command_parent(&uvx) {
+        projects_command.env("PATH", path);
+    }
+    let projects = projects_command
         .args(["basic-memory", "project", "list", "--json"])
         .output()
         .context("failed to list Basic Memory projects")?;
@@ -112,7 +117,11 @@ pub(super) fn prepare() -> Result<()> {
         return Ok(());
     }
 
-    let created = Command::new("uvx")
+    let mut created_command = Command::new(&uvx);
+    if let Some(path) = local::path_with_command_parent(&uvx) {
+        created_command.env("PATH", path);
+    }
+    let created = created_command
         .args([
             "basic-memory",
             "project",
