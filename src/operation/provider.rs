@@ -380,6 +380,17 @@ fn next_action_for_readiness(readiness: ProviderReadiness) -> &'static str {
     }
 }
 
+fn provider_installation(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+    provider_id: &ToolProviderId,
+) -> Result<ProviderInstallation> {
+    Ok(ProviderInstallation {
+        manifest: ensure_manifest(registry, provider_id)?,
+        installation: store.load_installed_provider(provider_id)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,15 +431,4 @@ mod tests {
             ProviderReadiness::ExternalAppRequired
         );
     }
-}
-
-fn provider_installation(
-    store: &Store,
-    registry: &ToolProviderRegistry,
-    provider_id: &ToolProviderId,
-) -> Result<ProviderInstallation> {
-    Ok(ProviderInstallation {
-        manifest: ensure_manifest(registry, provider_id)?,
-        installation: store.load_installed_provider(provider_id)?,
-    })
 }
