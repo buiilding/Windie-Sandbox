@@ -33,8 +33,7 @@ and provider lifecycle diagnostics for fresh macOS, Linux, and Windows setup.
   port diagnostics, and release-manifest compatibility checks.
 - Added checksum and manifest validation to the macOS, Linux, and Windows
   installation scripts.
-- Expanded release packaging and CI to Linux, macOS, Windows x64, and Windows
-  ARM64 assets.
+- Expanded release packaging and CI to Linux, macOS, and Windows x64 assets.
 
 ### Inspector and onboarding
 
