@@ -54,9 +54,6 @@ jobs:
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x86_64
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            label: windows-aarch64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
