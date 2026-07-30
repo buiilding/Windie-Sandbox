@@ -48,14 +48,23 @@ jobs:
           path: dist/*
 
   package-windows:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            label: windows-aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
@@ -66,10 +75,10 @@ jobs:
           cache-dependency-path: dev/windie-inspector/package-lock.json
       - name: Package Windows release
         shell: pwsh
-        run: ./scripts/package-release.ps1 x86_64-pc-windows-msvc windows-x86_64 dist
+        run: ./scripts/package-release.ps1 ${{ matrix.target }} ${{ matrix.label }} dist
       - uses: actions/upload-artifact@v4
         with:
-          name: windie-windows-x86_64
+          name: windie-${{ matrix.label }}
           path: dist/*
 
   publish:

@@ -17,7 +17,7 @@
 
 **AI that lives on your computer.**
 
-Windie is a quiet, foundational harness that runs beside your operating system — not inside a browser tab, not behind someone else's API wall, not locked into a single cloud provider. One line to install. No bloat. No cloud lock-in.
+Windie is a local AI runtime written in Rust. It provides durable conversation trees, explicit control over model context, permissioned tool execution, and extensibility through MCP servers, plugins, and skills. Running as a local daemon, Windie gives the AI a persistent presence on your computer.
 
 ```bash
 curl -sL https://windieos.com/install | sh

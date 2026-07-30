@@ -33,10 +33,10 @@ impl ToolProviderStatusResponse {
 }
 
 pub(super) async fn list_tools(State(state): State<ApiState>) -> ApiResult<ToolCatalogResponse> {
-    let store = open_store(&state)?;
+    let (tools, statuses) = run_blocking_catalog_operation(state, None).await?;
     Ok(Json(ToolCatalogResponse {
-        tools: operation::available_tools_with_registry(&store, &state.tool_registry)?,
-        providers: operation::enabled_provider_statuses(&store, &state.tool_registry)?
+        tools,
+        providers: statuses
             .into_iter()
             .map(ToolProviderStatusResponse::from_status)
             .collect(),
@@ -48,20 +48,41 @@ pub(super) async fn list_provider_tools(
     Path(provider_id): Path<String>,
 ) -> ApiResult<ToolCatalogResponse> {
     let provider_id = ToolProviderId::new(provider_id);
-    let store = open_store(&state)?;
-
+    let (tools, statuses) =
+        run_blocking_catalog_operation(state, Some(provider_id.clone())).await?;
     Ok(Json(ToolCatalogResponse {
-        tools: operation::available_provider_tools_with_registry(
-            &store,
-            &state.tool_registry,
-            &provider_id,
-        )?,
-        providers: operation::enabled_provider_statuses(&store, &state.tool_registry)?
+        tools,
+        providers: statuses
             .into_iter()
             .filter(|status| status.provider_id == provider_id)
             .map(ToolProviderStatusResponse::from_status)
             .collect(),
     }))
+}
+
+/// Runs provider catalog discovery away from Axum's async worker.
+async fn run_blocking_catalog_operation(
+    state: ApiState,
+    provider_id: Option<ToolProviderId>,
+) -> anyhow::Result<(Vec<ToolDefinition>, Vec<ToolProviderStatus>)> {
+    let store_path = state.store_path;
+    let registry = state.tool_registry;
+    tokio::task::spawn_blocking(move || {
+        let store = match store_path.as_ref() {
+            Some(path) => Store::open_at(path),
+            None => Store::open(),
+        }?;
+        let tools = match provider_id.as_ref() {
+            Some(provider_id) => {
+                operation::available_provider_tools_with_registry(&store, &registry, provider_id)?
+            }
+            None => operation::available_tools_with_registry(&store, &registry)?,
+        };
+        let statuses = operation::enabled_provider_statuses(&store, &registry)?;
+        Ok((tools, statuses))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("tool catalog worker failed: {error}"))?
 }
 
 #[derive(Debug, Deserialize)]

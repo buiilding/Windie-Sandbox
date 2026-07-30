@@ -8,7 +8,33 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
-The current development line after `v0.1.1`.
+Development after `v0.2.0`.
+
+## [0.2.0] - 2026-07-30
+
+Issue #26 delivers cross-platform installation, bundled gateway reliability,
+and provider lifecycle diagnostics for fresh macOS, Linux, and Windows setup.
+
+### Installation and providers
+
+- Added user-local Node.js and uv runtime provisioning with checksum
+  verification and platform-specific executable resolution.
+- Added Windows `.exe`, `.cmd`, and PowerShell handling, including CUA's
+  official Windows installer path.
+- Added actionable provider readiness states for missing runtimes, external
+  applications, permissions, secrets, unsupported platforms, and repairable
+  failures.
+- Added provider-specific preflight checks for Blender and Bright Data while
+  preserving shared runtimes across provider uninstall operations.
+
+### Runtime and release reliability
+
+- Hardened bundled Bifrost startup, stale-process recovery, PID ownership,
+  port diagnostics, and release-manifest compatibility checks.
+- Added checksum and manifest validation to the macOS, Linux, and Windows
+  installation scripts.
+- Expanded release packaging and CI to Linux, macOS, Windows x64, and Windows
+  ARM64 assets.
 
 ### Inspector and onboarding
 
@@ -103,6 +129,7 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.0
 [0.1.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.1.1
 [0.1.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.1.0

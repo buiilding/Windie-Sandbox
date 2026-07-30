@@ -47,6 +47,8 @@ export function providerInstallationsFromApi(body) {
     installation: provider.installation
       ? {
           state: provider.installation.state,
+          readiness: provider.installation.readiness || null,
+          nextAction: provider.installation.next_action || null,
           error: provider.installation.error || null,
           installedAt: provider.installation.installed_at,
           updatedAt: provider.installation.updated_at,

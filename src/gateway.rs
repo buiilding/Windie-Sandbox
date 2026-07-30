@@ -49,6 +49,17 @@ impl GatewayUrl {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Returns the configured gateway port, defaulting to Bifrost's standard
+    /// port when the URL omits one.
+    pub fn port(&self) -> String {
+        self.0
+            .rsplit_once(':')
+            .map(|(_, port)| port.trim_end_matches('/'))
+            .filter(|port| port.chars().all(|character| character.is_ascii_digit()))
+            .unwrap_or(BIFROST_PORT)
+            .to_string()
+    }
 }
 
 impl std::fmt::Display for GatewayUrl {
@@ -83,6 +94,7 @@ struct BifrostPaths {
     dir: PathBuf,
     app_dir: PathBuf,
     log_file: PathBuf,
+    pid_file: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +107,10 @@ impl BifrostGateway {
     /// Creates a gateway client for a specific local gateway URL.
     pub fn new(url: GatewayUrl) -> Self {
         Self {
-            http: Client::new(),
+            http: Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("gateway HTTP client configuration is valid"),
             url,
         }
     }
@@ -106,32 +121,53 @@ impl BifrostGateway {
             return Ok(GatewayStart::AlreadyRunning);
         }
 
+        let paths = bifrost_paths()?;
+        cleanup_stale_owned_process(&paths)?;
         self.start_process()?;
-        self.wait_until_running().await?;
+        if let Err(error) = self.wait_until_running().await {
+            let _ = stop_owned_process(&paths);
+            return Err(error);
+        }
 
         Ok(GatewayStart::Started)
     }
 
     /// Stops Bifrost processes listening on Windie's configured gateway port.
     pub async fn stop(&self) -> Result<GatewayStop> {
-        if !self.is_running().await {
+        let paths = bifrost_paths()?;
+        let owned_pid = read_pid_file(&paths.pid_file)?;
+        if !self.is_running().await && owned_pid.is_none() {
             return Ok(GatewayStop::NotRunning);
         }
 
-        let process_ids = bifrost_process_ids_on_port(BIFROST_PORT)?;
+        let port = self.url.port();
+        let process_ids = if let Some(process_id) = owned_pid {
+            vec![process_id]
+        } else {
+            bifrost_process_ids_on_port(&port)?
+        };
         if process_ids.is_empty() {
+            remove_pid_file(&paths.pid_file)?;
             return Err(anyhow!(
-                "Bifrost appears to be running on port {BIFROST_PORT}, but Windie could not find a Bifrost process to stop"
+                "Bifrost appears to be running on port {port}, but Windie could not find a Bifrost process to stop"
             ));
         }
 
         for process_id in process_ids {
+            if let Some(command) = process_command(process_id).ok()
+                && !is_bifrost_command(&command)
+            {
+                return Err(anyhow!(
+                    "refusing to stop non-Bifrost process {process_id} listening on port {port}: {command}"
+                ));
+            }
             let status = stop_process(process_id)?;
             if !status.success() {
                 return Err(anyhow!("failed to stop Bifrost process {process_id}"));
             }
         }
 
+        remove_pid_file(&paths.pid_file)?;
         self.wait_until_stopped().await?;
 
         Ok(GatewayStop::Stopped)
@@ -185,7 +221,8 @@ impl BifrostGateway {
         let environment = load_bifrost_environment()?;
 
         let BifrostLauncher::Binary { path, paths } = launcher;
-        start_binary_process(&path, &paths, environment)
+        let port = self.url.port();
+        start_binary_process(&path, &paths, &port, environment)
     }
 
     /// Polls the health endpoint until startup succeeds or times out.
@@ -201,9 +238,30 @@ impl BifrostGateway {
             waited += HEALTH_CHECK_INTERVAL;
         }
 
+        let log_file = bifrost_paths().ok().map(|paths| paths.log_file);
+        let log_tail = log_file
+            .as_deref()
+            .and_then(read_log_tail)
+            .filter(|text| !text.is_empty())
+            .map(|text| format!("\nBifrost log tail:\n{text}"))
+            .unwrap_or_default();
         Err(anyhow!(
-            "Bifrost did not become healthy within {} seconds",
-            START_TIMEOUT.as_secs()
+            "Bifrost did not become healthy within {} seconds. Check {}{}{}",
+            START_TIMEOUT.as_secs(),
+            log_file
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "the Windie gateway log".to_string()),
+            log_tail,
+            port_owner_diagnostics(&self.url.port())
+                .map(|owners| {
+                    if owners.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\nPort {} owners:\n{owners}", self.url.port())
+                    }
+                })
+                .unwrap_or_default()
         ))
     }
 
@@ -231,8 +289,10 @@ impl BifrostGateway {
 fn start_binary_process(
     binary: &Path,
     paths: &BifrostPaths,
+    port: &str,
     environment: Vec<(String, String)>,
 ) -> Result<()> {
+    validate_release_manifest(binary)?;
     fs::create_dir_all(&paths.app_dir).with_context(|| {
         format!(
             "failed to create Bifrost app dir {}",
@@ -245,11 +305,11 @@ fn start_binary_process(
         .try_clone()
         .with_context(|| format!("failed to open gateway log {}", paths.log_file.display()))?;
 
-    Command::new(binary)
+    let child = Command::new(binary)
         .arg("-app-dir")
         .arg(&paths.app_dir)
         .arg("-port")
-        .arg(BIFROST_PORT)
+        .arg(port)
         .current_dir(&paths.dir)
         .env_clear()
         .envs(required_platform_environment())
@@ -259,7 +319,47 @@ fn start_binary_process(
         .stderr(Stdio::from(stderr))
         .spawn()
         .context("failed to start the Windie-owned Bifrost binary")?;
+    write_pid_file(&paths.pid_file, child.id())?;
+    drop(child);
 
+    Ok(())
+}
+
+/// Validates the compatibility metadata shipped beside published binaries.
+/// Development builds without a manifest remain valid and use the source
+/// checkout's normal launcher behavior.
+fn validate_release_manifest(binary: &Path) -> Result<()> {
+    let Some(parent) = binary.parent() else {
+        return Ok(());
+    };
+    let manifest_path = parent.join("release-manifest.txt");
+    if !manifest_path.is_file() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(&manifest_path).with_context(|| {
+        format!(
+            "failed to read release manifest {}",
+            manifest_path.display()
+        )
+    })?;
+    let values = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let windie_version = values
+        .get("windie_version")
+        .copied()
+        .ok_or_else(|| anyhow!("release manifest is missing windie_version"))?;
+    let bifrost_version = values
+        .get("bifrost_version")
+        .copied()
+        .ok_or_else(|| anyhow!("release manifest is missing bifrost_version"))?;
+    if windie_version != bifrost_version {
+        return Err(anyhow!(
+            "Windie/Bifrost release mismatch: Windie {windie_version}, Bifrost {bifrost_version}"
+        ));
+    }
     Ok(())
 }
 
@@ -360,6 +460,7 @@ fn bifrost_paths() -> Result<BifrostPaths> {
     let dir = local::windie_home_dir()?.join(BIFROST_DIR);
     let app_dir = dir.join(BIFROST_DATA_DIR);
     let log_file = dir.join(BIFROST_LOG_FILE);
+    let pid_file = dir.join("bifrost.pid");
     fs::create_dir_all(&app_dir)
         .with_context(|| format!("failed to create Bifrost app dir {}", app_dir.display()))?;
 
@@ -367,7 +468,71 @@ fn bifrost_paths() -> Result<BifrostPaths> {
         dir,
         app_dir,
         log_file,
+        pid_file,
     })
+}
+
+/// Removes a stale Windie-owned Bifrost process without touching unrelated
+/// processes that may have reused the PID file's number.
+fn cleanup_stale_owned_process(paths: &BifrostPaths) -> Result<()> {
+    let Some(process_id) = read_pid_file(&paths.pid_file)? else {
+        return Ok(());
+    };
+
+    let command = process_command(process_id).unwrap_or_default();
+    if command.is_empty() {
+        return remove_pid_file(&paths.pid_file);
+    }
+    if !is_bifrost_command(&command) {
+        return remove_pid_file(&paths.pid_file);
+    }
+
+    if stop_process(process_id)?.success() {
+        remove_pid_file(&paths.pid_file)?;
+    }
+    Ok(())
+}
+
+/// Stops the process recorded as Windie's owned Bifrost process, if it still
+/// identifies itself as Bifrost.
+fn stop_owned_process(paths: &BifrostPaths) -> Result<()> {
+    let Some(process_id) = read_pid_file(&paths.pid_file)? else {
+        return Ok(());
+    };
+    let command = process_command(process_id).unwrap_or_default();
+    if !command.is_empty() && is_bifrost_command(&command) {
+        let _ = stop_process(process_id)?;
+    }
+    remove_pid_file(&paths.pid_file)
+}
+
+fn read_pid_file(path: &Path) -> Result<Option<u32>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read Bifrost PID file {}", path.display()))?;
+    let pid = text
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("invalid Bifrost PID file {}", path.display()))?;
+    Ok(Some(pid))
+}
+
+fn write_pid_file(path: &Path, process_id: u32) -> Result<()> {
+    let temporary = path.with_extension("pid.tmp");
+    fs::write(&temporary, format!("{process_id}\n"))
+        .with_context(|| format!("failed to write Bifrost PID file {}", path.display()))?;
+    fs::rename(&temporary, path)
+        .with_context(|| format!("failed to publish Bifrost PID file {}", path.display()))
+}
+
+fn remove_pid_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("failed to remove Bifrost PID file {}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Opens the gateway log file used by detached Bifrost processes.
@@ -384,6 +549,14 @@ fn gateway_log_file(path: &Path) -> Result<std::fs::File> {
         .with_context(|| format!("failed to open gateway log {}", path.display()))
 }
 
+/// Reads a bounded tail from the detached Bifrost log for startup diagnostics.
+fn read_log_tail(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let lines = text.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(80);
+    Some(lines[start..].join("\n"))
+}
+
 /// Finds Bifrost process IDs listening on a port and filters out unrelated
 /// processes that may also be reported by `lsof`.
 fn bifrost_process_ids_on_port(port: &str) -> Result<Vec<u32>> {
@@ -392,6 +565,45 @@ fn bifrost_process_ids_on_port(port: &str) -> Result<Vec<u32>> {
 
     #[cfg(not(windows))]
     bifrost_process_ids_on_port_unix(port)
+}
+
+/// Returns a human-readable process listing for a contested gateway port.
+fn port_owner_diagnostics(port: &str) -> Result<String> {
+    let mut owners = Vec::new();
+    for process_id in all_process_ids_on_port(port)? {
+        let command = process_command(process_id).unwrap_or_default();
+        owners.push(format!("pid={process_id} command={command}"));
+    }
+    Ok(owners.join("\n"))
+}
+
+fn all_process_ids_on_port(port: &str) -> Result<Vec<u32>> {
+    #[cfg(windows)]
+    return all_process_ids_on_port_windows(port);
+
+    #[cfg(not(windows))]
+    all_process_ids_on_port_unix(port)
+}
+
+#[cfg(not(windows))]
+fn all_process_ids_on_port_unix(port: &str) -> Result<Vec<u32>> {
+    let output = Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
+        .output()
+        .context("failed to inspect local gateway port")?;
+    Ok(parse_process_ids(&String::from_utf8_lossy(&output.stdout)))
+}
+
+#[cfg(windows)]
+fn all_process_ids_on_port_windows(port: &str) -> Result<Vec<u32>> {
+    let script = format!(
+        "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .context("failed to inspect local gateway port")?;
+    Ok(parse_process_ids(&String::from_utf8_lossy(&output.stdout)))
 }
 
 #[cfg(not(windows))]
@@ -496,8 +708,11 @@ fn process_command(process_id: u32) -> Result<String> {
 
 /// Identifies whether a process command line belongs to Bifrost.
 fn is_bifrost_command(command: &str) -> bool {
-    let Some(executable) = command.split_whitespace().next() else {
-        return false;
+    let command = command.trim();
+    let executable = if let Some(quoted) = command.strip_prefix('"') {
+        quoted.split('"').next().unwrap_or_default()
+    } else {
+        command.split_whitespace().next().unwrap_or_default()
     };
 
     Path::new(executable)
@@ -591,6 +806,13 @@ mod tests {
         let url = GatewayUrl::new("http://localhost:8080/");
 
         assert_eq!(url.as_str(), "http://localhost:8080");
+        assert_eq!(url.port(), "8080");
+    }
+
+    #[test]
+    fn gateway_url_defaults_port_when_omitted() {
+        assert_eq!(GatewayUrl::new("http://localhost").port(), "8080");
+        assert_eq!(GatewayUrl::new("http://localhost:8081").port(), "8081");
     }
 
     #[test]
@@ -703,6 +925,7 @@ mod tests {
                 .join(".windie")
                 .join("bifrost")
                 .join("windie-gateway.log"),
+            pid_file: root.join(".windie").join("bifrost").join("bifrost.pid"),
         }
     }
 }

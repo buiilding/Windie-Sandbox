@@ -134,6 +134,29 @@ impl ProviderPlatform {
     pub fn desktop() -> Vec<Self> {
         vec![Self::Windows, Self::Macos, Self::Linux]
     }
+
+    /// Returns the platform represented by the current Windie build target.
+    pub fn current() -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            return Self::Windows;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            return Self::Macos;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            return Self::Linux;
+        }
+        #[allow(unreachable_code)]
+        Self::Linux
+    }
+
+    /// Returns whether this provider manifest supports the current target.
+    pub fn supports_current(platforms: &[Self]) -> bool {
+        platforms.is_empty() || platforms.contains(&Self::current())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

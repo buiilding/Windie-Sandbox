@@ -162,7 +162,9 @@ impl ToolProviderRegistry {
             return Ok(tools);
         }
 
-        Ok(Vec::new())
+        Err(error::not_found(format!(
+            "provider does not exist: {provider_id}"
+        )))
     }
 
     /// Finds one available provider tool by provider ID and provider-native

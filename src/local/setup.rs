@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
+
+use super::runtime;
 use uuid::Uuid;
 
 const ENV_FILE_NAME: &str = ".env";
@@ -228,35 +230,31 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
         }),
         "cua-driver" => install_cua_driver(),
         "desktop-commander" => {
-            require_command("npx")?;
+            runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message:
-                    "Desktop Commander will run through public npx package @wonderwhy-er/desktop-commander@latest"
-                        .to_string(),
+                message: "Node.js runtime is ready for Desktop Commander".to_string(),
             })
         }
         "blender-mcp" => {
-            require_command("uvx")?;
+            runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message: "Blender MCP will run through public uvx package blender-mcp".to_string(),
+                message: "uv runtime is ready for Blender MCP".to_string(),
             })
         }
         "brightdata" => {
-            require_command("npx")?;
+            runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message: "Bright Data MCP will run through public npx package @brightdata/mcp"
-                    .to_string(),
+                message: "Node.js runtime is ready for Bright Data MCP".to_string(),
             })
         }
         "basic-memory" => {
-            require_command("uvx")?;
+            runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message: "Basic Memory will run through public uvx package basic-memory"
-                    .to_string(),
+                message: "uv runtime is ready for Basic Memory".to_string(),
             })
         }
         _ => Err(anyhow!("unknown install target: {target}")),
@@ -279,6 +277,19 @@ fn windie_layout() -> Result<WindieLayout> {
 
 /// Installs CUA Driver using its public upstream installer when needed.
 fn install_cua_driver() -> Result<InstallReport> {
+    #[cfg(target_os = "windows")]
+    {
+        if runtime::resolve_command("cua-driver").is_err() {
+            install_cua_driver_windows()?;
+        }
+        runtime::resolve_command("cua-driver")?;
+        return Ok(InstallReport {
+            target: "cua-driver".to_string(),
+            message: "installed or verified cua-driver with its official Windows installer"
+                .to_string(),
+        });
+    }
+
     if command_exists("cua-driver") {
         return Ok(InstallReport {
             target: "cua-driver".to_string(),
@@ -298,10 +309,41 @@ fn install_cua_driver() -> Result<InstallReport> {
         return Err(anyhow!("cua-driver installer failed"));
     }
 
+    runtime::resolve_command("cua-driver")
+        .context("cua-driver installer completed but cua-driver is not resolvable")?;
+
     Ok(InstallReport {
         target: "cua-driver".to_string(),
         message: "installed cua-driver with the public trycua installer".to_string(),
     })
+}
+
+#[cfg(target_os = "windows")]
+fn install_cua_driver_windows() -> Result<()> {
+    const INSTALL_URL: &str =
+        "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1";
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; $path = Join-Path $env:TEMP 'windie-cua-install.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{INSTALL_URL}' -OutFile $path; & $path; $code = $LASTEXITCODE; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit $code"
+    );
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status()
+        .context("failed to start the CUA Driver Windows installer")?;
+    if !status.success() {
+        return Err(anyhow!(
+            "CUA Driver Windows installer failed with status {status}"
+        ));
+    }
+    runtime::resolve_command("cua-driver")
+        .context("CUA Driver installer completed but cua-driver is not resolvable")?;
+    Ok(())
 }
 
 /// Requires one executable to be available on PATH.
@@ -321,7 +363,19 @@ fn command_exists(program: &str) -> bool {
         return false;
     };
 
-    env::split_paths(&paths).any(|path| path.join(program).is_file())
+    env::split_paths(&paths).any(|path| {
+        if path.join(program).is_file() {
+            return true;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return [".exe", ".cmd", ".bat"]
+                .iter()
+                .any(|suffix| path.join(format!("{program}{suffix}")).is_file());
+        }
+        #[cfg(not(target_os = "windows"))]
+        false
+    })
 }
 
 /// Validates a `.env` key that Windie is allowed to write.
