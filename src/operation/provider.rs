@@ -336,12 +336,6 @@ fn readiness_for_provider_error(
     {
         return ProviderReadiness::MissingSecret;
     }
-    if provider_id.as_str() == "blender-mcp"
-        || message.contains("blender") && message.contains("bridge")
-        || message.contains("external application")
-    {
-        return ProviderReadiness::ExternalAppRequired;
-    }
     if message.contains("permission")
         || message.contains("access denied")
         || message.contains("uac")
@@ -350,14 +344,22 @@ fn readiness_for_provider_error(
         return ProviderReadiness::PermissionRequired;
     }
     if message.contains("runtime")
+        || message.contains("checksum")
         || message.contains("command not found")
         || message.contains("no such file")
         || message.contains("npx")
         || message.contains("uvx")
+        || message.contains("uv")
         || message.contains("node.js")
         || message.contains("node runtime")
     {
         return ProviderReadiness::MissingRuntime;
+    }
+    if provider_id.as_str() == "blender-mcp"
+        || message.contains("blender") && message.contains("bridge")
+        || message.contains("external application")
+    {
+        return ProviderReadiness::ExternalAppRequired;
     }
 
     ProviderReadiness::Broken
@@ -375,6 +377,48 @@ fn next_action_for_readiness(readiness: ProviderReadiness) -> &'static str {
         ProviderReadiness::Installing => "wait for provider setup to finish",
         ProviderReadiness::Ready => "none",
         ProviderReadiness::Broken => "inspect the error and repair the provider",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_provider::ProviderPlatform;
+
+    fn blender_manifest() -> ProviderManifest {
+        ProviderManifest::mcp_stdio(
+            "blender-mcp",
+            "Blender MCP",
+            "test provider",
+            "uvx",
+            &[],
+            ProviderPlatform::desktop(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn runtime_failures_take_precedence_over_blender_app_hint() {
+        let manifest = blender_manifest();
+        let error = anyhow::anyhow!("failed to verify downloaded uv archive");
+
+        assert_eq!(
+            readiness_for_provider_error(&ToolProviderId::new("blender-mcp"), &manifest, &error,),
+            ProviderReadiness::MissingRuntime
+        );
+    }
+
+    #[test]
+    fn blender_bridge_failures_still_require_the_external_app() {
+        let manifest = blender_manifest();
+        let error = anyhow::anyhow!("Blender bridge is not running");
+
+        assert_eq!(
+            readiness_for_provider_error(&ToolProviderId::new("blender-mcp"), &manifest, &error,),
+            ProviderReadiness::ExternalAppRequired
+        );
     }
 }
 

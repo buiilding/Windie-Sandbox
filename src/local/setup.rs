@@ -323,7 +323,7 @@ fn install_cua_driver_windows() -> Result<()> {
     const INSTALL_URL: &str =
         "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1";
     let script = format!(
-        "$ErrorActionPreference = 'Stop'; $path = Join-Path $env:TEMP 'windie-cua-install.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{INSTALL_URL}' -OutFile $path; & $path -AutoStart; $code = $LASTEXITCODE; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit $code"
+        "$ErrorActionPreference = 'Stop'; $path = Join-Path $env:TEMP 'windie-cua-install.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{INSTALL_URL}' -OutFile $path; & $path; $code = $LASTEXITCODE; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit $code"
     );
     let status = Command::new("powershell.exe")
         .args([
@@ -341,6 +341,8 @@ fn install_cua_driver_windows() -> Result<()> {
             "CUA Driver Windows installer failed with status {status}"
         ));
     }
+    runtime::resolve_command("cua-driver")
+        .context("CUA Driver installer completed but cua-driver is not resolvable")?;
     Ok(())
 }
 

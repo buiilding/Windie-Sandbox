@@ -149,15 +149,20 @@ fn project_path<'a>(project_list: &'a Value, project_name: &str) -> Option<&'a s
     if let Some(projects) = projects.as_array() {
         return projects.iter().find_map(|project| {
             (project.get("name")?.as_str()? == project_name)
-                .then(|| project.get("path")?.as_str())
+                .then(|| {
+                    project
+                        .get("path")
+                        .or_else(|| project.get("local_path"))?
+                        .as_str()
+                })
                 .flatten()
         });
     }
 
-    projects
-        .as_object()?
-        .get(project_name)?
-        .get("path")?
+    let project = projects.as_object()?.get(project_name)?;
+    project
+        .get("path")
+        .or_else(|| project.get("local_path"))?
         .as_str()
 }
 
@@ -179,4 +184,25 @@ fn command_error(stderr: &[u8]) -> String {
 /// Returns Windie's per-user data directory.
 fn windie_data_dir() -> PathBuf {
     local::windie_home_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_path;
+    use serde_json::json;
+
+    #[test]
+    fn reads_basic_memory_local_path_project_field() {
+        let projects = json!({
+            "projects": [{
+                "name": "windie-memory",
+                "local_path": "C:/Users/test/.windie/memory"
+            }]
+        });
+
+        assert_eq!(
+            project_path(&projects, "windie-memory"),
+            Some("C:/Users/test/.windie/memory")
+        );
+    }
 }

@@ -270,7 +270,7 @@ fn verify_archive_checksum(url: &str, bytes: &[u8], checksum_text: &str) -> Resu
     let expected = checksum_text.lines().find_map(|line| {
         let mut fields = line.split_whitespace();
         let checksum = fields.next()?;
-        let name = fields.next();
+        let name = fields.next().map(|name| name.trim_start_matches('*'));
         if name.is_none() || name == Some(archive_name) {
             Some(checksum)
         } else {
@@ -467,7 +467,17 @@ fn path_command(program: &str) -> Option<PathBuf> {
     for directory in env::split_paths(&paths) {
         let direct = directory.join(program);
         if direct.is_file() {
+            #[cfg(not(target_os = "windows"))]
             return Some(direct);
+
+            #[cfg(target_os = "windows")]
+            if direct.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("exe")
+                    || extension.eq_ignore_ascii_case("cmd")
+                    || extension.eq_ignore_ascii_case("bat")
+            }) {
+                return Some(direct);
+            }
         }
         #[cfg(target_os = "windows")]
         for suffix in [".exe", ".cmd", ".bat"] {
@@ -516,6 +526,22 @@ mod tests {
 
         verify_archive_checksum(
             "https://nodejs.org/dist/v22.14.0/node-v22.14.0-darwin-arm64.tar.gz",
+            bytes,
+            &checksum,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn verifies_binary_checksum_manifest_entry() {
+        let bytes = b"windie";
+        let checksum = format!(
+            "{} *uv-x86_64-pc-windows-msvc.zip\n",
+            archive_fingerprint(bytes)
+        );
+
+        verify_archive_checksum(
+            "https://example.test/uv-x86_64-pc-windows-msvc.zip",
             bytes,
             &checksum,
         )

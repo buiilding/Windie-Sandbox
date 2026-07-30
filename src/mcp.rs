@@ -16,6 +16,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -428,7 +431,9 @@ impl McpSession {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("failed to start MCP provider: {}", command.program))?;
+            .map_err(|error| {
+                anyhow!("failed to start MCP provider {}: {error}", command.program)
+            })?;
         let stdin = child
             .stdin
             .take()
@@ -650,14 +655,19 @@ fn windows_command(program: PathBuf, args: &[&str]) -> Command {
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
     {
-        let mut command_line = quote_windows_argument(&program.to_string_lossy());
+        let mut command_line = String::from("call ");
+        command_line.push_str(&quote_windows_argument(&program.to_string_lossy()));
         for argument in args {
             command_line.push(' ');
             command_line.push_str(&quote_windows_argument(argument));
         }
-        let mut process = Command::new("cmd.exe");
-        process.args(["/D", "/S", "/C"]);
-        process.arg(command_line);
+        let command_processor = env::var_os("COMSPEC")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+        let mut process = Command::new(command_processor);
+        process.raw_arg("/D /S /C ");
+        process.raw_arg(command_line);
         return process;
     }
 
@@ -824,7 +834,13 @@ mod tests {
     fn windie_data_dir_env_value_resolves_under_user_home() {
         let value = resolve_env_value(McpEnvValue::WindieDataDir("mcp/desktop-commander")).unwrap();
 
-        assert!(value.ends_with(".windie/mcp/desktop-commander"));
+        assert!(
+            std::path::Path::new(&value).ends_with(
+                std::path::Path::new(".windie")
+                    .join("mcp")
+                    .join("desktop-commander")
+            )
+        );
     }
 
     #[test]
@@ -836,8 +852,12 @@ mod tests {
 
     #[test]
     fn user_env_value_resolves_from_process_environment() {
-        let expected = env::var("HOME").unwrap();
-        let value = resolve_env_value(McpEnvValue::UserEnv("HOME")).unwrap();
+        let (key, expected) = if cfg!(windows) {
+            ("USERPROFILE", env::var("USERPROFILE").unwrap())
+        } else {
+            ("HOME", env::var("HOME").unwrap())
+        };
+        let value = resolve_env_value(McpEnvValue::UserEnv(key)).unwrap();
 
         assert_eq!(value, expected);
     }

@@ -708,12 +708,11 @@ fn process_command(process_id: u32) -> Result<String> {
 
 /// Identifies whether a process command line belongs to Bifrost.
 fn is_bifrost_command(command: &str) -> bool {
-    #[cfg(windows)]
-    let executable = command.trim().trim_matches('"');
-
-    #[cfg(not(windows))]
-    let Some(executable) = command.split_whitespace().next() else {
-        return false;
+    let command = command.trim();
+    let executable = if let Some(quoted) = command.strip_prefix('"') {
+        quoted.split('"').next().unwrap_or_default()
+    } else {
+        command.split_whitespace().next().unwrap_or_default()
     };
 
     Path::new(executable)
