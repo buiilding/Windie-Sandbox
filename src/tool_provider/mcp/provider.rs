@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use super::{basic_memory, desktop_commander};
+use super::{basic_memory, blender, desktop_commander};
 use crate::mcp::{self, McpCommand, McpTool};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
@@ -35,6 +35,7 @@ pub(in crate::tool_provider) struct McpProviderDefinition {
 pub(in crate::tool_provider) enum McpProviderSetup {
     BasicMemoryProject,
     DesktopCommanderConfig,
+    BlenderBridge,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +119,7 @@ impl McpToolProvider {
         match self.setup {
             Some(McpProviderSetup::BasicMemoryProject) => basic_memory::prepare(),
             Some(McpProviderSetup::DesktopCommanderConfig) => desktop_commander::prepare(),
+            Some(McpProviderSetup::BlenderBridge) => blender::prepare(),
             None => Ok(()),
         }
     }

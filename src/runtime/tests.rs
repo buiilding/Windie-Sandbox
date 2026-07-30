@@ -1845,19 +1845,21 @@ fn test_mcp_command() -> McpCommand {
 }
 
 fn write_test_mcp_server() -> String {
-    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
 
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let counter = TEMP_MCP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "windie-runtime-test-mcp-{}-{nanos}-{counter}.sh",
-        std::process::id()
-    ));
-    let script = format!(
-        r#"#!/bin/sh
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let counter = TEMP_MCP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "windie-runtime-test-mcp-{}-{nanos}-{counter}.sh",
+            std::process::id()
+        ));
+        let script = format!(
+            r#"#!/bin/sh
 while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
@@ -1872,15 +1874,58 @@ while IFS= read -r line; do
   esac
 done
 "#,
-        tool_name = TEST_PROVIDER_TOOL_NAME,
-        tool_result = TEST_TOOL_RESULT
-    );
-    fs::write(&path, script).unwrap();
-    let mut permissions = fs::metadata(&path).unwrap().permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&path, permissions).unwrap();
+            tool_name = TEST_PROVIDER_TOOL_NAME,
+            tool_result = TEST_TOOL_RESULT
+        );
+        fs::write(&path, script).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
 
-    path.to_string_lossy().into_owned()
+        path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(windows)]
+    {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let counter = TEMP_MCP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir();
+        let script_path = root.join(format!(
+            "windie-runtime-test-mcp-{}-{nanos}-{counter}.ps1",
+            std::process::id()
+        ));
+        let command_path = root.join(format!(
+            "windie-runtime-test-mcp-{}-{nanos}-{counter}.cmd",
+            std::process::id()
+        ));
+        let script = format!(
+            r#"$line = [Console]::ReadLine()
+while ($null -ne $line) {{
+  if ($line.Contains('"method":"initialize"')) {{
+    [Console]::WriteLine('{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"windie-test-mcp","version":"0"}}}}}}')
+  }} elseif ($line.Contains('"method":"tools/list"')) {{
+    [Console]::WriteLine('{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"{tool_name}","description":"Test tool","inputSchema":{{"type":"object"}}}}]}}}}')
+  }} elseif ($line.Contains('"method":"tools/call"')) {{
+    [Console]::WriteLine('{{"jsonrpc":"2.0","id":2,"result":{{"content":[{{"type":"text","text":"{tool_result}"}}],"isError":false}}}}')
+  }}
+  $line = [Console]::ReadLine()
+}}
+"#,
+            tool_name = TEST_PROVIDER_TOOL_NAME,
+            tool_result = TEST_TOOL_RESULT
+        );
+        fs::write(&script_path, script).unwrap();
+        let command = format!(
+            "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"\r\n",
+            script_path.display()
+        );
+        fs::write(&command_path, command).unwrap();
+
+        command_path.to_string_lossy().into_owned()
+    }
 }
 
 fn attach_tool_schema(store: &mut Store, conversation_id: &ConversationId, name: &str) {

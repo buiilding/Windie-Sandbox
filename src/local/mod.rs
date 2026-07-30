@@ -4,6 +4,7 @@
 //! environment, such as `~/.windie`, provider-key env editing, API tokens, and
 //! approved dependency checks.
 
+mod runtime;
 mod setup;
 
 pub use setup::{
@@ -11,3 +12,5 @@ pub use setup::{
     inspector_log_file_path, install_target, is_llm_env_key, list_env_keys, set_env_values,
     unset_env_values, windie_home_dir,
 };
+
+pub(crate) use runtime::{path_with_command_parent, resolve_command};

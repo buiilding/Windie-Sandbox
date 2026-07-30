@@ -1,4 +1,25 @@
 import { upsertConversationMessage } from "./windieMappers";
+import { providerInstallationsFromApi } from "./windieMappers";
+
+describe("providerInstallationsFromApi", () => {
+  test("preserves actionable provider readiness", () => {
+    const [provider] = providerInstallationsFromApi([
+      {
+        manifest: { provider_id: "brightdata", display_name: "Bright Data" },
+        installation: {
+          state: "broken",
+          readiness: "missing_secret",
+          next_action: "configure the provider secret and repair",
+          error: "missing required provider secret BRIGHTDATA_API_TOKEN",
+        },
+      },
+    ]);
+
+    expect(provider.installation.readiness).toBe("missing_secret");
+    expect(provider.installation.nextAction).toContain("configure");
+    expect(provider.installation.error).toContain("BRIGHTDATA");
+  });
+});
 
 describe("upsertConversationMessage", () => {
   test("adds an authoritative child and advances the selected path", () => {

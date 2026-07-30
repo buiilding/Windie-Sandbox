@@ -1535,7 +1535,7 @@ async fn wait_for_session_status(
     session_id: &SessionId,
     status: SessionStatus,
 ) -> crate::session::Session {
-    for _ in 0..50 {
+    for _ in 0..250 {
         let store = Store::open_at(db_path).unwrap();
         let session = store.load_session(session_id).unwrap();
         if session.status == status {

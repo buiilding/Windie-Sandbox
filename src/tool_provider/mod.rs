@@ -18,7 +18,7 @@ mod tests;
 pub(crate) use builtin::{
     ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
 };
-pub use lifecycle::ProviderInstallState;
+pub use lifecycle::{ProviderInstallState, ProviderReadiness};
 pub use manifest::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
     ProviderPlatform, ProviderScope, ProviderSecret,

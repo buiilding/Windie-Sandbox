@@ -16,6 +16,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -422,14 +425,15 @@ struct McpSession {
 impl McpSession {
     /// Starts the provider process and completes the MCP initialize handshake.
     fn start(command: McpCommand) -> Result<Self> {
-        let mut process = Command::new(command.program);
-        configure_process(&mut process, command)?;
+        let mut process = configure_process(command)?;
         let mut child = process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("failed to start MCP provider: {}", command.program))?;
+            .map_err(|error| {
+                anyhow!("failed to start MCP provider {}: {error}", command.program)
+            })?;
         let stdin = child
             .stdin
             .take()
@@ -599,8 +603,7 @@ fn request_timeout_for_method(method: &str) -> Duration {
 
 /// Runs one shutdown command with a small timeout.
 fn run_shutdown_command(command: McpCommand) -> Result<()> {
-    let mut process = Command::new(command.program);
-    configure_process(&mut process, command)?;
+    let mut process = configure_process(command)?;
     let mut child = process
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -630,13 +633,53 @@ fn run_shutdown_command(command: McpCommand) -> Result<()> {
 }
 
 /// Applies the static command definition to a spawned provider process.
-fn configure_process(process: &mut Command, command: McpCommand) -> Result<()> {
-    process.args(command.args);
+fn configure_process(command: McpCommand) -> Result<Command> {
+    let program = local::resolve_command(command.program)?;
+    let command_path = local::path_with_command_parent(&program);
+    let mut process = windows_command(program, command.args);
+    if let Some(path) = command_path {
+        process.env("PATH", path);
+    }
     for variable in command.env {
         process.env(variable.key, resolve_env_value(variable.value)?);
     }
 
-    Ok(())
+    Ok(process)
+}
+
+/// Builds a process command that can launch both native executables and
+/// Windows command shims such as npm's `npx.cmd`.
+fn windows_command(program: PathBuf, args: &[&str]) -> Command {
+    #[cfg(target_os = "windows")]
+    if program
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+    {
+        let mut command_line = String::from("call ");
+        command_line.push_str(&quote_windows_argument(&program.to_string_lossy()));
+        for argument in args {
+            command_line.push(' ');
+            command_line.push_str(&quote_windows_argument(argument));
+        }
+        let command_processor = env::var_os("COMSPEC")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+        let mut process = Command::new(command_processor);
+        process.raw_arg("/D /S /C ");
+        process.raw_arg(command_line);
+        return process;
+    }
+
+    let mut process = Command::new(program);
+    process.args(args);
+    process
+}
+
+/// Quotes one static argument for the `cmd.exe /C` command line.
+#[cfg(target_os = "windows")]
+fn quote_windows_argument(argument: &str) -> String {
+    format!("\"{}\"", argument.replace('"', "\\\""))
 }
 
 /// Resolves an MCP environment value at process-start time.
@@ -791,7 +834,13 @@ mod tests {
     fn windie_data_dir_env_value_resolves_under_user_home() {
         let value = resolve_env_value(McpEnvValue::WindieDataDir("mcp/desktop-commander")).unwrap();
 
-        assert!(value.ends_with(".windie/mcp/desktop-commander"));
+        assert!(
+            std::path::Path::new(&value).ends_with(
+                std::path::Path::new(".windie")
+                    .join("mcp")
+                    .join("desktop-commander")
+            )
+        );
     }
 
     #[test]
@@ -803,8 +852,12 @@ mod tests {
 
     #[test]
     fn user_env_value_resolves_from_process_environment() {
-        let expected = env::var("HOME").unwrap();
-        let value = resolve_env_value(McpEnvValue::UserEnv("HOME")).unwrap();
+        let (key, expected) = if cfg!(windows) {
+            ("USERPROFILE", env::var("USERPROFILE").unwrap())
+        } else {
+            ("HOME", env::var("HOME").unwrap())
+        };
+        let value = resolve_env_value(McpEnvValue::UserEnv(key)).unwrap();
 
         assert_eq!(value, expected);
     }
