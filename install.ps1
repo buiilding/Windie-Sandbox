@@ -79,61 +79,95 @@ $gatewayHealthUrl = "http://$gatewayAddress/health"
 $apiHealthUrl = "http://$apiAddress/api/health"
 $inspectorHealthUrl = "http://$inspectorAddress/"
 
-$env:WINDIE_BIFROST_BIN = Join-Path $installDir "bifrost.exe"
-try {
-    Invoke-WebRequest -Uri $gatewayHealthUrl -UseBasicParsing -TimeoutSec 2 | Out-Null
-}
-catch {
-    & $windie "gateway" "start"
-}
+function Test-WindieHealth {
+    param([string]$Uri)
 
-try {
-    Invoke-WebRequest -Uri $apiHealthUrl -UseBasicParsing -TimeoutSec 2 | Out-Null
-}
-catch {
-    & $windie "api" "start"
-}
-
-$apiReady = $false
-for ($i = 0; $i -lt 75; $i++) {
     try {
-        Invoke-WebRequest -Uri $apiHealthUrl -UseBasicParsing -TimeoutSec 2 | Out-Null
-        $apiReady = $true
-        break
+        Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 2 | Out-Null
+        return $true
     }
     catch {
-        Start-Sleep -Seconds 1
+        return $false
     }
 }
-if (-not $apiReady) {
+
+function Write-WindieProgressBar {
+    param([int]$Percent)
+
+    $width = 20
+    $filled = [Math]::Floor($width * $Percent / 100)
+    $empty = $width - $filled
+    $bar = ("#" * $filled) + ("-" * $empty)
+    Write-Host ("`r[{0}] {1,3}%" -f $bar, $Percent) -NoNewline
+}
+
+function Wait-WindieHealth {
+    param(
+        [string]$Uri,
+        [int]$Attempts,
+        [string]$Component
+    )
+
+    Write-WindieProgressBar 80
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        if (Test-WindieHealth $Uri) {
+            Write-WindieProgressBar 100
+            Write-Host ""
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+    Write-Host ""
+    throw "Windie installed, but $Component did not start."
+}
+
+$env:WINDIE_BIFROST_BIN = Join-Path $installDir "bifrost.exe"
+
+Write-Host "Installing LLM gateway"
+if (-not (Test-WindieHealth $gatewayHealthUrl)) {
+    Write-WindieProgressBar 80
+    & $windie "gateway" "start" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        throw "failed to start the LLM gateway"
+    }
+}
+Wait-WindieHealth $gatewayHealthUrl 30 "the LLM gateway"
+Write-Host "Started the gateway at http://$gatewayAddress"
+
+Write-Host "Installing Windie runtime"
+if (-not (Test-WindieHealth $apiHealthUrl)) {
+    Write-WindieProgressBar 80
+    & $windie "api" "start" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        throw "failed to start the Windie runtime. Output: $windieHome\windie-api.log"
+    }
+}
+try {
+    Wait-WindieHealth $apiHealthUrl 75 "the Windie runtime"
+}
+catch {
     throw "Windie installed, but the local API did not start. Output: $windieHome\windie-api.log"
 }
+Write-Host "Started the runtime at http://$apiAddress"
 
-try {
-    Invoke-WebRequest -Uri $inspectorHealthUrl -UseBasicParsing -TimeoutSec 2 | Out-Null
-}
-catch {
-    & $windie "inspector" "start"
-}
-
-$inspectorReady = $false
-for ($i = 0; $i -lt 30; $i++) {
-    try {
-        Invoke-WebRequest -Uri $inspectorHealthUrl -UseBasicParsing -TimeoutSec 2 | Out-Null
-        $inspectorReady = $true
-        break
-    }
-    catch {
-        Start-Sleep -Seconds 1
+Write-Host "Installing Windie Inspector UI"
+if (-not (Test-WindieHealth $inspectorHealthUrl)) {
+    Write-WindieProgressBar 80
+    & $windie "inspector" "start" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        throw "failed to start the Windie Inspector UI. Output: $windieHome\windie-inspector.log"
     }
 }
-if (-not $inspectorReady) {
-    throw "Windie installed, but the Inspector did not start. Output: $windieHome\windie-inspector.log"
-}
+Wait-WindieHealth $inspectorHealthUrl 30 "the Windie Inspector UI"
 
 $uiUrl = "http://$inspectorAddress"
 Start-Process $uiUrl
 Start-Process -FilePath $windie -ArgumentList @("tray")
+Write-Host "Started the UI at $uiUrl"
+Write-Host "Click on the tray on your desktop to manage these processes."
 
 Write-Output "windie installed at $(Join-Path $installDir 'windie.exe')"
 Write-Output "Windie tray available as: $windie tray"
