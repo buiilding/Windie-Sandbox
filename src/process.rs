@@ -118,6 +118,7 @@ pub fn stop_inspector() -> Result<ProcessReport> {
 
 /// Registers the foreground tray process so another Windie command can stop
 /// it safely during uninstall.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn register_tray() -> Result<()> {
     let report = existing_report(ManagedComponent::Tray)?;
     if report.state == ProcessState::AlreadyRunning {
@@ -132,6 +133,7 @@ pub fn register_tray() -> Result<()> {
 }
 
 /// Removes the current tray PID file after the tray event loop exits.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn unregister_tray() -> Result<()> {
     remove_pid_file(ManagedComponent::Tray)
 }
