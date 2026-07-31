@@ -20,6 +20,17 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 }
 
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "aarch64" } else { "x86_64" }
+$runtimeNames = @("node", "npx", "uv", "uvx")
+Write-Output "Checking runtimes"
+foreach ($runtime in $runtimeNames) {
+    if (Get-Command $runtime -ErrorAction SilentlyContinue) {
+        Write-Output "$runtime`: detected"
+    } else {
+        Write-Output "$runtime`: missing"
+    }
+}
+Write-Output "missing runtimes will be installed and managed by Windie if the selected providers require them"
+
 $asset = "windie-windows-$arch.zip"
 $assetUrl = if ($env:WINDIE_ASSET_URL) {
     $env:WINDIE_ASSET_URL

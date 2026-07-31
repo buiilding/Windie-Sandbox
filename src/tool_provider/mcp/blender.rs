@@ -1,11 +1,6 @@
 //! Blender MCP provider definition.
 
-use anyhow::{Context, Result, anyhow};
-use std::net::{SocketAddr, TcpStream};
-use std::time::Duration;
-
 use super::McpProviderDefinition;
-use super::provider::McpProviderSetup;
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
@@ -67,18 +62,6 @@ pub(super) fn definition() -> McpProviderDefinition {
         display_name: "Blender MCP",
         command,
         shutdown_command: None,
-        setup: Some(McpProviderSetup::BlenderBridge),
+        setup: None,
     }
-}
-
-/// Confirms that Blender's local MCP bridge is accepting connections.
-pub(super) fn prepare() -> Result<()> {
-    let address = SocketAddr::from(([127, 0, 0, 1], 9876));
-    TcpStream::connect_timeout(&address, Duration::from_millis(500))
-        .map(|_| ())
-        .with_context(|| {
-            anyhow!(
-                "Blender is not running with its MCP bridge on 127.0.0.1:9876; start Blender and enable the Blender MCP addon"
-            )
-        })
 }

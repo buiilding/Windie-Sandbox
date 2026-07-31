@@ -22,6 +22,16 @@ case "$os" in
   *) echo "unsupported operating system: $os" >&2; exit 1 ;;
 esac
 
+echo "Checking runtimes"
+for runtime in node npx uv uvx; do
+  if command -v "$runtime" >/dev/null 2>&1; then
+    echo "$runtime: detected"
+  else
+    echo "$runtime: missing"
+  fi
+done
+echo "missing runtimes will be installed and managed by Windie if the selected providers require them"
+
 mkdir -p "$install_dir" "$windie_home/bifrost" "$windie_home/benchmarks"
 if [ ! -f "$windie_home/.env" ]; then
   : > "$windie_home/.env"
