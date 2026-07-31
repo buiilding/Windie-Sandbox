@@ -93,6 +93,43 @@ fn reads_tray_command() {
 }
 
 #[test]
+fn reads_uninstall_commands() {
+    let plain = command_from_args(["windie".to_string(), "uninstall".to_string()]);
+    let yes = command_from_args([
+        "windie".to_string(),
+        "uninstall".to_string(),
+        "--yes".to_string(),
+    ]);
+    let dry_run = command_from_args([
+        "windie".to_string(),
+        "uninstall".to_string(),
+        "--dry-run".to_string(),
+    ]);
+
+    assert!(matches!(
+        plain,
+        Command::Uninstall {
+            yes: false,
+            dry_run: false
+        }
+    ));
+    assert!(matches!(
+        yes,
+        Command::Uninstall {
+            yes: true,
+            dry_run: false
+        }
+    ));
+    assert!(matches!(
+        dry_run,
+        Command::Uninstall {
+            yes: false,
+            dry_run: true
+        }
+    ));
+}
+
+#[test]
 fn reads_onboard_command() {
     let command = command_from_args(["windie".to_string(), "onboard".to_string()]);
 

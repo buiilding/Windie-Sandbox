@@ -26,6 +26,7 @@ pub enum ManagedComponent {
     Gateway,
     Api,
     Inspector,
+    Tray,
 }
 
 impl ManagedComponent {
@@ -35,6 +36,7 @@ impl ManagedComponent {
             Self::Gateway => "gateway",
             Self::Api => "api",
             Self::Inspector => "inspector",
+            Self::Tray => "tray",
         }
     }
 }
@@ -73,6 +75,11 @@ pub fn start_api() -> Result<ProcessReport> {
 pub fn stop_api() -> Result<ProcessReport> {
     let report = existing_report(ManagedComponent::Api)?;
     let Some(pid) = report.pid else {
+        if endpoint_is_running(&format!("{API_ADDRESS}/api/health")) {
+            return Err(anyhow!(
+                "Windie API is running without an owned PID file; refusing to remove it"
+            ));
+        }
         return Ok(report);
     };
 
@@ -98,10 +105,74 @@ pub fn start_inspector() -> Result<ProcessReport> {
 pub fn stop_inspector() -> Result<ProcessReport> {
     let report = existing_report(ManagedComponent::Inspector)?;
     let Some(pid) = report.pid else {
+        if endpoint_is_running("http://127.0.0.1:3000/") {
+            return Err(anyhow!(
+                "Windie Inspector is running without an owned PID file; refusing to remove it"
+            ));
+        }
         return Ok(report);
     };
 
     stop_recorded_process(ManagedComponent::Inspector, pid, &report.log_file)
+}
+
+/// Registers the foreground tray process so another Windie command can stop
+/// it safely during uninstall.
+pub fn register_tray() -> Result<()> {
+    let report = existing_report(ManagedComponent::Tray)?;
+    if report.state == ProcessState::AlreadyRunning {
+        return Err(anyhow!(
+            "Windie tray is already running with PID {}",
+            report.pid.unwrap_or_default()
+        ));
+    }
+
+    let pid_file = local::component_pid_file_path(ManagedComponent::Tray)?;
+    write_pid_file(&pid_file, std::process::id())
+}
+
+/// Removes the current tray PID file after the tray event loop exits.
+pub fn unregister_tray() -> Result<()> {
+    remove_pid_file(ManagedComponent::Tray)
+}
+
+/// Stops the Windie tray process when its PID file still identifies a tray.
+pub fn stop_tray() -> Result<ProcessReport> {
+    let report = existing_report(ManagedComponent::Tray)?;
+    let Some(pid) = report.pid else {
+        return Ok(report);
+    };
+
+    stop_recorded_process(ManagedComponent::Tray, pid, &report.log_file)
+}
+
+/// Stops and verifies every Windie process managed by this process boundary.
+///
+/// Bifrost remains behind `gateway.rs`, which owns its port and executable
+/// identity checks. The uninstall operation invokes both boundaries before
+/// removing any filesystem state.
+pub fn stop_windie_processes() -> Result<Vec<ProcessReport>> {
+    let mut reports = Vec::new();
+    let mut failures = Vec::new();
+    for stop in [
+        stop_tray as fn() -> Result<ProcessReport>,
+        stop_api,
+        stop_inspector,
+    ] {
+        match stop() {
+            Ok(report) => reports.push(report),
+            Err(error) => failures.push(format!("{error:#}")),
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(reports)
+    } else {
+        Err(anyhow!(
+            "one or more Windie processes failed to stop: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 /// Reads the complete persisted stdout/stderr log for one component.
@@ -244,6 +315,16 @@ fn request_api_shutdown() -> bool {
         .is_some_and(|response| response.status().is_success())
 }
 
+/// Returns whether a local HTTP endpoint is responding successfully.
+fn endpoint_is_running(url: &str) -> bool {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()
+        .and_then(|client| client.get(url).send().ok())
+        .is_some_and(|response| response.status().is_success())
+}
+
 fn inspector_executable() -> Result<PathBuf> {
     if let Some(path) = env::var_os("WINDIE_INSPECTOR_BIN") {
         return Ok(PathBuf::from(path));
@@ -272,6 +353,7 @@ fn process_matches_component(component: ManagedComponent, pid: u32) -> bool {
         ManagedComponent::Gateway => "bifrost",
         ManagedComponent::Api => "windie",
         ManagedComponent::Inspector => "windie-inspector",
+        ManagedComponent::Tray => "windie",
     };
     let executable = command
         .trim_matches('"')
@@ -280,7 +362,21 @@ fn process_matches_component(component: ManagedComponent, pid: u32) -> bool {
         .and_then(|value| Path::new(value).file_stem())
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    executable.eq_ignore_ascii_case(expected)
+    if !executable.eq_ignore_ascii_case(expected) {
+        return false;
+    }
+
+    if component == ManagedComponent::Tray {
+        return process_command_line(pid)
+            .map(|command| {
+                command
+                    .split_whitespace()
+                    .any(|argument| argument.trim_matches('"') == "tray")
+            })
+            .unwrap_or(false);
+    }
+
+    true
 }
 
 fn process_is_alive(pid: u32) -> bool {
@@ -373,5 +469,23 @@ fn process_command(pid: u32) -> Result<String> {
             return Ok(String::new());
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+}
+
+fn process_command_line(pid: u32) -> Result<String> {
+    #[cfg(windows)]
+    {
+        let script =
+            format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine");
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .with_context(|| format!("failed to inspect process {pid}"))?;
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        process_command(pid)
     }
 }

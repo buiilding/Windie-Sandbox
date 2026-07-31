@@ -233,6 +233,24 @@ mod app {
             }
         }
 
+        /// Invokes the shared non-interactive uninstall command after the
+        /// tray event loop has released its PID registration.
+        fn run_uninstall(&self) -> Result<()> {
+            let status = Command::new(&self.windie_binary)
+                .args(["uninstall", "--yes"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .context("failed to run windie uninstall --yes")?;
+
+            if status.success() {
+                Ok(())
+            } else {
+                Err(anyhow!("windie uninstall --yes exited with {status}"))
+            }
+        }
+
         /// Stops every managed component, continuing if one stop command
         /// fails so that a failure in one component cannot leave the others
         /// running unintentionally.
@@ -321,6 +339,7 @@ mod app {
     #[allow(deprecated)]
     pub fn run() -> Result<()> {
         let controller = RuntimeController::new()?;
+        crate::process::register_tray()?;
         let (status_sender, status_receiver) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         start_status_monitor(controller.clone(), status_sender, stopping.clone());
@@ -328,11 +347,13 @@ mod app {
         let gateway = MenuItem::new("Start Gateway", true, None);
         let api = MenuItem::new("Start API", true, None);
         let inspector = MenuItem::new("Start Inspector", true, None);
+        let uninstall = MenuItem::new("Uninstall Windie", true, None);
         let quit = MenuItem::new("Quit and Stop Services", true, None);
         let menu = Menu::new();
         menu.append(&gateway)?;
         menu.append(&api)?;
         menu.append(&inspector)?;
+        menu.append(&uninstall)?;
         menu.append(&quit)?;
 
         let event_loop = EventLoop::<TrayEvent>::with_user_event()
@@ -345,6 +366,8 @@ mod app {
         let mut tray: Option<TrayIcon> = None;
         let event_loop_controller = controller.clone();
         let event_loop_stopping = stopping.clone();
+        let uninstall_requested = Arc::new(AtomicBool::new(false));
+        let event_loop_uninstall_requested = uninstall_requested.clone();
         let mut current_status = StatusSnapshot::default();
         let result = event_loop.run(move |event, event_loop| {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
@@ -391,6 +414,10 @@ mod app {
                 } else if event.id() == inspector.id() {
                     event_loop_controller
                         .toggle_async(Component::Inspector, current_status.inspector_running);
+                } else if event.id() == uninstall.id() {
+                    event_loop_uninstall_requested.store(true, Ordering::Release);
+                    event_loop_stopping.store(true, Ordering::Release);
+                    event_loop.exit();
                 } else if event.id() == quit.id() {
                     event_loop_stopping.store(true, Ordering::Release);
                     event_loop.exit();
@@ -404,14 +431,31 @@ mod app {
 
         let event_loop_result = result.context("Windie tray event loop failed");
         let shutdown_result = controller.stop_all();
-        match (event_loop_result, shutdown_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(event_error), Ok(())) => Err(event_error),
-            (Ok(()), Err(shutdown_error)) => Err(shutdown_error),
-            (Err(event_error), Err(shutdown_error)) => Err(anyhow!(
+        let unregister_result = crate::process::unregister_tray();
+        match (event_loop_result, shutdown_result, unregister_result) {
+            (Ok(()), Ok(()), Ok(())) => Ok(()),
+            (Err(event_error), Ok(()), Ok(())) => Err(event_error),
+            (Ok(()), Err(shutdown_error), Ok(())) => Err(shutdown_error),
+            (Ok(()), Ok(()), Err(unregister_error)) => Err(unregister_error),
+            (Err(event_error), Err(shutdown_error), Ok(())) => Err(anyhow!(
                 "{event_error}; tray shutdown cleanup failed: {shutdown_error:#}"
             )),
+            (Err(event_error), Ok(()), Err(unregister_error)) => Err(anyhow!(
+                "{event_error}; tray PID cleanup failed: {unregister_error:#}"
+            )),
+            (Ok(()), Err(shutdown_error), Err(unregister_error)) => Err(anyhow!(
+                "{shutdown_error:#}; tray PID cleanup failed: {unregister_error:#}"
+            )),
+            (Err(event_error), Err(shutdown_error), Err(unregister_error)) => Err(anyhow!(
+                "{event_error}; tray shutdown cleanup failed: {shutdown_error:#}; tray PID cleanup failed: {unregister_error:#}"
+            )),
+        }?;
+
+        if uninstall_requested.load(Ordering::Acquire) {
+            controller.run_uninstall()?;
         }
+
+        Ok(())
     }
 
     /// Applies the newest health snapshot to the toggle labels.
