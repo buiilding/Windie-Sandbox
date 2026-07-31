@@ -16,6 +16,7 @@ use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
 
 use super::windie_home_dir;
+use crate::tool_provider::ProviderRuntime;
 
 const NODE_VERSION: &str = "22.14.0";
 const UV_VERSION: &str = "latest";
@@ -30,12 +31,21 @@ enum ArchiveFormat {
 }
 
 /// Ensures the runtime needed by one approved provider is available.
-pub(super) fn ensure_provider_runtime(target: &str) -> Result<()> {
+pub(super) fn ensure_provider_runtime(target: &str) -> Result<bool> {
     match target {
-        "desktop-commander" | "brightdata" => ensure_node_runtime(),
-        "blender-mcp" | "basic-memory" => ensure_uv_runtime(),
-        "cua-driver" | "bifrost" => Ok(()),
+        "desktop-commander" | "brightdata" => ensure_runtime(ProviderRuntime::Node),
+        "blender-mcp" | "basic-memory" => ensure_runtime(ProviderRuntime::Uv),
+        "cua-driver" | "bifrost" => Ok(false),
         _ => Err(anyhow!("unknown runtime target: {target}")),
+    }
+}
+
+/// Ensures one declared runtime family is available.
+pub(crate) fn ensure_runtime(runtime: ProviderRuntime) -> Result<bool> {
+    match runtime {
+        ProviderRuntime::Native => Ok(false),
+        ProviderRuntime::Node => ensure_node_runtime(),
+        ProviderRuntime::Uv => ensure_uv_runtime(),
     }
 }
 
@@ -65,14 +75,14 @@ pub(crate) fn path_with_command_parent(executable: &Path) -> Option<OsString> {
     env::join_paths(paths).ok()
 }
 
-fn ensure_node_runtime() -> Result<()> {
+fn ensure_node_runtime() -> Result<bool> {
     let version = env::var("WINDIE_NODE_VERSION").unwrap_or_else(|_| NODE_VERSION.to_string());
     let runtime_dir = windie_home_dir()?
         .join("runtimes")
         .join("node")
         .join(&version);
     if runtime_contains(&runtime_dir, &["node", "npx"]) || node_on_path() {
-        return Ok(());
+        return Ok(false);
     }
 
     let (url, checksum_url, format) = node_asset(&version)?;
@@ -83,17 +93,18 @@ fn ensure_node_runtime() -> Result<()> {
         &runtime_dir,
         "Node.js",
         &["node", "npx"],
-    )
+    )?;
+    Ok(true)
 }
 
-fn ensure_uv_runtime() -> Result<()> {
+fn ensure_uv_runtime() -> Result<bool> {
     let version = env::var("WINDIE_UV_VERSION").unwrap_or_else(|_| UV_VERSION.to_string());
     let runtime_dir = windie_home_dir()?
         .join("runtimes")
         .join("uv")
         .join(&version);
     if runtime_contains(&runtime_dir, &["uv", "uvx"]) || uv_on_path() {
-        return Ok(());
+        return Ok(false);
     }
 
     let (url, checksum_url, format) = uv_asset(&version)?;
@@ -104,7 +115,8 @@ fn ensure_uv_runtime() -> Result<()> {
         &runtime_dir,
         "uv",
         &["uv", "uvx"],
-    )
+    )?;
+    Ok(true)
 }
 
 fn node_asset(version: &str) -> Result<(String, String, ArchiveFormat)> {
@@ -462,6 +474,15 @@ fn cua_driver_command() -> Result<Option<PathBuf>> {
     }
 
     Ok(candidates.into_iter().flatten().find(|path| path.is_file()))
+}
+
+/// Returns whether the macOS CUA application bundle required for TCC
+/// attribution is installed.
+#[cfg(target_os = "macos")]
+pub(crate) fn cua_driver_app_available() -> bool {
+    Path::new("/Applications/CuaDriver.app")
+        .join("Contents/MacOS/cua-driver")
+        .is_file()
 }
 
 fn find_file(root: &Path, file_name: &str) -> Result<Option<PathBuf>> {

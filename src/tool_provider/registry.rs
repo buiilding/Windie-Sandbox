@@ -15,6 +15,7 @@ use super::mcp::McpProviderDefinition;
 use super::mcp::{McpToolProvider, approved_mcp_providers};
 use crate::conversation::ToolCall;
 use crate::error;
+use crate::local;
 #[cfg(test)]
 use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
@@ -22,6 +23,7 @@ use crate::tool::{
     AttachedTool, ProviderToolName, ToolDefinition, ToolExecutionResult, ToolProviderId,
     ToolProviderKind, ToolSchemaName,
 };
+use crate::tool_provider::ProviderRuntime;
 
 #[derive(Debug, Clone)]
 /// Catalog status for one approved provider.
@@ -144,6 +146,48 @@ impl ToolProviderRegistry {
             .iter()
             .find(|provider| provider.id() == provider_id)
             .map(|provider| provider.manifest().clone())
+    }
+
+    /// Runs provider-specific configuration without starting MCP.
+    pub fn prepare_provider_configuration(&self, provider_id: &ToolProviderId) -> Result<()> {
+        let provider = self
+            .mcp_provider(provider_id)
+            .ok_or_else(|| error::not_found(format!("provider does not exist: {provider_id}")))?;
+        provider.prepare()
+    }
+
+    /// Installs or verifies the local runtime declared by one provider.
+    pub fn prepare_provider_runtime(&self, provider_id: &ToolProviderId) -> Result<()> {
+        let provider = self
+            .mcp_provider(provider_id)
+            .ok_or_else(|| error::not_found(format!("provider does not exist: {provider_id}")))?;
+        if provider.manifest().dependencies.is_empty() {
+            return Ok(());
+        }
+
+        match provider.manifest().runtime {
+            ProviderRuntime::Native => local::install_target(provider_id.as_str()).map(|_| ()),
+            runtime => local::ensure_runtime(runtime).map(|_| ()),
+        }
+    }
+
+    /// Prefetches the provider package without starting its MCP protocol.
+    pub fn prepare_provider_package(&self, provider_id: &ToolProviderId) -> Result<()> {
+        let provider = self
+            .mcp_provider(provider_id)
+            .ok_or_else(|| error::not_found(format!("provider does not exist: {provider_id}")))?;
+        provider.prepare_package()
+    }
+
+    /// Returns whether provider setup has a package-prefetch phase.
+    pub fn provider_requires_package_preparation(
+        &self,
+        provider_id: &ToolProviderId,
+    ) -> Result<bool> {
+        let provider = self
+            .mcp_provider(provider_id)
+            .ok_or_else(|| error::not_found(format!("provider does not exist: {provider_id}")))?;
+        Ok(provider.manifest().package.is_some())
     }
 
     /// Lists available tools for one provider ID.
@@ -290,6 +334,7 @@ impl ToolProviderRegistry {
                 schema_prefix,
                 display_name,
                 command,
+                package_command: None,
                 shutdown_command: None,
                 setup: None,
             })],

@@ -57,6 +57,9 @@ export function useToolCatalog({ onError }) {
 
   const runProviderAction = useCallback(
     async (action, providerId) => {
+      const progressPoll = window.setInterval(() => {
+        refreshProviderInstallations().catch(onError);
+      }, 500);
       try {
         const result = await action(providerId);
         await refreshProviderInstallations();
@@ -66,6 +69,8 @@ export function useToolCatalog({ onError }) {
         onError(error);
         toast.error(error.message);
         throw error;
+      } finally {
+        window.clearInterval(progressPoll);
       }
     },
     [onError, refreshAvailableTools, refreshProviderInstallations]

@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderReadiness {
     Ready,
     MissingRuntime,
+    PackageSetupFailed,
+    ProviderStartupFailed,
     ExternalAppRequired,
     PermissionRequired,
     MissingSecret,
@@ -25,6 +27,8 @@ impl ProviderReadiness {
         match self {
             Self::Ready => "ready",
             Self::MissingRuntime => "missing_runtime",
+            Self::PackageSetupFailed => "package_setup_failed",
+            Self::ProviderStartupFailed => "provider_startup_failed",
             Self::ExternalAppRequired => "external_app_required",
             Self::PermissionRequired => "permission_required",
             Self::MissingSecret => "missing_secret",
@@ -39,6 +43,8 @@ impl ProviderReadiness {
         match value {
             "ready" => Some(Self::Ready),
             "missing_runtime" => Some(Self::MissingRuntime),
+            "package_setup_failed" => Some(Self::PackageSetupFailed),
+            "provider_startup_failed" => Some(Self::ProviderStartupFailed),
             "external_app_required" => Some(Self::ExternalAppRequired),
             "permission_required" => Some(Self::PermissionRequired),
             "missing_secret" => Some(Self::MissingSecret),

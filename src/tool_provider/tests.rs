@@ -77,6 +77,58 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
 }
 
 #[test]
+fn approved_provider_definitions_separate_runtime_and_package_setup() {
+    let desktop_commander = approved_desktop_commander_provider();
+    assert_eq!(
+        desktop_commander.manifest().runtime,
+        crate::tool_provider::ProviderRuntime::Node
+    );
+    assert_eq!(
+        desktop_commander
+            .package_command
+            .as_ref()
+            .map(|command| command.program),
+        Some("npx")
+    );
+    assert_eq!(
+        desktop_commander
+            .manifest()
+            .package
+            .as_ref()
+            .map(|package| package.name.as_str()),
+        Some("@wonderwhy-er/desktop-commander")
+    );
+
+    let blender = approved_blender_mcp_provider();
+    assert_eq!(
+        blender.manifest().runtime,
+        crate::tool_provider::ProviderRuntime::Uv
+    );
+    assert_eq!(
+        blender
+            .package_command
+            .as_ref()
+            .map(|command| command.program),
+        Some("uvx")
+    );
+    assert_eq!(
+        blender
+            .manifest()
+            .package
+            .as_ref()
+            .map(|package| package.name.as_str()),
+        Some("blender-mcp")
+    );
+
+    let cua = approved_cua_provider();
+    assert_eq!(
+        cua.manifest().runtime,
+        crate::tool_provider::ProviderRuntime::Native
+    );
+    assert!(cua.package_command.is_none());
+}
+
+#[test]
 fn basic_memory_manifest_declares_local_runtime_requirements() {
     let provider = approved_basic_memory_provider();
     let manifest = provider.manifest();
@@ -437,6 +489,7 @@ fn registry_finds_tools_from_cached_provider_catalog() {
                 args: &[],
                 env: &[],
             },
+            package_command: None,
             shutdown_command: None,
             setup: None,
         })],
@@ -482,6 +535,7 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
                     args: &[],
                     env: &[],
                 },
+                package_command: None,
                 shutdown_command: None,
                 setup: None,
             }),
@@ -505,6 +559,7 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
                     args: &[],
                     env: &[],
                 },
+                package_command: None,
                 shutdown_command: None,
                 setup: None,
             }),

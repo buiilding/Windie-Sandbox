@@ -133,6 +133,48 @@ impl Store {
             .ok_or_else(|| anyhow!("updated provider was not persisted: {provider_id}"))
     }
 
+    /// Persists the current setup phase while the provider remains updating.
+    ///
+    /// The existing `next_action` column carries this short-lived progress so
+    /// the Inspector can poll it without adding a schema migration.
+    pub fn set_provider_progress(
+        &self,
+        provider_id: &ToolProviderId,
+        progress: &str,
+    ) -> Result<InstalledProvider> {
+        let now = now_millis()?;
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE installed_providers
+                SET state = ?1,
+                    readiness = ?2,
+                    next_action = ?3,
+                    error = NULL,
+                    updated_at = ?4,
+                    last_health_check_at = NULL
+                WHERE provider_id = ?5
+                ",
+                params![
+                    ProviderInstallState::Updating.as_storage(),
+                    ProviderReadiness::Installing.as_storage(),
+                    progress,
+                    now,
+                    provider_id.as_str()
+                ],
+            )
+            .context("failed to update provider setup progress")?;
+        if changed == 0 {
+            return Err(error::not_found(format!(
+                "installed provider does not exist: {provider_id}"
+            )));
+        }
+
+        self.load_installed_provider(provider_id)?
+            .ok_or_else(|| anyhow!("provider setup progress was not persisted: {provider_id}"))
+    }
+
     /// Records the result of an explicit provider health check.
     pub fn record_provider_health(
         &self,

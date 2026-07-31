@@ -107,15 +107,7 @@ pub fn setup_provider(
     store.install_provider(provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
-    let setup_result = prepare_provider(&manifest)
-        .and_then(|_| {
-            if manifest.dependencies.is_empty() {
-                Ok(())
-            } else {
-                local::install_target(provider_id.as_str()).map(|_| ())
-            }
-        })
-        .and_then(|_| registry.list_provider_tools(provider_id));
+    let setup_result = prepare_provider_setup(store, registry, provider_id, &manifest);
 
     match setup_result {
         Ok(_) => {
@@ -232,15 +224,7 @@ pub fn repair_provider(
     require_installation(store, provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
-    let repair_result = prepare_provider(&manifest)
-        .and_then(|_| {
-            if manifest.dependencies.is_empty() {
-                Ok(())
-            } else {
-                local::install_target(provider_id.as_str()).map(|_| ())
-            }
-        })
-        .and_then(|_| registry.list_provider_tools(provider_id));
+    let repair_result = prepare_provider_setup(store, registry, provider_id, &manifest);
 
     match repair_result {
         Ok(_) => {
@@ -320,6 +304,46 @@ fn prepare_provider(manifest: &ProviderManifest) -> Result<()> {
     Ok(())
 }
 
+/// Runs provider setup in explicit, observable phases before catalog discovery.
+///
+/// Runtime and package preparation intentionally happen outside MCP startup.
+/// This keeps first-use downloads out of the protocol initialize timeout and
+/// gives the Inspector a useful progress message while the operation runs.
+fn prepare_provider_setup(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+    provider_id: &ToolProviderId,
+    manifest: &ProviderManifest,
+) -> Result<Vec<crate::tool::ToolDefinition>> {
+    store.set_provider_progress(provider_id, "preparing provider")?;
+    prepare_provider(manifest)?;
+
+    if !manifest.dependencies.is_empty() {
+        let runtime_message = manifest
+            .runtime
+            .display_name()
+            .map(|name| format!("installing {name}"))
+            .unwrap_or_else(|| "installing provider runtime".to_string());
+        store.set_provider_progress(provider_id, &runtime_message)?;
+        registry.prepare_provider_runtime(provider_id)?;
+    }
+
+    if registry.provider_requires_package_preparation(provider_id)? {
+        store.set_provider_progress(
+            provider_id,
+            &format!("installing {}", manifest.display_name),
+        )?;
+        registry.prepare_provider_package(provider_id)?;
+    }
+
+    store.set_provider_progress(provider_id, "preparing provider configuration")?;
+    registry.prepare_provider_configuration(provider_id)?;
+
+    store.set_provider_progress(provider_id, "starting MCP server")?;
+    store.set_provider_progress(provider_id, "checking MCP tools")?;
+    registry.list_provider_tools(provider_id)
+}
+
 /// Maps a setup/health error to the stable UI-facing readiness category.
 fn readiness_for_provider_error(
     provider_id: &ToolProviderId,
@@ -343,17 +367,27 @@ fn readiness_for_provider_error(
     {
         return ProviderReadiness::PermissionRequired;
     }
-    if message.contains("runtime")
+    if message.contains("provider package preparation") {
+        return ProviderReadiness::PackageSetupFailed;
+    }
+    if message.contains("required command is not available")
+        || message.contains("runtime is not supported")
+        || message.contains("runtime installation")
+        || message.contains("failed to verify downloaded")
         || message.contains("checksum")
         || message.contains("command not found")
-        || message.contains("no such file")
-        || message.contains("npx")
-        || message.contains("uvx")
-        || message.contains("uv")
-        || message.contains("node.js")
-        || message.contains("node runtime")
     {
         return ProviderReadiness::MissingRuntime;
+    }
+    if message.contains("mcp provider timed out")
+        || message.contains("mcp provider closed")
+        || message.contains("failed to start mcp provider")
+        || message.contains("mcp provider stdout")
+        || message.contains("failed to read mcp response")
+        || message.contains("mcp response")
+        || message.contains("mcp error")
+    {
+        return ProviderReadiness::ProviderStartupFailed;
     }
     if provider_id.as_str() == "blender-mcp"
         || message.contains("blender") && message.contains("bridge")
@@ -368,6 +402,8 @@ fn readiness_for_provider_error(
 fn next_action_for_readiness(readiness: ProviderReadiness) -> &'static str {
     match readiness {
         ProviderReadiness::MissingRuntime => "repair provider to install its runtime",
+        ProviderReadiness::PackageSetupFailed => "retry provider package setup",
+        ProviderReadiness::ProviderStartupFailed => "retry provider startup",
         ProviderReadiness::ExternalAppRequired => {
             "start the required external application and repair"
         }
@@ -429,6 +465,41 @@ mod tests {
         assert_eq!(
             readiness_for_provider_error(&ToolProviderId::new("blender-mcp"), &manifest, &error,),
             ProviderReadiness::ExternalAppRequired
+        );
+    }
+
+    #[test]
+    fn mcp_startup_timeout_is_not_reported_as_missing_runtime() {
+        let manifest = blender_manifest();
+        let error = anyhow::anyhow!("MCP provider timed out during initialize after 30s: npx");
+
+        assert_eq!(
+            readiness_for_provider_error(&ToolProviderId::new("blender-mcp"), &manifest, &error,),
+            ProviderReadiness::ProviderStartupFailed
+        );
+    }
+
+    #[test]
+    fn missing_runtime_error_is_reported_as_missing_runtime() {
+        let manifest = blender_manifest();
+        let error = anyhow::anyhow!("required command is not available: uvx");
+
+        assert_eq!(
+            readiness_for_provider_error(&ToolProviderId::new("blender-mcp"), &manifest, &error,),
+            ProviderReadiness::MissingRuntime
+        );
+    }
+
+    #[test]
+    fn package_preparation_error_has_its_own_readiness_category() {
+        let manifest = blender_manifest();
+        let error = anyhow::anyhow!(
+            "provider package preparation failed with exit status: 1: uvx\nstderr:\npackage unavailable"
+        );
+
+        assert_eq!(
+            readiness_for_provider_error(&ToolProviderId::new("blender-mcp"), &manifest, &error,),
+            ProviderReadiness::PackageSetupFailed
         );
     }
 }

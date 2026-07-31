@@ -53,6 +53,8 @@ function providerStatus(provider, toolStatus) {
   if (state === "broken") {
     const labels = {
       missing_runtime: "runtime missing",
+      package_setup_failed: "provider package failed",
+      provider_startup_failed: "MCP startup failed",
       external_app_required: "app required",
       permission_required: "permission needed",
       missing_secret: "credential needed",

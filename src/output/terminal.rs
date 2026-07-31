@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 
 use crate::conversation::{ConversationId, Message, MessageId, ToolCall};
 use crate::llm::{ModelInfo, ModelName};
-use crate::local::InstallReport;
+use crate::local::{InstallReport, InstallStatus};
 use crate::operation::InspectionReport;
 use crate::operation::UninstallReport;
 use crate::perf::{PerformanceBaseline, PerformanceComparison, PerformanceReport};
@@ -381,7 +381,10 @@ impl TerminalOutput {
 
     /// Prints one install or verification result.
     pub fn install_report(&self, report: &InstallReport) {
-        println!("installed {}", report.target);
+        match report.status {
+            InstallStatus::Detected => println!("detected {}", report.target),
+            InstallStatus::Installed => println!("installed {}", report.target),
+        }
         println!("{}", report.message);
     }
 

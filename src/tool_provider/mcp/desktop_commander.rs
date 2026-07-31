@@ -14,8 +14,8 @@ use super::provider::{McpProviderDefinition, McpProviderSetup};
 use crate::local;
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
-    ProviderPlatform, ProviderScope,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
+    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
 };
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
@@ -49,6 +49,11 @@ pub(super) fn definition() -> McpProviderDefinition {
                 ProviderPermission::Filesystem,
             ],
         )
+        .with_runtime(ProviderRuntime::Node)
+        .with_package(
+            ProviderPackageManager::Npm,
+            "@wonderwhy-er/desktop-commander",
+        )
         .with_metadata(
             ProviderScope::Local,
             ProviderAuthentication::None,
@@ -64,6 +69,21 @@ pub(super) fn definition() -> McpProviderDefinition {
         schema_prefix: "desktop_commander",
         display_name: "Desktop Commander",
         command,
+        package_command: Some(McpCommand {
+            program: "npx",
+            args: &[
+                "--yes",
+                "--package",
+                "@wonderwhy-er/desktop-commander@latest",
+                "node",
+                "-e",
+                "",
+            ],
+            env: &[McpEnv {
+                key: "HOME",
+                value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
+            }],
+        }),
         shutdown_command: None,
         setup: Some(McpProviderSetup::DesktopCommanderConfig),
     }
