@@ -108,13 +108,15 @@ function Wait-WindieHealth {
         [string]$Component
     )
 
-    Write-WindieProgressBar 80
+    Write-WindieProgressBar 0
     for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
         if (Test-WindieHealth $Uri) {
             Write-WindieProgressBar 100
             Write-Host ""
             return
         }
+        $progress = [Math]::Min(95, 5 + [Math]::Floor((($attempt + 1) * 90) / $Attempts))
+        Write-WindieProgressBar $progress
         Start-Sleep -Seconds 1
     }
     Write-Host ""
@@ -125,7 +127,7 @@ $env:WINDIE_BIFROST_BIN = Join-Path $installDir "bifrost.exe"
 
 Write-Host "Installing LLM gateway"
 if (-not (Test-WindieHealth $gatewayHealthUrl)) {
-    Write-WindieProgressBar 80
+    Write-WindieProgressBar 5
     & $windie "gateway" "start" *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""
@@ -137,7 +139,7 @@ Write-Host "Started the gateway at http://$gatewayAddress"
 
 Write-Host "Installing Windie runtime"
 if (-not (Test-WindieHealth $apiHealthUrl)) {
-    Write-WindieProgressBar 80
+        Write-WindieProgressBar 5
     & $windie "api" "start" *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""
@@ -154,7 +156,7 @@ Write-Host "Started the runtime at http://$apiAddress"
 
 Write-Host "Installing Windie Inspector UI"
 if (-not (Test-WindieHealth $inspectorHealthUrl)) {
-    Write-WindieProgressBar 80
+        Write-WindieProgressBar 5
     & $windie "inspector" "start" *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""
