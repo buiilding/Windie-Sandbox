@@ -83,6 +83,11 @@ pub enum Command {
     GatewayOutput,
     /// Run the desktop tray controller.
     Tray,
+    /// Remove Windie's processes, local data, and installed binaries.
+    Uninstall {
+        yes: bool,
+        dry_run: bool,
+    },
     Help,
     Invalid,
     List {

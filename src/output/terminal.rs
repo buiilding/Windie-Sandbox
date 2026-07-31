@@ -13,6 +13,7 @@ use crate::conversation::{ConversationId, Message, MessageId, ToolCall};
 use crate::llm::{ModelInfo, ModelName};
 use crate::local::InstallReport;
 use crate::operation::InspectionReport;
+use crate::operation::UninstallReport;
 use crate::perf::{PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::process::{ManagedComponent, ProcessReport, ProcessState};
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
@@ -79,13 +80,11 @@ impl TerminalOutput {
 
     /// Prints one detached component lifecycle result.
     pub fn component_report(&self, report: &ProcessReport) {
-        let state = match report.state {
-            ProcessState::Started => "started",
-            ProcessState::AlreadyRunning => "already running",
-            ProcessState::Stopped => "stopped",
-            ProcessState::NotRunning => "not running",
-        };
-        println!("windie {}: {state}", report.component.as_str());
+        println!(
+            "windie {}: {}",
+            report.component.as_str(),
+            Self::process_state_label(report.state)
+        );
         if let Some(pid) = report.pid {
             println!("pid: {pid}");
         }
@@ -101,6 +100,52 @@ impl TerminalOutput {
         print!("{output}");
         if !output.ends_with('\n') {
             println!();
+        }
+    }
+
+    /// Prints a complete uninstall plan or result.
+    pub fn uninstall_report(&self, report: &UninstallReport) {
+        if report.dry_run {
+            println!("windie uninstall: dry run");
+            println!("would stop: tray, api, inspector, gateway");
+            println!("would remove data: {}", report.plan.windie_home.display());
+            for binary in &report.plan.binaries {
+                println!("would remove binary: {}", binary.display());
+            }
+            return;
+        }
+
+        for process in &report.processes {
+            println!(
+                "{} {}",
+                Self::process_state_label(process.state),
+                process.component.as_str()
+            );
+        }
+        if let Some(gateway) = &report.gateway {
+            println!(
+                "{} {}",
+                Self::process_state_label(gateway.state),
+                gateway.component.as_str()
+            );
+        }
+
+        if let Some(cleanup) = &report.cleanup {
+            if cleanup.cleanup_scheduled {
+                println!("windie uninstall: cleanup scheduled");
+            } else {
+                println!("windie uninstall: removed Windie data and binaries");
+            }
+        }
+    }
+
+    /// Returns the stable terminal label for one process state.
+    fn process_state_label(state: ProcessState) -> &'static str {
+        match state {
+            ProcessState::Started => "started",
+            ProcessState::AlreadyRunning => "already running",
+            ProcessState::Stopped => "stopped",
+            ProcessState::NotRunning => "not running",
         }
     }
 

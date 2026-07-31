@@ -23,6 +23,8 @@ const API_LOG_FILE_NAME: &str = "windie-api.log";
 const API_PID_FILE_NAME: &str = "windie-api.pid";
 const INSPECTOR_LOG_FILE_NAME: &str = "windie-inspector.log";
 const INSPECTOR_PID_FILE_NAME: &str = "windie-inspector.pid";
+const TRAY_LOG_FILE_NAME: &str = "windie-tray.log";
+const TRAY_PID_FILE_NAME: &str = "windie-tray.pid";
 const LLM_ENV_KEYS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -92,6 +94,25 @@ pub struct WindieLayout {
     pub api_pid_file: PathBuf,
     pub inspector_log_file: PathBuf,
     pub inspector_pid_file: PathBuf,
+    pub tray_log_file: PathBuf,
+    pub tray_pid_file: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Exact paths that the uninstall operation is allowed to remove.
+pub struct UninstallPlan {
+    pub windie_home: PathBuf,
+    pub install_dir: PathBuf,
+    pub binaries: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Filesystem result from one Windie uninstall attempt.
+pub struct UninstallCleanup {
+    pub removed_data: bool,
+    pub removed_binaries: Vec<PathBuf>,
+    pub deferred_binaries: Vec<PathBuf>,
+    pub cleanup_scheduled: bool,
 }
 
 /// Creates Windie's required user-local directories and empty env file.
@@ -124,6 +145,7 @@ pub fn component_log_file_path(component: crate::process::ManagedComponent) -> R
         crate::process::ManagedComponent::Gateway => layout.gateway_log_file,
         crate::process::ManagedComponent::Api => layout.api_log_file,
         crate::process::ManagedComponent::Inspector => layout.inspector_log_file,
+        crate::process::ManagedComponent::Tray => layout.tray_log_file,
     })
 }
 
@@ -134,6 +156,97 @@ pub fn component_pid_file_path(component: crate::process::ManagedComponent) -> R
         crate::process::ManagedComponent::Gateway => layout.gateway_pid_file,
         crate::process::ManagedComponent::Api => layout.api_pid_file,
         crate::process::ManagedComponent::Inspector => layout.inspector_pid_file,
+        crate::process::ManagedComponent::Tray => layout.tray_pid_file,
+    })
+}
+
+/// Returns the exact Windie-owned paths that uninstall may remove.
+///
+/// The data root is the only recursive target. Installed binaries are always
+/// individual files inside the configured install directory; the directory
+/// itself is never removed because it may contain unrelated user programs.
+pub fn uninstall_plan() -> Result<UninstallPlan> {
+    let user_home = absolute_path(&user_home_dir()?)?;
+    let windie_home = absolute_path(&windie_home_dir()?)?;
+    let install_dir = absolute_path(&windie_install_dir(&user_home)?)?;
+    validate_uninstall_paths(&user_home, &windie_home, &install_dir)?;
+
+    Ok(UninstallPlan {
+        windie_home,
+        install_dir: install_dir.clone(),
+        binaries: ["windie", "bifrost", "windie-inspector"]
+            .into_iter()
+            .map(|name| install_dir.join(executable_name(name)))
+            .collect(),
+    })
+}
+
+/// Removes the exact paths in an uninstall plan.
+///
+/// On Windows, a running `windie.exe` cannot remove itself. When the current
+/// executable is one of the planned binaries, this function schedules a
+/// short-lived PowerShell cleanup process and returns before that process
+/// removes the files after Windie exits.
+pub fn remove_uninstall_plan(plan: &UninstallPlan) -> Result<UninstallCleanup> {
+    validate_uninstall_plan(plan, &absolute_path(&user_home_dir()?)?)?;
+
+    let current_executable = absolute_path(&std::env::current_exe()?).ok();
+    let deferred_binaries = if cfg!(windows)
+        && current_executable
+            .as_ref()
+            .is_some_and(|path| plan.binaries.iter().any(|binary| binary == path))
+    {
+        plan.binaries.clone()
+    } else {
+        Vec::new()
+    };
+
+    let mut removed_binaries = Vec::new();
+    for path in &plan.binaries {
+        if deferred_binaries.contains(path) {
+            continue;
+        }
+        if let Some(removed) = remove_owned_file(path)? {
+            removed_binaries.push(removed);
+        }
+    }
+
+    let cleanup_scheduled = !deferred_binaries.is_empty();
+    if cleanup_scheduled {
+        schedule_windows_cleanup(plan)?;
+    }
+
+    let removed_data = match fs::symlink_metadata(&plan.windie_home) {
+        Ok(_) => {
+            ensure_owned_directory(&plan.windie_home)?;
+            if cleanup_scheduled {
+                false
+            } else {
+                fs::remove_dir_all(&plan.windie_home).with_context(|| {
+                    format!(
+                        "failed to remove Windie data {}",
+                        plan.windie_home.display()
+                    )
+                })?;
+                true
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect Windie data {}",
+                    plan.windie_home.display()
+                )
+            });
+        }
+    };
+
+    Ok(UninstallCleanup {
+        removed_data,
+        removed_binaries,
+        deferred_binaries,
+        cleanup_scheduled,
     })
 }
 
@@ -271,8 +384,162 @@ fn windie_layout() -> Result<WindieLayout> {
         api_pid_file: root.join(API_PID_FILE_NAME),
         inspector_log_file: root.join(INSPECTOR_LOG_FILE_NAME),
         inspector_pid_file: root.join(INSPECTOR_PID_FILE_NAME),
+        tray_log_file: root.join(TRAY_LOG_FILE_NAME),
+        tray_pid_file: root.join(TRAY_PID_FILE_NAME),
         root,
     })
+}
+
+/// Returns the configured user-local directory containing Windie binaries.
+fn windie_install_dir(user_home: &Path) -> Result<PathBuf> {
+    Ok(env::var_os("WINDIE_INSTALL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user_home.join(".local").join("bin")))
+}
+
+/// Returns an absolute, lexical path without requiring the target to exist.
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+/// Rejects paths that could turn uninstall into a broad recursive deletion.
+fn validate_uninstall_paths(
+    user_home: &Path,
+    windie_home: &Path,
+    install_dir: &Path,
+) -> Result<()> {
+    let root = Path::new(std::path::MAIN_SEPARATOR_STR);
+    if windie_home == root || windie_home == user_home || windie_home.parent().is_none() {
+        return Err(anyhow!(
+            "refusing to uninstall: Windie data path is unsafe: {}",
+            windie_home.display()
+        ));
+    }
+    if !matches!(
+        windie_home.file_name().and_then(|name| name.to_str()),
+        Some(".windie") | Some("windie")
+    ) {
+        return Err(anyhow!(
+            "refusing to uninstall: data path must be a Windie directory: {}",
+            windie_home.display()
+        ));
+    }
+    if install_dir == root
+        || install_dir.parent().is_none()
+        || install_dir == user_home
+        || install_dir == windie_home
+        || install_dir.starts_with(windie_home)
+        || windie_home.starts_with(install_dir)
+    {
+        return Err(anyhow!(
+            "refusing to uninstall: install and data paths overlap unsafely"
+        ));
+    }
+    Ok(())
+}
+
+/// Validates both the safe roots and the exact binary list selected by Windie.
+fn validate_uninstall_plan(plan: &UninstallPlan, user_home: &Path) -> Result<()> {
+    validate_uninstall_paths(user_home, &plan.windie_home, &plan.install_dir)?;
+    let expected = ["windie", "bifrost", "windie-inspector"]
+        .into_iter()
+        .map(|name| plan.install_dir.join(executable_name(name)))
+        .collect::<Vec<_>>();
+    if plan.binaries != expected {
+        return Err(anyhow!(
+            "refusing to uninstall: plan contains paths outside Windie's owned binaries"
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses to follow or remove a symlink at an owned file target.
+fn remove_owned_file(path: &Path) -> Result<Option<PathBuf>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(anyhow!(
+            "refusing to remove symlink at Windie-owned path {}",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(anyhow!(
+            "refusing to remove non-file at Windie-owned path {}",
+            path.display()
+        ));
+    }
+    fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
+/// Refuses to recursively remove a symlink in place of Windie's data root.
+fn ensure_owned_directory(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect Windie data {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(anyhow!(
+            "refusing to recursively remove non-directory Windie data path {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the platform-specific installed executable filename.
+fn executable_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+#[cfg(windows)]
+fn schedule_windows_cleanup(plan: &UninstallPlan) -> Result<()> {
+    let mut paths = plan.binaries.clone();
+    paths.push(plan.windie_home.clone());
+    let script = "Start-Sleep -Milliseconds 500; foreach ($path in $args) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue } }";
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        script,
+        "--",
+    ]);
+    command.args(paths);
+    command
+        .spawn()
+        .context("failed to schedule Windows Windie cleanup")?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn schedule_windows_cleanup(_plan: &UninstallPlan) -> Result<()> {
+    Ok(())
 }
 
 /// Installs CUA Driver using its public upstream installer when needed.
@@ -467,6 +734,53 @@ fn write_env_lines(path: &Path, lines: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uninstall_rejects_home_root_and_overlapping_paths() {
+        let home = Path::new("/Users/example");
+        let install = home.join(".local/bin");
+
+        assert!(validate_uninstall_paths(home, home, &install).is_err());
+        assert!(validate_uninstall_paths(home, Path::new("/"), &install).is_err());
+        assert!(validate_uninstall_paths(home, &home.join(".windie"), home).is_err());
+        assert!(
+            validate_uninstall_paths(home, &home.join(".windie"), &home.join(".windie/bin"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn uninstall_removes_only_exact_windie_paths() {
+        let root =
+            std::env::temp_dir().join(format!("windie-uninstall-test-{}", std::process::id()));
+        let home = root.join("home");
+        let windie_home = home.join(".windie");
+        let install_dir = home.join(".local/bin");
+        let windie_binary = install_dir.join(executable_name("windie"));
+        let unrelated_file = install_dir.join("unrelated");
+        fs::create_dir_all(&windie_home).unwrap();
+        fs::create_dir_all(&install_dir).unwrap();
+        fs::write(&windie_binary, "owned").unwrap();
+        fs::write(&unrelated_file, "preserve").unwrap();
+
+        let binaries = ["windie", "bifrost", "windie-inspector"]
+            .into_iter()
+            .map(|name| install_dir.join(executable_name(name)))
+            .collect();
+        let plan = UninstallPlan {
+            windie_home: windie_home.clone(),
+            install_dir: install_dir.clone(),
+            binaries,
+        };
+        let cleanup = remove_uninstall_plan(&plan).unwrap();
+
+        assert!(cleanup.removed_data);
+        assert!(!windie_home.exists());
+        assert!(!windie_binary.exists());
+        assert!(unrelated_file.exists());
+        assert!(install_dir.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn env_line_key_reads_plain_and_export_assignments() {

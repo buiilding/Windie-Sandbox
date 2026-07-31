@@ -35,6 +35,9 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie inspector start".to_string()));
     assert!(lines.contains(&"  windie inspector output".to_string()));
     assert!(lines.contains(&"  windie tray".to_string()));
+    assert!(lines.contains(&"  windie uninstall".to_string()));
+    assert!(lines.contains(&"  windie uninstall --yes".to_string()));
+    assert!(lines.contains(&"  windie uninstall --dry-run".to_string()));
     assert!(lines.contains(&"  windie tools".to_string()));
     assert!(lines.contains(&"  windie models".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));

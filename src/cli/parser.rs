@@ -34,6 +34,18 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
             Command::InspectorOutput
         }
         [arg] if arg == "onboard" => Command::Onboard,
+        [arg] if arg == "uninstall" => Command::Uninstall {
+            yes: false,
+            dry_run: false,
+        },
+        [command, flag] if command == "uninstall" && flag == "--yes" => Command::Uninstall {
+            yes: true,
+            dry_run: false,
+        },
+        [command, flag] if command == "uninstall" && flag == "--dry-run" => Command::Uninstall {
+            yes: false,
+            dry_run: true,
+        },
         [command, target] if command == "install" => Command::Install {
             target: target.to_string(),
         },

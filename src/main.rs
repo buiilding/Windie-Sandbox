@@ -78,6 +78,7 @@ async fn main() -> Result<()> {
         Command::UpdateBaseline { options } => update_baseline(options).await,
         Command::Env(command) => env_command(command),
         Command::Install { target } => install_target(&target),
+        Command::Uninstall { yes, dry_run } => uninstall_windie(yes, dry_run).await,
         Command::GatewayStart => start_gateway().await,
         Command::GatewayStop => stop_gateway().await,
         Command::GatewayOutput => output_component(ManagedComponent::Gateway),
@@ -217,6 +218,37 @@ fn output_component(component: ManagedComponent) -> Result<()> {
 async fn onboard() -> Result<()> {
     let mut console = cli::TerminalOnboarding::new();
     operation::run_onboarding(&mut console, gateway_url(), GATEWAY_URL, base_url()).await
+}
+
+/// Confirms and runs complete Windie cleanup from the CLI boundary.
+async fn uninstall_windie(yes: bool, dry_run: bool) -> Result<()> {
+    let output = TerminalOutput;
+    if !dry_run && !yes && !confirm_uninstall()? {
+        println!("windie uninstall: cancelled");
+        return Ok(());
+    }
+
+    let report = operation::uninstall_windie(dry_run).await?;
+    output.uninstall_report(&report);
+    Ok(())
+}
+
+/// Reads the destructive-action confirmation without exposing provider keys.
+fn confirm_uninstall() -> Result<bool> {
+    use std::io::{self, Write};
+
+    eprintln!(
+        "This will stop Windie and delete all Windie data, provider keys, logs, and installed binaries."
+    );
+    eprint!("Continue? [y/N] ");
+    io::stderr().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// Prints the generated CLI help text.
