@@ -26,6 +26,7 @@ pub(in crate::tool_provider) struct McpProviderDefinition {
     pub(in crate::tool_provider) schema_prefix: &'static str,
     pub(in crate::tool_provider) display_name: &'static str,
     pub(in crate::tool_provider) command: McpCommand,
+    pub(in crate::tool_provider) package_command: Option<McpCommand>,
     pub(in crate::tool_provider) shutdown_command: Option<McpCommand>,
     pub(in crate::tool_provider) setup: Option<McpProviderSetup>,
 }
@@ -45,6 +46,7 @@ pub(in crate::tool_provider) struct McpToolProvider {
     pub(in crate::tool_provider) schema_prefix: &'static str,
     pub(in crate::tool_provider) display_name: &'static str,
     pub(in crate::tool_provider) command: McpCommand,
+    pub(in crate::tool_provider) package_command: Option<McpCommand>,
     pub(in crate::tool_provider) shutdown_command: Option<McpCommand>,
     setup: Option<McpProviderSetup>,
 }
@@ -58,6 +60,7 @@ impl McpToolProvider {
             schema_prefix: definition.schema_prefix,
             display_name: definition.display_name,
             command: definition.command,
+            package_command: definition.package_command,
             shutdown_command: definition.shutdown_command,
             setup: definition.setup,
         }
@@ -82,6 +85,15 @@ impl McpToolProvider {
                 .map(|tool| self.definition_from_mcp_tool(tool))
                 .collect(),
         )
+    }
+
+    /// Prepares the provider package without starting its MCP protocol.
+    pub(in crate::tool_provider) fn prepare_package(&self) -> Result<()> {
+        let Some(command) = self.package_command else {
+            return Ok(());
+        };
+
+        mcp::run_preparation_command(command)
     }
 
     /// Converts one MCP tool into Windie's provider-backed tool definition.

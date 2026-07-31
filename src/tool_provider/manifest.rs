@@ -22,6 +22,8 @@ pub struct ProviderManifest {
     pub dependencies: Vec<ProviderDependency>,
     pub secrets: Vec<ProviderSecret>,
     pub permissions: Vec<ProviderPermission>,
+    pub runtime: ProviderRuntime,
+    pub package: Option<ProviderPackage>,
     pub scope: ProviderScope,
     pub authentication: ProviderAuthentication,
     pub category: String,
@@ -58,6 +60,8 @@ impl ProviderManifest {
             dependencies,
             secrets,
             permissions,
+            runtime: ProviderRuntime::Native,
+            package: None,
             scope: ProviderScope::Local,
             authentication: ProviderAuthentication::None,
             category: "other".to_string(),
@@ -65,6 +69,26 @@ impl ProviderManifest {
             documentation_url: None,
             setup_guide: Vec::new(),
         }
+    }
+
+    /// Declares the local runtime required before this provider can start.
+    pub fn with_runtime(mut self, runtime: ProviderRuntime) -> Self {
+        self.runtime = runtime;
+        self
+    }
+
+    /// Declares the package manager and package that must be prepared before
+    /// the provider's MCP process starts.
+    pub fn with_package(
+        mut self,
+        manager: ProviderPackageManager,
+        name: impl Into<String>,
+    ) -> Self {
+        self.package = Some(ProviderPackage {
+            manager,
+            name: name.into(),
+        });
+        self
     }
 
     /// Adds catalog metadata used by terminal and inspector onboarding.
@@ -84,6 +108,41 @@ impl ProviderManifest {
         self.documentation_url = documentation_url.map(str::to_string);
         self.setup_guide = setup_guide.iter().map(|step| (*step).to_string()).collect();
         self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Runtime family that must be ready before a provider package can be started.
+pub enum ProviderRuntime {
+    Native,
+    Node,
+    Uv,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Package metadata for one provider's pre-MCP preparation phase.
+pub struct ProviderPackage {
+    pub manager: ProviderPackageManager,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Package manager used to prefetch one provider.
+pub enum ProviderPackageManager {
+    Npm,
+    Uv,
+}
+
+impl ProviderRuntime {
+    /// Returns the user-facing runtime name used during setup progress.
+    pub fn display_name(self) -> Option<&'static str> {
+        match self {
+            Self::Native => None,
+            Self::Node => Some("Node.js runtime"),
+            Self::Uv => Some("uv runtime"),
+        }
     }
 }
 

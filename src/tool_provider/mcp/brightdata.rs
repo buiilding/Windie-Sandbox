@@ -3,19 +3,28 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
-    ProviderPlatform, ProviderScope, ProviderSecret,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
+    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
 };
+
+const BRIGHTDATA_NPM_CACHE_RELATIVE: &str = "mcp/brightdata/npm-cache";
+const BRIGHTDATA_ENV: &[McpEnv] = &[
+    McpEnv {
+        key: "API_TOKEN",
+        value: McpEnvValue::UserEnv("BRIGHTDATA_API_TOKEN"),
+    },
+    McpEnv {
+        key: "NPM_CONFIG_CACHE",
+        value: McpEnvValue::WindieDataDir(BRIGHTDATA_NPM_CACHE_RELATIVE),
+    },
+];
 
 /// Returns the code-approved Bright Data MCP provider definition.
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "npx",
         args: &["-y", "@brightdata/mcp"],
-        env: &[McpEnv {
-            key: "API_TOKEN",
-            value: McpEnvValue::UserEnv("BRIGHTDATA_API_TOKEN"),
-        }],
+        env: BRIGHTDATA_ENV,
     };
 
     McpProviderDefinition {
@@ -39,6 +48,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 ProviderPermission::Network,
             ],
         )
+        .with_runtime(ProviderRuntime::Node)
+        .with_package(ProviderPackageManager::Npm, "@brightdata/mcp")
         .with_metadata(
             ProviderScope::Cloud,
             ProviderAuthentication::ApiKey,
@@ -54,6 +65,11 @@ pub(super) fn definition() -> McpProviderDefinition {
         schema_prefix: "brightdata",
         display_name: "Bright Data",
         command,
+        package_command: Some(McpCommand {
+            program: "npx",
+            args: &["--yes", "--package", "@brightdata/mcp", "node", "-e", ""],
+            env: BRIGHTDATA_ENV,
+        }),
         shutdown_command: None,
         setup: None,
     }

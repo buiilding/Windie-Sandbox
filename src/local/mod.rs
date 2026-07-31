@@ -8,10 +8,10 @@ mod runtime;
 mod setup;
 
 pub use setup::{
-    InstallReport, UninstallCleanup, UninstallPlan, component_log_file_path,
+    InstallReport, InstallStatus, UninstallCleanup, UninstallPlan, component_log_file_path,
     component_pid_file_path, ensure_windie_layout, env_file_path, env_value, install_target,
     list_env_keys, remove_uninstall_plan, set_env_values, uninstall_plan, unset_env_values,
-    windie_home_dir,
+    user_home_dir, windie_home_dir,
 };
 
-pub(crate) use runtime::{path_with_command_parent, resolve_command};
+pub(crate) use runtime::{ensure_runtime, path_with_command_parent, resolve_command};

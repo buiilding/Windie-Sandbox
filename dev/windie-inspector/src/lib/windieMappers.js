@@ -39,6 +39,8 @@ export function providerInstallationsFromApi(body) {
     description: provider.manifest?.description || "",
     kind: provider.manifest?.kind || "mcp",
     transport: provider.manifest?.transport || "stdio",
+    runtime: provider.manifest?.runtime || "native",
+    package: provider.manifest?.package || null,
     launch: provider.manifest?.launch || null,
     platforms: provider.manifest?.platforms || [],
     dependencies: provider.manifest?.dependencies || [],

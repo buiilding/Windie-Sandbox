@@ -79,6 +79,14 @@ pub fn windie_home_dir() -> Result<PathBuf> {
 pub struct InstallReport {
     pub target: String,
     pub message: String,
+    pub status: InstallStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Describes whether an approved dependency was reused or installed.
+pub enum InstallStatus {
+    Detected,
+    Installed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,34 +344,55 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
         "bifrost" => Ok(InstallReport {
             target: target.to_string(),
             message: "Bifrost is provided by the Windie-owned bundled binary".to_string(),
+            status: InstallStatus::Detected,
         }),
         "cua-driver" => install_cua_driver(),
         "desktop-commander" => {
-            runtime::ensure_provider_runtime(target)?;
+            let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
                 message: "Node.js runtime is ready for Desktop Commander".to_string(),
+                status: if status {
+                    InstallStatus::Installed
+                } else {
+                    InstallStatus::Detected
+                },
             })
         }
         "blender-mcp" => {
-            runtime::ensure_provider_runtime(target)?;
+            let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
                 message: "uv runtime is ready for Blender MCP".to_string(),
+                status: if status {
+                    InstallStatus::Installed
+                } else {
+                    InstallStatus::Detected
+                },
             })
         }
         "brightdata" => {
-            runtime::ensure_provider_runtime(target)?;
+            let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
                 message: "Node.js runtime is ready for Bright Data MCP".to_string(),
+                status: if status {
+                    InstallStatus::Installed
+                } else {
+                    InstallStatus::Detected
+                },
             })
         }
         "basic-memory" => {
-            runtime::ensure_provider_runtime(target)?;
+            let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
                 message: "uv runtime is ready for Basic Memory".to_string(),
+                status: if status {
+                    InstallStatus::Installed
+                } else {
+                    InstallStatus::Detected
+                },
             })
         }
         _ => Err(anyhow!("unknown install target: {target}")),
@@ -554,13 +583,25 @@ fn install_cua_driver() -> Result<InstallReport> {
             target: "cua-driver".to_string(),
             message: "installed or verified cua-driver with its official Windows installer"
                 .to_string(),
+            status: InstallStatus::Detected,
         });
     }
 
+    #[cfg(target_os = "macos")]
+    if runtime::resolve_command("cua-driver").is_ok() && runtime::cua_driver_app_available() {
+        return Ok(InstallReport {
+            target: "cua-driver".to_string(),
+            message: "cua-driver and its macOS application are already available".to_string(),
+            status: InstallStatus::Detected,
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
     if command_exists("cua-driver") {
         return Ok(InstallReport {
             target: "cua-driver".to_string(),
             message: "cua-driver is already available on PATH".to_string(),
+            status: InstallStatus::Detected,
         });
     }
 
@@ -579,9 +620,17 @@ fn install_cua_driver() -> Result<InstallReport> {
     runtime::resolve_command("cua-driver")
         .context("cua-driver installer completed but cua-driver is not resolvable")?;
 
+    #[cfg(target_os = "macos")]
+    if !runtime::cua_driver_app_available() {
+        return Err(anyhow!(
+            "cua-driver installer completed but /Applications/CuaDriver.app is not installed"
+        ));
+    }
+
     Ok(InstallReport {
         target: "cua-driver".to_string(),
         message: "installed cua-driver with the public trycua installer".to_string(),
+        status: InstallStatus::Installed,
     })
 }
 

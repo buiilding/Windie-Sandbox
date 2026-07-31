@@ -41,7 +41,21 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: dev/windie-inspector/package-lock.json
-      - run: scripts/package-release.sh "${{ matrix.target }}" "${{ matrix.label }}" dist
+      - name: Restore Bifrost build
+        uses: actions/cache@v4
+        with:
+          path: vendor/bifrost/tmp
+          key: bifrost-v1-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
+      - name: Restore Inspector build
+        uses: actions/cache@v4
+        with:
+          path: target/${{ matrix.target }}/release/windie-inspector*
+          key: inspector-v1-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/bin/windie-inspector.rs', 'dev/windie-inspector/**', '!dev/windie-inspector/node_modules/**', '!dev/windie-inspector/build/**') }}
+      - name: Package release
+        env:
+          WINDIE_REUSE_BIFROST: "1"
+          WINDIE_REUSE_INSPECTOR: "1"
+        run: scripts/package-release.sh "${{ matrix.target }}" "${{ matrix.label }}" dist
       - uses: actions/upload-artifact@v4
         with:
           name: windie-${{ matrix.label }}
@@ -70,8 +84,21 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: dev/windie-inspector/package-lock.json
+      - name: Restore Bifrost build
+        uses: actions/cache@v4
+        with:
+          path: vendor/bifrost/tmp
+          key: bifrost-v1-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
+      - name: Restore Inspector build
+        uses: actions/cache@v4
+        with:
+          path: target/${{ matrix.target }}/release/windie-inspector*
+          key: inspector-v1-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/bin/windie-inspector.rs', 'dev/windie-inspector/**', '!dev/windie-inspector/node_modules/**', '!dev/windie-inspector/build/**') }}
       - name: Package Windows release
         shell: pwsh
+        env:
+          WINDIE_REUSE_BIFROST: "1"
+          WINDIE_REUSE_INSPECTOR: "1"
         run: ./scripts/package-release.ps1 ${{ matrix.target }} ${{ matrix.label }} dist
       - uses: actions/upload-artifact@v4
         with:

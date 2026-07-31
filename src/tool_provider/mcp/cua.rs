@@ -45,6 +45,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         schema_prefix: "cua_driver",
         display_name: "CUA Driver",
         command,
+        package_command: None,
         shutdown_command: Some(McpCommand {
             program: "cua-driver",
             args: &["stop"],

@@ -20,7 +20,7 @@ pub(crate) use builtin::{
 };
 pub use lifecycle::{ProviderInstallState, ProviderReadiness};
 pub use manifest::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
-    ProviderPlatform, ProviderScope, ProviderSecret,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
+    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
 };
 pub use registry::{ToolProviderRegistry, ToolProviderStatus};

@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use crate::local;
 
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_PACKAGE_PREPARATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MCP_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
@@ -166,6 +167,77 @@ pub fn list_tools(command: McpCommand) -> Result<Vec<McpTool>> {
         .context("failed to decode MCP tools/list response")?;
 
     Ok(list.tools)
+}
+
+/// Runs one provider package preparation command before MCP startup.
+///
+/// Package runners such as `npx` and `uvx` may download a provider package on
+/// their first invocation. That download is intentionally handled outside the
+/// MCP initialize timeout, so a normal package install does not look like a
+/// failed MCP server. The command's stderr is retained when preparation fails
+/// because package managers commonly report the useful diagnostic there.
+pub fn run_preparation_command(command: McpCommand) -> Result<()> {
+    let mut process = configure_process(command)?;
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to start provider package preparation command: {}",
+                command.program
+            )
+        })?;
+    let stderr = child.stderr.take().map(|mut stream| {
+        std::thread::spawn(move || {
+            let mut output = String::new();
+            let _ = stream.read_to_string(&mut output);
+            output
+        })
+    });
+    let started = Instant::now();
+
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to wait for provider package preparation")?
+        {
+            break status;
+        }
+        if started.elapsed() >= MCP_PACKAGE_PREPARATION_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(stderr) = stderr {
+                let _ = stderr.join();
+            }
+            return Err(anyhow!(
+                "provider package preparation timed out after {}s: {}",
+                MCP_PACKAGE_PREPARATION_TIMEOUT.as_secs(),
+                command.program
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stderr = stderr
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+
+    if !status.success() {
+        let diagnostics = stderr.trim();
+        if diagnostics.is_empty() {
+            return Err(anyhow!(
+                "provider package preparation failed with {status}: {}",
+                command.program
+            ));
+        }
+        return Err(anyhow!(
+            "provider package preparation failed with {status}: {}\nstderr:\n{diagnostics}",
+            command.program
+        ));
+    }
+
+    Ok(())
 }
 
 /// Lists tools with a provider-specific cleanup hook after the MCP process
