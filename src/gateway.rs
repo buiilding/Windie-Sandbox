@@ -338,7 +338,10 @@ fn validate_release_manifest(binary: &Path) -> Result<()> {
         .get("bifrost_version")
         .copied()
         .ok_or_else(|| anyhow!("release manifest is missing bifrost_version"))?;
-    if windie_version != bifrost_version {
+    // Release packages currently bundle the Bifrost build labeled `stable`
+    // rather than a Windie-matched semantic version. That is an intentional
+    // compatibility marker, not a release mismatch.
+    if bifrost_version != "stable" && windie_version != bifrost_version {
         return Err(anyhow!(
             "Windie/Bifrost release mismatch: Windie {windie_version}, Bifrost {bifrost_version}"
         ));
@@ -748,6 +751,47 @@ mod tests {
             "/Users/peterbui/.windie/bifrost/bifrost-http -app-dir /Users/peterbui/.windie/bifrost/data -port 8080"
         ));
         assert!(!is_bifrost_command("python3 -m http.server 8080"));
+    }
+
+    #[test]
+    fn accepts_stable_bifrost_release_manifest() {
+        let root = env::temp_dir().join(format!(
+            "windie-stable-manifest-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("release-manifest.txt"),
+            "windie_version=v0.2.4\nbifrost_version=stable\n",
+        )
+        .unwrap();
+        let binary = root.join("bifrost");
+        std::fs::write(&binary, "").unwrap();
+
+        assert!(validate_release_manifest(&binary).is_ok());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_non_matching_versioned_bifrost_release_manifest() {
+        let root = env::temp_dir().join(format!(
+            "windie-mismatched-manifest-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("release-manifest.txt"),
+            "windie_version=v0.2.4\nbifrost_version=v0.2.3\n",
+        )
+        .unwrap();
+        let binary = root.join("bifrost");
+        std::fs::write(&binary, "").unwrap();
+
+        let error = validate_release_manifest(&binary).unwrap_err();
+        assert!(error.to_string().contains("release mismatch"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn public_paths_for_test(root: &Path) -> BifrostPaths {
