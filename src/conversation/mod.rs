@@ -8,9 +8,9 @@
 pub mod assistant_metadata;
 pub mod id;
 pub mod message;
-pub mod user_part;
+pub mod message_part;
 
 pub use assistant_metadata::{MessageMetadata, TokenUsage, ToolCall, ToolCallId};
 pub use id::{CompactionId, ConversationId, ImageAssetId, MessageId};
 pub use message::{Message, Role};
-pub use user_part::{ImagePart, MessagePart, UnsavedImagePart, UnsavedMessagePart};
+pub use message_part::{ImagePart, MessagePart, UnsavedImagePart, UnsavedMessagePart};

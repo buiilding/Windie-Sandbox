@@ -8,10 +8,11 @@ pub(super) struct ApiState {
     pub(super) gateway_url: String,
     pub(super) base_url: String,
     pub(super) model: String,
-    pub(super) api_token: String,
     pub(super) store_path: Option<PathBuf>,
     pub(super) tool_registry: Arc<ToolProviderRegistry>,
     pub(super) session_manager: Arc<SessionManager>,
+    /// Broadcasts a requested API shutdown to the server task.
+    pub(super) shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 /// Opens the production store, or a test-scoped store when route tests inject

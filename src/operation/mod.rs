@@ -6,6 +6,7 @@
 //! inputs into these typed operations and translate returned values into their
 //! own output formats.
 
+mod component;
 mod conversation;
 mod gateway;
 mod input;
@@ -18,6 +19,7 @@ mod session_approval;
 mod session_cli;
 mod tool;
 
+pub use component::*;
 pub use conversation::*;
 pub use gateway::*;
 pub use input::{MessageInputPart, PreparedMessageInput, prepare_message_input};
@@ -60,7 +62,7 @@ use crate::runtime::{
     execute_pending_tool_call, load_pending_tool_call_at_head, pending_approvals_at_head,
     prepare_pending_tool_execution, store_pending_tool_result_at_head,
 };
-use crate::session::{Session, SessionEvent, SessionId, SessionStatus};
+use crate::session::{Session, SessionControl, SessionEvent, SessionId, SessionStatus};
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,

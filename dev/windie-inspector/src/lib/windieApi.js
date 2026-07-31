@@ -1,21 +1,4 @@
 const API_BASE = process.env.REACT_APP_WINDIE_API_URL || "http://127.0.0.1:8787";
-const API_TOKEN_STORAGE_KEY = "windie_api_token";
-
-function apiToken() {
-  const params = new URLSearchParams(window.location.search);
-  const tokenFromUrl = params.get("windie_token");
-  if (tokenFromUrl) {
-    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, tokenFromUrl);
-    return tokenFromUrl;
-  }
-
-  return (
-    process.env.REACT_APP_WINDIE_API_TOKEN ||
-    window.localStorage.getItem(API_TOKEN_STORAGE_KEY) ||
-    ""
-  );
-}
-
 function parseApiBody(text) {
   if (!text) return null;
   try {
@@ -26,13 +9,11 @@ function parseApiBody(text) {
 }
 
 export async function apiRequest(path, options = {}) {
-  const token = apiToken();
   const { headers: optionHeaders = {}, ...fetchOptions } = options;
   const response = await fetch(`${API_BASE}${path}`, {
     ...fetchOptions,
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { "X-Windie-Api-Token": token } : {}),
       ...optionHeaders,
     },
   });
@@ -41,11 +22,6 @@ export async function apiRequest(path, options = {}) {
   const body = parseApiBody(text);
 
   if (!response.ok) {
-    if (response.status === 401) {
-      throw new Error(
-        "Windie API token is missing or invalid. Start windie api, then open the inspector with ?windie_token=<printed token>."
-      );
-    }
     throw new Error(body?.error || `Windie API request failed: ${response.status}`);
   }
 
@@ -53,13 +29,9 @@ export async function apiRequest(path, options = {}) {
 }
 
 export async function fetchImageAsset(conversationId, assetId) {
-  const token = apiToken();
   const response = await fetch(
     `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/images/${encodeURIComponent(assetId)}`,
     {
-      headers: {
-        ...(token ? { "X-Windie-Api-Token": token } : {}),
-      },
     }
   );
 

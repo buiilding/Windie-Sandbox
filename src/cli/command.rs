@@ -7,10 +7,20 @@ use super::*;
 /// This is the CLI boundary's typed contract. Downstream code should match on
 /// this enum instead of inspecting raw argv strings.
 pub enum Command {
-    /// Start the localhost developer API server.
-    Api,
-    /// Open the local developer inspector with the current API token.
-    Inspector,
+    /// Start the detached localhost developer API server.
+    ApiStart,
+    /// Stop the detached localhost developer API server.
+    ApiStop,
+    /// Print the detached API process output.
+    ApiOutput,
+    /// Internal foreground API server entrypoint used by `api start`.
+    ApiRun,
+    /// Start the detached Inspector server.
+    InspectorStart,
+    /// Stop the detached Inspector server.
+    InspectorStop,
+    /// Print the detached Inspector process output.
+    InspectorOutput,
     /// Run the terminal-only first-run onboarding wizard.
     Onboard,
     /// Attach one provider tool to a conversation.
@@ -69,6 +79,10 @@ pub enum Command {
     },
     GatewayStart,
     GatewayStop,
+    /// Print the detached Bifrost process output.
+    GatewayOutput,
+    /// Run the desktop tray controller.
+    Tray,
     Help,
     Invalid,
     List {

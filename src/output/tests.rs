@@ -30,7 +30,11 @@ fn formats_help_lines() {
     assert_eq!(lines[0], "windie");
     assert!(lines.contains(&"Usage:".to_string()));
     assert!(lines.contains(&"  windie".to_string()));
-    assert!(lines.contains(&"  windie inspector".to_string()));
+    assert!(lines.contains(&"  windie api start".to_string()));
+    assert!(lines.contains(&"  windie api output".to_string()));
+    assert!(lines.contains(&"  windie inspector start".to_string()));
+    assert!(lines.contains(&"  windie inspector output".to_string()));
+    assert!(lines.contains(&"  windie tray".to_string()));
     assert!(lines.contains(&"  windie tools".to_string()));
     assert!(lines.contains(&"  windie models".to_string()));
     assert!(lines.contains(&"  windie ls".to_string()));
@@ -75,6 +79,7 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie run deny <session_id> <tool_call_id>".to_string()));
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
+    assert!(lines.contains(&"  windie gateway output".to_string()));
     assert!(lines.contains(&"  windie install <target>".to_string()));
     assert!(lines.contains(&"  windie env MCP_KEY=value".to_string()));
     assert!(lines.contains(&"  windie bench".to_string()));

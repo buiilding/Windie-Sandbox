@@ -49,15 +49,28 @@ Use this to print the package version compiled into the binary.
 ## Developer API
 
 ```text
-windie api
+windie api start
 ```
 
-Start the localhost developer API server at `http://127.0.0.1:8787`.
+Start the detached localhost developer API server at
+`http://127.0.0.1:8787`. The command returns immediately; use
+`windie api output` to inspect its stdout and stderr.
 
-The server prints a per-process API token at startup. Browser clients must send
-that token in the `X-Windie-Api-Token` header. The localhost inspector at
-`dev/windie-inspector` can store the token by opening it with
-`?windie_token=<printed token>`.
+The API is intentionally a localhost-only, unauthenticated developer API. The
+standalone Inspector calls it directly and does not receive or store a Windie
+API token.
+
+```text
+windie api stop
+```
+
+Gracefully stop the Windie API server without changing Bifrost.
+
+```text
+windie api output
+```
+
+Print the persistent Windie API process log.
 
 The API is a JSON test harness over Windie's existing runtime and store
 primitives. It is intended for local tools such as `dev/windie-inspector` to
@@ -74,8 +87,6 @@ GET    /api/models
 GET    /api/model-parameters?model=<provider/model>
 GET    /api/tools
 GET    /api/tools/{provider_id}
-POST   /api/gateway/start
-POST   /api/gateway/stop
 GET    /api/conversations
 POST   /api/conversations
 GET    /api/conversations/{conversation_id}?head_message_id=<message_id>
@@ -569,8 +580,10 @@ endpoint.
 Requires the local Bifrost gateway to already be running. This command is
 read-only: it does not start, stop, restart, or reconfigure Bifrost.
 
-After changing Windie's `.env`, restart the gateway explicitly before listing
-models again:
+Because Bifrost inherits the environment of the `windie gateway start`
+process, export provider credentials in the launching shell before starting or
+restarting the gateway. Windie's `~/.windie/.env` file is not injected into the
+Bifrost child process.
 
 ```text
 windie gateway stop
@@ -606,20 +619,14 @@ Launcher order:
 4. sibling development checkout: ../bifrost/tmp/bifrost-http
 ```
 
-Release installs place the bundled Bifrost binary beside `windie`. Running
-`windie api` can start the gateway without Node, npm, Docker, or a separate
-Bifrost checkout.
+Release installs place the bundled Bifrost binary beside `windie`. The API
+does not start or stop it; use the gateway commands explicitly without Node,
+npm, Docker, or a separate Bifrost checkout.
 
-When Windie starts Bifrost, provider keys come from a Windie `.env` file.
-Windie only reads:
-
-```text
-~/.windie/.env
-```
-
-Use `.env.example` as the non-secret template for `~/.windie/.env`. Do not
-commit real provider keys.
-The Bifrost child process receives only the variables loaded from this file.
+Windie launches Bifrost with the same inherited environment as the Windie
+process. It does not clear, filter, or reconstruct environment variables.
+Provider credentials must therefore already be present in the environment
+when `windie gateway start` runs.
 
 Detached Bifrost process logs are written to one of:
 
@@ -636,6 +643,33 @@ windie gateway stop
 Stop the local Bifrost gateway.
 
 If the gateway is not running, the command reports that instead of failing.
+
+```text
+windie gateway output
+```
+
+Print the persistent Bifrost process log.
+
+## Inspector
+
+```text
+windie inspector start
+```
+
+Start the standalone Inspector server at `http://127.0.0.1:3000`. It serves
+the browser UI and calls the Windie API independently.
+
+```text
+windie inspector stop
+```
+
+Stop the standalone Inspector server. This does not stop Windie or Bifrost.
+
+```text
+windie inspector output
+```
+
+Print the persistent Inspector process log.
 
 ## Benchmarks
 

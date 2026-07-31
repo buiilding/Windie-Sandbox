@@ -14,6 +14,7 @@ use crate::llm::{ModelInfo, ModelName};
 use crate::local::InstallReport;
 use crate::operation::InspectionReport;
 use crate::perf::{PerformanceBaseline, PerformanceComparison, PerformanceReport};
+use crate::process::{ManagedComponent, ProcessReport, ProcessState};
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
 use crate::store::ConversationInfo;
 use crate::tool::{ToolDefinition, ToolSchemaName};
@@ -71,27 +72,36 @@ impl TerminalOutput {
         println!("windie {}", env!("CARGO_PKG_VERSION"));
     }
 
-    /// Prints the local API address and generated access token at startup.
-    ///
-    /// The inspector is embedded in the API server, so its URL shares the API
-    /// origin rather than a separate dev-server port.
-    pub fn api_started(&self, address: &SocketAddr, api_token: &str) {
+    /// Prints the local API address when the foreground server is ready.
+    pub fn api_started(&self, address: &SocketAddr) {
         println!("windie api listening on http://{address}");
-        println!("windie api token: {api_token}");
-        println!(
-            "windie inspector: http://{address}/?windie_token={}",
-            encode_query_value(api_token)
-        );
     }
 
-    /// Prints the browser inspector URL opened by `windie inspector`.
-    pub fn inspector_opened(&self, url: &str, started_server: bool) {
-        if started_server {
-            println!("windie inspector server: started");
-        } else {
-            println!("windie inspector server: already running");
+    /// Prints one detached component lifecycle result.
+    pub fn component_report(&self, report: &ProcessReport) {
+        let state = match report.state {
+            ProcessState::Started => "started",
+            ProcessState::AlreadyRunning => "already running",
+            ProcessState::Stopped => "stopped",
+            ProcessState::NotRunning => "not running",
+        };
+        println!("windie {}: {state}", report.component.as_str());
+        if let Some(pid) = report.pid {
+            println!("pid: {pid}");
         }
-        println!("windie inspector: {url}");
+        println!("output: {}", report.log_file.display());
+    }
+
+    /// Prints one component's persisted stdout/stderr output.
+    pub fn component_output(&self, component: ManagedComponent, output: &str) {
+        if output.is_empty() {
+            println!("windie {}: no output", component.as_str());
+            return;
+        }
+        print!("{output}");
+        if !output.ends_with('\n') {
+            println!();
+        }
     }
 
     /// Prints all fields measured by a performance baseline.
@@ -428,26 +438,6 @@ impl TerminalOutput {
                 "not running"
             }
         );
-    }
-
-    /// Prints gateway lifecycle results.
-    pub fn gateway_started(&self) {
-        println!("gateway: started");
-    }
-
-    /// Prints gateway lifecycle results.
-    pub fn gateway_already_running(&self) {
-        println!("gateway: already running");
-    }
-
-    /// Prints gateway lifecycle results.
-    pub fn gateway_stopped(&self) {
-        println!("gateway: stopped");
-    }
-
-    /// Prints gateway lifecycle results.
-    pub fn gateway_not_running(&self) {
-        println!("gateway: not running");
     }
 
     /// Prints models currently reported by the running Bifrost gateway.

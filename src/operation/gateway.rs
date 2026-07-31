@@ -1,6 +1,13 @@
 //! Gateway, model metadata, and input-token operation workflows.
 
+use std::fs;
+
+use anyhow::{Context, Result};
+
 use super::*;
+
+use crate::local;
+use crate::process::{ManagedComponent, ProcessReport, ProcessState};
 
 pub(in crate::operation) const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,13 +78,49 @@ pub async fn gateway_status(gateway_url: GatewayUrl) -> bool {
 }
 
 /// Starts the configured local Bifrost gateway if it is not already running.
-pub async fn start_gateway(gateway_url: GatewayUrl) -> Result<GatewayStart> {
-    BifrostGateway::new(gateway_url).start().await
+pub async fn start_gateway(gateway_url: GatewayUrl) -> Result<ProcessReport> {
+    let status = BifrostGateway::new(gateway_url).start().await?;
+    let state = match status {
+        GatewayStart::AlreadyRunning => ProcessState::AlreadyRunning,
+        GatewayStart::Started => ProcessState::Started,
+    };
+    gateway_process_report(state, read_gateway_pid()?)
 }
 
 /// Stops the configured local Bifrost gateway when Windie can identify it.
-pub async fn stop_gateway(gateway_url: GatewayUrl) -> Result<GatewayStop> {
-    BifrostGateway::new(gateway_url).stop().await
+pub async fn stop_gateway(gateway_url: GatewayUrl) -> Result<ProcessReport> {
+    let pid = read_gateway_pid()?;
+    let status = BifrostGateway::new(gateway_url).stop().await?;
+    let state = match status {
+        GatewayStop::NotRunning => ProcessState::NotRunning,
+        GatewayStop::Stopped => ProcessState::Stopped,
+    };
+    gateway_process_report(state, pid)
+}
+
+/// Builds the shared lifecycle report for the gateway CLI and tray clients.
+fn gateway_process_report(state: ProcessState, pid: Option<u32>) -> Result<ProcessReport> {
+    Ok(ProcessReport {
+        component: ManagedComponent::Gateway,
+        state,
+        pid,
+        log_file: local::component_log_file_path(ManagedComponent::Gateway)?,
+    })
+}
+
+/// Reads the PID recorded for Windie-owned Bifrost.
+fn read_gateway_pid() -> Result<Option<u32>> {
+    let path = local::component_pid_file_path(ManagedComponent::Gateway)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read gateway PID file {}", path.display()))?;
+    text.trim()
+        .parse::<u32>()
+        .map(Some)
+        .with_context(|| format!("invalid gateway PID file {}", path.display()))
 }
 
 /// Requires the configured local Bifrost gateway to be reachable.
@@ -89,7 +132,7 @@ pub async fn require_gateway_running(gateway_url: GatewayUrl) -> Result<()> {
 ///
 /// This operation is intentionally read-only. It does not start, stop, restart,
 /// or reconfigure Bifrost; users restart the gateway explicitly after changing
-/// `.env`.
+/// the environment from which the gateway is launched.
 pub async fn list_models(gateway_url: GatewayUrl, base_url: BaseUrl) -> Result<Vec<ModelInfo>> {
     require_gateway_running(gateway_url).await?;
 

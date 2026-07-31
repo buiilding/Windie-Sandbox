@@ -66,8 +66,13 @@ pub(crate) fn help_lines() -> Vec<String> {
         "",
         "Usage:",
         "  windie",
-        "  windie api",
-        "  windie inspector",
+        "  windie api start",
+        "  windie api stop",
+        "  windie api output",
+        "  windie inspector start",
+        "  windie inspector stop",
+        "  windie inspector output",
+        "  windie tray",
         "  windie onboard",
         "  windie install <target>",
         "  windie env MCP_KEY=value",
@@ -114,6 +119,7 @@ pub(crate) fn help_lines() -> Vec<String> {
         "  windie status",
         "  windie gateway start",
         "  windie gateway stop",
+        "  windie gateway output",
         "  windie bench",
         "  windie bench --persistence --conversation --runtime --tools --mutations --mcp",
         "  windie bench --runs 100 --json",
@@ -122,8 +128,11 @@ pub(crate) fn help_lines() -> Vec<String> {
         "",
         "Notes:",
         "  windie exits successfully without runtime action.",
-        "  windie api starts the localhost developer API server and prints the inspector URL.",
-        "  windie inspector opens the browser inspector with the current API token.",
+        "  windie api start and stop manage the detached localhost developer API server.",
+        "  windie api output prints the API process stdout and stderr log.",
+        "  windie inspector start and stop manage the detached Inspector server.",
+        "  windie inspector output prints the Inspector process stdout and stderr log.",
+        "  windie tray runs the desktop controller for the independent local components.",
         "  windie onboard configures Bifrost providers and Windie MCP extensions through stdin.",
         "  windie install verifies or installs approved public runtime dependencies.",
         "  windie env edits only ~/.windie/.env and never prints secret values.",
@@ -137,6 +146,7 @@ pub(crate) fn help_lines() -> Vec<String> {
         "  windie inspect <conversation_id> --json prints full read-only runtime state.",
         "  windie gateway start starts the Windie-owned local Bifrost binary.",
         "  windie gateway stop stops the local Bifrost gateway.",
+        "  windie gateway output prints the Bifrost process stdout and stderr log.",
         "  windie models requires the local Bifrost gateway to be running.",
         "  windie run start requires the local Bifrost gateway to be running.",
         "  windie run start uses the conversation model unless --model is passed for the session.",
@@ -639,21 +649,6 @@ pub(crate) fn format_duration(duration: std::time::Duration) -> String {
     } else {
         format!("{}us", duration.as_micros())
     }
-}
-
-/// Percent-encodes one URL query value without adding another dependency.
-pub(crate) fn encode_query_value(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-
-    encoded
 }
 
 /// Formats stored microsecond metrics through the same human-readable duration

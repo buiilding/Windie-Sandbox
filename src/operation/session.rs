@@ -9,7 +9,6 @@ use crate::session::SessionResolution;
 pub enum SessionResumeAction {
     ApproveTool(ToolCallId),
     DenyTool(ToolCallId),
-    Stop,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +54,7 @@ impl<'a> RuntimeDependencies<'a> {
 ///
 /// Sessions are created as selectable branches through the store and started
 /// through the session manager. This helper is only for wakeups that target an
-/// already durable session: approving or denying a tool call, or stopping.
+/// already durable session: approving or denying a tool call.
 pub fn resume_session_from_wakeup(store: &Store, wakeup: Wakeup) -> Result<Option<SessionResume>> {
     let (session_id, action) = match wakeup {
         Wakeup::ApproveTool(decision) => (
@@ -66,15 +65,21 @@ pub fn resume_session_from_wakeup(store: &Store, wakeup: Wakeup) -> Result<Optio
             decision.session_id,
             SessionResumeAction::DenyTool(decision.tool_call_id),
         ),
-        Wakeup::Stop(stop) => (stop.session_id, SessionResumeAction::Stop),
     };
     let session = store.load_session(&session_id)?;
 
-    if action != SessionResumeAction::Stop && session.status != SessionStatus::WaitingForApproval {
+    if session.status != SessionStatus::WaitingForApproval {
         return Ok(None);
     }
 
     Ok(Some(SessionResume { session, action }))
+}
+
+/// Resolves an explicit control input to the durable session it targets.
+pub fn resolve_session_control(store: &Store, control: SessionControl) -> Result<Session> {
+    match control {
+        SessionControl::Cancel(cancellation) => store.load_session(&cancellation.session_id),
+    }
 }
 
 /// Persists the terminal status/head and final event for a session outcome.

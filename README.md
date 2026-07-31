@@ -17,7 +17,7 @@
 
 **AI that lives on your computer.**
 
-Windie is a local AI runtime written in Rust. It provides durable conversation trees, explicit control over model context, permissioned tool execution, and extensibility through MCP servers, plugins, and skills. Running as a local daemon, Windie gives the AI a persistent presence on your computer.
+Windie is a local AI runtime written in Rust that lets you control what your AI sees. Edit, add, or remove messages, branch from any point, and keep every path in one conversation tree. Its daemon keeps sessions running independently of the UI, with permissioned tools and open extensions.
 
 ```bash
 curl -sL https://windieos.com/install | sh
@@ -29,17 +29,27 @@ On Windows PowerShell:
 irm https://windieos.com/install.ps1 | iex
 ```
 
+The installer starts the simple Windie tray controller along with Bifrost, the
+Windie API, and the standalone Inspector as independent local processes. The
+tray invokes these CLI lifecycle commands:
+
+```bash
+windie gateway start|stop|output
+windie api start|stop|output
+windie inspector start|stop|output
+```
+
 ---
 
 ## What Windie Is
 
-Windie is a **layer, not a lock-in**. It's the minimal local harness that other software — agents, tools, workflows — builds on top of. Think of it as the quiet ground floor of an ambient AI operating layer, sitting on your machine, doing exactly what you tell it to and nothing you don't.
+Windie is the runtime beneath your AI—not another chat app. It runs locally and gives you direct control over the context your AI receives: edit, add, or remove messages; branch from any point; and keep every path in one conversation tree. Its daemon keeps the work running independently of the Inspector, while agents, tools, and workflows build on top.
 
 Three principles guide everything Windie does:
 
-- **Foundational** — A minimal local harness other software builds upon. Not a platform trying to own your workflow — the ground floor underneath it.
-- **Transparent** — You always know what your agent is doing and why. No hidden calls, no black boxes. Every capability is legible, inspectable, and yours to revoke.
-- **Yours** — Your harness, your data, your agent, your behavior. It lives on your computer and adapts to you — never the other way around.
+- **Context is yours** — Edit what the AI sees and branch without losing the original.
+- **Execution persists** — Sessions continue independently of the interface.
+- **The system stays open** — Bring your own models, tools, providers, and workflows.
 
 ---
 
