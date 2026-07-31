@@ -8,7 +8,14 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
-Development after `v0.2.0`.
+Development after `v0.2.2`.
+
+## [0.2.2] - 2026-07-31
+
+- Removed the Blender-specific localhost preflight so Blender MCP uses the
+  normal MCP session and tool error flow.
+- Added concise runtime detection output to the installers.
+- Added animated startup progress feedback to the installers.
 
 ## [0.2.0] - 2026-07-30
 
@@ -128,7 +135,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.2
 [0.2.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.0
 [0.1.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.1.1
 [0.1.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.1.0

@@ -22,6 +22,16 @@ case "$os" in
   *) echo "unsupported operating system: $os" >&2; exit 1 ;;
 esac
 
+echo "Checking runtimes"
+for runtime in node npx uv uvx; do
+  if command -v "$runtime" >/dev/null 2>&1; then
+    echo "$runtime: detected"
+  else
+    echo "$runtime: missing"
+  fi
+done
+echo "missing runtimes will be installed and managed by Windie if the selected providers require them"
+
 mkdir -p "$install_dir" "$windie_home/bifrost" "$windie_home/benchmarks"
 if [ ! -f "$windie_home/.env" ]; then
   : > "$windie_home/.env"
@@ -58,7 +68,7 @@ wait_for_health() {
   max_attempts="$2"
   component_name="$3"
   attempt=0
-  progress_bar 80
+  progress_bar 0
   while [ "$attempt" -lt "$max_attempts" ]; do
     if health_check "$health_url"; then
       progress_bar 100
@@ -66,6 +76,9 @@ wait_for_health() {
       return 0
     fi
     attempt=$((attempt + 1))
+    progress_percent=$((5 + (attempt * 90 / max_attempts)))
+    [ "$progress_percent" -gt 95 ] && progress_percent=95
+    progress_bar "$progress_percent"
     sleep 1
   done
   printf '\n'
@@ -96,7 +109,7 @@ inspector_health_url="http://$inspector_address/"
 
 echo "Installing LLM gateway"
 if ! health_check "$gateway_health_url"; then
-  progress_bar 80
+  progress_bar 5
   if ! WINDIE_BIFROST_BIN="$install_dir/bifrost" "$install_dir/windie" gateway start >/dev/null 2>&1; then
     printf '\n'
     echo "failed to start the LLM gateway" >&2
@@ -108,7 +121,7 @@ echo "Started the gateway at http://$gateway_address"
 
 echo "Installing Windie runtime"
 if ! health_check "$api_health_url"; then
-  progress_bar 80
+  progress_bar 5
   if ! "$install_dir/windie" api start >/dev/null 2>&1; then
     printf '\n'
     echo "failed to start the Windie runtime" >&2
@@ -124,7 +137,7 @@ echo "Started the runtime at http://$api_address"
 
 echo "Installing Windie Inspector UI"
 if ! health_check "$inspector_health_url"; then
-  progress_bar 80
+  progress_bar 5
   if ! "$install_dir/windie" inspector start >/dev/null 2>&1; then
     printf '\n'
     echo "failed to start the Windie Inspector UI" >&2
