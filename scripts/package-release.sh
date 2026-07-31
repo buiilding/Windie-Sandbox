@@ -13,8 +13,9 @@
 # scope: it links SQLite through CGO, which needs a native C toolchain.
 #
 # Tarball layout consumed by install.sh:
-#   windie            CLI + embedded API/inspector
+#   windie            CLI + API server
 #   bifrost           owned Bifrost gateway binary (sibling of `windie`)
+#   windie-inspector  standalone Inspector server
 #   release-manifest.txt  target/version metadata for installer diagnostics
 
 set -euo pipefail
@@ -46,7 +47,7 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 
 echo "==> windie release: target=$RUST_TARGET label=$ASSET_LABEL version=$VERSION"
 
-# --- 1. Build the inspector UI (embedded into the windie binary) -------------
+# --- 1. Build the Inspector UI (embedded into windie-inspector) --------------
 # rust-embed captures dev/windie-inspector/build at compile time, so the UI
 # must be built before cargo.
 echo "==> building inspector UI"
@@ -58,6 +59,8 @@ echo "==> building windie ($RUST_TARGET)"
 cargo build --release --target "$RUST_TARGET" --manifest-path "$REPO_ROOT/Cargo.toml"
 WINDIE_BIN="$REPO_ROOT/target/$RUST_TARGET/release/windie"
 [ -f "$WINDIE_BIN" ] || { echo "windie binary not found at $WINDIE_BIN" >&2; exit 1; }
+INSPECTOR_BIN="$REPO_ROOT/target/$RUST_TARGET/release/windie-inspector"
+[ -f "$INSPECTOR_BIN" ] || { echo "windie inspector binary not found at $INSPECTOR_BIN" >&2; exit 1; }
 
 # --- 3. Build the Bifrost UI, then the Bifrost binary ------------------------
 # main.go has //go:embed all:ui, so the UI must be produced first. `npm run
@@ -104,6 +107,7 @@ BIFROST_BIN="$BIFROST_DIR/tmp/bifrost-http"
 echo "==> assembling tarball"
 install -m 0755 "$WINDIE_BIN" "$STAGING_DIR/windie"
 install -m 0755 "$BIFROST_BIN" "$STAGING_DIR/bifrost"
+install -m 0755 "$INSPECTOR_BIN" "$STAGING_DIR/windie-inspector"
 cat > "$STAGING_DIR/release-manifest.txt" <<EOF
 windie_version=$VERSION
 bifrost_version=$VERSION
@@ -111,7 +115,7 @@ asset_label=$ASSET_LABEL
 rust_target=$RUST_TARGET
 os=$RELEASE_OS
 cpu=$RELEASE_CPU
-contents=windie,bifrost
+contents=windie,bifrost,windie-inspector
 EOF
 
 "$WINDIE_BIN" --version >/dev/null
@@ -119,7 +123,7 @@ EOF
 
 mkdir -p "$DIST_DIR"
 TARBALL="$DIST_DIR/windie-$ASSET_LABEL.tar.gz"
-tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost release-manifest.txt
+tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector release-manifest.txt
 sha256sum "$TARBALL" > "$TARBALL.sha256"
 
 echo "==> wrote $TARBALL"

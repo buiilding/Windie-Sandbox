@@ -45,7 +45,7 @@ pub(crate) fn resolve_command(program: &str) -> Result<PathBuf> {
         return Ok(path);
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     if program == "cua-driver"
         && let Some(path) = cua_driver_command()?
     {
@@ -417,25 +417,50 @@ fn local_runtime_command(program: &str) -> Result<Option<PathBuf>> {
     find_file(&root, program)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn cua_driver_command() -> Result<Option<PathBuf>> {
-    let candidates = [
-        env::var_os("LOCALAPPDATA").map(|path| {
-            PathBuf::from(path)
-                .join("Programs")
-                .join("Cua")
-                .join("cua-driver")
-                .join("bin")
-                .join("cua-driver.exe")
-        }),
-        env::var_os("USERPROFILE").map(|path| {
-            PathBuf::from(path)
-                .join(".cua-driver")
-                .join("packages")
-                .join("current")
-                .join("cua-driver.exe")
-        }),
-    ];
+    let mut candidates = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.extend([
+            env::var_os("LOCALAPPDATA").map(|path| {
+                PathBuf::from(path)
+                    .join("Programs")
+                    .join("Cua")
+                    .join("cua-driver")
+                    .join("bin")
+                    .join("cua-driver.exe")
+            }),
+            env::var_os("USERPROFILE").map(|path| {
+                PathBuf::from(path)
+                    .join(".cua-driver")
+                    .join("packages")
+                    .join("current")
+                    .join("cua-driver.exe")
+            }),
+        ]);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // The upstream macOS installer places a stable launcher in this
+        // directory and only adds the directory to the user's shell profile.
+        // Windie must check it directly because an already-running API process
+        // does not receive PATH changes made by a child installer shell.
+        if let Some(home) = env::var_os("HOME") {
+            candidates.push(Some(
+                PathBuf::from(home)
+                    .join(".local")
+                    .join("bin")
+                    .join("cua-driver"),
+            ));
+        }
+        candidates.push(Some(PathBuf::from(
+            "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+        )));
+    }
+
     Ok(candidates.into_iter().flatten().find(|path| path.is_file()))
 }
 

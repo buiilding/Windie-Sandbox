@@ -93,7 +93,7 @@ export function WindieProvider({ children }) {
     (error) => setApiError(error.message),
     [setApiError]
   );
-  const { gatewayRunning, refreshGateway } = useGatewayStore({
+  const { gatewayRunning } = useGatewayStore({
     onError: handleResourceError,
   });
   const {
@@ -399,8 +399,6 @@ export function WindieProvider({ children }) {
     [runMutation, setActiveConvId, setSelectedNodeId]
   );
 
-  const startGateway = useCallback(() => runMutation(async () => { const r = await apiRequest("/api/gateway/start", { method: "POST" }); await refreshGateway(); await refreshModels().catch(() => {}); return r; }, { reload: false }), [refreshGateway, refreshModels, runMutation]);
-  const stopGateway = useCallback(() => runMutation(async () => { const r = await apiRequest("/api/gateway/stop", { method: "POST" }); await refreshGateway(); await refreshModels().catch(() => {}); return r; }, { reload: false }), [refreshGateway, refreshModels, runMutation]);
   const value = {
     conversations,
     activeConv,
@@ -469,9 +467,6 @@ export function WindieProvider({ children }) {
     sendMessage,
     continueConversation,
     stopStreaming,
-    startGateway,
-    stopGateway,
-    refreshGateway,
     approveToolCall,
     denyToolCall,
     refreshSessions,

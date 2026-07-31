@@ -2,7 +2,8 @@
 #
 # Usage: scripts/package-release.ps1 <rust-target> <asset-label> <dist-dir>
 # The Windows runner already matches the target, so Rust and CGO builds remain
-# native and the resulting archive contains windie.exe and bifrost.exe.
+# native and the resulting archive contains the unified Windie executable,
+# Bifrost, and Inspector.
 
 [CmdletBinding()]
 param(
@@ -54,6 +55,10 @@ try {
     if (-not (Test-Path -LiteralPath $WindieBinary -PathType Leaf)) {
         throw "windie binary not found at $WindieBinary"
     }
+    $InspectorBinary = Join-Path $RepoRoot "target\$RustTarget\release\windie-inspector.exe"
+    if (-not (Test-Path -LiteralPath $InspectorBinary -PathType Leaf)) {
+        throw "windie inspector binary not found at $InspectorBinary"
+    }
 
     Write-Host "==> building bifrost UI"
     Invoke-Native "npm" @("ci", "--prefix", (Join-Path $BifrostDir "ui"))
@@ -102,6 +107,7 @@ try {
 
     Copy-Item -LiteralPath $WindieBinary -Destination (Join-Path $StagingDir "windie.exe")
     Copy-Item -LiteralPath $BifrostBinary -Destination (Join-Path $StagingDir "bifrost.exe")
+    Copy-Item -LiteralPath $InspectorBinary -Destination (Join-Path $StagingDir "windie-inspector.exe")
     @(
         "windie_version=$Version"
         "bifrost_version=$Version"
@@ -109,13 +115,13 @@ try {
         "rust_target=$RustTarget"
         "os=windows"
         "cpu=$(if ($RustTarget.StartsWith('aarch64')) { 'aarch64' } else { 'x86_64' })"
-        "contents=windie.exe,bifrost.exe"
+        "contents=windie.exe,bifrost.exe,windie-inspector.exe"
     ) | Set-Content -LiteralPath (Join-Path $StagingDir "release-manifest.txt") -Encoding utf8
     Invoke-Native $WindieBinary @("--version")
     & $BifrostBinary --help *> $null
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
     $Archive = Join-Path $DistDir "windie-$AssetLabel.zip"
-    Compress-Archive -Path (Join-Path $StagingDir "windie.exe"), (Join-Path $StagingDir "bifrost.exe"), (Join-Path $StagingDir "release-manifest.txt") -DestinationPath $Archive -Force
+    Compress-Archive -Path (Join-Path $StagingDir "windie.exe"), (Join-Path $StagingDir "bifrost.exe"), (Join-Path $StagingDir "windie-inspector.exe"), (Join-Path $StagingDir "release-manifest.txt") -DestinationPath $Archive -Force
     (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant() + "  " + (Split-Path $Archive -Leaf) | Set-Content -LiteralPath "$Archive.sha256" -Encoding ascii
     Write-Host "==> wrote $Archive"
     Get-Item -LiteralPath $Archive | Select-Object FullName, Length

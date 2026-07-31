@@ -21,12 +21,12 @@ use crate::operation::{self, MessageInputPart, RuntimeDependencies};
 use crate::output::RuntimeOutput;
 use crate::runtime::RuntimeEventSink;
 use crate::session::{
-    Session, SessionEvent, SessionEventRecord, SessionId, SessionQueryResult, SessionResolution,
-    SessionStatus,
+    Session, SessionCancellation, SessionControl, SessionEvent, SessionEventRecord, SessionId,
+    SessionQueryResult, SessionResolution, SessionStatus,
 };
 use crate::store::Store;
 use crate::tool_provider::ToolProviderRegistry;
-use crate::wakeup::{StopWakeup, ToolDecisionWakeup, Wakeup};
+use crate::wakeup::{ToolDecisionWakeup, Wakeup};
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -422,18 +422,15 @@ impl SessionManager {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
-        let Some(resume) = operation::resume_session_from_wakeup(
+        let session = operation::resolve_session_control(
             &store,
-            Wakeup::Stop(StopWakeup {
+            SessionControl::Cancel(SessionCancellation {
                 session_id: session_id.clone(),
             }),
-        )?
-        else {
-            return Ok(());
-        };
+        )?;
         drop(store);
 
-        let session_key = resume.session.id.as_str().to_string();
+        let session_key = session.id.as_str().to_string();
         let running_task = self
             .active
             .lock()
@@ -445,8 +442,8 @@ impl SessionManager {
         }
 
         let mut store = self.open_store()?;
-        store.update_session_status(&resume.session.id, SessionStatus::Cancelled, None)?;
-        let record = store.append_session_event(&resume.session.id, SessionEvent::Cancelled)?;
+        store.update_session_status(&session.id, SessionStatus::Cancelled, None)?;
+        let record = store.append_session_event(&session.id, SessionEvent::Cancelled)?;
 
         // Send the terminal event on the durable channel, then remove it so the
         // stream closes after delivering the cancellation.
@@ -812,7 +809,6 @@ impl SessionManager {
         let session_id = match &wakeup {
             Wakeup::ApproveTool(decision) => &decision.session_id,
             Wakeup::DenyTool(decision) => &decision.session_id,
-            Wakeup::Stop(stop) => &stop.session_id,
         };
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
@@ -838,7 +834,6 @@ impl SessionManager {
             operation::SessionResumeAction::DenyTool(tool_call_id) => {
                 SessionCommand::DenyTool(tool_call_id)
             }
-            operation::SessionResumeAction::Stop => return Ok(()),
         };
 
         self.spawn(

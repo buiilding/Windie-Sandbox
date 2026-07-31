@@ -1,21 +1,4 @@
 const API_BASE = process.env.REACT_APP_WINDIE_API_URL || "http://127.0.0.1:8787";
-const API_TOKEN_STORAGE_KEY = "windie_api_token";
-
-function apiToken() {
-  const params = new URLSearchParams(window.location.search);
-  const tokenFromUrl = params.get("windie_token");
-  if (tokenFromUrl) {
-    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, tokenFromUrl);
-    return tokenFromUrl;
-  }
-
-  return (
-    process.env.REACT_APP_WINDIE_API_TOKEN ||
-    window.localStorage.getItem(API_TOKEN_STORAGE_KEY) ||
-    ""
-  );
-}
-
 function parseApiBody(text) {
   if (!text) return null;
   try {
@@ -51,11 +34,7 @@ function parseSseBlock(block) {
 }
 
 async function streamSse(path, fallbackError, onEvent, options = {}) {
-  const token = apiToken();
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      ...(token ? { "X-Windie-Api-Token": token } : {}),
-    },
     signal: options.signal,
   });
 

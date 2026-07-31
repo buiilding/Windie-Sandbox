@@ -30,7 +30,7 @@ impl From<ModelInfo> for ModelResponse {
 
 /// Lists models reported by the running gateway for API clients.
 pub(super) async fn list_models(
-    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::State(state): State<ApiState>,
 ) -> ApiResult<ModelListResponse> {
     let models = operation::list_models(
         GatewayUrl::new(state.gateway_url),
@@ -45,7 +45,7 @@ pub(super) async fn list_models(
 
 /// Lists Bifrost's complete provider catalog for onboarding clients.
 pub(super) async fn list_provider_catalog(
-    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::State(state): State<ApiState>,
 ) -> ApiResult<crate::llm::ProviderCatalog> {
     let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
     Ok(Json(client.provider_catalog().await?))
@@ -53,7 +53,7 @@ pub(super) async fn list_provider_catalog(
 
 /// Lists redacted keys for one Bifrost-managed LLM provider.
 pub(super) async fn list_provider_keys(
-    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::State(state): State<ApiState>,
     Path(provider): Path<String>,
 ) -> ApiResult<crate::llm::ProviderKeyList> {
     let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
@@ -67,12 +67,8 @@ pub(super) struct EnsureProviderResponse {
 }
 
 /// Creates Bifrost's default provider configuration before its first key.
-///
-/// Onboarding clients call this before submitting a key for a provider that
-/// has not been configured yet. Bifrost treats an existing provider as a
-/// no-op, so clients may call this unconditionally.
 pub(super) async fn ensure_provider(
-    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::State(state): State<ApiState>,
     Path(provider): Path<String>,
 ) -> ApiResult<EnsureProviderResponse> {
     let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
@@ -82,7 +78,7 @@ pub(super) async fn ensure_provider(
 
 /// Creates one Bifrost-managed provider key from an onboarding client.
 pub(super) async fn create_provider_key(
-    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::State(state): State<ApiState>,
     Path(provider): Path<String>,
     Json(request): Json<crate::llm::CreateProviderKey>,
 ) -> ApiResult<crate::llm::ProviderKey> {
@@ -92,7 +88,7 @@ pub(super) async fn create_provider_key(
 
 /// Deletes one Bifrost-managed LLM provider key.
 pub(super) async fn delete_provider_key(
-    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::State(state): State<ApiState>,
     Path((provider, key_id)): Path<(String, String)>,
 ) -> ApiResult<crate::llm::ProviderKey> {
     let client = crate::llm::BifrostManagementClient::new(state.gateway_url);
@@ -107,7 +103,7 @@ pub(super) struct ModelParametersQuery {
 
 /// Loads normalized Bifrost model-parameter metadata for one selected model.
 pub(super) async fn model_parameters(
-    axum::extract::State(state): axum::extract::State<ApiState>,
+    axum::extract::State(state): State<ApiState>,
     Query(query): Query<ModelParametersQuery>,
 ) -> ApiResult<operation::ModelRuntimeParameters> {
     let model = ModelName::new(query.model);
@@ -119,48 +115,6 @@ pub(super) async fn model_parameters(
     .await?;
 
     Ok(Json(parameters))
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-/// Result of a gateway start request.
-pub(super) enum GatewayStartResponse {
-    AlreadyRunning,
-    Started,
-}
-
-/// Starts the configured local Bifrost gateway when possible.
-pub(super) async fn start_gateway(
-    axum::extract::State(state): axum::extract::State<ApiState>,
-) -> ApiResult<GatewayStartResponse> {
-    let status = operation::start_gateway(GatewayUrl::new(state.gateway_url)).await?;
-    let response = match status {
-        crate::gateway::GatewayStart::AlreadyRunning => GatewayStartResponse::AlreadyRunning,
-        crate::gateway::GatewayStart::Started => GatewayStartResponse::Started,
-    };
-
-    Ok(Json(response))
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-/// Result of a gateway stop request.
-pub(super) enum GatewayStopResponse {
-    NotRunning,
-    Stopped,
-}
-
-/// Stops the configured local Bifrost gateway when Windie can identify it.
-pub(super) async fn stop_gateway(
-    axum::extract::State(state): axum::extract::State<ApiState>,
-) -> ApiResult<GatewayStopResponse> {
-    let status = operation::stop_gateway(GatewayUrl::new(state.gateway_url)).await?;
-    let response = match status {
-        crate::gateway::GatewayStop::NotRunning => GatewayStopResponse::NotRunning,
-        crate::gateway::GatewayStop::Stopped => GatewayStopResponse::Stopped,
-    };
-
-    Ok(Json(response))
 }
 
 #[derive(Debug, Deserialize)]

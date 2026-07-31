@@ -7,20 +7,22 @@
 
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 
 use super::runtime;
-use uuid::Uuid;
 
 const ENV_FILE_NAME: &str = ".env";
-const API_TOKEN_FILE_NAME: &str = "api-token";
 const BIFROST_DIR: &str = "bifrost";
 const BENCHMARK_DIR: &str = "benchmarks";
+const GATEWAY_LOG_FILE_NAME: &str = "windie-gateway.log";
+const GATEWAY_PID_FILE_NAME: &str = "bifrost.pid";
+const API_LOG_FILE_NAME: &str = "windie-api.log";
+const API_PID_FILE_NAME: &str = "windie-api.pid";
 const INSPECTOR_LOG_FILE_NAME: &str = "windie-inspector.log";
+const INSPECTOR_PID_FILE_NAME: &str = "windie-inspector.pid";
 const LLM_ENV_KEYS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -82,10 +84,14 @@ pub struct InstallReport {
 pub struct WindieLayout {
     pub root: PathBuf,
     pub env_file: PathBuf,
-    pub api_token_file: PathBuf,
     pub bifrost_dir: PathBuf,
     pub benchmarks_dir: PathBuf,
+    pub gateway_log_file: PathBuf,
+    pub gateway_pid_file: PathBuf,
+    pub api_log_file: PathBuf,
+    pub api_pid_file: PathBuf,
     pub inspector_log_file: PathBuf,
+    pub inspector_pid_file: PathBuf,
 }
 
 /// Creates Windie's required user-local directories and empty env file.
@@ -111,28 +117,24 @@ pub fn env_file_path() -> Result<PathBuf> {
     Ok(windie_layout()?.env_file)
 }
 
-/// Returns the stable localhost API token shared by `windie api` and UI clients.
-pub fn ensure_api_token() -> Result<String> {
+/// Returns the persistent log file for one managed component.
+pub fn component_log_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
     let layout = ensure_windie_layout()?;
-    if layout.api_token_file.exists() {
-        let token = fs::read_to_string(&layout.api_token_file)
-            .with_context(|| format!("failed to read {}", layout.api_token_file.display()))?
-            .trim()
-            .to_string();
-        if !token.is_empty() {
-            return Ok(token);
-        }
-    }
-
-    let token = Uuid::new_v4().to_string();
-    write_secret_file(&layout.api_token_file, &format!("{token}\n"))?;
-
-    Ok(token)
+    Ok(match component {
+        crate::process::ManagedComponent::Gateway => layout.gateway_log_file,
+        crate::process::ManagedComponent::Api => layout.api_log_file,
+        crate::process::ManagedComponent::Inspector => layout.inspector_log_file,
+    })
 }
 
-/// Returns the log file used by the detached local inspector dev server.
-pub fn inspector_log_file_path() -> Result<PathBuf> {
-    Ok(ensure_windie_layout()?.inspector_log_file)
+/// Returns the persistent PID file for one managed component.
+pub fn component_pid_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
+    let layout = ensure_windie_layout()?;
+    Ok(match component {
+        crate::process::ManagedComponent::Gateway => layout.gateway_pid_file,
+        crate::process::ManagedComponent::Api => layout.api_pid_file,
+        crate::process::ManagedComponent::Inspector => layout.inspector_pid_file,
+    })
 }
 
 /// Lists keys currently present in Windie's provider-key environment file.
@@ -213,12 +215,6 @@ pub fn unset_env_values(keys: &[String]) -> Result<PathBuf> {
     Ok(layout.env_file)
 }
 
-/// Returns whether a key belongs to an LLM provider and therefore must be
-/// managed by Bifrost instead of Windie's MCP environment file.
-pub fn is_llm_env_key(key: &str) -> bool {
-    LLM_ENV_KEYS.contains(&key)
-}
-
 /// Installs or verifies one approved Windie runtime dependency.
 pub fn install_target(target: &str) -> Result<InstallReport> {
     ensure_windie_layout()?;
@@ -267,10 +263,14 @@ fn windie_layout() -> Result<WindieLayout> {
 
     Ok(WindieLayout {
         env_file: root.join(ENV_FILE_NAME),
-        api_token_file: root.join(API_TOKEN_FILE_NAME),
         bifrost_dir: root.join(BIFROST_DIR),
         benchmarks_dir: root.join(BENCHMARK_DIR),
+        gateway_log_file: root.join(BIFROST_DIR).join(GATEWAY_LOG_FILE_NAME),
+        gateway_pid_file: root.join(BIFROST_DIR).join(GATEWAY_PID_FILE_NAME),
+        api_log_file: root.join(API_LOG_FILE_NAME),
+        api_pid_file: root.join(API_PID_FILE_NAME),
         inspector_log_file: root.join(INSPECTOR_LOG_FILE_NAME),
+        inspector_pid_file: root.join(INSPECTOR_PID_FILE_NAME),
         root,
     })
 }
@@ -462,23 +462,6 @@ fn write_env_lines(path: &Path, lines: &[String]) -> Result<()> {
         format!("{}\n", lines.join("\n"))
     };
     fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))
-}
-
-/// Writes a user-local secret file without inheriting permissive default modes.
-fn write_secret_file(path: &Path, text: &str) -> Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    file.write_all(text.as_bytes())
-        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 #[cfg(test)]

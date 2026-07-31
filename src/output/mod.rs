@@ -8,9 +8,9 @@ mod formatting;
 mod terminal;
 
 pub(crate) use formatting::{
-    ConversationListReport, available_tool_lines, conversation_lines, encode_query_value,
-    format_duration, help_lines, invalid_usage_lines, message_lines, model_lines,
-    performance_comparison_lines, performance_report_lines, print_lines, text_preview, tree_lines,
+    ConversationListReport, available_tool_lines, conversation_lines, format_duration, help_lines,
+    invalid_usage_lines, message_lines, model_lines, performance_comparison_lines,
+    performance_report_lines, print_lines, text_preview, tree_lines,
 };
 pub(crate) use terminal::{RuntimeOutput, TerminalOutput};
 

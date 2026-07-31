@@ -8,6 +8,7 @@ use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::watch;
 use tower::ServiceExt;
 
 use crate::conversation::{MessageMetadata, MessagePart, Role, ToolCall};
@@ -124,7 +125,31 @@ async fn health_does_not_require_token() {
 }
 
 #[tokio::test]
-async fn protected_routes_reject_missing_or_invalid_token() {
+async fn shutdown_does_not_require_token_and_signals_server() {
+    let db_path = temp_database_path();
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let app = test_app_with_shutdown(db_path.clone(), shutdown_tx);
+
+    let response = app
+        .oneshot(
+            HttpRequest::builder()
+                .method(Method::POST)
+                .uri("/api/shutdown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json_body(response).await["stopping"], true);
+    shutdown_rx.changed().await.unwrap();
+    assert!(*shutdown_rx.borrow());
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn api_routes_accept_requests_without_a_token() {
     let app = test_app(temp_database_path());
     let missing = app
         .clone()
@@ -137,20 +162,7 @@ async fn protected_routes_reject_missing_or_invalid_token() {
         )
         .await
         .unwrap();
-    let invalid = app
-        .oneshot(
-            HttpRequest::builder()
-                .method(Method::GET)
-                .uri("/api/conversations")
-                .header(API_TOKEN_HEADER, "wrong-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(missing.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1385,6 +1397,25 @@ fn test_app_with_gateway(store_path: PathBuf, gateway_url: &str) -> Router {
 }
 
 fn test_app_with_urls(store_path: PathBuf, gateway_url: &str, base_url: &str) -> Router {
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+    test_app_with_urls_and_shutdown(store_path, gateway_url, base_url, shutdown_tx)
+}
+
+fn test_app_with_shutdown(store_path: PathBuf, shutdown_tx: watch::Sender<bool>) -> Router {
+    test_app_with_urls_and_shutdown(
+        store_path,
+        "http://localhost:8080",
+        "http://localhost:8080/v1",
+        shutdown_tx,
+    )
+}
+
+fn test_app_with_urls_and_shutdown(
+    store_path: PathBuf,
+    gateway_url: &str,
+    base_url: &str,
+    shutdown_tx: watch::Sender<bool>,
+) -> Router {
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
     let session_manager = Arc::new(SessionManager::new(
         Some(store_path.clone()),
@@ -1396,10 +1427,10 @@ fn test_app_with_urls(store_path: PathBuf, gateway_url: &str, base_url: &str) ->
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
         model: "openai/test".to_string(),
-        api_token: "test-token".to_string(),
         store_path: Some(store_path),
         tool_registry,
         session_manager,
+        shutdown_tx,
     })
 }
 
@@ -1417,10 +1448,10 @@ fn test_app_with_tool_registry(
         gateway_url: "http://localhost:8080".to_string(),
         base_url: "http://localhost:8080/v1".to_string(),
         model: "openai/test".to_string(),
-        api_token: "test-token".to_string(),
         store_path: Some(store_path),
         tool_registry,
         session_manager,
+        shutdown_tx: watch::channel(false).0,
     })
 }
 
@@ -1500,10 +1531,7 @@ async fn write_mock_status(stream: &mut tokio::net::TcpStream, status: u16, body
 }
 
 fn authed_request(method: Method, uri: &str, body: Option<Value>) -> HttpRequest<Body> {
-    let mut builder = HttpRequest::builder()
-        .method(method)
-        .uri(uri)
-        .header(API_TOKEN_HEADER, "test-token");
+    let mut builder = HttpRequest::builder().method(method).uri(uri);
 
     let body = match body {
         Some(value) => {

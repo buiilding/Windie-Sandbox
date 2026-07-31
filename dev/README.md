@@ -13,14 +13,15 @@ state transitions, tool execution, or permission policy.
 Run it from this repo with:
 
 ```bash
-target/release/windie inspector
+target/release/windie inspector start
 ```
 
-Start the API from the repository root:
+Start the API independently from the repository root:
 
 ```bash
-target/release/windie api
+target/release/windie api start
 ```
 
-The inspector command starts the React dev server when needed and opens the
-browser with the API token already attached.
+For a production-style local Inspector, build the frontend and run
+`windie inspector start`; it serves the standalone UI on port 3000. The
+Inspector calls the localhost API without an API token.

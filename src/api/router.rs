@@ -7,24 +7,13 @@ use super::*;
 /// Handlers translate HTTP requests into shared operations and map returned
 /// values into JSON responses. The router only owns HTTP mapping.
 pub(super) fn router(state: ApiState) -> Router {
-    Router::new()
-        // Embedded inspector UI and its static assets are served without the
-        // API token so the browser can load the app before it has a token.
-        // The CRA build references assets with absolute `/static/...` paths,
-        // so the UI is served from the server root rather than a subpath.
-        .route("/", get(ui::index))
-        .route("/static/{*path}", get(ui::static_asset))
-        .route("/asset-manifest.json", get(ui::asset_manifest))
-        .route("/favicon.ico", get(ui::favicon))
-        .route("/manifest.json", get(ui::manifest))
-        .merge(api_router(state))
+    Router::new().merge(api_router(state))
 }
 
-/// Builds the authenticated `/api/*` route table.
+/// Builds the unauthenticated localhost `/api/*` route table.
 ///
-/// CORS stays scoped to the API so browser clients served from the webpack dev
-/// server (ports 3000/5173) keep working, while the same-origin embedded UI
-/// needs no cross-origin allowance.
+/// CORS stays scoped to the API so the standalone Inspector and browser clients
+/// served from webpack dev servers (ports 3000/5173) can call localhost.
 fn api_router(state: ApiState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin([
@@ -40,11 +29,12 @@ fn api_router(state: ApiState) -> Router {
             Method::PATCH,
             Method::DELETE,
         ])
-        .allow_headers([CONTENT_TYPE, HeaderName::from_static(API_TOKEN_HEADER)]);
+        .allow_headers([CONTENT_TYPE]);
 
     Router::new()
         .route("/api/health", get(health))
         .route("/api/status", get(status))
+        .route("/api/shutdown", post(shutdown))
         .route("/api/models", get(list_models))
         .route("/api/llm/providers", get(list_provider_catalog))
         .route(
@@ -83,8 +73,6 @@ fn api_router(state: ApiState) -> Router {
             "/api/providers/{provider_id}/health-check",
             post(health_check_provider),
         )
-        .route("/api/gateway/start", post(start_gateway))
-        .route("/api/gateway/stop", post(stop_gateway))
         .route(
             "/api/conversations",
             get(list_conversations).post(create_conversation),
@@ -197,10 +185,6 @@ fn api_router(state: ApiState) -> Router {
             "/api/conversations/{conversation_id}/input-tokens",
             post(count_input_tokens),
         )
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_api_token,
-        ))
         .layer(DefaultBodyLimit::max(API_JSON_BODY_LIMIT_BYTES))
         .layer(cors)
         .with_state(state)

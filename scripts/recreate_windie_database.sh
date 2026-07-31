@@ -22,7 +22,7 @@ fi
 
 (
   cd "$WINDIE_DIR"
-  cargo run --quiet -- ls >/dev/null
+  cargo run --quiet --bin windie -- ls >/dev/null
 )
 
 if [ ! -f "$DB_PATH" ]; then

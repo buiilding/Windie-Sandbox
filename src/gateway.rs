@@ -25,15 +25,8 @@ const BIFROST_DATA_DIR: &str = "data";
 const BIFROST_LOG_FILE: &str = "windie-gateway.log";
 const BIFROST_BINARY_ENV: &str = "WINDIE_BIFROST_BIN";
 const BIFROST_PORT: &str = "8080";
-const ENV_FILE_NAME: &str = ".env";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(200);
-
-#[cfg(windows)]
-const REQUIRED_PLATFORM_ENVIRONMENT: &[&str] = &["TEMP", "TMP", "SystemRoot", "WINDIR"];
-
-#[cfg(not(windows))]
-const REQUIRED_PLATFORM_ENVIRONMENT: &[&str] = &["TMPDIR"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the local Bifrost gateway health endpoint.
@@ -213,16 +206,14 @@ impl BifrostGateway {
 
     /// Spawns the owned Bifrost binary with the first available path.
     ///
-    /// The child process environment is intentionally cleared first. Bifrost
-    /// receives only variables loaded from Windie's `.env` file so provider keys
-    /// are explicit instead of inherited from the user's shell environment.
+    /// Bifrost inherits the same environment as Windie. There is no separate
+    /// environment allowlist or `.env` injection at this process boundary.
     fn start_process(&self) -> Result<()> {
         let launcher = find_bifrost_launcher()?;
-        let environment = load_bifrost_environment()?;
 
         let BifrostLauncher::Binary { path, paths } = launcher;
         let port = self.url.port();
-        start_binary_process(&path, &paths, &port, environment)
+        start_binary_process(&path, &paths, &port)
     }
 
     /// Polls the health endpoint until startup succeeds or times out.
@@ -286,12 +277,7 @@ impl BifrostGateway {
 }
 
 /// Starts the Windie-owned Bifrost binary.
-fn start_binary_process(
-    binary: &Path,
-    paths: &BifrostPaths,
-    port: &str,
-    environment: Vec<(String, String)>,
-) -> Result<()> {
+fn start_binary_process(binary: &Path, paths: &BifrostPaths, port: &str) -> Result<()> {
     validate_release_manifest(binary)?;
     fs::create_dir_all(&paths.app_dir).with_context(|| {
         format!(
@@ -311,9 +297,6 @@ fn start_binary_process(
         .arg("-port")
         .arg(port)
         .current_dir(&paths.dir)
-        .env_clear()
-        .envs(required_platform_environment())
-        .envs(environment)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -431,28 +414,6 @@ fn owned_bifrost_candidates() -> Vec<PathBuf> {
     }
 
     candidates
-}
-
-/// Returns the small set of host variables Bifrost and SQLite need at startup.
-///
-/// Bifrost is intentionally launched with a cleared environment so provider
-/// credentials and unrelated shell state are not inherited. Windows SQLite
-/// migrations still need the OS temporary-directory and system-root variables,
-/// so those variables are restored explicitly before the `.env` values are
-/// applied.
-fn required_platform_environment() -> Vec<(String, String)> {
-    platform_environment_from(REQUIRED_PLATFORM_ENVIRONMENT, |key| env::var(key).ok())
-}
-
-/// Selects platform variables from a lookup function so the allowlist can be
-/// tested without mutating the process-wide environment.
-fn platform_environment_from(
-    keys: &[&str],
-    lookup: impl Fn(&str) -> Option<String>,
-) -> Vec<(String, String)> {
-    keys.iter()
-        .filter_map(|key| lookup(key).map(|value| ((*key).to_string(), value)))
-        .collect()
 }
 
 /// Builds the owned Bifrost runtime paths under `~/.windie`.
@@ -722,81 +683,6 @@ fn is_bifrost_command(command: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Loads the environment variables Windie explicitly gives to Bifrost.
-///
-/// Missing `.env` is allowed so the gateway can still start for development
-/// without provider keys. Provider calls may fail later until keys are added.
-fn load_bifrost_environment() -> Result<Vec<(String, String)>> {
-    let Some(path) = find_env_file_path() else {
-        return Ok(Vec::new());
-    };
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read environment file {}", path.display()))?;
-
-    let values = parse_env_file(&text)
-        .with_context(|| format!("failed to parse {}", path.display()))?
-        .into_iter()
-        .filter(|(key, _)| !local::is_llm_env_key(key))
-        .collect();
-
-    Ok(values)
-}
-
-/// Finds Windie's provider-key environment file.
-fn find_env_file_path() -> Option<PathBuf> {
-    env_file_path().filter(|path| path.is_file())
-}
-
-/// Returns the only supported provider-key environment file path.
-fn env_file_path() -> Option<PathBuf> {
-    local::windie_home_dir()
-        .ok()
-        .map(|home| home.join(ENV_FILE_NAME))
-}
-
-/// Parses simple KEY=VALUE lines from a `.env` file.
-///
-/// Empty lines and `#` comments are ignored. `export KEY=VALUE` is accepted.
-/// Single or double quotes around the entire value are stripped.
-fn parse_env_file(text: &str) -> Result<Vec<(String, String)>> {
-    let mut values = Vec::new();
-
-    for (index, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let line = line.strip_prefix("export ").unwrap_or(line).trim();
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(anyhow!("invalid .env line {}", index + 1));
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(anyhow!("empty .env key on line {}", index + 1));
-        }
-
-        values.push((key.to_string(), unquote_env_value(value.trim()).to_string()));
-    }
-
-    Ok(values)
-}
-
-/// Removes matching quote characters around a full `.env` value.
-fn unquote_env_value(value: &str) -> &str {
-    if value.len() >= 2 {
-        let bytes = value.as_bytes();
-        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
-            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
-        {
-            return &value[1..value.len() - 1];
-        }
-    }
-
-    value
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,59 +699,6 @@ mod tests {
     fn gateway_url_defaults_port_when_omitted() {
         assert_eq!(GatewayUrl::new("http://localhost").port(), "8080");
         assert_eq!(GatewayUrl::new("http://localhost:8081").port(), "8081");
-    }
-
-    #[test]
-    fn parses_env_file_values() {
-        let values = parse_env_file(
-            r#"
-            # test launch environment
-            WINDIE_TEST_KEY=alpha
-            export WINDIE_SECOND_TEST_KEY='beta'
-            WINDIE_THIRD_TEST_KEY="gamma"
-            EMPTY=
-            "#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            values,
-            vec![
-                ("WINDIE_TEST_KEY".to_string(), "alpha".to_string()),
-                ("WINDIE_SECOND_TEST_KEY".to_string(), "beta".to_string()),
-                ("WINDIE_THIRD_TEST_KEY".to_string(), "gamma".to_string()),
-                ("EMPTY".to_string(), "".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn env_file_path_uses_windie_home() {
-        assert_eq!(
-            env_file_path(),
-            Some(local::windie_home_dir().unwrap().join(ENV_FILE_NAME))
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_env_file_line() {
-        let error = parse_env_file("OPENAI_API_KEY").unwrap_err();
-
-        assert!(error.to_string().contains("invalid .env line 1"));
-    }
-
-    #[test]
-    fn preserves_only_required_platform_environment() {
-        let values = platform_environment_from(REQUIRED_PLATFORM_ENVIRONMENT, |key| {
-            Some(format!("value-for-{key}"))
-        });
-        let expected = REQUIRED_PLATFORM_ENVIRONMENT
-            .iter()
-            .map(|key| ((*key).to_string(), format!("value-for-{key}")))
-            .collect::<Vec<_>>();
-
-        assert_eq!(values, expected);
-        assert!(!values.iter().any(|(key, _)| key == "OPENAI_API_KEY"));
     }
 
     #[test]

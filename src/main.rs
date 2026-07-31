@@ -8,7 +8,6 @@ mod api;
 mod cli;
 mod context;
 mod conversation;
-mod dev;
 mod error;
 mod gateway;
 mod input;
@@ -18,11 +17,13 @@ mod mcp;
 mod operation;
 mod output;
 mod perf;
+mod process;
 mod runtime;
 mod session;
 mod store;
 mod tool;
 mod tool_provider;
+mod tray;
 mod wakeup;
 
 use anyhow::Result;
@@ -35,6 +36,7 @@ use crate::llm::{BaseUrl, ModelName};
 use crate::operation::MessageInputPart;
 use crate::output::TerminalOutput;
 use crate::perf::{BenchmarkMode, BenchmarkOptions};
+use crate::process::ManagedComponent;
 use crate::session::SessionId;
 use crate::store::Store;
 use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
@@ -50,8 +52,13 @@ const INVALID_USAGE_EXIT_CODE: i32 = 2;
 #[tokio::main]
 async fn main() -> Result<()> {
     match cli::read() {
-        Command::Api => api().await,
-        Command::Inspector => open_inspector(),
+        Command::ApiStart => start_api_process(),
+        Command::ApiStop => stop_api_process(),
+        Command::ApiOutput => output_component(ManagedComponent::Api),
+        Command::ApiRun => run_api().await,
+        Command::InspectorStart => start_inspector_process(),
+        Command::InspectorStop => stop_inspector_process(),
+        Command::InspectorOutput => output_component(ManagedComponent::Inspector),
         Command::Onboard => onboard().await,
         Command::Noop => Ok(()),
         Command::AttachTool {
@@ -73,6 +80,8 @@ async fn main() -> Result<()> {
         Command::Install { target } => install_target(&target),
         Command::GatewayStart => start_gateway().await,
         Command::GatewayStop => stop_gateway().await,
+        Command::GatewayOutput => output_component(ManagedComponent::Gateway),
+        Command::Tray => tray::run(),
         Command::InsertMessage {
             conversation_id,
             head_message_id,
@@ -157,7 +166,7 @@ async fn main() -> Result<()> {
 }
 
 /// Starts Windie's local developer API server.
-async fn api() -> Result<()> {
+async fn run_api() -> Result<()> {
     let gateway_url = gateway_url();
     let base_url = base_url();
     api::serve(
@@ -169,24 +178,45 @@ async fn api() -> Result<()> {
     .await
 }
 
+/// Starts the detached Windie API process.
+fn start_api_process() -> Result<()> {
+    let report = operation::start_api()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Stops the Windie API process without touching Bifrost.
+fn stop_api_process() -> Result<()> {
+    let report = operation::stop_api()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Starts the detached Inspector process.
+fn start_inspector_process() -> Result<()> {
+    let report = operation::start_inspector()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Stops the Inspector process without touching the API or Bifrost.
+fn stop_inspector_process() -> Result<()> {
+    let report = operation::stop_inspector()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Prints persisted output for one independent local component.
+fn output_component(component: ManagedComponent) -> Result<()> {
+    let output = operation::component_output(component)?;
+    TerminalOutput.component_output(component, &output);
+    Ok(())
+}
+
 /// Runs the terminal-only onboarding wizard without opening a browser.
 async fn onboard() -> Result<()> {
     let mut console = cli::TerminalOnboarding::new();
     operation::run_onboarding(&mut console, gateway_url(), GATEWAY_URL, base_url()).await
-}
-
-/// Opens the local browser inspector with the API token already attached.
-fn open_inspector() -> Result<()> {
-    let output = TerminalOutput;
-    let api_token = match std::env::var("WINDIE_API_TOKEN") {
-        Ok(token) => token,
-        Err(_) => local::ensure_api_token()?,
-    };
-    let launch = dev::open(&api_token)?;
-
-    output.inspector_opened(&launch.url, launch.started_server);
-
-    Ok(())
 }
 
 /// Prints the generated CLI help text.
@@ -709,26 +739,16 @@ async fn status() -> Result<()> {
 /// Starts the local Bifrost gateway when it is not already running.
 async fn start_gateway() -> Result<()> {
     let output = TerminalOutput;
-    let status = operation::start_gateway(gateway_url()).await?;
-
-    match status {
-        crate::gateway::GatewayStart::AlreadyRunning => output.gateway_already_running(),
-        crate::gateway::GatewayStart::Started => output.gateway_started(),
-    }
-
+    let report = operation::start_gateway(gateway_url()).await?;
+    output.component_report(&report);
     Ok(())
 }
 
 /// Stops the local Bifrost gateway process owned by the configured port.
 async fn stop_gateway() -> Result<()> {
     let output = TerminalOutput;
-    let status = operation::stop_gateway(gateway_url()).await?;
-
-    match status {
-        crate::gateway::GatewayStop::NotRunning => output.gateway_not_running(),
-        crate::gateway::GatewayStop::Stopped => output.gateway_stopped(),
-    }
-
+    let report = operation::stop_gateway(gateway_url()).await?;
+    output.component_report(&report);
     Ok(())
 }
 

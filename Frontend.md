@@ -59,8 +59,8 @@ paths below are relative to `dev/windie-inspector/`.
 - `src/pages/Windie.jsx`: main page composition; owns overlay selection,
   onboarding auto-check, and persisted tree-panel visibility.
 - `src/components/windie/TopBar.jsx`: top-level controls for conversation
-  selection, tree visibility, tools/approval access, theme, gateway/model
-  status, and token display.
+  selection, tree visibility, tools/approval access, theme, and gateway/model
+  status.
 - `src/components/windie/Sidebar.jsx`: conversation-tree panel frame and
   collapsed/expanded layout boundary.
 - `src/components/windie/TreePanel.jsx`: compact visual tree; computes a
@@ -162,10 +162,11 @@ wrappers. They contain no Windie runtime or persistence rules:
 
 ### API, event, and data-shape libraries
 
-- `src/lib/windieApi.js`: authenticated HTTP boundary for Windie API requests;
+- `src/lib/windieApi.js`: localhost HTTP boundary for Windie API requests;
   covers health/status, conversations, images, models, model parameters,
-  sessions, approvals, providers, gateway setup, and conversation settings.
-- `src/lib/sessionStream.js`: authenticated SSE transport; reads streamed
+  sessions, approvals, providers, and conversation settings. Gateway process
+  lifecycle remains a CLI concern.
+- `src/lib/sessionStream.js`: localhost SSE transport; reads streamed
   session events, parses `id`, `event`, and multiline `data` fields, and turns
   failed events into client errors.
 - `src/lib/sessionEventCursor.js`: event-ID ordering and duplicate suppression
@@ -267,9 +268,6 @@ Browser storage is only for UI convenience:
 - `windie.treeCollapsed`: whether the conversation tree is collapsed;
 - `windie.selected-session:<conversation_id>`: the last selected session for a
   conversation;
-- `windie_api_token`: the API token supplied through the inspector URL or build
-  configuration.
-
 None of these values replace backend state. If storage is unavailable, the UI
 continues with in-memory state.
 
@@ -354,10 +352,10 @@ treated as durable history.
 ## Transport and mapping boundaries
 
 - `lib/windieApi.js`: the only general HTTP client. It resolves the API base
-  URL, adds `X-Windie-Api-Token`, parses JSON errors, and exposes typed-ish
-  frontend operations for conversations, backend-owned session-head
-  resolution/query/continue, sessions, models, tools, providers, gateway
-  actions, approvals, and image assets.
+  URL, parses JSON errors, and exposes typed-ish frontend operations for
+  conversations, backend-owned session-head resolution/query/continue,
+  sessions, models, tools, providers, gateway state, approvals, and image
+  assets.
 - `lib/sessionStream.js`: the SSE client for one session's event stream. It
   parses SSE framing and JSON payloads, but does not decide how events affect
   application state.
@@ -373,8 +371,8 @@ treated as durable history.
 - `lib/treeLayout.js`: computes positions and edges for the visual tree. It is
   a layout calculation, not a conversation operation.
 
-The API token may arrive as `?windie_token=...`; the client stores it locally
-for subsequent requests. The default API endpoint is
+The standalone Inspector calls the localhost API directly without an API token.
+The default API endpoint is
 `http://127.0.0.1:8787`, overridable with `REACT_APP_WINDIE_API_URL`.
 
 ## Live session lifecycle

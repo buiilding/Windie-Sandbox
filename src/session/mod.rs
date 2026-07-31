@@ -5,11 +5,13 @@
 //! replayable events clients can inspect, and how live session tasks are
 //! supervised.
 
+mod control;
 mod event;
 mod id;
 mod manager;
 mod model;
 
+pub use control::{SessionCancellation, SessionControl};
 pub use event::{SessionEvent, SessionEventRecord};
 pub use id::{SessionId, SessionInputId};
 pub use manager::{SessionManager, SessionSubscription};

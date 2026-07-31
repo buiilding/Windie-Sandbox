@@ -24,8 +24,15 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [] => Command::Noop,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" => Command::Version,
-        [arg] if arg == "api" => Command::Api,
-        [arg] if arg == "inspector" => Command::Inspector,
+        [command, action] if command == "api" && action == "start" => Command::ApiStart,
+        [command, action] if command == "api" && action == "stop" => Command::ApiStop,
+        [command, action] if command == "api" && action == "output" => Command::ApiOutput,
+        [command, action] if command == "api" && action == "run" => Command::ApiRun,
+        [command, action] if command == "inspector" && action == "start" => Command::InspectorStart,
+        [command, action] if command == "inspector" && action == "stop" => Command::InspectorStop,
+        [command, action] if command == "inspector" && action == "output" => {
+            Command::InspectorOutput
+        }
         [arg] if arg == "onboard" => Command::Onboard,
         [command, target] if command == "install" => Command::Install {
             target: target.to_string(),
@@ -62,6 +69,8 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         }
         [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
         [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
+        [command, action] if command == "gateway" && action == "output" => Command::GatewayOutput,
+        [arg] if arg == "tray" => Command::Tray,
         [arg] if arg == "new" => Command::New,
         [arg] if arg == "ls" => Command::List { json: false },
         [command, json_flag] if command == "ls" && json_flag == "--json" => {
