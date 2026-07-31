@@ -756,26 +756,28 @@ mod tests {
         let home = root.join("home");
         let windie_home = home.join(".windie");
         let install_dir = home.join(".local/bin");
+        let windie_binary = install_dir.join(executable_name("windie"));
+        let unrelated_file = install_dir.join("unrelated");
         fs::create_dir_all(&windie_home).unwrap();
         fs::create_dir_all(&install_dir).unwrap();
-        fs::write(install_dir.join("windie"), "owned").unwrap();
-        fs::write(install_dir.join("unrelated"), "preserve").unwrap();
+        fs::write(&windie_binary, "owned").unwrap();
+        fs::write(&unrelated_file, "preserve").unwrap();
 
+        let binaries = ["windie", "bifrost", "windie-inspector"]
+            .into_iter()
+            .map(|name| install_dir.join(executable_name(name)))
+            .collect();
         let plan = UninstallPlan {
             windie_home: windie_home.clone(),
             install_dir: install_dir.clone(),
-            binaries: vec![
-                install_dir.join("windie"),
-                install_dir.join("bifrost"),
-                install_dir.join("windie-inspector"),
-            ],
+            binaries,
         };
         let cleanup = remove_uninstall_plan(&plan).unwrap();
 
         assert!(cleanup.removed_data);
         assert!(!windie_home.exists());
-        assert!(!install_dir.join("windie").exists());
-        assert!(install_dir.join("unrelated").exists());
+        assert!(!windie_binary.exists());
+        assert!(unrelated_file.exists());
         assert!(install_dir.exists());
         fs::remove_dir_all(root).unwrap();
     }
