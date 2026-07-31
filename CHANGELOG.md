@@ -8,7 +8,14 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
-Development after `v0.2.2`.
+Development after `v0.2.3`.
+
+## [0.2.3] - 2026-07-31
+
+- Added complete Windie uninstall commands with confirmation, `--yes`, and
+  `--dry-run` modes.
+- Added exact-path safety checks and Windows delayed self-cleanup.
+- Added the tray's `Uninstall Windie` action through the shared CLI command.
 
 ## [0.2.2] - 2026-07-31
 
