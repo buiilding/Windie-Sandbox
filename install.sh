@@ -30,6 +30,49 @@ fi
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
+health_check() {
+  curl -fsS --connect-timeout 2 --max-time 3 "$1" >/dev/null 2>&1
+}
+
+progress_bar() {
+  progress_percent="$1"
+  progress_filled=$((progress_percent / 5))
+  progress_empty=$((20 - progress_filled))
+  progress_filled_bar=""
+  progress_empty_bar=""
+  progress_index=0
+  while [ "$progress_index" -lt "$progress_filled" ]; do
+    progress_filled_bar="${progress_filled_bar}#"
+    progress_index=$((progress_index + 1))
+  done
+  progress_index=0
+  while [ "$progress_index" -lt "$progress_empty" ]; do
+    progress_empty_bar="${progress_empty_bar}-"
+    progress_index=$((progress_index + 1))
+  done
+  printf '\r[%s%s] %3d%%' "$progress_filled_bar" "$progress_empty_bar" "$progress_percent"
+}
+
+wait_for_health() {
+  health_url="$1"
+  max_attempts="$2"
+  component_name="$3"
+  attempt=0
+  progress_bar 80
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    if health_check "$health_url"; then
+      progress_bar 100
+      printf '\n'
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  printf '\n'
+  echo "windie installed, but $component_name did not start" >&2
+  return 1
+}
+
 asset="windie-$platform-$arch.tar.gz"
 url="${WINDIE_ASSET_URL:-https://github.com/$repo/releases/latest/download/$asset}"
 
@@ -51,58 +94,62 @@ gateway_health_url="http://$gateway_address/health"
 api_health_url="http://$api_address/api/health"
 inspector_health_url="http://$inspector_address/"
 
-if ! curl -fsS "$gateway_health_url" >/dev/null 2>&1; then
-  WINDIE_BIFROST_BIN="$install_dir/bifrost" "$install_dir/windie" gateway start
-fi
-
-if ! curl -fsS "$api_health_url" >/dev/null 2>&1; then
-  "$install_dir/windie" api start
-fi
-
-i=0
-while [ "$i" -lt 75 ]; do
-  if curl -fsS "$api_health_url" >/dev/null 2>&1; then
-    break
+echo "Installing LLM gateway"
+if ! health_check "$gateway_health_url"; then
+  progress_bar 80
+  if ! WINDIE_BIFROST_BIN="$install_dir/bifrost" "$install_dir/windie" gateway start >/dev/null 2>&1; then
+    printf '\n'
+    echo "failed to start the LLM gateway" >&2
+    exit 1
   fi
-  i=$((i + 1))
-  sleep 1
-done
+fi
+wait_for_health "$gateway_health_url" 30 "the LLM gateway" || exit 1
+echo "Started the gateway at http://$gateway_address"
 
-if ! curl -fsS "$api_health_url" >/dev/null 2>&1; then
-  echo "windie installed, but the local API did not start" >&2
+echo "Installing Windie runtime"
+if ! health_check "$api_health_url"; then
+  progress_bar 80
+  if ! "$install_dir/windie" api start >/dev/null 2>&1; then
+    printf '\n'
+    echo "failed to start the Windie runtime" >&2
+    echo "api output: $windie_home/windie-api.log" >&2
+    exit 1
+  fi
+fi
+wait_for_health "$api_health_url" 75 "the Windie runtime" || {
   echo "api output: $windie_home/windie-api.log" >&2
   exit 1
-fi
+}
+echo "Started the runtime at http://$api_address"
 
-if ! curl -fsS "$inspector_health_url" >/dev/null 2>&1; then
-  "$install_dir/windie" inspector start
-fi
-
-i=0
-while [ "$i" -lt 30 ]; do
-  if curl -fsS "$inspector_health_url" >/dev/null 2>&1; then
-    break
+echo "Installing Windie Inspector UI"
+if ! health_check "$inspector_health_url"; then
+  progress_bar 80
+  if ! "$install_dir/windie" inspector start >/dev/null 2>&1; then
+    printf '\n'
+    echo "failed to start the Windie Inspector UI" >&2
+    echo "Inspector output: $windie_home/windie-inspector.log" >&2
+    exit 1
   fi
-  i=$((i + 1))
-  sleep 1
-done
-
-if ! curl -fsS "$inspector_health_url" >/dev/null 2>&1; then
-  echo "windie installed, but the Inspector did not start" >&2
+fi
+wait_for_health "$inspector_health_url" 30 "the Windie Inspector UI" || {
   echo "Inspector output: $windie_home/windie-inspector.log" >&2
   exit 1
-fi
+}
+echo "Started the UI at http://$inspector_address"
 
 ui_url="http://$inspector_address"
 case "$os" in
   darwin)
     open "$ui_url" >/dev/null 2>&1 || true
     nohup "$install_dir/windie" tray >/dev/null 2>&1 </dev/null &
+    echo "Click on the tray on your desktop to manage these processes."
     ;;
   linux)
     if command -v xdg-open >/dev/null 2>&1; then
       xdg-open "$ui_url" >/dev/null 2>&1 || true
     fi
+    echo "Manage these processes with: $install_dir/windie gateway|api|inspector start|stop"
     ;;
 esac
 
