@@ -51,8 +51,12 @@ pub(crate) fn ensure_runtime(runtime: ProviderRuntime) -> Result<bool> {
 
 /// Resolves an approved provider command without relying on shell lookup.
 pub(crate) fn resolve_command(program: &str) -> Result<PathBuf> {
-    if let Some(path) = local_runtime_command(program)? {
-        return Ok(path);
+    if managed_runtime_program(program) {
+        return local_runtime_command(program)?.ok_or_else(|| {
+            anyhow!(
+                "Windie-managed runtime command is not installed: {program}; set up the provider first"
+            )
+        });
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -77,11 +81,8 @@ pub(crate) fn path_with_command_parent(executable: &Path) -> Option<OsString> {
 
 fn ensure_node_runtime() -> Result<bool> {
     let version = env::var("WINDIE_NODE_VERSION").unwrap_or_else(|_| NODE_VERSION.to_string());
-    let runtime_dir = windie_home_dir()?
-        .join("runtimes")
-        .join("node")
-        .join(&version);
-    if runtime_contains(&runtime_dir, &["node", "npx"]) || node_on_path() {
+    let runtime_dir = runtime_directory(ProviderRuntime::Node, &version)?;
+    if runtime_contains(&runtime_dir, &["node", "npx"]) {
         return Ok(false);
     }
 
@@ -99,11 +100,8 @@ fn ensure_node_runtime() -> Result<bool> {
 
 fn ensure_uv_runtime() -> Result<bool> {
     let version = env::var("WINDIE_UV_VERSION").unwrap_or_else(|_| UV_VERSION.to_string());
-    let runtime_dir = windie_home_dir()?
-        .join("runtimes")
-        .join("uv")
-        .join(&version);
-    if runtime_contains(&runtime_dir, &["uv", "uvx"]) || uv_on_path() {
+    let runtime_dir = runtime_directory(ProviderRuntime::Uv, &version)?;
+    if runtime_contains(&runtime_dir, &["uv", "uvx"]) {
         return Ok(false);
     }
 
@@ -392,24 +390,57 @@ fn runtime_contains(root: &Path, executables: &[&str]) -> bool {
     })
 }
 
-fn node_on_path() -> bool {
-    path_command("npx").is_some()
+/// Returns the versioned directory owned by Windie for one runtime family.
+fn runtime_directory(runtime: ProviderRuntime, version: &str) -> Result<PathBuf> {
+    runtime_directory_under(&windie_home_dir()?, runtime, version)
 }
 
-fn uv_on_path() -> bool {
-    path_command("uvx").is_some()
+/// Builds a versioned runtime path beneath a supplied Windie data directory.
+fn runtime_directory_under(
+    home: &Path,
+    runtime: ProviderRuntime,
+    version: &str,
+) -> Result<PathBuf> {
+    let name = match runtime {
+        ProviderRuntime::Node => "node",
+        ProviderRuntime::Uv => "uv",
+        ProviderRuntime::Native => {
+            return Err(anyhow!("native providers do not have a managed runtime"));
+        }
+    };
+
+    Ok(home.join("runtimes").join(name).join(version))
+}
+
+/// Returns whether a command must be resolved from Windie's managed runtime.
+fn managed_runtime_program(program: &str) -> bool {
+    matches!(program, "node" | "npx" | "uv" | "uvx")
+}
+
+/// Returns the configured Windie runtime version for one runtime family.
+fn configured_runtime_version(runtime: ProviderRuntime) -> Result<String> {
+    match runtime {
+        ProviderRuntime::Node => {
+            Ok(env::var("WINDIE_NODE_VERSION").unwrap_or_else(|_| NODE_VERSION.to_string()))
+        }
+        ProviderRuntime::Uv => {
+            Ok(env::var("WINDIE_UV_VERSION").unwrap_or_else(|_| UV_VERSION.to_string()))
+        }
+        ProviderRuntime::Native => Err(anyhow!("native providers do not have a managed runtime")),
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn local_runtime_command(program: &str) -> Result<Option<PathBuf>> {
-    let (runtime, names): (&str, &[&str]) = match program {
-        "npx" => ("node", &["npx.cmd", "npx.exe"]),
-        "node" => ("node", &["node.exe"]),
-        "uvx" => ("uv", &["uvx.exe"]),
-        "uv" => ("uv", &["uv.exe"]),
+    let (runtime, names): (ProviderRuntime, &[&str]) = match program {
+        "npx" => (ProviderRuntime::Node, &["npx.cmd", "npx.exe"]),
+        "node" => (ProviderRuntime::Node, &["node.exe"]),
+        "uvx" => (ProviderRuntime::Uv, &["uvx.exe"]),
+        "uv" => (ProviderRuntime::Uv, &["uv.exe"]),
         _ => return Ok(None),
     };
-    let root = windie_home_dir()?.join("runtimes").join(runtime);
+    let version = configured_runtime_version(runtime)?;
+    let root = runtime_directory(runtime, &version)?;
     for name in names {
         if let Some(path) = find_file(&root, name)? {
             return Ok(Some(path));
@@ -421,12 +452,13 @@ fn local_runtime_command(program: &str) -> Result<Option<PathBuf>> {
 #[cfg(not(target_os = "windows"))]
 fn local_runtime_command(program: &str) -> Result<Option<PathBuf>> {
     let runtime = match program {
-        "npx" | "node" => "node",
-        "uvx" | "uv" => "uv",
+        "npx" | "node" => ProviderRuntime::Node,
+        "uvx" | "uv" => ProviderRuntime::Uv,
         _ => return Ok(None),
     };
-    let root = windie_home_dir()?.join("runtimes").join(runtime);
-    find_file(&root, program)
+    let version = configured_runtime_version(runtime)?;
+    let root = runtime_directory(runtime, &version)?;
+    find_file(&root, runtime_file_name(program))
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -546,6 +578,9 @@ pub(crate) fn archive_fingerprint(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn archive_suffix_matches_format() {
@@ -560,6 +595,49 @@ mod tests {
             archive_fingerprint(b"windie"),
             "2d6945726283047b18baa8e618ba50c7c532079da77b2439d54e30716fb5bdd3"
         );
+    }
+
+    #[test]
+    fn runtime_directories_are_version_scoped() {
+        let home = Path::new("/tmp/windie-runtime-test");
+
+        assert_eq!(
+            runtime_directory_under(home, ProviderRuntime::Node, "22.14.0").unwrap(),
+            home.join("runtimes/node/22.14.0")
+        );
+    }
+
+    #[test]
+    fn global_runtime_commands_do_not_fall_back_to_path() {
+        let _lock = ENVIRONMENT_LOCK.lock().unwrap();
+        let root =
+            env::temp_dir().join(format!("windie-runtime-resolution-{}", std::process::id()));
+        let global_bin = root.join("global-bin");
+        let windie_home = root.join("windie-home");
+        fs::create_dir_all(&global_bin).unwrap();
+        fs::write(global_bin.join(runtime_file_name("npx")), b"global runtime").unwrap();
+
+        let previous_home = env::var_os("WINDIE_HOME");
+        let previous_path = env::var_os("PATH");
+        unsafe {
+            env::set_var("WINDIE_HOME", &windie_home);
+            env::set_var("PATH", &global_bin);
+        }
+        let result = resolve_command("npx");
+        unsafe {
+            match previous_home {
+                Some(value) => env::set_var("WINDIE_HOME", value),
+                None => env::remove_var("WINDIE_HOME"),
+            }
+            match previous_path {
+                Some(value) => env::set_var("PATH", value),
+                None => env::remove_var("PATH"),
+            }
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("Windie-managed runtime command is not installed"));
     }
 
     #[test]

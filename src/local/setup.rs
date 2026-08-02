@@ -351,7 +351,8 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
             let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message: "Node.js runtime is ready for Desktop Commander".to_string(),
+                message: "Windie-managed Node.js runtime is ready for Desktop Commander"
+                    .to_string(),
                 status: if status {
                     InstallStatus::Installed
                 } else {
@@ -363,7 +364,7 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
             let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message: "uv runtime is ready for Blender MCP".to_string(),
+                message: "Windie-managed uv runtime is ready for Blender MCP".to_string(),
                 status: if status {
                     InstallStatus::Installed
                 } else {
@@ -375,7 +376,7 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
             let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message: "Node.js runtime is ready for Bright Data MCP".to_string(),
+                message: "Windie-managed Node.js runtime is ready for Bright Data MCP".to_string(),
                 status: if status {
                     InstallStatus::Installed
                 } else {
@@ -387,7 +388,7 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
             let status = runtime::ensure_provider_runtime(target)?;
             Ok(InstallReport {
                 target: target.to_string(),
-                message: "uv runtime is ready for Basic Memory".to_string(),
+                message: "Windie-managed uv runtime is ready for Basic Memory".to_string(),
                 status: if status {
                     InstallStatus::Installed
                 } else {
