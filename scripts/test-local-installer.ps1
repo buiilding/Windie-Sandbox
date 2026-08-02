@@ -12,6 +12,41 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Import-WindieWindowsBuildEnvironment {
+    $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+    if (-not $env:VCToolsInstallDir) {
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "Visual Studio Build Tools are required. Install the C++ workload before running the local Windows release test."
+        }
+        $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+        if (-not $vsPath) {
+            throw "Visual Studio C++ Build Tools were not found. Install the C++ workload before running the local Windows release test."
+        }
+        $vsDevCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
+        $environmentLines = & cmd.exe /d /s /c "call `"$vsDevCmd`" -arch=x64 -host_arch=x64 && set"
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to load the Visual Studio build environment"
+        }
+        foreach ($line in $environmentLines) {
+            if ($line -match "^(?<name>[A-Za-z_][A-Za-z0-9_]*)=(?<value>.*)$") {
+                Set-Item -Path ("Env:{0}" -f $matches.name) -Value $matches.value
+            }
+        }
+    }
+
+    $env:Path = "$env:USERPROFILE\.cargo\bin;C:\Program Files\Go\bin;$env:Path"
+    if ($gcc) {
+        $env:WINDIE_GO_CC = $gcc.Source
+    }
+    $linker = Get-Command link.exe -ErrorAction SilentlyContinue
+    if ($linker -and $linker.Source -match "Microsoft Visual Studio") {
+        $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker.Source
+    }
+}
+
+Import-WindieWindowsBuildEnvironment
+
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $LandingRoot = if ($env:WINDIE_LANDING_DIR) {
     $env:WINDIE_LANDING_DIR

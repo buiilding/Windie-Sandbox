@@ -134,28 +134,58 @@ function Wait-WindieHealth {
     throw "Windie installed, but $Component did not start."
 }
 
+function Invoke-WindieLifecycle {
+    param(
+        [string[]]$Arguments,
+        [string]$Component,
+        [int]$TimeoutSeconds
+    )
+
+    $stdoutPath = Join-Path $windieHome "windie-installer-$Component.stdout.log"
+    $stderrPath = Join-Path $windieHome "windie-installer-$Component.stderr.log"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+
+    $process = Start-Process -FilePath $windie -ArgumentList $Arguments -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+    try {
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "Windie $Component command timed out after $TimeoutSeconds seconds. Logs: $stdoutPath and $stderrPath"
+        }
+
+        $process.Refresh()
+        $exitCode = $process.ExitCode
+        if ($null -ne $exitCode -and "$exitCode" -ne "" -and [int]$exitCode -ne 0) {
+            $details = @(
+                if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw }
+                if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw }
+            ) -join "`n"
+            $details = $details.Trim()
+            if ($details) {
+                throw "Windie $Component command failed with exit code $exitCode`: $details"
+            }
+            throw "Windie $Component command failed with exit code $exitCode. Logs: $stdoutPath and $stderrPath"
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 $env:WINDIE_BIFROST_BIN = Join-Path $installDir "bifrost.exe"
 
 Write-Host "Installing LLM gateway"
 if (-not (Test-WindieHealth $gatewayHealthUrl)) {
     Write-WindieProgressBar 5
-    & $windie "gateway" "start" *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
-        throw "failed to start the LLM gateway"
-    }
+    Invoke-WindieLifecycle @("gateway", "start") "gateway" 75
 }
 Wait-WindieHealth $gatewayHealthUrl 30 "the LLM gateway"
 Write-Host "Started the gateway at http://$gatewayAddress"
 
 Write-Host "Installing Windie runtime"
 if (-not (Test-WindieHealth $apiHealthUrl)) {
-        Write-WindieProgressBar 5
-    & $windie "api" "start" *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
-        throw "failed to start the Windie runtime. Output: $windieHome\windie-api.log"
-    }
+    Write-WindieProgressBar 5
+    Invoke-WindieLifecycle @("api", "start") "api" 30
 }
 try {
     Wait-WindieHealth $apiHealthUrl 75 "the Windie runtime"
@@ -167,12 +197,8 @@ Write-Host "Started the runtime at http://$apiAddress"
 
 Write-Host "Installing Windie Inspector UI"
 if (-not (Test-WindieHealth $inspectorHealthUrl)) {
-        Write-WindieProgressBar 5
-    & $windie "inspector" "start" *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
-        throw "failed to start the Windie Inspector UI. Output: $windieHome\windie-inspector.log"
-    }
+    Write-WindieProgressBar 5
+    Invoke-WindieLifecycle @("inspector", "start") "inspector" 30
 }
 Wait-WindieHealth $inspectorHealthUrl 30 "the Windie Inspector UI"
 

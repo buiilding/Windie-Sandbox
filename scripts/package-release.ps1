@@ -100,8 +100,16 @@ try {
         Write-Host "==> building bifrost (native Windows CGO sqlite)"
         New-Item -ItemType Directory -Path (Join-Path $BifrostDir "tmp") -Force | Out-Null
         Push-Location $BifrostHttpDir
+        $PreviousGoCompiler = $env:CC
+        $PreviousGoCxxCompiler = $env:CXX
         try {
             $env:CGO_ENABLED = "1"
+            if ($env:WINDIE_GO_CC) {
+                $env:CC = $env:WINDIE_GO_CC
+            }
+            if ($env:WINDIE_GO_CXX) {
+                $env:CXX = $env:WINDIE_GO_CXX
+            }
             Invoke-Native "go" @(
                 "build",
                 "-ldflags=-w -s -X main.Version=$BifrostVersion",
@@ -112,6 +120,18 @@ try {
             )
         }
         finally {
+            if ($null -eq $PreviousGoCompiler) {
+                Remove-Item Env:CC -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:CC = $PreviousGoCompiler
+            }
+            if ($null -eq $PreviousGoCxxCompiler) {
+                Remove-Item Env:CXX -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:CXX = $PreviousGoCxxCompiler
+            }
             Pop-Location
         }
     }
@@ -130,9 +150,8 @@ try {
         "os=windows"
         "cpu=$(if ($RustTarget.StartsWith('aarch64')) { 'aarch64' } else { 'x86_64' })"
         "contents=windie.exe,bifrost.exe,windie-inspector.exe"
-    ) | Set-Content -LiteralPath (Join-Path $StagingDir "release-manifest.txt") -Encoding utf8
+    ) | Set-Content -LiteralPath (Join-Path $StagingDir "release-manifest.txt") -Encoding ascii
     Invoke-Native $WindieBinary @("--version")
-    & $BifrostBinary --help *> $null
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
     $Archive = Join-Path $DistDir "windie-$AssetLabel.zip"
     Compress-Archive -Path (Join-Path $StagingDir "windie.exe"), (Join-Path $StagingDir "bifrost.exe"), (Join-Path $StagingDir "windie-inspector.exe"), (Join-Path $StagingDir "release-manifest.txt") -DestinationPath $Archive -Force
