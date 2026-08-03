@@ -6,13 +6,6 @@
 
 use std::env;
 
-/// Default Bifrost gateway URL.
-pub const DEFAULT_GATEWAY_URL: &str = "http://localhost:8080";
-/// Default Windie API socket address.
-pub const DEFAULT_API_ADDRESS: &str = "127.0.0.1:8787";
-/// Default Inspector socket address.
-pub const DEFAULT_INSPECTOR_ADDRESS: &str = "127.0.0.1:3000";
-
 /// Returns the configured gateway URL.
 pub fn gateway_url() -> String {
     non_empty_env("WINDIE_GATEWAY_URL").unwrap_or_else(|| {
@@ -50,16 +43,4 @@ fn non_empty_env(name: &str) -> Option<String> {
 
 fn env_or_default(name: &str, default: &str) -> String {
     non_empty_env(name).unwrap_or_else(|| default.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_are_stable() {
-        assert_eq!(DEFAULT_GATEWAY_URL, "http://localhost:8080");
-        assert_eq!(DEFAULT_API_ADDRESS, "127.0.0.1:8787");
-        assert_eq!(DEFAULT_INSPECTOR_ADDRESS, "127.0.0.1:3000");
-    }
 }
