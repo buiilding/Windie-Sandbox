@@ -23,5 +23,6 @@ target/release/windie api start
 ```
 
 For a production-style local Inspector, build the frontend and run
-`windie inspector start`; it serves the standalone UI on port 3000. The
-Inspector calls the localhost API without an API token.
+`windie inspector start`; it serves the standalone UI on port 3000 by default.
+Set `WINDIE_INSPECTOR_PORT` or `WINDIE_INSPECTOR_ADDRESS` to change the
+Inspector port. The Inspector calls the localhost API without an API token.

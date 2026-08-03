@@ -6,6 +6,7 @@
 
 mod api;
 mod cli;
+mod config;
 mod context;
 mod conversation;
 mod error;
@@ -42,8 +43,6 @@ use crate::store::Store;
 use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
 use crate::tool_provider::ToolProviderRegistry;
 
-const GATEWAY_URL: &str = "http://localhost:8080";
-const API_ADDRESS: &str = "127.0.0.1:8787";
 const MODEL: &str = "openai/gpt-4o-mini";
 const INVALID_USAGE_EXIT_CODE: i32 = 2;
 
@@ -216,7 +215,14 @@ fn output_component(component: ManagedComponent) -> Result<()> {
 /// Runs the terminal-only onboarding wizard without opening a browser.
 async fn onboard() -> Result<()> {
     let mut console = cli::TerminalOnboarding::new();
-    operation::run_onboarding(&mut console, gateway_url(), GATEWAY_URL, base_url()).await
+    let gateway_url = gateway_url();
+    operation::run_onboarding(
+        &mut console,
+        gateway_url.clone(),
+        gateway_url.as_str(),
+        base_url(),
+    )
+    .await
 }
 
 /// Confirms and runs complete Windie cleanup from the CLI boundary.
@@ -227,7 +233,7 @@ async fn uninstall_windie(yes: bool, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    let report = operation::uninstall_windie(dry_run).await?;
+    let report = operation::uninstall_windie(dry_run, gateway_url()).await?;
     output.uninstall_report(&report);
     Ok(())
 }
@@ -785,7 +791,7 @@ async fn stop_gateway() -> Result<()> {
 
 /// Centralizes the gateway health base URL.
 fn gateway_url() -> GatewayUrl {
-    GatewayUrl::new(std::env::var("WINDIE_GATEWAY_URL").unwrap_or_else(|_| GATEWAY_URL.to_string()))
+    GatewayUrl::new(config::gateway_url())
 }
 
 /// Centralizes the OpenAI-compatible API base URL.
@@ -803,8 +809,7 @@ fn model_name() -> ModelName {
 
 /// Centralizes the local developer API bind address.
 fn api_address() -> SocketAddr {
-    std::env::var("WINDIE_API_ADDRESS")
-        .unwrap_or_else(|_| API_ADDRESS.to_string())
+    config::api_address()
         .parse()
         .expect("WINDIE_API_ADDRESS must be a valid socket address")
 }

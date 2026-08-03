@@ -15,13 +15,20 @@ pub(super) fn router(state: ApiState) -> Router {
 /// CORS stays scoped to the API so the standalone Inspector and browser clients
 /// served from webpack dev servers (ports 3000/5173) can call localhost.
 fn api_router(state: ApiState) -> Router {
+    let mut origins = vec![
+        HeaderValue::from_static("http://localhost:3000"),
+        HeaderValue::from_static("http://127.0.0.1:3000"),
+        HeaderValue::from_static("http://localhost:5173"),
+        HeaderValue::from_static("http://127.0.0.1:5173"),
+    ];
+    if let Ok(origin) =
+        HeaderValue::try_from(format!("http://{}", crate::config::inspector_address()))
+    {
+        origins.push(origin);
+    }
+
     let cors = CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("http://localhost:3000"),
-            HeaderValue::from_static("http://127.0.0.1:3000"),
-            HeaderValue::from_static("http://localhost:5173"),
-            HeaderValue::from_static("http://127.0.0.1:5173"),
-        ])
+        .allow_origin(origins)
         .allow_methods([
             Method::GET,
             Method::POST,

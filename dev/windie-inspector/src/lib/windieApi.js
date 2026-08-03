@@ -1,4 +1,7 @@
-const API_BASE = process.env.REACT_APP_WINDIE_API_URL || "http://127.0.0.1:8787";
+const API_BASE =
+  (typeof window !== "undefined" && window.__WINDIE_API_URL__) ||
+  process.env.REACT_APP_WINDIE_API_URL ||
+  "http://127.0.0.1:8787";
 function parseApiBody(text) {
   if (!text) return null;
   try {

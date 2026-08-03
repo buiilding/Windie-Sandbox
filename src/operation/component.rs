@@ -48,7 +48,10 @@ pub fn component_output(component: ManagedComponent) -> Result<String> {
 /// The operation stops every process before deleting any data. If one process
 /// cannot be verified as Windie-owned and stopped, cleanup is aborted so its
 /// files and state remain available for diagnosis.
-pub async fn uninstall_windie(dry_run: bool) -> Result<UninstallReport> {
+pub async fn uninstall_windie(
+    dry_run: bool,
+    gateway_url: crate::gateway::GatewayUrl,
+) -> Result<UninstallReport> {
     let plan = crate::local::uninstall_plan()?;
     if dry_run {
         return Ok(UninstallReport {
@@ -61,9 +64,7 @@ pub async fn uninstall_windie(dry_run: bool) -> Result<UninstallReport> {
     }
 
     let process_result = crate::process::stop_windie_processes();
-    let gateway_result =
-        crate::operation::stop_gateway(crate::gateway::GatewayUrl::new("http://127.0.0.1:8080"))
-            .await;
+    let gateway_result = crate::operation::stop_gateway(gateway_url).await;
     let mut failures = Vec::new();
     let processes = match process_result {
         Ok(reports) => reports,

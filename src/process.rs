@@ -19,7 +19,6 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::local;
 
-const API_ADDRESS: &str = "http://127.0.0.1:8787";
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -81,7 +80,7 @@ pub fn start_api() -> Result<ProcessReport> {
 pub fn stop_api() -> Result<ProcessReport> {
     let report = existing_report(ManagedComponent::Api)?;
     let Some(pid) = report.pid else {
-        if endpoint_is_running(&format!("{API_ADDRESS}/api/health")) {
+        if endpoint_is_running(&format!("{}/api/health", crate::config::api_url())) {
             return Err(anyhow!(
                 "Windie API is running without an owned PID file; refusing to remove it"
             ));
@@ -111,7 +110,7 @@ pub fn start_inspector() -> Result<ProcessReport> {
 pub fn stop_inspector() -> Result<ProcessReport> {
     let report = existing_report(ManagedComponent::Inspector)?;
     let Some(pid) = report.pid else {
-        if endpoint_is_running("http://127.0.0.1:3000/") {
+        if endpoint_is_running(&format!("http://{}/", crate::config::inspector_address())) {
             return Err(anyhow!(
                 "Windie Inspector is running without an owned PID file; refusing to remove it"
             ));
@@ -318,7 +317,7 @@ fn request_api_shutdown() -> bool {
         .ok()
         .and_then(|client| {
             client
-                .post(format!("{API_ADDRESS}/api/shutdown"))
+                .post(format!("{}/api/shutdown", crate::config::api_url()))
                 .send()
                 .ok()
         })

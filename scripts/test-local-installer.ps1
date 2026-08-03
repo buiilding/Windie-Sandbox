@@ -3,6 +3,11 @@
 # a normal Windie installation.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File scripts/test-local-installer.ps1
+#
+# Optional endpoint settings are inherited by the installed processes:
+#   $env:WINDIE_GATEWAY_PORT = "8081"
+#   $env:WINDIE_API_PORT = "8788"
+#   $env:WINDIE_INSPECTOR_PORT = "3001"
 
 [CmdletBinding()]
 param(

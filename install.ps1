@@ -11,9 +11,30 @@ $windieHome = if ($env:WINDIE_HOME) {
 } else {
     Join-Path $env:USERPROFILE ".windie"
 }
-$gatewayAddress = "127.0.0.1:8080"
-$apiAddress = "127.0.0.1:8787"
-$inspectorAddress = "127.0.0.1:3000"
+$gatewayUrl = if ($env:WINDIE_GATEWAY_URL) {
+    $env:WINDIE_GATEWAY_URL.TrimEnd('/')
+} elseif ($env:WINDIE_GATEWAY_PORT) {
+    "http://127.0.0.1:$($env:WINDIE_GATEWAY_PORT)"
+} else {
+    "http://127.0.0.1:8080"
+}
+$apiAddress = if ($env:WINDIE_API_ADDRESS) {
+    $env:WINDIE_API_ADDRESS
+} elseif ($env:WINDIE_API_PORT) {
+    "127.0.0.1:$($env:WINDIE_API_PORT)"
+} else {
+    "127.0.0.1:8787"
+}
+$inspectorAddress = if ($env:WINDIE_INSPECTOR_ADDRESS) {
+    $env:WINDIE_INSPECTOR_ADDRESS
+} elseif ($env:WINDIE_INSPECTOR_PORT) {
+    "127.0.0.1:$($env:WINDIE_INSPECTOR_PORT)"
+} else {
+    "127.0.0.1:3000"
+}
+$env:WINDIE_GATEWAY_URL = $gatewayUrl
+$env:WINDIE_API_ADDRESS = $apiAddress
+$env:WINDIE_INSPECTOR_ADDRESS = $inspectorAddress
 
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw "Windie requires a 64-bit Windows installation."
@@ -86,7 +107,7 @@ if (-not $hasInstallDir) {
 }
 
 $windie = Join-Path $installDir "windie.exe"
-$gatewayHealthUrl = "http://$gatewayAddress/health"
+$gatewayHealthUrl = "$gatewayUrl/health"
 $apiHealthUrl = "http://$apiAddress/api/health"
 $inspectorHealthUrl = "http://$inspectorAddress/"
 
@@ -180,7 +201,7 @@ if (-not (Test-WindieHealth $gatewayHealthUrl)) {
     Invoke-WindieLifecycle @("gateway", "start") "gateway" 75
 }
 Wait-WindieHealth $gatewayHealthUrl 30 "the LLM gateway"
-Write-Host "Started the gateway at http://$gatewayAddress"
+Write-Host "Started the gateway at $gatewayUrl"
 
 Write-Host "Installing Windie runtime"
 if (-not (Test-WindieHealth $apiHealthUrl)) {
@@ -214,6 +235,6 @@ Write-Output "bundled Bifrost installed at $(Join-Path $installDir 'bifrost.exe'
 Write-Output "Inspector installed at $(Join-Path $installDir 'windie-inspector.exe')"
 Write-Output "Windie home ready at $windieHome"
 Write-Output "provider keys file: $envFile"
-Write-Output "Bifrost: http://$gatewayAddress"
+Write-Output "Bifrost: $gatewayUrl"
 Write-Output "Windie API: http://$apiAddress"
 Write-Output "Inspector: $uiUrl"

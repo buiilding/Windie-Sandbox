@@ -5,6 +5,10 @@
 # normal Windie installation.
 #
 # Usage: scripts/test-local-installer.sh
+#
+# Optional endpoint settings are inherited by the installed processes:
+#   WINDIE_GATEWAY_PORT=8081 WINDIE_API_PORT=8788 WINDIE_INSPECTOR_PORT=3001 \
+#     scripts/test-local-installer.sh
 
 set -euo pipefail
 

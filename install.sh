@@ -4,9 +4,17 @@ set -eu
 repo="${WINDIE_REPO:-buiilding/Windie-Sandbox}"
 install_dir="${WINDIE_INSTALL_DIR:-$HOME/.local/bin}"
 windie_home="${WINDIE_HOME:-$HOME/.windie}"
-api_address="127.0.0.1:8787"
-inspector_address="127.0.0.1:3000"
-gateway_address="127.0.0.1:8080"
+gateway_url="${WINDIE_GATEWAY_URL:-http://127.0.0.1:${WINDIE_GATEWAY_PORT:-8080}}"
+gateway_url="${gateway_url%/}"
+api_address="${WINDIE_API_ADDRESS:-127.0.0.1:${WINDIE_API_PORT:-8787}}"
+inspector_address="${WINDIE_INSPECTOR_ADDRESS:-127.0.0.1:${WINDIE_INSPECTOR_PORT:-3000}}"
+
+# The detached lifecycle commands inherit these values. Keeping the resolved
+# addresses in the environment makes installer-started processes behave the
+# same as manually started processes.
+export WINDIE_GATEWAY_URL="$gateway_url"
+export WINDIE_API_ADDRESS="$api_address"
+export WINDIE_INSPECTOR_ADDRESS="$inspector_address"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -103,7 +111,7 @@ install -m 0755 "$tmp_dir/windie" "$install_dir/windie"
 install -m 0755 "$tmp_dir/bifrost" "$install_dir/bifrost"
 install -m 0755 "$tmp_dir/windie-inspector" "$install_dir/windie-inspector"
 
-gateway_health_url="http://$gateway_address/health"
+gateway_health_url="$gateway_url/health"
 api_health_url="http://$api_address/api/health"
 inspector_health_url="http://$inspector_address/"
 
@@ -117,7 +125,7 @@ if ! health_check "$gateway_health_url"; then
   fi
 fi
 wait_for_health "$gateway_health_url" 30 "the LLM gateway" || exit 1
-echo "Started the gateway at http://$gateway_address"
+echo "Started the gateway at $gateway_url"
 
 echo "Installing Windie runtime"
 if ! health_check "$api_health_url"; then
@@ -172,6 +180,6 @@ echo "bundled Bifrost installed at $install_dir/bifrost"
 echo "Inspector installed at $install_dir/windie-inspector"
 echo "Windie home ready at $windie_home"
 echo "provider keys file: $windie_home/.env"
-echo "Bifrost: http://$gateway_address"
+echo "Bifrost: $gateway_url"
 echo "Windie API: http://$api_address"
 echo "Inspector: $ui_url"

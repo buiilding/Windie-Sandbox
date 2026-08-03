@@ -373,7 +373,9 @@ treated as durable history.
 
 The standalone Inspector calls the localhost API directly without an API token.
 The default API endpoint is
-`http://127.0.0.1:8787`, overridable with `REACT_APP_WINDIE_API_URL`.
+`http://127.0.0.1:8787`, overridable with `REACT_APP_WINDIE_API_URL` during a
+frontend build or by the standalone Inspector's runtime
+`WINDIE_API_ADDRESS`/`WINDIE_API_PORT` settings.
 
 ## Live session lifecycle
 

@@ -626,6 +626,11 @@ Release installs place the bundled Bifrost binary beside `windie`. The API
 does not start or stop it; use the gateway commands explicitly without Node,
 npm, Docker, or a separate Bifrost checkout.
 
+The default gateway port is `8080`. Set `WINDIE_GATEWAY_PORT` to change it, or
+set `WINDIE_GATEWAY_URL` to provide the complete gateway URL. The API and
+Inspector have equivalent `WINDIE_API_PORT`/`WINDIE_API_ADDRESS` and
+`WINDIE_INSPECTOR_PORT`/`WINDIE_INSPECTOR_ADDRESS` settings.
+
 Windie launches Bifrost with the same inherited environment as the Windie
 process. It does not clear, filter, or reconstruct environment variables.
 Provider credentials must therefore already be present in the environment
@@ -660,7 +665,10 @@ windie inspector start
 ```
 
 Start the standalone Inspector server at `http://127.0.0.1:3000`. It serves
-the browser UI and calls the Windie API independently.
+the browser UI and calls the Windie API independently. Set
+`WINDIE_INSPECTOR_PORT` or `WINDIE_INSPECTOR_ADDRESS` to change its bind
+address. `WINDIE_API_PORT` or `WINDIE_API_ADDRESS` changes the API endpoint
+the Inspector uses.
 
 ```text
 windie inspector stop
