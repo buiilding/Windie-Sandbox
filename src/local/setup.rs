@@ -459,12 +459,8 @@ fn packaged_executable_directory() -> Result<Option<PathBuf>> {
 
 /// Recognizes one packaged executable path using the adjacent release marker.
 fn packaged_executable_directory_for(executable: &Path) -> Option<PathBuf> {
-    let Some(directory) = executable.parent() else {
-        return None;
-    };
-    let Some(name) = executable.file_name().and_then(|name| name.to_str()) else {
-        return None;
-    };
+    let directory = executable.parent()?;
+    let name = executable.file_name().and_then(|name| name.to_str())?;
 
     if !name.eq_ignore_ascii_case(&executable_name("windie"))
         || !directory.join("release-manifest.txt").is_file()
