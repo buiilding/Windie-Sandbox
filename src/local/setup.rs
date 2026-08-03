@@ -420,11 +420,59 @@ fn windie_layout() -> Result<WindieLayout> {
     })
 }
 
-/// Returns the configured user-local directory containing Windie binaries.
+/// Returns the user-local directory containing the Windie binaries.
+///
+/// A packaged executable knows its own install directory. Prefer that path so
+/// uninstall works even when the installer used a custom directory and did not
+/// persist `WINDIE_INSTALL_DIR` into future shells. The explicit environment
+/// variable remains first for isolated local-release tests and administrators
+/// that intentionally manage a custom layout.
 fn windie_install_dir(user_home: &Path) -> Result<PathBuf> {
-    Ok(env::var_os("WINDIE_INSTALL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home.join(".local").join("bin")))
+    if let Some(path) = env::var_os("WINDIE_INSTALL_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Some(path) = packaged_executable_directory()? {
+        return Ok(path);
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+            return Ok(PathBuf::from(local_app_data).join("Windie").join("bin"));
+        }
+    }
+
+    Ok(user_home.join(".local").join("bin"))
+}
+
+/// Returns the directory of a packaged Windie executable when recognizable.
+///
+/// The release manifest is the ownership marker placed beside all published
+/// binaries. Requiring it prevents a developer binary under `target\debug` or
+/// `target\release` from accidentally turning its build directory into an
+/// uninstall target.
+fn packaged_executable_directory() -> Result<Option<PathBuf>> {
+    let executable = env::current_exe().ok();
+    Ok(executable.and_then(|executable| packaged_executable_directory_for(&executable)))
+}
+
+/// Recognizes one packaged executable path using the adjacent release marker.
+fn packaged_executable_directory_for(executable: &Path) -> Option<PathBuf> {
+    let Some(directory) = executable.parent() else {
+        return None;
+    };
+    let Some(name) = executable.file_name().and_then(|name| name.to_str()) else {
+        return None;
+    };
+
+    if !name.eq_ignore_ascii_case(&executable_name("windie"))
+        || !directory.join("release-manifest.txt").is_file()
+    {
+        return None;
+    }
+
+    Some(directory.to_path_buf())
 }
 
 /// Returns an absolute, lexical path without requiring the target to exist.
@@ -839,6 +887,27 @@ mod tests {
         assert!(!windie_binary.exists());
         assert!(unrelated_file.exists());
         assert!(install_dir.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn packaged_executable_requires_release_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "windie-packaged-install-test-{}",
+            std::process::id()
+        ));
+        let executable = root.join(executable_name("windie"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&executable, "owned").unwrap();
+
+        assert_eq!(packaged_executable_directory_for(&executable), None);
+
+        fs::write(root.join("release-manifest.txt"), "version=local\n").unwrap();
+        assert_eq!(
+            packaged_executable_directory_for(&executable),
+            Some(root.clone())
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 
