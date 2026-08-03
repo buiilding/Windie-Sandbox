@@ -148,12 +148,14 @@ export default function InspectorPanel({ mode, onClose }) {
   return (
     <div data-testid="windie-inspector-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className={`absolute inset-0 z-40 bg-background/90 backdrop-blur-sm flex items-start justify-center overflow-y-auto windie-scroll ${mode === "tools" ? "p-0" : "px-6 pt-12 pb-6"}`} style={{ scrollbarGutter: "stable" }}>
       <div data-testid={`windie-${mode}-overlay`} className={`w-full border border-border bg-background shadow-lg flex flex-col ${mode === "tools" ? "h-full max-w-none max-h-none self-stretch" : mode === "system" ? "max-w-5xl h-[77vh] self-start" : "max-w-4xl max-h-[calc(100vh-7rem)]"} ${mode === "onboarding" ? "h-[77vh] self-start" : ""}`}>
-        <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
-          <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">{mode === "system" ? "system" : mode === "onboarding" ? "setup" : "tools"}</span>
-          <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
-            <X className="size-3.5" strokeWidth={1.75} />
-          </button>
-        </div>
+        {mode !== "system" ? (
+          <div className="h-10 shrink-0 border-b border-border px-4 flex items-center justify-between">
+            <span className="font-mono text-[11px] uppercase tracking-widest">{mode === "onboarding" ? "setup" : "tools"}</span>
+            <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
+              <X className="size-3.5" strokeWidth={1.75} />
+            </button>
+          </div>
+        ) : null}
         {mode === "tools" && (
           <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-surface/20 px-3">
             <button
@@ -194,6 +196,9 @@ export default function InspectorPanel({ mode, onClose }) {
               className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${systemView === "providers" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"}`}
             >
               providers
+            </button>
+            <button type="button" data-testid="windie-overlay-close" onClick={onClose} aria-label="close overlay" className="ml-auto p-1 text-muted-foreground hover:text-foreground hover:bg-surface-hover">
+              <X className="size-3.5" strokeWidth={1.75} />
             </button>
           </div>
         )}
