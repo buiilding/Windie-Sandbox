@@ -13,8 +13,17 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-landing_root="${WINDIE_LANDING_DIR:-$repo_root/../windie-landing-2nd}"
+landing_root="${WINDIE_LANDING_DIR:-$repo_root/vendor/windie-landing-2nd}"
 installer="$landing_root/frontend/public/install"
+
+if [ -z "${WINDIE_LANDING_DIR:-}" ] && [ ! -f "$installer" ]; then
+  shared_landing_root="$repo_root/../windie/vendor/windie-landing-2nd"
+  shared_installer="$shared_landing_root/frontend/public/install"
+  if [ -f "$shared_installer" ]; then
+    landing_root="$shared_landing_root"
+    installer="$shared_installer"
+  fi
+fi
 
 if [ ! -f "$installer" ]; then
   echo "local Windie installer was not found at $installer" >&2
