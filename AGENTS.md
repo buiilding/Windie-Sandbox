@@ -43,6 +43,14 @@ ownership from its cached session list.
 
 Only give your opinion when asked. Your job is to read code and provide facts. Do not modify codebase unless explicitly told so.
 
+## Pull Request Rule
+
+Every pull request merged into `main` must be associated with a GitHub issue. The pull request must use a closing reference such as `Closes #123` so merging it into `main` closes the associated issue.
+
+Every pull request merged into `main` must use its own dedicated branch that is not reused for another pull request; changes must not be committed directly to `main` for merging.
+
+Every public release must include release notes, patch notes, or a changelog describing the changes included in that release.
+
 ## North Star
 
 The long-term goal is a local AI runtime that lives on the user's computer and can eventually grow into an AI operating layer.
