@@ -153,9 +153,13 @@ impl BifrostGateway {
         }
 
         for process_id in process_ids {
-            if let Some(command) = process_command(process_id).ok()
-                && !is_bifrost_command(&command)
-            {
+            let command = process_command(process_id)?;
+            if command.is_empty() {
+                // The process can exit between the port snapshot and the
+                // identity lookup. Treat that stale PID as already stopped.
+                continue;
+            }
+            if !is_bifrost_command(&command) {
                 return Err(anyhow!(
                     "refusing to stop non-Bifrost process {process_id} listening on port {port}: {command}"
                 ));

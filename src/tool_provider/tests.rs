@@ -136,12 +136,14 @@ fn basic_memory_manifest_declares_local_runtime_requirements() {
     assert_eq!(manifest.launch.program, "uvx");
     assert_eq!(
         manifest.launch.args,
-        vec![
-            "basic-memory".to_string(),
-            "mcp".to_string(),
-            "--project".to_string(),
-            "windie-memory".to_string(),
-        ]
+        vec!["basic-memory".to_string(), "mcp".to_string()]
+    );
+    assert!(
+        provider
+            .command
+            .env
+            .iter()
+            .any(|variable| { variable.key == "BASIC_MEMORY_MCP_PROJECT" })
     );
     assert!(
         manifest

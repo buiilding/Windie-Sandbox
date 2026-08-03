@@ -382,12 +382,10 @@ fn runtime_file_name(executable: &str) -> &str {
 }
 
 fn runtime_contains(root: &Path, executables: &[&str]) -> bool {
-    executables.iter().all(|executable| {
-        find_file(root, runtime_file_name(executable))
-            .ok()
-            .flatten()
-            .is_some()
-    })
+    find_runtime_directory(root, executables)
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 /// Returns the versioned directory owned by Windie for one runtime family.
@@ -432,33 +430,65 @@ fn configured_runtime_version(runtime: ProviderRuntime) -> Result<String> {
 
 #[cfg(target_os = "windows")]
 fn local_runtime_command(program: &str) -> Result<Option<PathBuf>> {
-    let (runtime, names): (ProviderRuntime, &[&str]) = match program {
-        "npx" => (ProviderRuntime::Node, &["npx.cmd", "npx.exe"]),
-        "node" => (ProviderRuntime::Node, &["node.exe"]),
-        "uvx" => (ProviderRuntime::Uv, &["uvx.exe"]),
-        "uv" => (ProviderRuntime::Uv, &["uv.exe"]),
+    let (runtime, anchor): (ProviderRuntime, &str) = match program {
+        "npx" | "node" => (ProviderRuntime::Node, "node"),
+        "uvx" | "uv" => (ProviderRuntime::Uv, "uv"),
         _ => return Ok(None),
     };
     let version = configured_runtime_version(runtime)?;
     let root = runtime_directory(runtime, &version)?;
-    for name in names {
-        if let Some(path) = find_file(&root, name)? {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
+    Ok(find_runtime_command(&root, anchor, program)?)
 }
 
 #[cfg(not(target_os = "windows"))]
 fn local_runtime_command(program: &str) -> Result<Option<PathBuf>> {
-    let runtime = match program {
-        "npx" | "node" => ProviderRuntime::Node,
-        "uvx" | "uv" => ProviderRuntime::Uv,
+    let (runtime, anchor): (ProviderRuntime, &str) = match program {
+        "npx" | "node" => (ProviderRuntime::Node, "node"),
+        "uvx" | "uv" => (ProviderRuntime::Uv, "uv"),
         _ => return Ok(None),
     };
     let version = configured_runtime_version(runtime)?;
     let root = runtime_directory(runtime, &version)?;
-    find_file(&root, runtime_file_name(program))
+    find_runtime_command(&root, anchor, program)
+}
+
+/// Finds one runtime command beside its runtime's anchor executable.
+///
+/// Runtime archives may contain nested command shims, especially Node's
+/// Corepack files. A command is valid only when it is in the same directory
+/// as the anchor executable (`node` or `uv`), which identifies the archive's
+/// actual runtime bin directory.
+fn find_runtime_command(root: &Path, anchor: &str, command: &str) -> Result<Option<PathBuf>> {
+    let Some(directory) = find_runtime_directory(root, &[anchor, command])? else {
+        return Ok(None);
+    };
+
+    Ok(Some(directory.join(runtime_file_name(command))))
+}
+
+/// Finds a runtime directory containing all required executable siblings.
+fn find_runtime_directory(root: &Path, executables: &[&str]) -> Result<Option<PathBuf>> {
+    if !root.is_dir() {
+        return Ok(None);
+    }
+
+    if executables
+        .iter()
+        .all(|executable| root.join(runtime_file_name(executable)).is_file())
+    {
+        return Ok(Some(root.to_path_buf()));
+    }
+
+    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        let path = entry?.path();
+        if path.is_dir()
+            && let Some(found) = find_runtime_directory(&path, executables)?
+        {
+            return Ok(Some(found));
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -605,6 +635,32 @@ mod tests {
             runtime_directory_under(home, ProviderRuntime::Node, "22.14.0").unwrap(),
             home.join("runtimes/node/22.14.0")
         );
+    }
+
+    #[test]
+    fn runtime_resolution_ignores_nested_corepack_shims() {
+        let root = env::temp_dir().join(format!("windie-runtime-siblings-{}", std::process::id()));
+        let runtime_bin = root.join("node-v22.14.0-win-x64");
+        let corepack_shims = runtime_bin.join("node_modules/corepack/shims/nodewin");
+        fs::create_dir_all(&corepack_shims).unwrap();
+        fs::write(runtime_bin.join(runtime_file_name("node")), b"node").unwrap();
+        fs::write(runtime_bin.join(runtime_file_name("npx")), b"real npx").unwrap();
+        fs::write(
+            corepack_shims.join(runtime_file_name("npx")),
+            b"corepack npx",
+        )
+        .unwrap();
+
+        let directory = find_runtime_directory(&root, &["node", "npx"])
+            .unwrap()
+            .unwrap();
+        let command = find_runtime_command(&root, "node", "npx").unwrap().unwrap();
+
+        assert_eq!(directory, runtime_bin);
+        assert_eq!(command, runtime_bin.join(runtime_file_name("npx")));
+        assert!(runtime_contains(&root, &["node", "npx"]));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

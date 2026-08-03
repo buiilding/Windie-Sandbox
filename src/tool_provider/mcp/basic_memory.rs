@@ -1,9 +1,9 @@
 //! Basic Memory MCP provider definition and local project setup.
 //!
-//! Windie uses Basic Memory's normal user-wide configuration, but gives its
-//! MCP process a dedicated `windie-memory` project rooted at `~/.windie/memory`.
-//! The project argument is the provider boundary: Basic Memory can remain
-//! globally installed and useful to other clients without letting Windie
+//! Windie uses Basic Memory's normal user-wide configuration, but gives each
+//! Windie home a dedicated project rooted at that home's `memory` directory.
+//! The project constraint is the provider boundary: Basic Memory can remain
+//! globally configured and useful to other clients without letting Windie
 //! access their other memory projects.
 
 use std::fs;
@@ -12,6 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::McpProviderDefinition;
 use super::provider::McpProviderSetup;
@@ -23,24 +24,30 @@ use crate::tool_provider::{
 };
 
 const BASIC_MEMORY_PROJECT_NAME: &str = "windie-memory";
+const BASIC_MEMORY_PROJECT_ENV: &str = "BASIC_MEMORY_MCP_PROJECT";
 const BASIC_MEMORY_MEMORY_RELATIVE: &str = "memory";
 const BASIC_MEMORY_UV_CACHE_RELATIVE: &str = "mcp/basic-memory/uv-cache";
-const BASIC_MEMORY_ENV: &[crate::mcp::McpEnv] = &[crate::mcp::McpEnv {
+const BASIC_MEMORY_PACKAGE_ENV: &[crate::mcp::McpEnv] = &[crate::mcp::McpEnv {
     key: "UV_CACHE_DIR",
     value: crate::mcp::McpEnvValue::WindieDataDir(BASIC_MEMORY_UV_CACHE_RELATIVE),
 }];
+const BASIC_MEMORY_MCP_ENV: &[crate::mcp::McpEnv] = &[
+    crate::mcp::McpEnv {
+        key: "UV_CACHE_DIR",
+        value: crate::mcp::McpEnvValue::WindieDataDir(BASIC_MEMORY_UV_CACHE_RELATIVE),
+    },
+    crate::mcp::McpEnv {
+        key: BASIC_MEMORY_PROJECT_ENV,
+        value: crate::mcp::McpEnvValue::UserEnv(BASIC_MEMORY_PROJECT_ENV),
+    },
+];
 
 /// Returns the code-approved Basic Memory MCP provider definition.
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "uvx",
-        args: &[
-            "basic-memory",
-            "mcp",
-            "--project",
-            BASIC_MEMORY_PROJECT_NAME,
-        ],
-        env: BASIC_MEMORY_ENV,
+        args: &["basic-memory", "mcp"],
+        env: BASIC_MEMORY_MCP_ENV,
     };
 
     McpProviderDefinition {
@@ -81,7 +88,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: Some(McpCommand {
             program: "uvx",
             args: &["--from", "basic-memory", "python", "-c", "pass"],
-            env: BASIC_MEMORY_ENV,
+            env: BASIC_MEMORY_PACKAGE_ENV,
         }),
         shutdown_command: None,
         setup: Some(McpProviderSetup::BasicMemoryProject),
@@ -97,6 +104,9 @@ pub(super) fn prepare() -> Result<()> {
             memory_dir.display()
         )
     })?;
+
+    let project_name = project_name()?;
+    local::set_env_values(&[(BASIC_MEMORY_PROJECT_ENV.to_string(), project_name.clone())])?;
 
     let uvx = local::resolve_command("uvx")?;
     let mut projects_command = Command::new(&uvx);
@@ -120,12 +130,12 @@ pub(super) fn prepare() -> Result<()> {
 
     let project_list: Value = serde_json::from_slice(&projects.stdout)
         .context("failed to decode Basic Memory project list")?;
-    if let Some(configured_path) = project_path(&project_list, BASIC_MEMORY_PROJECT_NAME) {
+    if let Some(configured_path) = project_path(&project_list, &project_name) {
         let expected_path = canonical_path(&memory_dir)?;
         let actual_path = canonical_path(Path::new(configured_path))?;
         if actual_path != expected_path {
             return Err(anyhow!(
-                "Basic Memory project {BASIC_MEMORY_PROJECT_NAME} already points to {}; expected {}",
+                "Basic Memory project {project_name} already points to {}; expected {}",
                 actual_path.display(),
                 expected_path.display()
             ));
@@ -146,7 +156,7 @@ pub(super) fn prepare() -> Result<()> {
             "basic-memory",
             "project",
             "add",
-            BASIC_MEMORY_PROJECT_NAME,
+            project_name.as_str(),
             memory_dir.to_string_lossy().as_ref(),
             "--default",
         ])
@@ -154,12 +164,59 @@ pub(super) fn prepare() -> Result<()> {
         .context("failed to create Basic Memory Windie project")?;
     if !created.status.success() {
         return Err(anyhow!(
-            "failed to create Basic Memory project {BASIC_MEMORY_PROJECT_NAME}: {}",
+            "failed to create Basic Memory project {project_name}: {}",
             command_error(&created.stderr)
         ));
     }
 
     Ok(())
+}
+
+/// Returns the global Basic Memory project name assigned to this Windie home.
+///
+/// The normal user installation keeps the historical stable name so existing
+/// users keep their project. Isolated homes, such as local release tests, get
+/// deterministic names so they can coexist in Basic Memory's global registry.
+fn project_name() -> Result<String> {
+    let current_home = canonical_path(&windie_data_dir())?;
+    let default_home = local::user_home_dir()?.join(".windie");
+    let default_home = fs::canonicalize(&default_home).unwrap_or(default_home);
+
+    Ok(project_name_for_paths(&current_home, &default_home))
+}
+
+/// Builds a stable project name without exposing the full local path.
+fn project_name_for_paths(current_home: &Path, default_home: &Path) -> String {
+    if paths_equal(current_home, default_home) {
+        return BASIC_MEMORY_PROJECT_NAME.to_string();
+    }
+
+    let digest = Sha256::digest(normalized_path_text(current_home).as_bytes());
+    let suffix = format!("{digest:x}");
+    format!("{BASIC_MEMORY_PROJECT_NAME}-{}", &suffix[..12])
+}
+
+/// Compares paths using Windows' case-insensitive filesystem semantics.
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+/// Returns a stable path representation for project-name hashing.
+fn normalized_path_text(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        text.to_ascii_lowercase()
+    } else {
+        text
+    }
 }
 
 /// Returns the configured path for one project from Basic Memory JSON output.
@@ -223,7 +280,7 @@ fn windie_data_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_home_path, project_path};
+    use super::{expand_home_path, project_name_for_paths, project_path};
     use crate::local;
     use serde_json::json;
     use std::path::Path;
@@ -251,5 +308,31 @@ mod tests {
             expanded,
             local::user_home_dir().unwrap().join(".windie/memory")
         );
+    }
+
+    #[test]
+    fn keeps_the_default_project_name_for_the_normal_windie_home() {
+        assert_eq!(
+            project_name_for_paths(
+                Path::new("C:/Users/test/.windie"),
+                Path::new("C:/Users/test/.windie")
+            ),
+            "windie-memory"
+        );
+    }
+
+    #[test]
+    fn gives_isolated_homes_distinct_stable_project_names() {
+        let first = project_name_for_paths(
+            Path::new("C:/repo/target/local-installer/windows-x86_64/.windie"),
+            Path::new("C:/Users/test/.windie"),
+        );
+        let second = project_name_for_paths(
+            Path::new("C:/repo/target/local-installer/windows-x86_64/.windie"),
+            Path::new("C:/Users/test/.windie"),
+        );
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("windie-memory-"));
     }
 }
