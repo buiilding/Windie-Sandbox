@@ -16,7 +16,6 @@ use super::runtime;
 
 const ENV_FILE_NAME: &str = ".env";
 const BIFROST_DIR: &str = "bifrost";
-const BENCHMARK_DIR: &str = "benchmarks";
 const GATEWAY_LOG_FILE_NAME: &str = "windie-gateway.log";
 const GATEWAY_PID_FILE_NAME: &str = "bifrost.pid";
 const API_LOG_FILE_NAME: &str = "windie-api.log";
@@ -95,7 +94,6 @@ pub struct WindieLayout {
     pub root: PathBuf,
     pub env_file: PathBuf,
     pub bifrost_dir: PathBuf,
-    pub benchmarks_dir: PathBuf,
     pub gateway_log_file: PathBuf,
     pub gateway_pid_file: PathBuf,
     pub api_log_file: PathBuf,
@@ -131,8 +129,6 @@ pub fn ensure_windie_layout() -> Result<WindieLayout> {
         .with_context(|| format!("failed to create {}", layout.root.display()))?;
     fs::create_dir_all(&layout.bifrost_dir)
         .with_context(|| format!("failed to create {}", layout.bifrost_dir.display()))?;
-    fs::create_dir_all(&layout.benchmarks_dir)
-        .with_context(|| format!("failed to create {}", layout.benchmarks_dir.display()))?;
     if !layout.env_file.exists() {
         fs::write(&layout.env_file, "")
             .with_context(|| format!("failed to create {}", layout.env_file.display()))?;
@@ -407,7 +403,6 @@ fn windie_layout() -> Result<WindieLayout> {
     Ok(WindieLayout {
         env_file: root.join(ENV_FILE_NAME),
         bifrost_dir: root.join(BIFROST_DIR),
-        benchmarks_dir: root.join(BENCHMARK_DIR),
         gateway_log_file: root.join(BIFROST_DIR).join(GATEWAY_LOG_FILE_NAME),
         gateway_pid_file: root.join(BIFROST_DIR).join(GATEWAY_PID_FILE_NAME),
         api_log_file: root.join(API_LOG_FILE_NAME),

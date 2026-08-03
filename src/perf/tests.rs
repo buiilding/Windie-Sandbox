@@ -13,6 +13,16 @@ fn summarizes_duration_samples() {
 }
 
 #[test]
+fn uses_repository_baseline_path() {
+    assert_eq!(
+        default_baseline_path().unwrap(),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("benches")
+            .join("baseline.json")
+    );
+}
+
+#[test]
 fn compares_report_medians() {
     let baseline = PerformanceReport {
         format_version: REPORT_FORMAT_VERSION,

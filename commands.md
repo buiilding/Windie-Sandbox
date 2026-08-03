@@ -713,13 +713,13 @@ windie update baseline
 ```
 
 Run the current local benchmark suite and write
-`~/.windie/benchmarks/baseline.json`.
+`benches/baseline.json` in the Windie repository.
 
 ```text
 windie compare baseline
 ```
 
 Run the current local benchmark suite, compare it with
-`~/.windie/benchmarks/baseline.json`, and print median percentage changes.
+`benches/baseline.json` in the Windie repository, and print median percentage changes.
 Negative percentages mean the current run is faster. Positive percentages mean
 the current run is slower.
