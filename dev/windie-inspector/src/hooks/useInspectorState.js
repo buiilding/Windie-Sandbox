@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 /** Owns browser-only inspector state that is not runtime or persistence state. */
 export function useInspectorState() {
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState("light");
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [apiError, setApiError] = useState(null);
