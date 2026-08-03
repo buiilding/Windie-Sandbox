@@ -23,6 +23,24 @@ mod app {
 
     use anyhow::{Context, Result, anyhow};
     use reqwest::blocking::Client;
+
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    #[cfg(windows)]
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetConsoleWindow() -> *mut std::ffi::c_void;
+    }
+
+    #[cfg(windows)]
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn ShowWindow(window: *mut std::ffi::c_void, command: i32) -> i32;
+    }
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
     use winit::event::Event;
@@ -212,15 +230,17 @@ mod app {
 
         /// Invokes the current executable as a short-lived CLI command.
         fn run_cli(&self, component: Component, action: &str) -> Result<()> {
-            let status = Command::new(&self.windie_binary)
+            let mut command = Command::new(&self.windie_binary);
+            command
                 .args([component.command(), action])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .with_context(|| {
-                    format!("failed to run windie {} {}", component.command(), action)
-                })?;
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            command.creation_flags(CREATE_NO_WINDOW);
+            let status = command.status().with_context(|| {
+                format!("failed to run windie {} {}", component.command(), action)
+            })?;
 
             if status.success() {
                 Ok(())
@@ -236,11 +256,15 @@ mod app {
         /// Invokes the shared non-interactive uninstall command after the
         /// tray event loop has released its PID registration.
         fn run_uninstall(&self) -> Result<()> {
-            let status = Command::new(&self.windie_binary)
+            let mut command = Command::new(&self.windie_binary);
+            command
                 .args(["uninstall", "--yes"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            command.creation_flags(CREATE_NO_WINDOW);
+            let status = command
                 .status()
                 .context("failed to run windie uninstall --yes")?;
 
@@ -338,6 +362,9 @@ mod app {
     /// Runs the macOS or Windows tray event loop.
     #[allow(deprecated)]
     pub fn run() -> Result<()> {
+        #[cfg(windows)]
+        hide_console_window();
+
         let controller = RuntimeController::new()?;
         crate::process::register_tray()?;
         let (status_sender, status_receiver) = mpsc::channel();
@@ -456,6 +483,16 @@ mod app {
         }
 
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn hide_console_window() {
+        let window = unsafe { GetConsoleWindow() };
+        if !window.is_null() {
+            unsafe {
+                ShowWindow(window, 0);
+            }
+        }
     }
 
     /// Applies the newest health snapshot to the toggle labels.

@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use tokio::time::sleep;
@@ -27,6 +30,9 @@ const BIFROST_BINARY_ENV: &str = "WINDIE_BIFROST_BIN";
 const BIFROST_PORT: &str = "8080";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(200);
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Base URL for the local Bifrost gateway health endpoint.
@@ -291,7 +297,8 @@ fn start_binary_process(binary: &Path, paths: &BifrostPaths, port: &str) -> Resu
         .try_clone()
         .with_context(|| format!("failed to open gateway log {}", paths.log_file.display()))?;
 
-    let child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .arg("-app-dir")
         .arg(&paths.app_dir)
         .arg("-port")
@@ -299,7 +306,10 @@ fn start_binary_process(binary: &Path, paths: &BifrostPaths, port: &str) -> Resu
         .current_dir(&paths.dir)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
+        .stderr(Stdio::from(stderr));
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let child = command
         .spawn()
         .context("failed to start the Windie-owned Bifrost binary")?;
     write_pid_file(&paths.pid_file, child.id())?;

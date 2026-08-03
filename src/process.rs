@@ -12,6 +12,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use anyhow::{Context, Result, anyhow};
 
 use crate::local;
@@ -19,6 +22,9 @@ use crate::local;
 const API_ADDRESS: &str = "http://127.0.0.1:8787";
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// One independently managed local Windie component.
@@ -233,6 +239,8 @@ fn start_detached(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
     let child = command.spawn().with_context(|| {
         format!(
             "failed to start {} with {}",
