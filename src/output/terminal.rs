@@ -22,6 +22,22 @@ use crate::tool::{ToolDefinition, ToolSchemaName};
 
 use super::*;
 
+/// Converts a scenario layer into a readable section heading.
+fn title_case(value: &str) -> String {
+    if value == "api" {
+        return "API".to_string();
+    }
+    if value == "mcp" {
+        return "MCP".to_string();
+    }
+
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Minimal output interface needed by runtime flows.
 ///
 /// Tests can implement this trait without depending on terminal stdout.
@@ -149,7 +165,7 @@ impl TerminalOutput {
         }
     }
 
-    /// Prints all fields measured by a performance baseline.
+    /// Prints named benchmark scenarios grouped by architectural layer.
     pub fn performance_baseline(&self, baseline: &PerformanceBaseline) {
         println!("performance baseline");
         println!("mode: {}", baseline.mode.as_str());
@@ -160,185 +176,16 @@ impl TerminalOutput {
         if let Some(conversation_id) = baseline.conversation_id.as_ref() {
             println!("conversation: {conversation_id}");
         }
-        if let Some(duration) = baseline.store_open {
-            println!("store open: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.conversation_load {
-            println!("path load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.head_message_lookup {
-            println!("head message lookup: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.path_row_load {
-            println!("path row load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.path_part_load {
-            println!("path part/image load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tree_load {
-            println!("tree load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tree_row_load {
-            println!("tree row load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tree_part_load {
-            println!("tree part/image load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tool_schema_load {
-            println!("tool schema load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build {
-            println!("context build: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_path_load {
-            println!("context path load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_system_prompt_load {
-            println!("context system prompt load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_compaction_load {
-            println!("context compaction load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_flatten {
-            println!("context flatten: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.prepare_head_turn {
-            println!("prepare run head turn: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.pending_tool_approval_scan {
-            println!("pending tool approval scan: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.tool_result_insert {
-            println!("tool result insert: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.deny_tool_result_persist {
-            println!("deny tool result persist: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.splice_remove {
-            println!("splice remove: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.truncate {
-            println!("truncate: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_after_tool_chain {
-            println!(
-                "context build after tool chain: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.path_load_100 {
-            println!("path load 100: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.path_load_1000 {
-            println!("path load 1000: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.pending_tool_approval_scan_long_path {
-            println!(
-                "pending tool approval scan long path: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.pending_tool_approval_scan_deep_chain {
-            println!(
-                "pending tool approval scan deep chain: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.prepare_run_head_no_tools {
-            println!("prepare query no tools: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.prepare_run_head_completed_tool_chain {
-            println!(
-                "prepare query completed tool chain: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.prepare_run_head_requires_approval {
-            println!(
-                "prepare query requires approval: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.prepare_run_head_policy_denied {
-            println!("prepare query policy denied: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.splice_remove_branch_point {
-            println!("splice remove branch point: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.splice_remove_root_many_children {
-            println!(
-                "splice remove root many children: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.splice_remove_tool_group {
-            println!("splice remove tool group: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.truncate_large_subtree {
-            println!("truncate large subtree: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_plain_100 {
-            println!("context build plain 100: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_plain_1000 {
-            println!("context build plain 1000: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.context_build_with_system_prompt {
-            println!(
-                "context build with system prompt: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.context_build_with_compaction {
-            println!(
-                "context build with compaction: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.context_build_with_image_parts {
-            println!(
-                "context build with image parts: {}",
-                format_duration(duration)
-            );
-        }
-        if let Some(duration) = baseline.provider_tool_attach_load {
-            println!("provider tool attach/load: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.fake_mcp_list_call {
-            println!("fake mcp list/call: {}", format_duration(duration));
-        }
-        if let Some(loaded_messages) = baseline.loaded_messages {
-            println!("path messages: {loaded_messages}");
-        }
-        if let Some(tree_messages) = baseline.tree_messages {
-            println!("tree messages: {tree_messages}");
-        }
-        if let Some(requested_tool_calls) = baseline.requested_tool_calls {
-            println!("requested tool calls: {requested_tool_calls}");
-        }
-        if let Some(resolved_tool_results) = baseline.resolved_tool_results {
-            println!("resolved tool results: {resolved_tool_results}");
-        }
-        if let Some(deleted_messages) = baseline.deleted_messages {
-            println!("deleted messages: {deleted_messages}");
-        }
-        if let Some(promoted_children) = baseline.promoted_children {
-            println!("promoted children: {promoted_children}");
-        }
-        if let Some(truncated_messages) = baseline.truncated_messages {
-            println!("truncated messages: {truncated_messages}");
-        }
-        if let Some(duration) = baseline.gateway_ready {
-            println!("gateway ready: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.first_token {
-            println!("first token: {}", format_duration(duration));
-        }
-        if let Some(duration) = baseline.full_response {
-            println!("full response: {}", format_duration(duration));
-        }
-        if let Some(response_bytes) = baseline.response_bytes {
-            println!("response bytes: {response_bytes}");
+        let mut current_layer = None;
+        for scenario in &baseline.scenarios {
+            if current_layer.as_deref() != Some(scenario.layer.as_str()) {
+                println!();
+                println!("{}", title_case(&scenario.layer));
+                current_layer = Some(scenario.layer.clone());
+            }
+            println!("  {}", scenario.name);
+            println!("    fixture: {}", scenario.fixture);
+            println!("    time: {}", format_duration(scenario.duration));
         }
     }
 

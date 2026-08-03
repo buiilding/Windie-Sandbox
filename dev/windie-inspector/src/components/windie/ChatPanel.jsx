@@ -83,7 +83,7 @@ function LiveExecutionIndicator({ count }) {
   );
 }
 
-export default function ChatPanel() {
+export default function ChatPanel({ onFirstMessage }) {
   const { activeConv, selectedSession, selectedPathNodes, streaming, pendingAssistant, stopStreaming, apiError } = useWindie();
   const scrollRef = useRef(null);
   const prevConvId = useRef(activeConv?.id);
@@ -133,9 +133,75 @@ export default function ChatPanel() {
 
   if (!activeConv) {
     return (
-      <div className="flex-1 min-w-0 flex items-center justify-center bg-background min-h-0">
-        <div className="font-mono text-xs text-muted-foreground">
-          {apiError || "no conversation selected"}
+      <div
+        data-testid="windie-welcome-canvas"
+        className="relative flex-1 min-w-0 flex items-center overflow-hidden bg-background min-h-0"
+      >
+        <div className="pointer-events-none absolute inset-0 windie-welcome-grid" aria-hidden="true" />
+        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+          <div className="windie-welcome-orbit absolute right-[8%] top-1/2 size-[min(42vw,34rem)] -translate-y-1/2 rounded-full border border-border/60" />
+          <div className="absolute right-[calc(8%+4rem)] top-1/2 size-[min(28vw,22rem)] -translate-y-1/2 rounded-full border border-border/40" />
+          <div className="absolute right-[calc(8%+11rem)] top-1/2 size-2 -translate-y-1/2 rounded-full bg-accent shadow-[0_0_24px_hsl(var(--accent)/0.75)]" />
+          <div className="absolute right-[calc(8%+4rem)] top-[calc(50%-1px)] h-px w-[min(42vw,34rem)] origin-left bg-border/50" />
+          <div className="absolute right-[calc(8%+1px)] top-[calc(50%-min(21vw,17rem))] h-[min(42vw,34rem)] w-px bg-border/30" />
+        </div>
+
+        <div className="relative z-10 w-full max-w-5xl px-8 py-16 lg:px-16">
+          <div className="grid items-center gap-16 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.65fr)]">
+            <div className="max-w-2xl">
+              <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.28em] text-muted-foreground">
+                <span className="size-2 bg-accent shadow-[0_0_12px_hsl(var(--accent)/0.65)]" />
+                <span>local runtime / 001</span>
+              </div>
+
+              <h1 className="mt-8 text-4xl font-semibold tracking-[-0.05em] text-foreground sm:text-6xl lg:text-7xl">
+                Welcome
+                <span className="block text-muted-foreground">to Windie</span>
+              </h1>
+
+              <div className="mt-8 max-w-lg border-l border-accent pl-5">
+                <p className="text-lg leading-relaxed text-foreground sm:text-xl">
+                  This is Peter&apos;s creation of an AI on the computer
+                </p>
+                <p className="mt-3 font-mono text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                  Please be kind with it <span className="text-base normal-case tracking-normal">😊</span>
+                </p>
+              </div>
+
+              {apiError ? (
+                <div className="mt-10 max-w-lg border border-destructive/40 bg-destructive/5 px-3 py-2 font-mono text-[10px] text-destructive">
+                  {apiError}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="hidden justify-self-end lg:block">
+              <div className="w-64 border border-border/80 bg-background/70 p-4 backdrop-blur-sm">
+                <div className="flex items-center justify-between border-b border-border pb-3 font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground">
+                  <span>windie / core</span>
+                  <span>01</span>
+                </div>
+                <div className="space-y-4 py-5 font-mono text-[10px] uppercase tracking-[0.16em]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">context</span>
+                    <span className="text-foreground">ready</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">computer</span>
+                    <span className="text-foreground">local</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">conversation</span>
+                    <span className="text-accent">waiting</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 border-t border-border pt-3 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground">
+                  <span className="size-1.5 rounded-full bg-accent shadow-[0_0_10px_hsl(var(--accent)/0.7)]" />
+                  <span>ready for a conversation</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -191,7 +257,7 @@ export default function ChatPanel() {
         ) : null}
       </div>
 
-      <Composer />
+      <Composer onFirstMessage={onFirstMessage} />
     </div>
   );
 }

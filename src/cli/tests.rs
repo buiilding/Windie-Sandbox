@@ -993,7 +993,48 @@ fn reads_bare_bench_command() {
             options,
         } if options.runs == 1
             && !options.json
-            && options.categories == BenchmarkCategory::all()
+            && options.categories == BenchmarkCategory::deterministic()
+    ));
+}
+
+#[test]
+fn reads_all_bench_categories_command() {
+    let command = command_from_args([
+        "windie".to_string(),
+        "bench".to_string(),
+        "--all".to_string(),
+    ]);
+
+    assert!(matches!(
+        command,
+        Command::Bench { options, .. } if options.categories == BenchmarkCategory::all()
+    ));
+}
+
+#[test]
+fn reads_conversation_bench_command() {
+    let command = command_from_args([
+        "windie".to_string(),
+        "bench".to_string(),
+        "conversation-123".to_string(),
+        "--conversation".to_string(),
+        "--serialization".to_string(),
+        "--api".to_string(),
+    ]);
+
+    assert!(matches!(
+        command,
+        Command::Bench {
+            mode: BenchmarkMode::Conversation,
+            conversation_id: Some(conversation_id),
+            options,
+        } if conversation_id.as_str() == "conversation-123"
+            && options.categories
+                == vec![
+                    BenchmarkCategory::Conversation,
+                    BenchmarkCategory::Serialization,
+                    BenchmarkCategory::Api,
+                ]
     ));
 }
 

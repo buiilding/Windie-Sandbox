@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import TopBar from "@/components/windie/TopBar";
 import Sidebar from "@/components/windie/Sidebar";
 import ChatPanel from "@/components/windie/ChatPanel";
 import InspectorPanel from "@/components/windie/InspectorPanel";
 import { useWindie } from "@/context/WindieContext";
-import { listLlmProviders } from "@/lib/windieApi";
+import { listLlmProviderKeys, listLlmProviders } from "@/lib/windieApi";
 
 export default function Windie() {
   const [overlay, setOverlay] = useState(null);
@@ -12,31 +12,60 @@ export default function Windie() {
   const [treeCollapsed, setTreeCollapsed] = useState(() => {
     try {
       const value = window.localStorage.getItem("windie.treeCollapsed");
-      return value == null ? false : value === "true";
+      return value == null ? true : value === "true";
     } catch {
-      return false;
+      return true;
     }
   });
+  const firstMessageOpenedRef = useRef(false);
+  const openTreeForFirstMessage = useCallback(() => {
+    if (firstMessageOpenedRef.current) return;
+    firstMessageOpenedRef.current = true;
+    setTreeCollapsed(false);
+  }, []);
 
-  // First-run setup: if no LLM provider is configured in Bifrost, open the
-  // onboarding overlay once. No persisted flag — configuration state itself is
-  // the signal, so CLI-onboarded users never see this.
+  // First-run setup: open onboarding unless Bifrost has validated an enabled
+  // provider key. key_count only reports stored key records, so it cannot be
+  // used as a readiness signal for auto-detected environment keys.
   useEffect(() => {
     if (onboardingCheckedRef.current) return;
     onboardingCheckedRef.current = true;
-    listLlmProviders()
-      .then((providers) => {
-        const configured = providers.some(
-          (provider) =>
-            provider.authentication === "none" ||
-            (provider.configured && provider.key_count > 0)
-        );
-        if (!configured) setOverlay("onboarding");
-      })
-      .catch(() => {
-        // The API may still be starting; skipping the auto-show is safer than
-        // showing setup to an already-configured user.
-      });
+    listLlmProviders().then(async (providers) => {
+      const readiness = await Promise.all(
+        providers.map(async (provider) => {
+          if (provider.authentication === "none") {
+            return { checked: true, ready: true };
+          }
+          if (!provider.configured || provider.key_count === 0) {
+            return { checked: true, ready: false };
+          }
+
+          try {
+            const keys = await listLlmProviderKeys(provider.name);
+            return {
+              checked: true,
+              ready: keys.some(
+                (key) => key.enabled !== false && key.status === "success"
+              ),
+            };
+          } catch {
+            // Keep the existing startup behavior when Bifrost is still coming
+            // up or its key endpoint is temporarily unavailable.
+            return { checked: false, ready: false };
+          }
+        })
+      );
+
+      if (
+        readiness.every(({ checked }) => checked) &&
+        !readiness.some(({ ready }) => ready)
+      ) {
+        setOverlay("onboarding");
+      }
+    }).catch(() => {
+      // The API may still be starting; skipping the auto-show is safer than
+      // showing setup to an already-configured user.
+    });
   }, []);
 
   useEffect(() => {
@@ -62,7 +91,7 @@ export default function Windie() {
         <Sidebar treeCollapsed={treeCollapsed} />
         <div className="flex-1 min-w-0 relative flex">
           <div className="flex-1 min-w-0 relative flex flex-col min-h-0">
-            <ChatPanel />
+            <ChatPanel onFirstMessage={openTreeForFirstMessage} />
           </div>
           {overlay && <InspectorPanel mode={overlay} onClose={() => setOverlay(null)} />}
         </div>

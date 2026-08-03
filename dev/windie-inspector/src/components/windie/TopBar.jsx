@@ -1,6 +1,7 @@
 import { useWindie } from "@/context/WindieContext";
-import { Sun, Moon, GitBranch } from "lucide-react";
+import { Sun, Moon, GitBranch, Plus } from "lucide-react";
 import ConversationPicker from "@/components/windie/ConversationPicker";
+import { toast } from "sonner";
 
 function formatTokenCount(value) {
   if (value == null) return "--";
@@ -13,12 +14,19 @@ const TOKEN_METER_TITLE = "Token count over selected model context";
 
 export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlayChange }) {
   const {
+    activeConv,
+    createConversation,
     theme,
     setTheme,
     tokenMeter,
     approvals,
   } =
     useWindie();
+
+  const handleCreateConversation = async () => {
+    const id = await createConversation();
+    if (id) toast.message("new conversation created", { description: id.slice(0, 8) });
+  };
 
   return (
     <header
@@ -43,7 +51,18 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
         <GitBranch className="size-3.5" strokeWidth={1.75} />
       </button>
 
-      <div className="pointer-events-auto">
+      <div className="pointer-events-auto flex items-center gap-1">
+        <button
+          type="button"
+          data-testid="topbar-new-conversation"
+          onClick={handleCreateConversation}
+          aria-label="new conversation"
+          title="new conversation"
+          className="flex h-7 items-center gap-1.5 border border-border bg-background px-2 hover:bg-surface-hover transition-colors"
+        >
+          <Plus className="size-3.5" strokeWidth={1.75} />
+          <span className="font-mono text-[10px] uppercase tracking-widest">new conversation</span>
+        </button>
         <ConversationPicker />
       </div>
 
@@ -53,25 +72,29 @@ export default function TopBar({ treeCollapsed, onTreeToggle, overlay, onOverlay
         className="flex items-center gap-1.5"
         title={TOKEN_METER_TITLE}
       >
-        <button
-          type="button"
-          data-testid="topbar-open-system"
-          onClick={() => onOverlayChange(overlay === "system" ? null : "system")}
-          className={`pointer-events-auto h-6 px-1.5 border border-border bg-background font-mono text-[10px] uppercase tracking-widest text-foreground hover:bg-surface-hover transition-colors ${overlay === "system" ? "bg-surface-hover" : ""}`}
-        >
-          system
-        </button>
+        {activeConv ? (
+          <>
+            <button
+              type="button"
+              data-testid="topbar-open-system"
+              onClick={() => onOverlayChange(overlay === "system" ? null : "system")}
+              className={`pointer-events-auto h-6 px-1.5 border border-border bg-background font-mono text-[10px] uppercase tracking-widest text-foreground hover:bg-surface-hover transition-colors ${overlay === "system" ? "bg-surface-hover" : ""}`}
+            >
+              system
+            </button>
 
-        <button
-          type="button"
-          data-testid="topbar-open-tools"
-          onClick={() => onOverlayChange(overlay === "tools" ? null : "tools")}
-          className={`pointer-events-auto h-6 px-1.5 border border-border bg-background font-mono text-[10px] uppercase tracking-widest text-foreground hover:bg-surface-hover transition-colors ${overlay === "tools" ? "bg-surface-hover" : ""}`}
-        >
-          tools{approvals.length > 0 ? ` · ${approvals.length}` : ""}
-        </button>
+            <button
+              type="button"
+              data-testid="topbar-open-tools"
+              onClick={() => onOverlayChange(overlay === "tools" ? null : "tools")}
+              className={`pointer-events-auto h-6 px-1.5 border border-border bg-background font-mono text-[10px] uppercase tracking-widest text-foreground hover:bg-surface-hover transition-colors ${overlay === "tools" ? "bg-surface-hover" : ""}`}
+            >
+              tools{approvals.length > 0 ? ` · ${approvals.length}` : ""}
+            </button>
 
-        <div className="h-4 w-px bg-border mx-1" />
+            <div className="h-4 w-px bg-border mx-1" />
+          </>
+        ) : null}
 
         <span className="uppercase tracking-widest">tokens</span>
         <span className="text-foreground">

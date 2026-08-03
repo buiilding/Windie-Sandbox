@@ -30,10 +30,41 @@ pub use model::ModelParameterInfo;
 #[cfg(test)]
 pub use stream::FinishReason;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::conversation::Message;
 use crate::tool::ToolSchema;
+
+/// Serializes one provider-facing Responses request without performing HTTP.
+///
+/// The benchmark boundary uses the same serializer as `BifrostClient::stream`
+/// so request construction is measured independently from SQLite and network
+/// latency.
+pub(crate) fn benchmark_responses_request_size(
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolSchema],
+) -> Result<usize> {
+    let prompt_cache = None;
+    let prompt_cache_fields = serialization::prompt_cache_fields(model, prompt_cache);
+    let request = responses::ResponsesRequest {
+        model,
+        input: serialization::responses_input(
+            messages,
+            serialization::image_input_detail_for_model(model),
+        ),
+        tools: serialization::responses_tools(tools),
+        reasoning: None,
+        prompt_cache_key: prompt_cache_fields.prompt_cache_key,
+        prompt_cache_retention: prompt_cache_fields.prompt_cache_retention,
+        cache_control: prompt_cache_fields.cache_control,
+        stream: true,
+    };
+
+    serde_json::to_vec(&request)
+        .context("failed to serialize benchmark Responses request")
+        .map(|bytes| bytes.len())
+}
 
 /// Minimal LLM interface needed by runtime query execution.
 ///

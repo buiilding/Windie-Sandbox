@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::conversation::{Message, MessageId, MessagePart};
 use crate::llm::ModelInfo;
-use crate::perf::{DurationMetric, PerformanceComparison, PerformanceReport};
+use crate::perf::{PerformanceComparison, PerformanceReport};
 use crate::store::ConversationInfo;
 use crate::tool::ToolDefinition;
 
@@ -124,7 +124,8 @@ pub(crate) fn help_lines() -> Vec<String> {
         "  windie gateway stop",
         "  windie gateway output",
         "  windie bench",
-        "  windie bench --persistence --conversation --runtime --tools --mutations --mcp",
+        "  windie bench --all",
+        "  windie bench --persistence --conversation --serialization --runtime --sessions --tools --mutations --mcp --api --lifecycle",
         "  windie bench --runs 100 --json",
         "  windie compare baseline",
         "  windie update baseline",
@@ -186,233 +187,41 @@ pub(crate) fn performance_report_lines(report: &PerformanceReport) -> Vec<String
         lines.push(format!("conversation: {conversation_id}"));
     }
 
-    push_metric_lines(&mut lines, "store open", report.summary.store_open.as_ref());
-    push_metric_lines(&mut lines, "path load", report.summary.path_load.as_ref());
-    push_metric_lines(
-        &mut lines,
-        "head message lookup",
-        report.summary.head_message_lookup.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "path row load",
-        report.summary.path_row_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "path part/image load",
-        report.summary.path_part_load.as_ref(),
-    );
-    push_metric_lines(&mut lines, "tree load", report.summary.tree_load.as_ref());
-    push_metric_lines(
-        &mut lines,
-        "tree row load",
-        report.summary.tree_row_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "tree part/image load",
-        report.summary.tree_part_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "tool schema load",
-        report.summary.tool_schema_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build",
-        report.summary.context_build.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context path load",
-        report.summary.context_path_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context system prompt load",
-        report.summary.context_system_prompt_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context compaction load",
-        report.summary.context_compaction_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context flatten",
-        report.summary.context_flatten.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare run head turn",
-        report.summary.prepare_head_turn.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "pending tool approval scan",
-        report.summary.pending_tool_approval_scan.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "tool result insert",
-        report.summary.tool_result_insert.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "deny tool result persist",
-        report.summary.deny_tool_result_persist.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove",
-        report.summary.splice_remove.as_ref(),
-    );
-    push_metric_lines(&mut lines, "truncate", report.summary.truncate.as_ref());
-    push_metric_lines(
-        &mut lines,
-        "context build after tool chain",
-        report.summary.context_build_after_tool_chain.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "path load 100",
-        report.summary.path_load_100.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "path load 1000",
-        report.summary.path_load_1000.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "pending tool approval scan long path",
-        report.summary.pending_tool_approval_scan_long_path.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "pending tool approval scan deep chain",
-        report
-            .summary
-            .pending_tool_approval_scan_deep_chain
-            .as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query no tools",
-        report.summary.prepare_run_head_no_tools.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query completed tool chain",
-        report
-            .summary
-            .prepare_run_head_completed_tool_chain
-            .as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query requires approval",
-        report.summary.prepare_run_head_requires_approval.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "prepare query policy denied",
-        report.summary.prepare_run_head_policy_denied.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove branch point",
-        report.summary.splice_remove_branch_point.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove root many children",
-        report.summary.splice_remove_root_many_children.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "splice remove tool group",
-        report.summary.splice_remove_tool_group.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "truncate large subtree",
-        report.summary.truncate_large_subtree.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build plain 100",
-        report.summary.context_build_plain_100.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build plain 1000",
-        report.summary.context_build_plain_1000.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build with system prompt",
-        report.summary.context_build_with_system_prompt.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build with compaction",
-        report.summary.context_build_with_compaction.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "context build with image parts",
-        report.summary.context_build_with_image_parts.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "provider tool attach/load",
-        report.summary.provider_tool_attach_load.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "fake mcp list/call",
-        report.summary.fake_mcp_list_call.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "gateway ready",
-        report.summary.gateway_ready.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "first token",
-        report.summary.first_token.as_ref(),
-    );
-    push_metric_lines(
-        &mut lines,
-        "full response",
-        report.summary.full_response.as_ref(),
-    );
+    let mut current_layer = None;
+    for (name, scenario) in &report.summary.scenarios {
+        if current_layer.as_deref() != Some(scenario.layer.as_str()) {
+            lines.push(String::new());
+            lines.push(title_case(&scenario.layer));
+            current_layer = Some(scenario.layer.clone());
+        }
+        let prefix = format!("{}/", scenario.layer);
+        let display_name = name.strip_prefix(&prefix).unwrap_or(name);
+        lines.push(format!("  {display_name}"));
+        lines.push(format!("    fixture: {}", scenario.fixture));
+        lines.push(format!(
+            "    median: {}  p95: {}",
+            format_duration_us(scenario.timing.median_us),
+            format_duration_us(scenario.timing.p95_us)
+        ));
+    }
 
     lines
 }
 
-/// Appends min/median/p95/max lines for one benchmark metric.
-pub(super) fn push_metric_lines(
-    lines: &mut Vec<String>,
-    name: &str,
-    metric: Option<&DurationMetric>,
-) {
-    let Some(metric) = metric else {
-        return;
-    };
+/// Converts a scenario layer into a readable section heading.
+fn title_case(value: &str) -> String {
+    if value == "api" {
+        return "API".to_string();
+    }
+    if value == "mcp" {
+        return "MCP".to_string();
+    }
 
-    lines.push(format!("{name}:"));
-    lines.push(format!("  min: {}", format_duration_us(metric.min_us)));
-    lines.push(format!(
-        "  median: {}",
-        format_duration_us(metric.median_us)
-    ));
-    lines.push(format!("  p95: {}", format_duration_us(metric.p95_us)));
-    lines.push(format!("  max: {}", format_duration_us(metric.max_us)));
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Converts a persisted benchmark comparison into stable CLI lines.
