@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Checkout Bifrost submodule
-        run: git submodule update --init vendor/bifrost
+        run: git submodule update --init --depth 1 vendor/bifrost
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Checkout Bifrost submodule
-        run: git submodule update --init vendor/bifrost
+        run: git submodule update --init --depth 1 vendor/bifrost
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
