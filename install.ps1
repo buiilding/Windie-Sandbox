@@ -204,7 +204,7 @@ Wait-WindieHealth $inspectorHealthUrl 30 "the Windie Inspector UI"
 
 $uiUrl = "http://$inspectorAddress"
 Start-Process $uiUrl
-Start-Process -FilePath $windie -ArgumentList @("tray")
+Start-Process -FilePath $windie -ArgumentList @("tray") -WindowStyle Hidden
 Write-Host "Started the UI at $uiUrl"
 Write-Host "Click on the tray on your desktop to manage these processes."
 

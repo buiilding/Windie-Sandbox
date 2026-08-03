@@ -94,7 +94,22 @@ if (Test-Path -LiteralPath $PreviousWindie -PathType Leaf) {
     Write-Host "==> stopping previous local Windie installation"
     $env:WINDIE_HOME = $WindieHome
     $env:WINDIE_INSTALL_DIR = $InstallDir
-    & $PreviousWindie uninstall --yes *> $null
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $PreviousWindie uninstall --yes 2>$null | Out-Null
+    $previousUninstallExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($previousUninstallExitCode -ne 0) {
+        throw "previous local Windie uninstall failed with exit code $previousUninstallExitCode"
+    }
+
+    # Older local packages could schedule a broken self-cleanup command. The
+    # test root is disposable, so clear its remaining state before rebuilding.
+    foreach ($path in @($InstallDir, $WindieHome)) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Recurse -Force
+        }
+    }
 }
 
 Write-Host "==> packaging local release"

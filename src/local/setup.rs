@@ -549,7 +549,14 @@ fn executable_name(name: &str) -> String {
 fn schedule_windows_cleanup(plan: &UninstallPlan) -> Result<()> {
     let mut paths = plan.binaries.clone();
     paths.push(plan.windie_home.clone());
-    let script = "Start-Sleep -Milliseconds 500; foreach ($path in $args) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue } }";
+    let path_literals = paths
+        .iter()
+        .map(|path| powershell_single_quoted(path.to_string_lossy().as_ref()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let script = format!(
+        "Start-Sleep -Milliseconds 500; $paths = @({path_literals}); foreach ($path in $paths) {{ if (Test-Path -LiteralPath $path) {{ Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }} }}"
+    );
     let mut command = Command::new("powershell.exe");
     command.args([
         "-NoProfile",
@@ -557,14 +564,17 @@ fn schedule_windows_cleanup(plan: &UninstallPlan) -> Result<()> {
         "-WindowStyle",
         "Hidden",
         "-Command",
-        script,
-        "--",
+        &script,
     ]);
-    command.args(paths);
     command
         .spawn()
         .context("failed to schedule Windows Windie cleanup")?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn powershell_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[cfg(not(windows))]

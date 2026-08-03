@@ -33,6 +33,9 @@ const MCP_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 const MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SHUTDOWN_RETRY_DELAY: Duration = Duration::from_millis(750);
 const MCP_SHUTDOWN_RETRIES: usize = 4;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MCP_STDERR_MAX_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -740,11 +743,15 @@ fn windows_command(program: PathBuf, args: &[&str]) -> Command {
         let mut process = Command::new(command_processor);
         process.raw_arg("/D /S /C ");
         process.raw_arg(command_line);
+        #[cfg(windows)]
+        process.creation_flags(CREATE_NO_WINDOW);
         return process;
     }
 
     let mut process = Command::new(program);
     process.args(args);
+    #[cfg(windows)]
+    process.creation_flags(CREATE_NO_WINDOW);
     process
 }
 
