@@ -2,3 +2,7 @@
 	path = vendor/bifrost
 	url = https://github.com/buiilding/bifrost.git
 	branch = dev
+[submodule "vendor/windie-landing-2nd"]
+	path = vendor/windie-landing-2nd
+	url = https://github.com/buiilding/windie-landing-2nd.git
+	branch = main
