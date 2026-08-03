@@ -8,7 +8,7 @@ use crate::conversation::{
 use crate::llm::ReasoningRequest;
 use crate::perf::{
     BenchmarkCategory, BenchmarkMode, DurationMetric, PerformanceComparison,
-    PerformanceComparisonRow, PerformanceReport, PerformanceSummary,
+    PerformanceComparisonRow, PerformanceReport, PerformanceSummary, ScenarioSummary,
 };
 use crate::store::Compaction;
 use crate::tool::{
@@ -88,14 +88,16 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie bench".to_string()));
     assert!(
         lines.contains(
-            &"  windie bench --persistence --conversation --runtime --tools --mutations --mcp"
+            &"  windie bench --persistence --conversation --serialization --runtime --sessions --tools --mutations --mcp --api --lifecycle"
                 .to_string()
         )
     );
     assert!(lines.contains(&"  windie compare baseline".to_string()));
     assert!(lines.contains(&"  windie update baseline".to_string()));
     assert!(!lines.contains(&"  windie bench live".to_string()));
+    assert!(!lines.contains(&"Notes:".to_string()));
     assert!(lines.contains(&"Options:".to_string()));
+    assert!(lines.contains(&"  -v, -V, --version    Show version".to_string()));
 }
 
 #[test]
@@ -524,21 +526,30 @@ fn formats_duration_as_seconds() {
 #[test]
 fn formats_performance_report_lines() {
     let report = PerformanceReport {
-        format_version: 3,
+        format_version: 7,
         mode: BenchmarkMode::Local,
-        categories: BenchmarkCategory::all(),
+        categories: BenchmarkCategory::deterministic(),
         model: "openai/gpt-4o-mini".to_string(),
         conversation_id: None,
         runs: 3,
         samples: vec![],
         summary: PerformanceSummary {
-            store_open: Some(DurationMetric {
-                min_us: 100,
-                median_us: 200,
-                p95_us: 300,
-                max_us: 400,
-            }),
-            ..PerformanceSummary::default()
+            scenarios: [(
+                "storage/open_database".to_string(),
+                ScenarioSummary {
+                    category: BenchmarkCategory::Persistence,
+                    layer: "storage".to_string(),
+                    fixture: "fresh file-backed SQLite database".to_string(),
+                    timing: DurationMetric {
+                        min_us: 100,
+                        median_us: 200,
+                        p95_us: 300,
+                        max_us: 400,
+                    },
+                },
+            )]
+            .into_iter()
+            .collect(),
         },
     };
 
@@ -547,8 +558,10 @@ fn formats_performance_report_lines() {
     assert_eq!(lines[0], "performance report");
     assert!(lines.contains(&"mode: local".to_string()));
     assert!(lines.contains(&"runs: 3".to_string()));
-    assert!(lines.contains(&"store open:".to_string()));
-    assert!(lines.contains(&"  median: 200us".to_string()));
+    assert!(lines.contains(&"Storage".to_string()));
+    assert!(lines.contains(&"  open_database".to_string()));
+    assert!(lines.contains(&"    fixture: fresh file-backed SQLite database".to_string()));
+    assert!(lines.contains(&"    median: 200us  p95: 300us".to_string()));
 }
 
 #[test]
@@ -559,7 +572,7 @@ fn formats_performance_comparison_lines() {
         baseline_runs: 100,
         current_runs: 100,
         rows: vec![PerformanceComparisonRow {
-            name: "context build",
+            name: "context build".to_string(),
             baseline_median_us: 100,
             current_median_us: 80,
             change_percent: -20.0,

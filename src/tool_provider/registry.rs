@@ -10,13 +10,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow};
 
 use super::builtin;
-#[cfg(test)]
 use super::mcp::McpProviderDefinition;
 use super::mcp::{McpToolProvider, approved_mcp_providers};
 use crate::conversation::ToolCall;
 use crate::error;
 use crate::local;
-#[cfg(test)]
 use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
 use crate::tool::{
@@ -306,8 +304,12 @@ impl ToolProviderRegistry {
     ///
     /// Runtime tests use this to exercise provider dispatch without depending
     /// on user-installed MCP binaries.
-    #[cfg(test)]
-    pub(crate) fn with_test_mcp_provider(
+    /// Builds a deterministic fake MCP registry for provider-path benchmarks.
+    ///
+    /// The fake command still crosses the same registry, provider adapter, and
+    /// MCP executor boundaries as a real approved provider; only its stdio
+    /// command is deterministic and local.
+    pub(crate) fn with_benchmark_mcp_provider(
         provider_id: &'static str,
         schema_prefix: &'static str,
         display_name: &'static str,
@@ -341,6 +343,17 @@ impl ToolProviderRegistry {
             mcp_session_pool: None,
             catalog_cache,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_mcp_provider(
+        provider_id: &'static str,
+        schema_prefix: &'static str,
+        display_name: &'static str,
+        command: McpCommand,
+        tools: Vec<ToolDefinition>,
+    ) -> Self {
+        Self::with_benchmark_mcp_provider(provider_id, schema_prefix, display_name, command, tools)
     }
 }
 

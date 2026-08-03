@@ -19,7 +19,11 @@ impl BenchmarkMode {
         }
     }
 
-    /// Marks benchmark modes that may send a paid provider request.
+    /// Reports whether this mode performs a paid provider request.
+    ///
+    /// Both supported modes are deterministic and provider-free. External
+    /// provider/inference measurements are intentionally separate integration
+    /// work rather than part of `windie bench`.
     pub fn may_call_provider(self) -> bool {
         false
     }
@@ -31,10 +35,14 @@ impl BenchmarkMode {
 pub enum BenchmarkCategory {
     Persistence,
     Conversation,
+    Serialization,
     Runtime,
+    Sessions,
     Tools,
     Mutations,
     Mcp,
+    Api,
+    Lifecycle,
 }
 
 impl BenchmarkCategory {
@@ -43,7 +51,25 @@ impl BenchmarkCategory {
         vec![
             Self::Persistence,
             Self::Conversation,
+            Self::Serialization,
             Self::Runtime,
+            Self::Sessions,
+            Self::Tools,
+            Self::Mutations,
+            Self::Mcp,
+            Self::Api,
+            Self::Lifecycle,
+        ]
+    }
+
+    /// Returns the deterministic provider-free categories used by default.
+    pub fn deterministic() -> Vec<Self> {
+        vec![
+            Self::Persistence,
+            Self::Conversation,
+            Self::Serialization,
+            Self::Runtime,
+            Self::Sessions,
             Self::Tools,
             Self::Mutations,
             Self::Mcp,
@@ -66,7 +92,7 @@ impl Default for BenchmarkOptions {
         Self {
             runs: 1,
             json: false,
-            categories: BenchmarkCategory::all(),
+            categories: BenchmarkCategory::deterministic(),
         }
     }
 }

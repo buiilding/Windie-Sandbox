@@ -1,8 +1,10 @@
 //! Performance measurement and comparison.
 //!
-//! This module owns lightweight timing for the current local CLI/query path,
+//! This module owns lightweight timing for Windie's deterministic local paths,
 //! repeated benchmark reports, JSON benchmark artifacts, and report comparison.
-//! Benchmarks are provider-free and run against local fixture data.
+//! Named scenarios separate storage, context, serialization, runtime, session,
+//! MCP, API, and lifecycle measurements. External inference and installation
+//! work remains outside the default provider-free benchmark.
 
 use std::env;
 use std::fs;
@@ -22,11 +24,7 @@ use crate::conversation::{
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::mcp::{self, McpCommand};
-use crate::runtime::{
-    NoopRuntimeEventSink, RuntimeInput, RuntimeModelRequest, deny_pending_tool_call,
-    load_pending_tool_call_at_head, pending_approvals_at_head, prepare_head_turn,
-    store_pending_tool_result_at_head,
-};
+use crate::runtime::{NoopRuntimeEventSink, prepare_head_turn};
 use crate::store::Store;
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
@@ -40,6 +38,7 @@ mod mode;
 mod report;
 mod runner;
 mod runtime;
+mod scenarios;
 mod storage;
 
 #[cfg(test)]
@@ -49,8 +48,10 @@ mod tests;
 pub use comparison::PerformanceComparisonRow;
 pub use comparison::{PerformanceComparison, compare_reports};
 pub use mode::{BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
+#[cfg(test)]
+pub use report::{DurationMetric, ScenarioSummary};
 pub use report::{
-    DurationMetric, PerformanceBaseline, PerformanceReport, PerformanceSample, PerformanceSummary,
+    PerformanceBaseline, PerformanceReport, PerformanceSample, PerformanceSummary, ScenarioTiming,
 };
 pub use runner::{run, run_report};
 pub use storage::{default_baseline_path, read_report, write_report};
@@ -62,15 +63,9 @@ use runtime::*;
 
 const SCALE_PATH_MESSAGES: usize = 100;
 
-const LARGE_SCALE_PATH_MESSAGES: usize = 1_000;
+const SCALE_BRANCH_TREE_MESSAGES: usize = 1_000;
 
 const TOOL_CHAIN_RESULTS: usize = 10;
-
-const BRANCH_CHILDREN: usize = 100;
-
-const LARGE_TRUNCATE_DESCENDANTS: usize = 100;
-
-const IMAGE_PART_MESSAGES: usize = 10;
 
 const TEST_PROVIDER_ID: &str = "desktop-commander";
 
@@ -92,4 +87,4 @@ const FAKE_MCP_COMMAND: McpCommand = McpCommand {
     env: &[],
 };
 
-const REPORT_FORMAT_VERSION: u32 = 4;
+const REPORT_FORMAT_VERSION: u32 = 7;

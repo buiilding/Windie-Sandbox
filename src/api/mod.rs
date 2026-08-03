@@ -133,6 +133,28 @@ pub async fn serve(
     server_result
 }
 
+/// Builds the production route table against an isolated store for local
+/// benchmark and integration callers.
+pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
+    let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let session_manager = Arc::new(SessionManager::new(
+        Some(store_path.clone()),
+        "http://127.0.0.1:8080".to_string(),
+        "http://127.0.0.1:8080/v1".to_string(),
+        tool_registry.clone(),
+    ));
+    let (shutdown_tx, _) = watch::channel(false);
+    router(ApiState {
+        gateway_url: "http://127.0.0.1:8080".to_string(),
+        base_url: "http://127.0.0.1:8080/v1".to_string(),
+        model: "openai/test".to_string(),
+        store_path: Some(store_path),
+        tool_registry,
+        session_manager,
+        shutdown_tx,
+    })
+}
+
 fn write_process_pid_file(path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)

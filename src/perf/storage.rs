@@ -25,9 +25,9 @@ pub fn write_report(path: &Path, report: &PerformanceReport) -> Result<()> {
         .with_context(|| format!("failed to write benchmark report {}", path.display()))
 }
 
-/// Returns Windie's default persisted benchmark baseline path.
+/// Returns the repository's committed benchmark baseline path.
 pub fn default_baseline_path() -> Result<PathBuf> {
-    Ok(crate::local::windie_home_dir()?
-        .join("benchmarks")
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("benches")
         .join("baseline.json"))
 }
