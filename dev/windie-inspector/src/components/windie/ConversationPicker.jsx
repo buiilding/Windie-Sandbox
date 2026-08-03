@@ -202,17 +202,19 @@ export default function ConversationPicker({ variant = "topbar", dropUp = false 
             )}
           </div>
 
-          <div className="border-t border-border">
-            <button
-              type="button"
-              data-testid={inSidebar ? "sidebar-conv-picker-new" : "topbar-conv-picker-new"}
-              onClick={handleCreate}
-              className="w-full text-left px-3 py-2 font-mono text-[11px] flex items-center gap-2 hover:bg-surface-hover"
-            >
-              <Plus className="size-3" strokeWidth={1.75} />
-              <span className="uppercase tracking-widest">new conversation</span>
-            </button>
-          </div>
+          {inSidebar ? (
+            <div className="border-t border-border">
+              <button
+                type="button"
+                data-testid="sidebar-conv-picker-new"
+                onClick={handleCreate}
+                className="w-full text-left px-3 py-2 font-mono text-[11px] flex items-center gap-2 hover:bg-surface-hover"
+              >
+                <Plus className="size-3" strokeWidth={1.75} />
+                <span className="uppercase tracking-widest">new conversation</span>
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
       <FloatingDeleteMenu

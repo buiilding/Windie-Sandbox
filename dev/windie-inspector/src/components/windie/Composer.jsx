@@ -22,7 +22,7 @@ function formatBytes(bytes = 0) {
   return `${bytes}b`;
 }
 
-export default function Composer() {
+export default function Composer({ onFirstMessage }) {
   const {
     activeConv,
     sendMessage,
@@ -149,6 +149,7 @@ export default function Composer() {
 
   const submit = async () => {
     if (!hasSendContent) return;
+    onFirstMessage?.();
     const sentText = text;
     const sentAttachments = attachments;
     setText("");
@@ -283,7 +284,7 @@ export default function Composer() {
                       )}
                       {!modelsLoading && modelsError && (
                         <div className="px-2.5 py-2 text-xs font-mono text-muted-foreground">
-                          models unavailable
+                          add a provider API key to load available models
                         </div>
                       )}
                       {!modelsLoading && !modelsError && filteredModels.length === 0 && (
