@@ -21,9 +21,9 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
     }
 
     match args.as_slice() {
-        [] => Command::Noop,
+        [] => Command::Help,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
-        [arg] if arg == "--version" || arg == "-V" => Command::Version,
+        [arg] if arg == "--version" || arg == "-V" || arg == "-v" => Command::Version,
         [command, action] if command == "api" && action == "start" => Command::ApiStart,
         [command, action] if command == "api" && action == "stop" => Command::ApiStop,
         [command, action] if command == "api" && action == "output" => Command::ApiOutput,

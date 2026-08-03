@@ -28,8 +28,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Checkout Bifrost submodule
+        run: git submodule update --init --depth 1 vendor/bifrost
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor/bifrost/tmp
-          key: bifrost-v1-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
+          key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
       - name: Restore Inspector build
         uses: actions/cache@v4
         with:
@@ -71,8 +71,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Checkout Bifrost submodule
+        run: git submodule update --init --depth 1 vendor/bifrost
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -88,7 +88,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor/bifrost/tmp
-          key: bifrost-v1-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
+          key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
       - name: Restore Inspector build
         uses: actions/cache@v4
         with:

@@ -96,7 +96,6 @@ pub enum Command {
     /// List models reported by the running Bifrost gateway.
     Models,
     New,
-    Noop,
     SessionStart {
         conversation_id: ConversationId,
         head_message_id: Option<MessageId>,

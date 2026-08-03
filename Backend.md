@@ -82,6 +82,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/env.rs: securely writes manifest-declared provider secrets to ~/.windie/.env and refuses arbitrary environment keys.
 - api/shutdown.rs: unauthenticated localhost graceful-stop route used by `windie api stop`; signals api/mod.rs without changing Bifrost.
 - api/tests.rs: test HTTP routes, unauthenticated access, error mapping, SSE/session behavior, conversation operating, tools, and mock Bifrost responses.
+- config.rs: shared environment-backed gateway, API, and Inspector endpoint configuration.
 
 ## CLI
 
@@ -96,7 +97,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - cli/env.rs: Parses environment variable commands, `windie env KEY=value`, etc.
 - cli/onboard.rs: terminal input/output adapter for onboarding. it prompts for provider choices, api keys, mcp secrets, and displays progress
 - process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, and Inspector components.
-- bin/windie-inspector.rs: standalone Inspector static server on localhost:3000.
+- bin/windie-inspector.rs: standalone Inspector static server; its address and
+  API endpoint are configurable through the local endpoint environment settings.
 - tray.rs: simple macOS/Windows tray controller that invokes the lifecycle CLI commands and polls localhost health.
 - cli/tests.rs: test cli command parsing and validation
 

@@ -105,10 +105,18 @@ else
     go work sync
   )
 
-  echo "==> building bifrost (native, CGO static sqlite, local workspace)"
+  if [ "$RELEASE_OS" = "macos" ]; then
+    echo "==> building bifrost (native, CGO static sqlite, macOS 11 deployment target)"
+    export MACOSX_DEPLOYMENT_TARGET=11.0
+  else
+    echo "==> building bifrost (native, CGO static sqlite)"
+  fi
   mkdir -p "$BIFROST_DIR/tmp"
   (
     cd "$BIFROST_HTTP_DIR"
+    # On macOS, the deployment target above keeps Bifrost compatible with the
+    # same baseline as Windie. Without it, the runner SDK can become the
+    # binary's minimum supported macOS version.
     CGO_ENABLED=1 go build \
       -ldflags="-w -s -X main.Version=$BIFROST_VERSION" \
       -trimpath \

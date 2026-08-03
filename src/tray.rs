@@ -73,11 +73,11 @@ mod app {
         }
 
         /// Returns the localhost endpoint used for status polling.
-        const fn health_url(self) -> &'static str {
+        fn health_url(self) -> String {
             match self {
-                Self::Gateway => "http://127.0.0.1:8080/health",
-                Self::Api => "http://127.0.0.1:8787/api/health",
-                Self::Inspector => "http://127.0.0.1:3000/",
+                Self::Gateway => format!("{}/health", crate::config::gateway_url()),
+                Self::Api => format!("{}/api/health", crate::config::api_url()),
+                Self::Inspector => format!("http://{}/", crate::config::inspector_address()),
             }
         }
     }

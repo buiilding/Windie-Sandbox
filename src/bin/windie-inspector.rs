@@ -1,9 +1,8 @@
 //! Standalone Windie Inspector server.
 //!
 //! The Inspector is an independent localhost process. It serves the compiled
-//! browser assets on port 3000 and talks to the Windie API on port 8787. The
-//! API does not embed these files or authenticate browser requests with a
-//! token; process lifecycle is managed by the CLI.
+//! browser assets and talks to the Windie API. Both endpoints are configurable
+//! through environment variables; process lifecycle is managed by the CLI.
 
 use std::net::SocketAddr;
 
@@ -16,7 +15,7 @@ use axum::{Router, serve};
 use rust_embed::Embed;
 use tokio::net::TcpListener;
 
-const INSPECTOR_ADDRESS: &str = "127.0.0.1:3000";
+const DEFAULT_INSPECTOR_ADDRESS: &str = "127.0.0.1:3000";
 
 #[derive(Embed)]
 #[folder = "dev/windie-inspector/build"]
@@ -26,7 +25,15 @@ struct InspectorAssets;
 #[tokio::main]
 async fn main() -> Result<()> {
     let address = std::env::var("WINDIE_INSPECTOR_ADDRESS")
-        .unwrap_or_else(|_| INSPECTOR_ADDRESS.to_string())
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("WINDIE_INSPECTOR_PORT")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|port| format!("127.0.0.1:{port}"))
+        })
+        .unwrap_or_else(|| DEFAULT_INSPECTOR_ADDRESS.to_string())
         .parse::<SocketAddr>()
         .context("invalid WINDIE_INSPECTOR_ADDRESS")?;
     let listener = TcpListener::bind(address)
@@ -71,7 +78,26 @@ async fn manifest() -> Response {
 
 fn serve_index() -> Response {
     match InspectorAssets::get("index.html") {
-        Some(content) => Html(content.data.into_owned()).into_response(),
+        Some(content) => {
+            let html = String::from_utf8_lossy(&content.data);
+            let api_url = std::env::var("WINDIE_API_ADDRESS")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|address| format!("http://{address}"))
+                .or_else(|| {
+                    std::env::var("WINDIE_API_PORT")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|port| format!("http://127.0.0.1:{port}"))
+                })
+                .unwrap_or_else(|| "http://127.0.0.1:8787".to_string());
+            let config_script = format!(
+                "<script>window.__WINDIE_API_URL__ = {};</script>",
+                serde_json::to_string(&api_url).expect("API URL is serializable")
+            );
+            let html = html.replace("</head>", &format!("{config_script}</head>"));
+            Html(html).into_response()
+        }
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
             "Inspector build is missing; run npm run build in dev/windie-inspector",
