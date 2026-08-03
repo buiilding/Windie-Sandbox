@@ -60,7 +60,6 @@ async fn main() -> Result<()> {
         Command::InspectorStop => stop_inspector_process(),
         Command::InspectorOutput => output_component(ManagedComponent::Inspector),
         Command::Onboard => onboard().await,
-        Command::Noop => Ok(()),
         Command::AttachTool {
             conversation_id,
             provider_id,

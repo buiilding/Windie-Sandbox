@@ -95,7 +95,9 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie compare baseline".to_string()));
     assert!(lines.contains(&"  windie update baseline".to_string()));
     assert!(!lines.contains(&"  windie bench live".to_string()));
+    assert!(!lines.contains(&"Notes:".to_string()));
     assert!(lines.contains(&"Options:".to_string()));
+    assert!(lines.contains(&"  -v, -V, --version    Show version".to_string()));
 }
 
 #[test]

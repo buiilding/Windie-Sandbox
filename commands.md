@@ -3,16 +3,13 @@
 This file is the concrete CLI command reference. Keep primitive operations here
 instead of in `AGENTS.md`.
 
-## No-op
+## Default command
 
 ```text
 windie
 ```
 
-Exit successfully without doing anything.
-
-Use this to verify the binary exists without starting chat, creating a
-conversation tree, opening Bifrost, or mutating persisted state.
+Show help.
 
 ## Help
 
@@ -31,6 +28,12 @@ Show help.
 Use this to print the current CLI surface and command notes.
 
 ## Version
+
+```text
+windie -v
+```
+
+Show version.
 
 ```text
 windie -V

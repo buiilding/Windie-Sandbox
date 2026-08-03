@@ -3,10 +3,10 @@
 use super::*;
 
 #[test]
-fn reads_noop_command_by_default() {
+fn reads_help_command_by_default() {
     let command = command_from_args(["windie".to_string()]);
 
-    assert!(matches!(command, Command::Noop));
+    assert!(matches!(command, Command::Help));
 }
 
 #[test]
@@ -33,6 +33,13 @@ fn reads_long_version_command() {
 #[test]
 fn reads_short_version_command() {
     let command = command_from_args(["windie".to_string(), "-V".to_string()]);
+
+    assert!(matches!(command, Command::Version));
+}
+
+#[test]
+fn reads_lowercase_short_version_command() {
+    let command = command_from_args(["windie".to_string(), "-v".to_string()]);
 
     assert!(matches!(command, Command::Version));
 }
