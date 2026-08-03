@@ -105,6 +105,50 @@ pub(super) fn create_message_chain(
     Ok(parent_id)
 }
 
+/// Creates a branched tree with one selected path and unrelated sibling paths.
+pub(super) fn create_branched_message_tree(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    total_messages: usize,
+    selected_path_messages: usize,
+) -> Result<MessageId> {
+    if selected_path_messages == 0 || total_messages < selected_path_messages {
+        anyhow::bail!("branched fixture requires a non-empty selected path within the tree");
+    }
+
+    let root = insert_user_message(store, conversation_id, None, "branch root")?;
+    let mut selected_head = root.clone();
+    for index in 1..selected_path_messages {
+        selected_head = store.insert_message(
+            conversation_id,
+            Some(&selected_head),
+            if index % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
+            &format!("selected path message {index}"),
+            None,
+        )?;
+    }
+
+    for index in selected_path_messages..total_messages {
+        store.insert_message(
+            conversation_id,
+            Some(&root),
+            if index % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
+            &format!("branch message {index}"),
+            None,
+        )?;
+    }
+
+    Ok(selected_head)
+}
+
 /// Returns the most recently inserted message ID for a conversation.
 pub(super) fn latest_message_id(
     store: &Store,
@@ -114,6 +158,25 @@ pub(super) fn latest_message_id(
         .load_message_rows(conversation_id)?
         .last()
         .and_then(|message| message.id.clone()))
+}
+
+/// Selects the backend-owned current head for a conversation benchmark.
+///
+/// Older databases may have no durable session, so the latest tree row is a
+/// compatibility fallback for those legacy fixtures only.
+pub(super) fn selected_session_head(
+    store: &Store,
+    conversation_id: &ConversationId,
+) -> Result<Option<MessageId>> {
+    if let Some(session) = store
+        .list_conversation_sessions(conversation_id)?
+        .into_iter()
+        .find(|session| session.current_head_message_id.is_some())
+    {
+        return Ok(session.current_head_message_id);
+    }
+
+    latest_message_id(store, conversation_id)
 }
 
 /// Creates one assistant tool-call message with all requested results stored.

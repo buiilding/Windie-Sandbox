@@ -1,0 +1,639 @@
+{
+  "format_version": 7,
+  "mode": "local",
+  "categories": [
+    "persistence",
+    "conversation",
+    "serialization",
+    "runtime",
+    "sessions",
+    "tools",
+    "mutations",
+    "mcp"
+  ],
+  "model": "openai/gpt-4o-mini",
+  "conversation_id": null,
+  "runs": 1,
+  "samples": [
+    {
+      "scenarios": [
+        {
+          "name": "open_database",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "fresh file-backed SQLite database",
+          "duration_us": 5711
+        },
+        {
+          "name": "conversation_list_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "1 conversation, 0 messages",
+          "duration_us": 46
+        },
+        {
+          "name": "tree_rows_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "linear conversation, 100 total messages",
+          "duration_us": 77
+        },
+        {
+          "name": "selected_path_rows_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "linear conversation, selected path contains 100 messages",
+          "duration_us": 173
+        },
+        {
+          "name": "tree_messages_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "linear conversation, 100 messages including parts",
+          "duration_us": 140
+        },
+        {
+          "name": "selected_path_messages_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "linear conversation, selected path contains 100 messages including parts",
+          "duration_us": 205
+        },
+        {
+          "name": "branched_tree_rows_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "branched tree, 1,000 total messages",
+          "duration_us": 286
+        },
+        {
+          "name": "branched_selected_path_rows_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "branched tree, 100-message selected path",
+          "duration_us": 145
+        },
+        {
+          "name": "image_message_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "1 message with text plus one PNG image",
+          "duration_us": 35
+        },
+        {
+          "name": "system_prompt_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "1 conversation-wide prompt",
+          "duration_us": 7
+        },
+        {
+          "name": "compaction_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "1 checkpoint after a 100-message path",
+          "duration_us": 14
+        },
+        {
+          "name": "tool_schema_load",
+          "category": "persistence",
+          "layer": "storage",
+          "fixture": "1 attached tool schema",
+          "duration_us": 27
+        },
+        {
+          "name": "build_plain_context",
+          "category": "conversation",
+          "layer": "context",
+          "fixture": "100-message selected path, no prompt or compaction",
+          "duration_us": 199
+        },
+        {
+          "name": "build_context_with_system_prompt",
+          "category": "conversation",
+          "layer": "context",
+          "fixture": "100-message selected path plus 1 system prompt",
+          "duration_us": 195
+        },
+        {
+          "name": "build_context_with_compaction",
+          "category": "conversation",
+          "layer": "context",
+          "fixture": "100-message selected path plus 1 compaction",
+          "duration_us": 214
+        },
+        {
+          "name": "build_image_context",
+          "category": "conversation",
+          "layer": "context",
+          "fixture": "1 message with text plus one PNG image",
+          "duration_us": 68
+        },
+        {
+          "name": "build_tool_chain_context",
+          "category": "conversation",
+          "layer": "context",
+          "fixture": "4-message path with 2 completed tool results",
+          "duration_us": 63
+        },
+        {
+          "name": "responses_text",
+          "category": "serialization",
+          "layer": "serialization",
+          "fixture": "100-message text context",
+          "duration_us": 21
+        },
+        {
+          "name": "responses_image",
+          "category": "serialization",
+          "layer": "serialization",
+          "fixture": "1-message text/image context",
+          "duration_us": 8
+        },
+        {
+          "name": "responses_tool_calls",
+          "category": "serialization",
+          "layer": "serialization",
+          "fixture": "4-message context with 2 tool calls and results",
+          "duration_us": 4
+        },
+        {
+          "name": "responses_tool_schemas",
+          "category": "serialization",
+          "layer": "serialization",
+          "fixture": "100-message context plus 1 tool schema",
+          "duration_us": 15
+        },
+        {
+          "name": "prepare_plain_completed_turn",
+          "category": "runtime",
+          "layer": "runtime",
+          "fixture": "100-message path, no tool calls",
+          "duration_us": 389
+        },
+        {
+          "name": "prepare_completed_tool_chain",
+          "category": "runtime",
+          "layer": "runtime",
+          "fixture": "12-message path, 10 completed tool results",
+          "duration_us": 196
+        },
+        {
+          "name": "prepare_approval_required",
+          "category": "runtime",
+          "layer": "runtime",
+          "fixture": "2-message path, 1 attached pending tool call",
+          "duration_us": 268
+        },
+        {
+          "name": "prepare_policy_denied",
+          "category": "runtime",
+          "layer": "runtime",
+          "fixture": "2-message path, 1 detached denied tool call",
+          "duration_us": 236
+        },
+        {
+          "name": "create_and_resolve",
+          "category": "sessions",
+          "layer": "sessions",
+          "fixture": "1 session, 1 selected head",
+          "duration_us": 73
+        },
+        {
+          "name": "queue_and_materialize",
+          "category": "sessions",
+          "layer": "sessions",
+          "fixture": "2 FIFO inputs, 2 materializations",
+          "duration_us": 1400
+        },
+        {
+          "name": "event_append_and_replay",
+          "category": "sessions",
+          "layer": "sessions",
+          "fixture": "3 durable events, then replay from event 0",
+          "duration_us": 130
+        },
+        {
+          "name": "edit_message",
+          "category": "mutations",
+          "layer": "mutations",
+          "fixture": "1 text message",
+          "duration_us": 52
+        },
+        {
+          "name": "fork_conversation",
+          "category": "mutations",
+          "layer": "mutations",
+          "fixture": "copy 100-message selected path into a new conversation",
+          "duration_us": 1054
+        },
+        {
+          "name": "delete_conversation",
+          "category": "mutations",
+          "layer": "mutations",
+          "fixture": "delete 100-message conversation plus owned cleanup",
+          "duration_us": 689
+        },
+        {
+          "name": "delete_session",
+          "category": "mutations",
+          "layer": "mutations",
+          "fixture": "terminal session with exclusive 10-message path",
+          "duration_us": 271
+        },
+        {
+          "name": "protocol_initialize_list_call",
+          "category": "mcp",
+          "layer": "mcp",
+          "fixture": "fake child process: initialize, list, and call",
+          "duration_us": 7548
+        },
+        {
+          "name": "registry_executor_call",
+          "category": "mcp",
+          "layer": "mcp",
+          "fixture": "registry → provider adapter → fake MCP executor",
+          "duration_us": 2487
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "scenarios": {
+      "context/build_context_with_compaction": {
+        "category": "conversation",
+        "layer": "context",
+        "fixture": "100-message selected path plus 1 compaction",
+        "timing": {
+          "min_us": 214,
+          "median_us": 214,
+          "p95_us": 214,
+          "max_us": 214
+        }
+      },
+      "context/build_context_with_system_prompt": {
+        "category": "conversation",
+        "layer": "context",
+        "fixture": "100-message selected path plus 1 system prompt",
+        "timing": {
+          "min_us": 195,
+          "median_us": 195,
+          "p95_us": 195,
+          "max_us": 195
+        }
+      },
+      "context/build_image_context": {
+        "category": "conversation",
+        "layer": "context",
+        "fixture": "1 message with text plus one PNG image",
+        "timing": {
+          "min_us": 68,
+          "median_us": 68,
+          "p95_us": 68,
+          "max_us": 68
+        }
+      },
+      "context/build_plain_context": {
+        "category": "conversation",
+        "layer": "context",
+        "fixture": "100-message selected path, no prompt or compaction",
+        "timing": {
+          "min_us": 199,
+          "median_us": 199,
+          "p95_us": 199,
+          "max_us": 199
+        }
+      },
+      "context/build_tool_chain_context": {
+        "category": "conversation",
+        "layer": "context",
+        "fixture": "4-message path with 2 completed tool results",
+        "timing": {
+          "min_us": 63,
+          "median_us": 63,
+          "p95_us": 63,
+          "max_us": 63
+        }
+      },
+      "mcp/protocol_initialize_list_call": {
+        "category": "mcp",
+        "layer": "mcp",
+        "fixture": "fake child process: initialize, list, and call",
+        "timing": {
+          "min_us": 7548,
+          "median_us": 7548,
+          "p95_us": 7548,
+          "max_us": 7548
+        }
+      },
+      "mcp/registry_executor_call": {
+        "category": "mcp",
+        "layer": "mcp",
+        "fixture": "registry → provider adapter → fake MCP executor",
+        "timing": {
+          "min_us": 2487,
+          "median_us": 2487,
+          "p95_us": 2487,
+          "max_us": 2487
+        }
+      },
+      "mutations/delete_conversation": {
+        "category": "mutations",
+        "layer": "mutations",
+        "fixture": "delete 100-message conversation plus owned cleanup",
+        "timing": {
+          "min_us": 689,
+          "median_us": 689,
+          "p95_us": 689,
+          "max_us": 689
+        }
+      },
+      "mutations/delete_session": {
+        "category": "mutations",
+        "layer": "mutations",
+        "fixture": "terminal session with exclusive 10-message path",
+        "timing": {
+          "min_us": 271,
+          "median_us": 271,
+          "p95_us": 271,
+          "max_us": 271
+        }
+      },
+      "mutations/edit_message": {
+        "category": "mutations",
+        "layer": "mutations",
+        "fixture": "1 text message",
+        "timing": {
+          "min_us": 52,
+          "median_us": 52,
+          "p95_us": 52,
+          "max_us": 52
+        }
+      },
+      "mutations/fork_conversation": {
+        "category": "mutations",
+        "layer": "mutations",
+        "fixture": "copy 100-message selected path into a new conversation",
+        "timing": {
+          "min_us": 1054,
+          "median_us": 1054,
+          "p95_us": 1054,
+          "max_us": 1054
+        }
+      },
+      "runtime/prepare_approval_required": {
+        "category": "runtime",
+        "layer": "runtime",
+        "fixture": "2-message path, 1 attached pending tool call",
+        "timing": {
+          "min_us": 268,
+          "median_us": 268,
+          "p95_us": 268,
+          "max_us": 268
+        }
+      },
+      "runtime/prepare_completed_tool_chain": {
+        "category": "runtime",
+        "layer": "runtime",
+        "fixture": "12-message path, 10 completed tool results",
+        "timing": {
+          "min_us": 196,
+          "median_us": 196,
+          "p95_us": 196,
+          "max_us": 196
+        }
+      },
+      "runtime/prepare_plain_completed_turn": {
+        "category": "runtime",
+        "layer": "runtime",
+        "fixture": "100-message path, no tool calls",
+        "timing": {
+          "min_us": 389,
+          "median_us": 389,
+          "p95_us": 389,
+          "max_us": 389
+        }
+      },
+      "runtime/prepare_policy_denied": {
+        "category": "runtime",
+        "layer": "runtime",
+        "fixture": "2-message path, 1 detached denied tool call",
+        "timing": {
+          "min_us": 236,
+          "median_us": 236,
+          "p95_us": 236,
+          "max_us": 236
+        }
+      },
+      "serialization/responses_image": {
+        "category": "serialization",
+        "layer": "serialization",
+        "fixture": "1-message text/image context",
+        "timing": {
+          "min_us": 8,
+          "median_us": 8,
+          "p95_us": 8,
+          "max_us": 8
+        }
+      },
+      "serialization/responses_text": {
+        "category": "serialization",
+        "layer": "serialization",
+        "fixture": "100-message text context",
+        "timing": {
+          "min_us": 21,
+          "median_us": 21,
+          "p95_us": 21,
+          "max_us": 21
+        }
+      },
+      "serialization/responses_tool_calls": {
+        "category": "serialization",
+        "layer": "serialization",
+        "fixture": "4-message context with 2 tool calls and results",
+        "timing": {
+          "min_us": 4,
+          "median_us": 4,
+          "p95_us": 4,
+          "max_us": 4
+        }
+      },
+      "serialization/responses_tool_schemas": {
+        "category": "serialization",
+        "layer": "serialization",
+        "fixture": "100-message context plus 1 tool schema",
+        "timing": {
+          "min_us": 15,
+          "median_us": 15,
+          "p95_us": 15,
+          "max_us": 15
+        }
+      },
+      "sessions/create_and_resolve": {
+        "category": "sessions",
+        "layer": "sessions",
+        "fixture": "1 session, 1 selected head",
+        "timing": {
+          "min_us": 73,
+          "median_us": 73,
+          "p95_us": 73,
+          "max_us": 73
+        }
+      },
+      "sessions/event_append_and_replay": {
+        "category": "sessions",
+        "layer": "sessions",
+        "fixture": "3 durable events, then replay from event 0",
+        "timing": {
+          "min_us": 130,
+          "median_us": 130,
+          "p95_us": 130,
+          "max_us": 130
+        }
+      },
+      "sessions/queue_and_materialize": {
+        "category": "sessions",
+        "layer": "sessions",
+        "fixture": "2 FIFO inputs, 2 materializations",
+        "timing": {
+          "min_us": 1400,
+          "median_us": 1400,
+          "p95_us": 1400,
+          "max_us": 1400
+        }
+      },
+      "storage/branched_selected_path_rows_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "branched tree, 100-message selected path",
+        "timing": {
+          "min_us": 145,
+          "median_us": 145,
+          "p95_us": 145,
+          "max_us": 145
+        }
+      },
+      "storage/branched_tree_rows_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "branched tree, 1,000 total messages",
+        "timing": {
+          "min_us": 286,
+          "median_us": 286,
+          "p95_us": 286,
+          "max_us": 286
+        }
+      },
+      "storage/compaction_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "1 checkpoint after a 100-message path",
+        "timing": {
+          "min_us": 14,
+          "median_us": 14,
+          "p95_us": 14,
+          "max_us": 14
+        }
+      },
+      "storage/conversation_list_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "1 conversation, 0 messages",
+        "timing": {
+          "min_us": 46,
+          "median_us": 46,
+          "p95_us": 46,
+          "max_us": 46
+        }
+      },
+      "storage/image_message_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "1 message with text plus one PNG image",
+        "timing": {
+          "min_us": 35,
+          "median_us": 35,
+          "p95_us": 35,
+          "max_us": 35
+        }
+      },
+      "storage/open_database": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "fresh file-backed SQLite database",
+        "timing": {
+          "min_us": 5711,
+          "median_us": 5711,
+          "p95_us": 5711,
+          "max_us": 5711
+        }
+      },
+      "storage/selected_path_messages_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "linear conversation, selected path contains 100 messages including parts",
+        "timing": {
+          "min_us": 205,
+          "median_us": 205,
+          "p95_us": 205,
+          "max_us": 205
+        }
+      },
+      "storage/selected_path_rows_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "linear conversation, selected path contains 100 messages",
+        "timing": {
+          "min_us": 173,
+          "median_us": 173,
+          "p95_us": 173,
+          "max_us": 173
+        }
+      },
+      "storage/system_prompt_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "1 conversation-wide prompt",
+        "timing": {
+          "min_us": 7,
+          "median_us": 7,
+          "p95_us": 7,
+          "max_us": 7
+        }
+      },
+      "storage/tool_schema_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "1 attached tool schema",
+        "timing": {
+          "min_us": 27,
+          "median_us": 27,
+          "p95_us": 27,
+          "max_us": 27
+        }
+      },
+      "storage/tree_messages_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "linear conversation, 100 messages including parts",
+        "timing": {
+          "min_us": 140,
+          "median_us": 140,
+          "p95_us": 140,
+          "max_us": 140
+        }
+      },
+      "storage/tree_rows_load": {
+        "category": "persistence",
+        "layer": "storage",
+        "fixture": "linear conversation, 100 total messages",
+        "timing": {
+          "min_us": 77,
+          "median_us": 77,
+          "p95_us": 77,
+          "max_us": 77
+        }
+      }
+    }
+  }
+}

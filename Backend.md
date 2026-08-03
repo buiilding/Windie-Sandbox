@@ -37,6 +37,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - store/compaction.rs: summary checkpoint store, saves and loads compaction checkpoints.
 - store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
 - store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
+- docs/conversation-tree-and-paths.md: explains why the shared message tree is canonical and why model context resolves a selected root-to-head path instead of storing duplicated linear paths.
 - store/schema.rs: database shape, schema version checks, table creation, indexes, and unsupported database version rejection.
 - store/session.rs: stores sessions and queued inputs, updates current heads/status, resolves session branches at conversation heads, atomically resolves-or-creates branches, and stores/replays session events.
 - store/system_prompt.rs: stores one conversation-wide system prompt, shared by every branch/head.

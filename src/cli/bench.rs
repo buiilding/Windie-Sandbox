@@ -6,14 +6,27 @@ use super::*;
 ///
 /// `--runs` repeats local measurements so users can compare median/p95 values
 /// across code changes. `--json` writes a persistent artifact to stdout.
+/// `--all` includes opt-in API and lifecycle measurements.
 pub(super) fn parse_bench_command(args: &[String]) -> Command {
-    let Some(options) = parse_benchmark_options(args) else {
+    let (mode, conversation_id, options_args) = match args.first() {
+        Some(value)
+            if !value.starts_with('-') && !matches!(value.as_str(), "live" | "runtime" | "ls") =>
+        {
+            (
+                BenchmarkMode::Conversation,
+                Some(ConversationId::new(value.as_str())),
+                &args[1..],
+            )
+        }
+        _ => (BenchmarkMode::Local, None, args),
+    };
+    let Some(options) = parse_benchmark_options(options_args) else {
         return Command::Invalid;
     };
 
     Command::Bench {
-        mode: BenchmarkMode::Local,
-        conversation_id: None,
+        mode,
+        conversation_id,
         options,
     }
 }
@@ -22,12 +35,17 @@ pub(super) fn parse_bench_command(args: &[String]) -> Command {
 fn parse_benchmark_options(args: &[String]) -> Option<BenchmarkOptions> {
     let mut options = BenchmarkOptions::default();
     let mut categories = Vec::new();
+    let mut include_all = false;
     let mut index = 0;
 
     while index < args.len() {
         match args.get(index).map(String::as_str) {
             Some("--json") => {
                 options.json = true;
+                index += 1;
+            }
+            Some("--all") => {
+                include_all = true;
                 index += 1;
             }
             Some("--runs") => {
@@ -47,8 +65,16 @@ fn parse_benchmark_options(args: &[String]) -> Option<BenchmarkOptions> {
                 categories.push(BenchmarkCategory::Conversation);
                 index += 1;
             }
+            Some("--serialization") => {
+                categories.push(BenchmarkCategory::Serialization);
+                index += 1;
+            }
             Some("--runtime") => {
                 categories.push(BenchmarkCategory::Runtime);
+                index += 1;
+            }
+            Some("--sessions") => {
+                categories.push(BenchmarkCategory::Sessions);
                 index += 1;
             }
             Some("--tools") => {
@@ -63,10 +89,20 @@ fn parse_benchmark_options(args: &[String]) -> Option<BenchmarkOptions> {
                 categories.push(BenchmarkCategory::Mcp);
                 index += 1;
             }
+            Some("--api") => {
+                categories.push(BenchmarkCategory::Api);
+                index += 1;
+            }
+            Some("--lifecycle") => {
+                categories.push(BenchmarkCategory::Lifecycle);
+                index += 1;
+            }
             _ => return None,
         }
     }
-    if !categories.is_empty() {
+    if include_all {
+        options.categories = BenchmarkCategory::all();
+    } else if !categories.is_empty() {
         options.categories = BenchmarkCategory::all()
             .into_iter()
             .filter(|category| categories.contains(category))

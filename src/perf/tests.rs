@@ -1,4 +1,4 @@
-//! Performance tests.
+//! Performance report tests.
 
 use super::*;
 
@@ -13,34 +13,62 @@ fn summarizes_duration_samples() {
 }
 
 #[test]
-fn compares_report_medians() {
+fn uses_repository_baseline_path() {
+    assert_eq!(
+        default_baseline_path().unwrap(),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("benches")
+            .join("baseline.json")
+    );
+}
+
+#[test]
+fn compares_named_scenario_medians() {
     let baseline = PerformanceReport {
         format_version: REPORT_FORMAT_VERSION,
         mode: BenchmarkMode::Local,
-        categories: BenchmarkCategory::all(),
+        categories: BenchmarkCategory::deterministic(),
         model: "model".to_string(),
         conversation_id: None,
         runs: 2,
         samples: vec![],
         summary: PerformanceSummary {
-            path_load: Some(DurationMetric {
-                min_us: 100,
-                median_us: 100,
-                p95_us: 100,
-                max_us: 100,
-            }),
-            ..PerformanceSummary::default()
+            scenarios: [(
+                "runtime/prepare_plain_completed_turn".to_string(),
+                ScenarioSummary {
+                    category: BenchmarkCategory::Runtime,
+                    layer: "runtime".to_string(),
+                    fixture: "100-message path, no tool calls".to_string(),
+                    timing: DurationMetric {
+                        min_us: 100,
+                        median_us: 100,
+                        p95_us: 100,
+                        max_us: 100,
+                    },
+                },
+            )]
+            .into_iter()
+            .collect(),
         },
     };
     let current = PerformanceReport {
         summary: PerformanceSummary {
-            path_load: Some(DurationMetric {
-                min_us: 125,
-                median_us: 125,
-                p95_us: 125,
-                max_us: 125,
-            }),
-            ..baseline.summary.clone()
+            scenarios: [(
+                "runtime/prepare_plain_completed_turn".to_string(),
+                ScenarioSummary {
+                    category: BenchmarkCategory::Runtime,
+                    layer: "runtime".to_string(),
+                    fixture: "100-message path, no tool calls".to_string(),
+                    timing: DurationMetric {
+                        min_us: 125,
+                        median_us: 125,
+                        p95_us: 125,
+                        max_us: 125,
+                    },
+                },
+            )]
+            .into_iter()
+            .collect(),
         },
         runs: 3,
         ..baseline.clone()
@@ -49,93 +77,37 @@ fn compares_report_medians() {
     let comparison = compare_reports(&baseline, &current);
 
     assert_eq!(comparison.rows.len(), 1);
-    assert_eq!(comparison.rows[0].name, "path load");
+    assert_eq!(
+        comparison.rows[0].name,
+        "runtime/prepare_plain_completed_turn"
+    );
     assert_eq!(comparison.rows[0].change_percent, 25.0);
 }
 
 #[test]
-fn reads_json_report_and_compares_it() {
-    let baseline = PerformanceReport {
-        format_version: REPORT_FORMAT_VERSION,
+fn aggregates_named_scenarios() {
+    let baseline = PerformanceBaseline {
         mode: BenchmarkMode::Local,
-        categories: BenchmarkCategory::all(),
-        model: "model".to_string(),
+        model: ModelName::new("model"),
         conversation_id: None,
-        runs: 1,
-        samples: vec![PerformanceSample {
-            store_open_us: Some(10),
-            path_load_us: Some(20),
-            tree_load_us: None,
-            context_build_us: Some(30),
-            path_messages: Some(1),
-            tree_messages: Some(1),
-            gateway_ready_us: None,
-            first_token_us: None,
-            full_response_us: None,
-            response_bytes: None,
-            ..PerformanceSample::default()
+        scenarios: vec![ScenarioTiming {
+            name: "store_open".to_string(),
+            category: BenchmarkCategory::Persistence,
+            layer: "storage".to_string(),
+            fixture: "fresh database".to_string(),
+            duration: Duration::from_micros(10),
         }],
-        summary: PerformanceSummary {
-            store_open: Some(DurationMetric {
-                min_us: 10,
-                median_us: 10,
-                p95_us: 10,
-                max_us: 10,
-            }),
-            path_load: Some(DurationMetric {
-                min_us: 20,
-                median_us: 20,
-                p95_us: 20,
-                max_us: 20,
-            }),
-            tree_load: None,
-            context_build: Some(DurationMetric {
-                min_us: 30,
-                median_us: 30,
-                p95_us: 30,
-                max_us: 30,
-            }),
-            ..PerformanceSummary::default()
-        },
     };
-    let current = PerformanceReport {
-        summary: PerformanceSummary {
-            path_load: Some(DurationMetric {
-                min_us: 40,
-                median_us: 40,
-                p95_us: 40,
-                max_us: 40,
-            }),
-            ..baseline.summary.clone()
-        },
-        ..baseline.clone()
-    };
-    let baseline_path = std::env::temp_dir().join(format!(
-        "windie-baseline-{}-{}.json",
-        std::process::id(),
-        "read"
-    ));
-    let current_path = std::env::temp_dir().join(format!(
-        "windie-current-{}-{}.json",
-        std::process::id(),
-        "read"
-    ));
+    let sample = PerformanceSample::from_baseline(&baseline);
+    let summary = PerformanceSummary::from_samples(&[sample]);
 
-    std::fs::write(&baseline_path, serde_json::to_string(&baseline).unwrap()).unwrap();
-    std::fs::write(&current_path, serde_json::to_string(&current).unwrap()).unwrap();
-
-    let baseline = read_report(&baseline_path).unwrap();
-    let current = read_report(&current_path).unwrap();
-    let comparison = compare_reports(&baseline, &current);
-
-    assert_eq!(comparison.rows.len(), 3);
-    assert!(
-        comparison
-            .rows
-            .iter()
-            .any(|row| row.name == "path load" && row.change_percent == 100.0)
+    assert_eq!(
+        summary
+            .scenarios
+            .get("storage/store_open")
+            .unwrap()
+            .timing
+            .median_us,
+        10
     );
-
-    let _ = std::fs::remove_file(baseline_path);
-    let _ = std::fs::remove_file(current_path);
 }
