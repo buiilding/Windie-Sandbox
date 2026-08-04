@@ -18,10 +18,11 @@ use windie::config;
 use windie::conversation::ConversationId;
 use windie::gateway::GatewayUrl;
 use windie::llm::{BaseUrl, ModelName};
+use windie::operation;
 use windie::output::TerminalOutput;
 use windie::perf::{self, BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
 
-const MODEL: &str = "openai/gpt-4o-mini";
+const DEV_GATEWAY_START_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -165,25 +166,28 @@ async fn spawn_gateway() -> Result<Child> {
     if !transport_root.join("main.go").is_file() {
         bail!("Bifrost source is missing at {}", transport_root.display());
     }
-    if !std::process::Command::new("air")
-        .arg("--version")
+    let air = tool_path("air").ok_or_else(|| {
+        anyhow!(
+            "Bifrost hot reload requires Air; install it with `go install github.com/air-verse/air@latest`"
+        )
+    })?;
+    if !std::process::Command::new(&air)
+        .arg("-v")
         .output()
         .is_ok_and(|output| output.status.success())
     {
-        bail!(
-            "Bifrost hot reload requires Air; install it with `go install github.com/air-verse/air@latest`"
-        );
+        bail!("Air was found at {} but could not run", air.display());
     }
     prepare_bifrost_workspace(&bifrost_root).await?;
 
     let app_dir = windie::local::windie_home_dir()?.join("bifrost/data");
     let port = gateway_url().port();
     let air_config = write_bifrost_air_config(&root, &app_dir, &port)?;
-    let mut command = Command::new("air");
+    let mut command = Command::new(air);
     command
         .args(["-c"])
         .arg(air_config)
-        .current_dir(root)
+        .current_dir(&bifrost_root)
         .env("BIFROST_UI_DEV", "true")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -203,8 +207,9 @@ fn write_bifrost_air_config(repository_root: &Path, app_dir: &Path, port: &str) 
         .with_context(|| format!("failed to create {}", config_dir.display()))?;
     let config_path = config_dir.join("bifrost-air.toml");
     let config = format!(
-        "root = {root}\ntmp_dir = \"transports/bifrost-http/tmp\"\n\n[build]\ncmd = \"cd transports/bifrost-http && go build -tags dev -o ./tmp/bifrost-http .\"\nbin = \"transports/bifrost-http/tmp/bifrost-http\"\nargs_bin = [{host}, {host_value}, {port}, {port_value}, {app_flag}, {app_value}]\ndelay = 1000\nexclude_dir = [\"assets\", \"tmp\", \"vendor\", \"testdata\", \"ui\", \"node_modules\", \"core/tests\", \"tests\", \"docs\"]\nexclude_regex = [\"_test.go\"]\nwatch_dirs = [\"cli\", \"core\", \"framework\", \"plugins\", \"transports/bifrost-http\"]\ninclude_ext = [\"go\", \"tpl\", \"tmpl\", \"html\"]\nkill_delay = \"1s\"\nlog = \"transports/bifrost-http/tmp/build-errors.log\"\nstop_on_error = true\nsend_interrupt = true\n\n[log]\ntime = false\n\n[misc]\nclean_on_exit = false\n",
+        "root = {root}\ntmp_dir = \"transports/bifrost-http/tmp\"\n\n[build]\ncmd = \"go build -tags dev -o ./transports/bifrost-http/tmp/bifrost-http ./transports/bifrost-http\"\nentrypoint = [{entrypoint}, {host}, {host_value}, {port}, {port_value}, {app_flag}, {app_value}]\ndelay = 1000\nexclude_dir = [\"assets\", \"tmp\", \"vendor\", \"testdata\", \"ui\", \"node_modules\", \"core/tests\", \"tests\", \"docs\"]\nexclude_regex = [\"_test.go\"]\nwatch_dirs = [\"cli\", \"core\", \"framework\", \"plugins\", \"transports/bifrost-http\"]\ninclude_ext = [\"go\", \"tpl\", \"tmpl\", \"html\"]\nkill_delay = \"1s\"\nlog = \"transports/bifrost-http/tmp/build-errors.log\"\nstop_on_error = true\nsend_interrupt = true\n\n[log]\ntime = false\n\n[misc]\nclean_on_exit = false\n",
         root = toml_string(&bifrost_root),
+        entrypoint = toml_string("transports/bifrost-http/tmp/bifrost-http"),
         host = toml_string("-host"),
         host_value = toml_string("127.0.0.1"),
         port = toml_string("-port"),
@@ -232,7 +237,7 @@ fn toml_string(value: impl AsRef<Path>) -> String {
 /// Waits for the Air-managed Bifrost process to become healthy.
 async fn wait_for_gateway(child: &mut Child) -> Result<()> {
     let health_url = format!("{}/health", config::gateway_url());
-    for _ in 0..300 {
+    for _ in 0..(DEV_GATEWAY_START_TIMEOUT.as_millis() / 200) {
         if health(&health_url).await == "running" {
             return Ok(());
         }
@@ -241,7 +246,10 @@ async fn wait_for_gateway(child: &mut Child) -> Result<()> {
         }
         sleep(Duration::from_millis(200)).await;
     }
-    bail!("Bifrost did not become healthy within 60 seconds")
+    bail!(
+        "Bifrost did not become healthy within {} seconds",
+        DEV_GATEWAY_START_TIMEOUT.as_secs()
+    )
 }
 
 /// Creates the local Bifrost Go workspace used by Air's local-module build.
@@ -331,27 +339,75 @@ fn spawn_component(component: &str) -> Result<Child> {
 
 /// Uses cargo-watch when available so Rust API changes restart automatically.
 fn cargo_component_command(component: &str) -> Command {
-    let mut command = Command::new("cargo");
     let command_line = format!("run --bin windie -- {component} run");
-    if watch_enabled() {
-        command.args(["watch", "-x", command_line.as_str()]);
+    if let Some(cargo_watch) = tool_path("cargo-watch") {
+        let mut command = Command::new(cargo_watch);
+        command.args(["-x", command_line.as_str()]);
+        command
     } else {
+        let mut command = Command::new("cargo");
         command.args(["run", "--bin", "windie", "--", component, "run"]);
+        command
     }
-    command
 }
 
-/// Enables cargo-watch by default when it is installed; set `WINDIE_DEV_WATCH=0`
-/// to force a single Rust process for environments without file watching.
-fn watch_enabled() -> bool {
-    env::var("WINDIE_DEV_WATCH")
-        .map(|value| value != "0")
-        .unwrap_or_else(|_| {
-            std::process::Command::new("cargo")
-                .args(["watch", "--version"])
-                .output()
-                .is_ok_and(|output| output.status.success())
+/// Finds a developer tool on PATH or in its conventional user install path.
+///
+/// Go and Cargo intentionally install user tools outside most shell PATHs on
+/// macOS. Resolving those directories here keeps `windie-dev` usable even
+/// when the user has installed the tools but has not restarted their shell.
+fn tool_path(tool: &str) -> Option<PathBuf> {
+    let executable_names = if cfg!(windows) {
+        vec![format!("{tool}.exe"), tool.to_string()]
+    } else {
+        vec![tool.to_string()]
+    };
+    let mut directories = env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    if tool == "cargo-watch" {
+        if let Some(cargo_home) = env::var_os("CARGO_HOME") {
+            directories.push(PathBuf::from(cargo_home).join("bin"));
+        } else if let Some(home) = env::var_os("HOME") {
+            directories.push(PathBuf::from(home).join(".cargo/bin"));
+        }
+    }
+    if tool == "air" {
+        if let Some(gobin) = env::var_os("GOBIN").filter(|path| !path.is_empty()) {
+            directories.push(PathBuf::from(gobin));
+        } else if let Some(go_bin) = go_install_bin_dir() {
+            directories.push(go_bin);
+        }
+    }
+
+    directories
+        .into_iter()
+        .flat_map(|directory| {
+            executable_names
+                .iter()
+                .map(move |name| directory.join(name))
         })
+        .find(|path| path.is_file())
+}
+
+/// Returns Go's user-level binary directory when Go is available.
+fn go_install_bin_dir() -> Option<PathBuf> {
+    let output = std::process::Command::new("go")
+        .args(["env", "GOPATH"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let gopath = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if gopath.is_empty() {
+        return None;
+    }
+    let gopath = std::ffi::OsString::from(gopath);
+    let paths = env::split_paths(&gopath);
+    Some(paths.into_iter().next()?.join("bin"))
 }
 
 /// Waits until one foreground child exits or Ctrl-C is pressed.
@@ -546,6 +602,7 @@ fn local_install_dir() -> Result<PathBuf> {
 /// Runs one provider-free benchmark command through the shared perf module.
 async fn benchmark(args: &[String]) -> Result<()> {
     let (mode, conversation_id, options) = parse_benchmark_args(args)?;
+    let model = benchmark_model().await?;
     let output = TerminalOutput;
     if options.runs == 1 && !options.json {
         let baseline = perf::run(
@@ -553,7 +610,7 @@ async fn benchmark(args: &[String]) -> Result<()> {
             conversation_id,
             gateway_url(),
             base_url(),
-            ModelName::new(MODEL),
+            model.clone(),
             &options.categories,
         )
         .await?;
@@ -564,7 +621,7 @@ async fn benchmark(args: &[String]) -> Result<()> {
             conversation_id,
             gateway_url(),
             base_url(),
-            ModelName::new(MODEL),
+            model,
             &options,
         )
         .await?;
@@ -580,6 +637,7 @@ async fn benchmark(args: &[String]) -> Result<()> {
 /// Compares the current local benchmark run with the checked-in baseline.
 async fn compare_baseline(args: &[String]) -> Result<()> {
     let options = parse_options(args)?;
+    let model = benchmark_model().await?;
     let baseline_path = perf::default_baseline_path()?;
     let baseline = perf::read_report(&baseline_path)?;
     let current = perf::run_report(
@@ -587,7 +645,7 @@ async fn compare_baseline(args: &[String]) -> Result<()> {
         None,
         gateway_url(),
         base_url(),
-        ModelName::new(MODEL),
+        model,
         &options,
     )
     .await?;
@@ -598,19 +656,31 @@ async fn compare_baseline(args: &[String]) -> Result<()> {
 /// Replaces the checked-in benchmark baseline with a current local run.
 async fn update_baseline(args: &[String]) -> Result<()> {
     let options = parse_options(args)?;
+    let model = benchmark_model().await?;
     let baseline_path = perf::default_baseline_path()?;
     let report = perf::run_report(
         BenchmarkMode::Local,
         None,
         gateway_url(),
         base_url(),
-        ModelName::new(MODEL),
+        model,
         &options,
     )
     .await?;
     perf::write_report(&baseline_path, &report)?;
     TerminalOutput.updated_baseline(&baseline_path);
     Ok(())
+}
+
+/// Selects the first model currently exposed by Bifrost for development
+/// benchmarks when the caller has not supplied a model override.
+async fn benchmark_model() -> Result<ModelName> {
+    operation::list_models(gateway_url(), base_url())
+        .await?
+        .into_iter()
+        .next()
+        .map(|model| ModelName::new(model.id))
+        .ok_or_else(|| anyhow!("no models are available; configure a provider key first"))
 }
 
 /// Parses the optional conversation selector and benchmark flags.

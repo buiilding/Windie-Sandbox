@@ -84,12 +84,7 @@ use tool::*;
 const API_JSON_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Sessions the local developer API server until the process is stopped.
-pub async fn serve(
-    address: SocketAddr,
-    gateway_url: &str,
-    base_url: &str,
-    model: &str,
-) -> Result<()> {
+pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Result<()> {
     let output = TerminalOutput;
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
     let session_manager = Arc::new(SessionManager::new(
@@ -103,7 +98,7 @@ pub async fn serve(
     let state = ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
-        model: model.to_string(),
+        model: None,
         store_path: None,
         tool_registry,
         session_manager,
@@ -147,7 +142,7 @@ pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
     router(ApiState {
         gateway_url: "http://127.0.0.1:8080".to_string(),
         base_url: "http://127.0.0.1:8080/v1".to_string(),
-        model: "openai/test".to_string(),
+        model: Some("openai/test".to_string()),
         store_path: Some(store_path),
         tool_registry,
         session_manager,

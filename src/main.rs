@@ -20,7 +20,6 @@ use windie::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName}
 use windie::tool_provider::ToolProviderRegistry;
 use windie::{cli, config, local, operation, tray};
 
-const MODEL: &str = "openai/gpt-4o-mini";
 const INVALID_USAGE_EXIT_CODE: i32 = 2;
 
 /// Process entrypoint. It only dispatches the parsed command to the matching
@@ -73,7 +72,7 @@ async fn main() -> Result<()> {
         } => fork_conversation(conversation_id, message_id),
         Command::List { json } => list_conversations(json),
         Command::Models => list_models().await,
-        Command::New => new_conversation(),
+        Command::New => new_conversation().await,
         Command::SessionStart {
             conversation_id,
             head_message_id,
@@ -138,13 +137,7 @@ async fn main() -> Result<()> {
 async fn run_api() -> Result<()> {
     let gateway_url = gateway_url();
     let base_url = base_url();
-    windie::api::serve(
-        api_address(),
-        gateway_url.as_str(),
-        base_url.as_str(),
-        MODEL,
-    )
-    .await
+    windie::api::serve(api_address(), gateway_url.as_str(), base_url.as_str()).await
 }
 
 /// Starts the detached Windie API process.
@@ -286,10 +279,18 @@ fn install_target(target: &str) -> Result<()> {
 }
 
 /// Creates an empty persisted conversation and prints only its ID.
-fn new_conversation() -> Result<()> {
+async fn new_conversation() -> Result<()> {
+    let models = operation::list_models(gateway_url(), base_url()).await?;
+    let model = models
+        .into_iter()
+        .next()
+        .map(|model| ModelName::new(model.id))
+        .ok_or_else(|| {
+            anyhow::anyhow!("no models are available; configure a provider key first")
+        })?;
     let store = Store::open()?;
     let output = TerminalOutput;
-    let conversation_id = operation::create_conversation(&store, &model_name())?;
+    let conversation_id = operation::create_conversation(&store, &model)?;
 
     output.created_conversation(&conversation_id);
 
@@ -686,11 +687,6 @@ fn base_url() -> BaseUrl {
         std::env::var("WINDIE_BASE_URL")
             .unwrap_or_else(|_| format!("{}/v1", gateway_url().as_str())),
     )
-}
-
-/// Centralizes the default model while config is intentionally not in scope.
-fn model_name() -> ModelName {
-    ModelName::new(MODEL)
 }
 
 /// Centralizes the local developer API bind address.

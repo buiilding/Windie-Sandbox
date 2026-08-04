@@ -7,7 +7,7 @@ use super::*;
 pub(super) struct ApiState {
     pub(super) gateway_url: String,
     pub(super) base_url: String,
-    pub(super) model: String,
+    pub(super) model: Option<String>,
     pub(super) store_path: Option<PathBuf>,
     pub(super) tool_registry: Arc<ToolProviderRegistry>,
     pub(super) session_manager: Arc<SessionManager>,
