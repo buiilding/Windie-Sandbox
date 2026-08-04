@@ -11,9 +11,14 @@ permissions:
 
 jobs:
   rust:
+    needs: frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: inspector-build
+          path: dev/windie-inspector/build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -35,11 +40,21 @@ jobs:
           cache-dependency-path: dev/windie-inspector/package-lock.json
       - run: npm ci --legacy-peer-deps
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inspector-build
+          path: dev/windie-inspector/build
+          if-no-files-found: error
 
   windows:
+    needs: frontend
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: inspector-build
+          path: dev/windie-inspector/build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
