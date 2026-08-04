@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Source this file to put the isolated local release ahead of any installed
+# Windie binary in the current shell.
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  echo "source this file: source ./activate_windie" >&2
+  exit 1
+fi
+
+windie_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${WINDIE_INSTALL_DIR:-}" ]]; then
+  windie_install_dir="$WINDIE_INSTALL_DIR"
+else
+  case "$(uname -s):$(uname -m)" in
+    Darwin:arm64) windie_asset_label="macos-aarch64" ;;
+    Darwin:x86_64) windie_asset_label="macos-x86_64" ;;
+    Linux:aarch64) windie_asset_label="linux-aarch64" ;;
+    Linux:x86_64) windie_asset_label="linux-x86_64" ;;
+    *)
+      echo "unsupported host; set WINDIE_INSTALL_DIR explicitly" >&2
+      return 1
+      ;;
+  esac
+  windie_install_dir="$windie_root/target/local-installer/$windie_asset_label/bin"
+fi
+
+if [[ ! -x "$windie_install_dir/windie" ]]; then
+  echo "local Windie binary not found at $windie_install_dir/windie" >&2
+  echo "run: windie-dev release install" >&2
+  return 1
+fi
+
+export PATH="$windie_install_dir:$PATH"
+echo "windie active: $windie_install_dir/windie"

@@ -4,44 +4,21 @@
 //! small and avoid owning business logic, persistence, HTTP, or terminal
 //! formatting details.
 
-mod api;
-mod cli;
-mod config;
-mod context;
-mod conversation;
-mod error;
-mod gateway;
-mod input;
-mod llm;
-mod local;
-mod mcp;
-mod operation;
-mod output;
-mod perf;
-mod process;
-mod runtime;
-mod session;
-mod store;
-mod tool;
-mod tool_provider;
-mod tray;
-mod wakeup;
-
 use anyhow::Result;
 use std::net::SocketAddr;
 
-use crate::cli::{Command, EnvCommand, InsertPart};
-use crate::conversation::{ConversationId, MessageId, Role, ToolCallId};
-use crate::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, ModelName};
-use crate::operation::MessageInputPart;
-use crate::output::TerminalOutput;
-use crate::perf::{BenchmarkMode, BenchmarkOptions};
-use crate::process::ManagedComponent;
-use crate::session::SessionId;
-use crate::store::Store;
-use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
-use crate::tool_provider::ToolProviderRegistry;
+use windie::cli::{Command, EnvCommand, InsertPart};
+use windie::conversation::{ConversationId, MessageId, Role, ToolCallId};
+use windie::gateway::GatewayUrl;
+use windie::llm::{BaseUrl, ModelName};
+use windie::operation::MessageInputPart;
+use windie::output::TerminalOutput;
+use windie::process::ManagedComponent;
+use windie::session::SessionId;
+use windie::store::Store;
+use windie::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
+use windie::tool_provider::ToolProviderRegistry;
+use windie::{cli, config, local, operation, tray};
 
 const MODEL: &str = "openai/gpt-4o-mini";
 const INVALID_USAGE_EXIT_CODE: i32 = 2;
@@ -67,13 +44,6 @@ async fn main() -> Result<()> {
         Command::Help => print_help(),
         Command::Invalid => invalid_usage(),
         Command::Version => print_version(),
-        Command::Bench {
-            mode,
-            conversation_id,
-            options,
-        } => benchmark(mode, conversation_id, options).await,
-        Command::CompareBaseline { options } => compare_baseline(options).await,
-        Command::UpdateBaseline { options } => update_baseline(options).await,
         Command::Env(command) => env_command(command),
         Command::Install { target } => install_target(&target),
         Command::Uninstall { yes, dry_run } => uninstall_windie(yes, dry_run).await,
@@ -168,7 +138,7 @@ async fn main() -> Result<()> {
 async fn run_api() -> Result<()> {
     let gateway_url = gateway_url();
     let base_url = base_url();
-    api::serve(
+    windie::api::serve(
         api_address(),
         gateway_url.as_str(),
         base_url.as_str(),
@@ -179,35 +149,35 @@ async fn run_api() -> Result<()> {
 
 /// Starts the detached Windie API process.
 fn start_api_process() -> Result<()> {
-    let report = operation::start_api()?;
+    let report = windie::operation::start_api()?;
     TerminalOutput.component_report(&report);
     Ok(())
 }
 
 /// Stops the Windie API process without touching Bifrost.
 fn stop_api_process() -> Result<()> {
-    let report = operation::stop_api()?;
+    let report = windie::operation::stop_api()?;
     TerminalOutput.component_report(&report);
     Ok(())
 }
 
 /// Starts the detached Inspector process.
 fn start_inspector_process() -> Result<()> {
-    let report = operation::start_inspector()?;
+    let report = windie::operation::start_inspector()?;
     TerminalOutput.component_report(&report);
     Ok(())
 }
 
 /// Stops the Inspector process without touching the API or Bifrost.
 fn stop_inspector_process() -> Result<()> {
-    let report = operation::stop_inspector()?;
+    let report = windie::operation::stop_inspector()?;
     TerminalOutput.component_report(&report);
     Ok(())
 }
 
 /// Prints persisted output for one independent local component.
 fn output_component(component: ManagedComponent) -> Result<()> {
-    let output = operation::component_output(component)?;
+    let output = windie::operation::component_output(component)?;
     TerminalOutput.component_output(component, &output);
     Ok(())
 }
@@ -276,90 +246,6 @@ fn invalid_usage() -> Result<()> {
 fn print_version() -> Result<()> {
     let output = TerminalOutput;
     output.version();
-
-    Ok(())
-}
-
-/// Sessions one benchmark mode and sends the measured baseline to the output
-/// boundary.
-async fn benchmark(
-    mode: BenchmarkMode,
-    conversation_id: Option<ConversationId>,
-    options: BenchmarkOptions,
-) -> Result<()> {
-    let output = TerminalOutput;
-
-    if options.runs == 1 && !options.json {
-        let baseline = perf::run(
-            mode,
-            conversation_id,
-            gateway_url(),
-            base_url(),
-            model_name(),
-            &options.categories,
-        )
-        .await?;
-
-        output.performance_baseline(&baseline);
-
-        return Ok(());
-    }
-
-    let report = perf::run_report(
-        mode,
-        conversation_id,
-        gateway_url(),
-        base_url(),
-        model_name(),
-        &options,
-    )
-    .await?;
-
-    if options.json {
-        output.performance_report_json(&report)?;
-    } else {
-        output.performance_report(&report);
-    }
-
-    Ok(())
-}
-
-/// Sessions the current local benchmark suite and compares it with the default baseline.
-async fn compare_baseline(options: BenchmarkOptions) -> Result<()> {
-    let baseline_path = perf::default_baseline_path()?;
-    let baseline = perf::read_report(&baseline_path)?;
-    let current = perf::run_report(
-        BenchmarkMode::Local,
-        None,
-        gateway_url(),
-        base_url(),
-        model_name(),
-        &options,
-    )
-    .await?;
-    let output = TerminalOutput;
-    let comparison = perf::compare_reports(&baseline, &current);
-
-    output.performance_comparison(&comparison);
-
-    Ok(())
-}
-
-/// Replaces the default persisted benchmark baseline with the current local run.
-async fn update_baseline(options: BenchmarkOptions) -> Result<()> {
-    let baseline_path = perf::default_baseline_path()?;
-    let report = perf::run_report(
-        BenchmarkMode::Local,
-        None,
-        gateway_url(),
-        base_url(),
-        model_name(),
-        &options,
-    )
-    .await?;
-    perf::write_report(&baseline_path, &report)?;
-    let output = TerminalOutput;
-    output.updated_baseline(&baseline_path);
 
     Ok(())
 }

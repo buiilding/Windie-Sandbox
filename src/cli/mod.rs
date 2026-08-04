@@ -2,17 +2,15 @@
 //!
 //! This module owns command-line arguments only. It maps raw argv text into
 //! typed commands such as `new`, `ls`, `insert`, `update`, `run`, `gateway`,
-//! and `bench`. It should not open the database, call Bifrost, or print output.
+//! It should not open the database, call Bifrost, or print output.
 
 use std::path::PathBuf;
 
 use crate::conversation::{ConversationId, MessageId, Role, ToolCallId};
 use crate::llm::ModelName;
-use crate::perf::{BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
 use crate::session::SessionId;
 use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
 
-mod bench;
 mod command;
 mod env;
 mod message;
@@ -28,7 +26,6 @@ pub use command::{Command, EnvCommand, InsertPart};
 pub use onboard::TerminalOnboarding;
 pub use parser::read;
 
-use bench::*;
 use env::*;
 use message::*;
 #[cfg(test)]

@@ -23,7 +23,7 @@ impl BenchmarkMode {
     ///
     /// Both supported modes are deterministic and provider-free. External
     /// provider/inference measurements are intentionally separate integration
-    /// work rather than part of `windie bench`.
+    /// work rather than part of the public `windie` CLI.
     pub fn may_call_provider(self) -> bool {
         false
     }
@@ -31,7 +31,7 @@ impl BenchmarkMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-/// Local benchmark category selected by `windie bench` flags.
+/// Local benchmark category selected by `windie-dev bench` flags.
 pub enum BenchmarkCategory {
     Persistence,
     Conversation,

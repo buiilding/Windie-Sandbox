@@ -10,19 +10,51 @@ It is not part of the runtime boundary: it must call explicit API primitives
 and must not own provider logic, persistence, context construction, runtime
 state transitions, tool execution, or permission policy.
 
-Run it from this repo with:
+The repository development supervisor runs the API and Inspector in the
+foreground, keeps their output attached to the terminal, and stops them with
+Ctrl-C:
 
 ```bash
-target/release/windie inspector start
+source ./activate_windie-dev
+windie-dev dev up
 ```
 
-Start the API independently from the repository root:
+Run one component when debugging a single boundary:
 
 ```bash
-target/release/windie api start
+windie-dev dev run api
+windie-dev dev run inspector
+windie-dev dev run gateway
 ```
 
-For a production-style local Inspector, build the frontend and run
-`windie inspector start`; it serves the standalone UI on port 3000 by default.
-Set `WINDIE_INSPECTOR_PORT` or `WINDIE_INSPECTOR_ADDRESS` to change the
-Inspector port. The Inspector calls the localhost API without an API token.
+`inspector` uses `npm start` and hot reloads browser changes. Rust API changes
+hot reload when `cargo-watch` is installed; otherwise the API runs once and
+must be restarted. The gateway runs Bifrost through Air, rebuilding and
+restarting on Go changes. Install the two optional watchers when needed:
+
+```bash
+cargo install cargo-watch
+go install github.com/air-verse/air@latest
+```
+
+Check or stop the development stack with:
+
+```bash
+windie-dev dev status
+windie-dev dev down
+```
+
+For a local release install, use the same repository binary:
+
+```bash
+windie-dev release build
+windie-dev release install
+windie-dev release verify
+source ./activate_windie
+windie status
+```
+
+Set `WINDIE_GATEWAY_PORT`, `WINDIE_API_PORT`, and `WINDIE_INSPECTOR_PORT` before
+starting either workflow when two local installations need to run together.
+The installed release Inspector is embedded and does not hot reload; use
+`windie-dev dev up` for frontend development.

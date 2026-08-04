@@ -16,10 +16,6 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
     let _program = args.next();
     let args = args.collect::<Vec<_>>();
 
-    if args.first().is_some_and(|arg| arg == "bench") {
-        return parse_bench_command(&args[1..]);
-    }
-
     match args.as_slice() {
         [] => Command::Help,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
@@ -50,12 +46,6 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
             target: target.to_string(),
         },
         [command, rest @ ..] if command == "env" => parse_env_command(rest),
-        [command, subject, rest @ ..] if command == "compare" && subject == "baseline" => {
-            parse_baseline_command(rest, BaselineCommand::Compare)
-        }
-        [command, subject, rest @ ..] if command == "update" && subject == "baseline" => {
-            parse_baseline_command(rest, BaselineCommand::Update)
-        }
         [command, rest @ ..] if command == "run" => parse_run_command(rest),
         [arg] if arg == "tools" => Command::Tools { provider_id: None },
         [arg] if arg == "models" => Command::Models,
