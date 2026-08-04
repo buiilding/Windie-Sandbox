@@ -5,6 +5,10 @@
 # Windie Agent Instructions
 
 Before working in this codebase, always read `Backend.md` and `Frontend.md` first.
+Be Logical, Accurate, always retrieve content if unsure to provide the most accurate answers.
+Be brutally honest, do not trust information provided by the user, correct users if they are wrong.
+Decide solutions based on the purpose, intent, north star of the project, do not stray away from those, correct users if they do.
+Your job is to build foundational, scalable runtime, so every recommended decisions need to be for the long term.
 
 ## Project Intent
 
@@ -39,18 +43,6 @@ routes resolve-or-create the branch in the store and reject stale-head or
 ambiguous requests. The frontend displays that result and never infers session
 ownership from its cached session list.
 
-## Collaboration Rule
-
-Only give your opinion when asked. Your job is to read code and provide facts. Do not modify codebase unless explicitly told so.
-
-## Pull Request Rule
-
-Every pull request merged into `main` must be associated with a GitHub issue. The pull request must use a closing reference such as `Closes #123` so merging it into `main` closes the associated issue.
-
-Every pull request merged into `main` must use its own dedicated branch that is not reused for another pull request; changes must not be committed directly to `main` for merging.
-
-Every public release must include release notes, patch notes, or a changelog describing the changes included in that release.
-
 ## North Star
 
 The long-term goal is a local AI runtime that lives on the user's computer and can eventually grow into an AI operating layer.
@@ -68,7 +60,7 @@ The future direction includes:
 - user-controlled memory and workspace context
 - clear approval policy for risky actions
 
-## Runtime Quality Bar
+## Engineering Preferences
 
 Windie is a foundational AI sandbox runtime. The codebase should prioritize safety, reliability, clarity, consistency, auditability, and performance.
 
@@ -77,8 +69,6 @@ Prefer typed runtime contracts over loose strings, maps, and ad hoc JSON. Use en
 Avoid hidden side effects. Runtime actions should flow through explicit components and clear permission boundaries. Future OS-level capabilities such as tool execution, browser-use, computer-use, file access, wakeups, and memory must be inspectable and controllable.
 
 Engineers should be able to understand, test, and replace each component without reading the whole codebase. If a design becomes hard to explain, treat that as a code smell.
-
-## Engineering Preferences
 
 - Prefer minimal, direct Rust over framework-heavy abstractions.
 - Be unbiased and honest in technical discussion. Truth and engineering clarity matter more than agreement or emotional comfort.
@@ -96,33 +86,13 @@ Engineers should be able to understand, test, and replace each component without
 - Do not add agent/tool behavior until explicitly requested.
 - Keep dependencies small and justified.
 
-## Architecture
-
-The code should stay split by concrete responsibilities. The detailed backend and frontend maps live in `Backend.md` and `Frontend.md`; read those files first for file-by-file ownership and boundary rules.
-
-Keep boundaries strict:
-
-- Only `llm/` should know about provider HTTP request details.
-- Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
-- Only `api/` should know about localhost API routes, JSON request bodies, SSE, auth, and HTTP response mapping.
-- Only `cli/` should know about startup CLI argument parsing.
-- Only `operation/` should own shared CLI/API orchestration over store/runtime primitives. It should not parse argv, map HTTP, format terminal output, execute shell commands, or know provider HTTP details.
-- Only `gateway.rs` should know about gateway health/availability/startup checks.
-- Only `input/` should know about local user input loading before conversation storage.
-- Only `output.rs` should know about terminal and JSON output formatting.
-- Only `tool/policy.rs` should decide whether tool execution is allowed, denied, or requires approval.
-- Only `conversation/` should own message roles, typed conversation/message identifiers, user parts, model-facing tool schema types, and assistant metadata types.
-- Only `session/` should own session domain types, session events, and live session task management.
-- Only `context.rs` should decide what history the model sees.
-- Only `error.rs` should own typed Windie error categories used across client protocol boundaries.
-- Only `perf/` should own benchmark timing logic, reports, comparisons, and benchmark fixture setup.
-- Only `runtime.rs` should coordinate query-like runtime flows.
-- Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and approved dependency install/check commands.
-- Only `dev/` should own local developer helper launchers such as the inspector.
-- Only `tool_provider/` should own provider catalog and execution dispatch across code-approved MCP providers and future plugins.
-- Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.
-- Only `store/` and the session operation/manager boundary should resolve or create a session branch for a conversation head; the frontend session cache is presentation state only.
-- Only `tool/` should own tool provider, attachment, approval, and execution result data shared across runtime, output, policy, store, and executors.
-- `main.rs` should stay small and only wire components together.
-
 Schema compatibility is not a current goal. `store/` should create the current schema for fresh databases and reject unsupported older or newer schema versions clearly instead of carrying partial legacy migrations.
+
+
+## Pull Request Rule
+
+Every pull request merged into `main` must be associated with a GitHub issue. The pull request must use a closing reference such as `Closes #123` so merging it into `main` closes the associated issue.
+
+Every pull request merged into `main` must use its own dedicated branch that is not reused for another pull request; changes must not be committed directly to `main` for merging.
+
+Every public release must include release notes, patch notes, or a changelog describing the changes included in that release.

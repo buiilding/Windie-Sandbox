@@ -217,3 +217,30 @@ into the conversation tree immediately. When the active run completes, Windie
 materializes the oldest queued input under the latest session head and starts
 the next run. This keeps queued inputs from becoming stale tree branches and
 lets the inspector display queue state without owning execution.
+
+## Architecture
+
+Keep boundaries strict:
+
+- Only `llm/` should know about provider HTTP request details.
+- Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
+- Only `api/` should know about localhost API routes, JSON request bodies, SSE, auth, and HTTP response mapping.
+- Only `cli/` should know about startup CLI argument parsing.
+- Only `operation/` should own shared CLI/API orchestration over store/runtime primitives. It should not parse argv, map HTTP, format terminal output, execute shell commands, or know provider HTTP details.
+- Only `gateway.rs` should know about gateway health/availability/startup checks.
+- Only `input/` should know about local user input loading before conversation storage.
+- Only `output.rs` should know about terminal and JSON output formatting.
+- Only `tool/policy.rs` should decide whether tool execution is allowed, denied, or requires approval.
+- Only `conversation/` should own message roles, typed conversation/message identifiers, user parts, model-facing tool schema types, and assistant metadata types.
+- Only `session/` should own session domain types, session events, and live session task management.
+- Only `context.rs` should decide what history the model sees.
+- Only `error.rs` should own typed Windie error categories used across client protocol boundaries.
+- Only `perf/` should own benchmark timing logic, reports, comparisons, and benchmark fixture setup.
+- Only `runtime.rs` should coordinate query-like runtime flows.
+- Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and approved dependency install/check commands.
+- Only `dev/` should own local developer helper launchers such as the inspector.
+- Only `tool_provider/` should own provider catalog and execution dispatch across code-approved MCP providers and future plugins.
+- Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.
+- Only `store/` and the session operation/manager boundary should resolve or create a session branch for a conversation head; the frontend session cache is presentation state only.
+- Only `tool/` should own tool provider, attachment, approval, and execution result data shared across runtime, output, policy, store, and executors.
+- `main.rs` should stay small and only wire components together.
