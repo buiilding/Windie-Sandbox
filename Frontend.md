@@ -73,8 +73,8 @@ paths below are relative to `dev/windie-inspector/`.
 - `src/components/windie/ConversationPicker.jsx`: searchable conversation
   list, conversation creation, selection, and deletion controls.
 - `src/components/windie/ChatPanel.jsx`: selected-path transcript, execution
-  grouping, live execution indicator, streaming preview placement, and scroll
-  behavior.
+  grouping, live execution indicator, inline approval placement, streaming
+  preview placement, and scroll behavior.
 - `src/components/windie/MessageRow.jsx`: role-specific message rendering,
   Markdown, image assets, reasoning, tool metadata, usage, refusal and
   annotation lanes, editing, copying, and message tree actions.
@@ -84,8 +84,12 @@ paths below are relative to `dev/windie-inspector/`.
 - `src/components/windie/SessionsChip.jsx`: session picker and status display;
   shows active branch, queue depth, approval state, and session deletion.
 - `src/components/windie/InspectorPanel.jsx`: inspector overlay for context
-  preview, system prompt, conversation settings, approvals, tool schemas,
-  provider installations, and LLM provider setup.
+- `src/components/windie/InspectorPanel.jsx`: inspector overlay for context
+  preview, system prompt, conversation settings, tool access mode, tool
+  schemas, provider installations, and LLM provider setup.
+- `src/components/windie/ToolApprovalPrompt.jsx`: inline session-owned tool
+  approval surface rendered immediately above the composer when approval is
+  required.
 - `src/components/windie/ExtensionsPanel.jsx`: executable tool-provider
   installation lifecycle controls: setup, enable, disable, repair, and
   uninstall.
@@ -460,10 +464,12 @@ use the original persisted message ID, never the synthetic group ID.
 
 ### Tool approval
 
-The inspector displays pending approval records and sends approve or deny
-actions to the owning session. The session stream remains the source of
-progress. The frontend does not decide whether a tool call is allowed; that is
-the backend tool policy.
+The chat surface displays pending approval records immediately above the user
+input bar and sends approve or deny actions to the owning session. The
+Inspector only controls the conversation's tool access mode. The session
+stream remains the source of progress, and a `waiting_for_approval` event
+refreshes the authoritative pending approval records. The frontend does not
+decide whether a tool call is allowed; that is the backend tool policy.
 
 ### Provider and model setup
 

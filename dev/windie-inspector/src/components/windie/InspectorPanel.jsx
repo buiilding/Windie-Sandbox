@@ -38,9 +38,6 @@ export default function InspectorPanel({ mode, onClose }) {
     setSystemPrompt,
     setToolApprovalMode,
     toolSchemas,
-    approvals,
-    approveToolCall,
-    denyToolCall,
     availableToolSchemas,
     availableToolsLoading,
     refreshModels,
@@ -259,7 +256,7 @@ export default function InspectorPanel({ mode, onClose }) {
           ) : (
             <>
 
-        <Section title={`approvals · ${approvals.length}`} testId="inspector-section-approvals">
+        <Section title="tool access" testId="inspector-section-tool-access">
           <div className="flex items-center gap-2 py-1 text-[11px]">
             <span className="text-muted-foreground font-mono uppercase tracking-widest w-24 shrink-0">tool access</span>
             <div className="grid grid-cols-2 border border-border">
@@ -267,19 +264,6 @@ export default function InspectorPanel({ mode, onClose }) {
               <button data-testid="tool-approval-mode-auto" onClick={() => { setToolApprovalMode(activeConv.id, "auto_approve_attached"); toast.message("tool access set", { description: "full access" }); }} className={`h-7 px-2 font-mono text-[10px] uppercase tracking-widest border-l border-border ${activeConv.toolApprovalMode === "auto_approve_attached" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-surface-hover"}`}>full access</button>
             </div>
           </div>
-          {approvals.length === 0 ? <div className="font-mono text-[11px] text-muted-foreground">no pending</div> : approvals.map((a) => (
-            <div key={a.tool_call_id} className="border border-border mb-2">
-              <div className="px-2 py-1 border-b border-border flex justify-between"><span className="font-mono text-[11px] text-[hsl(var(--tool-call))]">{a.tool_name}</span><span className="font-mono text-[9px] text-muted-foreground">session {a.session_id?.slice(0, 8)}</span></div>
-              <div className="px-2 py-1.5 space-y-1">
-                <div className="font-mono text-[10px] text-muted-foreground">{a.reason}</div>
-                <pre className="font-mono text-[10px] bg-surface/60 border border-border p-2 overflow-auto max-h-32 whitespace-pre-wrap">{(() => { try { return JSON.stringify(JSON.parse(a.arguments), null, 2); } catch { return a.arguments; } })()}</pre>
-                <div className="grid grid-cols-2 gap-1">
-                  <button data-testid={`approval-approve-${a.tool_call_id}`} onClick={() => { approveToolCall(a.session_id, a.tool_call_id); toast.message("approved"); }} className="h-7 border border-foreground bg-foreground text-background font-mono text-[10px] uppercase">approve</button>
-                  <button data-testid={`approval-deny-${a.tool_call_id}`} onClick={() => { denyToolCall(a.session_id, a.tool_call_id); toast.message("denied"); }} className="h-7 border border-border font-mono text-[10px] uppercase text-[hsl(var(--destructive))]">deny</button>
-                </div>
-              </div>
-            </div>
-          ))}
         </Section>
 
         <Section title={`tool schemas · ${availableToolsLoading ? "loading" : availableToolSchemas.length}`} testId="inspector-section-tools" resetKey={activeConv.id}>
