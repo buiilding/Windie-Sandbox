@@ -110,6 +110,13 @@ export function useSessionRuntime({
         return;
       }
 
+      if (projection.type === "waiting_for_approval" && selected) {
+        loadConversation(currentSession.conversationId, {
+          headMessageId: currentSession.currentHeadMessageId,
+          countTokens: false,
+        }).catch((error) => setApiError(error.message));
+      }
+
       if (!projection.isTerminal) return;
 
       if (
@@ -122,7 +129,7 @@ export function useSessionRuntime({
 
       clearPreview(currentSession.id);
     },
-    [applyDelta, applySavedMessage, applySessionMessage, clearPreview, rememberSession]
+    [applyDelta, applySavedMessage, applySessionMessage, clearPreview, loadConversation, rememberSession, setApiError]
   );
 
   const onTransportError = useCallback((error) => {
@@ -316,24 +323,32 @@ export function useSessionRuntime({
     try {
       const session = sessionFromApi(await approveSessionToolApi(sessionId, toolCallId));
       rememberSession(session);
+      await loadConversation(session.conversationId, {
+        headMessageId: session.currentHeadMessageId,
+        countTokens: false,
+      });
       subscribeToSession(session);
     } catch (error) {
       setApiError(error.message);
       toast.error(error.message);
     }
-  }, [rememberSession, setApiError, subscribeToSession]);
+  }, [loadConversation, rememberSession, setApiError, subscribeToSession]);
 
   const denyToolCall = useCallback(async (sessionId, toolCallId) => {
     if (!sessionId) return;
     try {
       const session = sessionFromApi(await denySessionToolApi(sessionId, toolCallId));
       rememberSession(session);
+      await loadConversation(session.conversationId, {
+        headMessageId: session.currentHeadMessageId,
+        countTokens: false,
+      });
       subscribeToSession(session);
     } catch (error) {
       setApiError(error.message);
       toast.error(error.message);
     }
-  }, [rememberSession, setApiError, subscribeToSession]);
+  }, [loadConversation, rememberSession, setApiError, subscribeToSession]);
 
   const stopStreaming = useCallback(async (sessionId = selectedSessionId) => {
     const targetSessionId =

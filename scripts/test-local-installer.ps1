@@ -56,9 +56,19 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $LandingRoot = if ($env:WINDIE_LANDING_DIR) {
     $env:WINDIE_LANDING_DIR
 } else {
-    Join-Path $RepoRoot "..\windie-landing-2nd"
+    Join-Path $RepoRoot "vendor\windie-landing-2nd"
 }
 $Installer = Join-Path $LandingRoot "frontend\public\install.ps1"
+
+if (-not $env:WINDIE_LANDING_DIR -and -not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
+    $SharedLandingRoot = Join-Path $RepoRoot "..\windie\vendor\windie-landing-2nd"
+    $SharedInstaller = Join-Path $SharedLandingRoot "frontend\public\install.ps1"
+    if (Test-Path -LiteralPath $SharedInstaller -PathType Leaf) {
+        $LandingRoot = $SharedLandingRoot
+        $Installer = $SharedInstaller
+    }
+}
+
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
     throw "local Windie installer was not found at $Installer"
 }

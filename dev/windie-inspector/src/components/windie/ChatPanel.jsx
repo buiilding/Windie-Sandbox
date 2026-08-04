@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useWindie } from "@/context/WindieContext";
 import MessageRow, { PendingAssistantRow } from "@/components/windie/MessageRow";
 import Composer from "@/components/windie/Composer";
+import ToolApprovalPrompt from "@/components/windie/ToolApprovalPrompt";
 import { executionToolCount, isExecutionNode } from "@/lib/treeProjection";
 import { ChevronDown, ChevronUp, MoreHorizontal } from "lucide-react";
 
@@ -257,6 +258,7 @@ export default function ChatPanel({ onFirstMessage }) {
         ) : null}
       </div>
 
+      <ToolApprovalPrompt />
       <Composer onFirstMessage={onFirstMessage} />
     </div>
   );
