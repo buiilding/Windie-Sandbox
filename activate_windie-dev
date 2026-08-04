@@ -10,9 +10,5 @@ fi
 windie_dev_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cargo build --release --manifest-path "$windie_dev_root/Cargo.toml" --bin windie-dev
 export WINDIE_DEV_ROOT="$windie_dev_root"
-windie_go_bin="$(go env GOBIN 2>/dev/null || true)"
-if [[ -z "$windie_go_bin" ]]; then
-  windie_go_bin="$(go env GOPATH 2>/dev/null || true)/bin"
-fi
-export PATH="$windie_dev_root/target/release:$HOME/.cargo/bin:$windie_go_bin:$PATH"
+export PATH="$windie_dev_root/target/release:$PATH"
 echo "windie-dev active: $windie_dev_root/target/release/windie-dev"

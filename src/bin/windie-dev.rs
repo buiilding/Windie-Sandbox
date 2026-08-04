@@ -74,25 +74,36 @@ fn print_help() -> Result<()> {
     Ok(())
 }
 
-/// Runs gateway, API, and the hot-reloading Inspector together.
+/// Builds and runs gateway, API, and the HMR Inspector together.
 async fn dev_up() -> Result<()> {
     println!("windie-dev: starting gateway");
     let mut gateway = spawn_gateway().await?;
     if let Err(error) = wait_for_gateway(&mut gateway).await {
         stop_child(&mut gateway).await;
-        let _ = stop_gateway_process().await;
         return Err(error);
     }
 
-    let mut api = spawn_component("api")?;
-    let mut inspector = spawn_component("inspector")?;
+    let mut api = match spawn_component("api").await {
+        Ok(child) => child,
+        Err(error) => {
+            stop_child(&mut gateway).await;
+            return Err(error);
+        }
+    };
+    let mut inspector = match spawn_component("inspector").await {
+        Ok(child) => child,
+        Err(error) => {
+            stop_child(&mut api).await;
+            stop_child(&mut gateway).await;
+            return Err(error);
+        }
+    };
     println!("windie-dev: api and inspector are running; press Ctrl-C to stop");
 
     let result = supervise_children(&mut gateway, &mut api, &mut inspector).await;
     stop_child(&mut api).await;
     stop_child(&mut inspector).await;
     stop_child(&mut gateway).await;
-    stop_gateway_process().await?;
     result
 }
 
@@ -103,17 +114,15 @@ async fn dev_run(component: &str) -> Result<()> {
             let mut gateway = spawn_gateway().await?;
             if let Err(error) = wait_for_gateway(&mut gateway).await {
                 stop_child(&mut gateway).await;
-                let _ = stop_gateway_process().await;
                 return Err(error);
             }
             println!("windie-dev: gateway is running; press Ctrl-C to stop");
             let result = supervise_one(&mut gateway).await;
             stop_child(&mut gateway).await;
-            stop_gateway_process().await?;
             result
         }
         "api" | "inspector" => {
-            let mut child = spawn_component(component)?;
+            let mut child = spawn_component(component).await?;
             println!("windie-dev: {component} is running; press Ctrl-C to stop");
             let result = supervise_one(&mut child).await;
             stop_child(&mut child).await;
@@ -153,12 +162,7 @@ async fn dev_down() -> Result<()> {
     Ok(())
 }
 
-/// Stops any Bifrost process left by the development watcher.
-async fn stop_gateway_process() -> Result<()> {
-    run_windie(&["gateway", "stop"]).await
-}
-
-/// Starts Bifrost through Air so Go changes rebuild and restart the gateway.
+/// Builds and starts the current Bifrost source as one foreground process.
 async fn spawn_gateway() -> Result<Child> {
     let root = repository_root()?;
     let bifrost_root = root.join("vendor/bifrost");
@@ -166,27 +170,40 @@ async fn spawn_gateway() -> Result<Child> {
     if !transport_root.join("main.go").is_file() {
         bail!("Bifrost source is missing at {}", transport_root.display());
     }
-    let air = tool_path("air").ok_or_else(|| {
-        anyhow!(
-            "Bifrost hot reload requires Air; install it with `go install github.com/air-verse/air@latest`"
-        )
-    })?;
-    if !std::process::Command::new(&air)
-        .arg("-v")
-        .output()
-        .is_ok_and(|output| output.status.success())
-    {
-        bail!("Air was found at {} but could not run", air.display());
-    }
     prepare_bifrost_workspace(&bifrost_root).await?;
 
     let app_dir = windie::local::windie_home_dir()?.join("bifrost/data");
     let port = gateway_url().port();
-    let air_config = write_bifrost_air_config(&root, &app_dir, &port)?;
-    let mut command = Command::new(air);
+    let executable = root
+        .join("target/windie-dev")
+        .join(executable_name("bifrost-http"));
+    fs::create_dir_all(
+        executable
+            .parent()
+            .expect("Bifrost binary has a parent directory"),
+    )
+    .with_context(|| format!("failed to create {}", executable.display()))?;
+    let build_status = Command::new("go")
+        .args(["build", "-tags", "dev", "-o"])
+        .arg(&executable)
+        .arg("./transports/bifrost-http")
+        .current_dir(&bifrost_root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .context("failed to build Bifrost")?;
+    if !build_status.success() {
+        bail!("Bifrost build exited with {build_status}");
+    }
+
+    let mut command = Command::new(&executable);
     command
-        .args(["-c"])
-        .arg(air_config)
+        .args(["-host", "127.0.0.1", "-port"])
+        .arg(port)
+        .arg("-app-dir")
+        .arg(app_dir)
         .current_dir(&bifrost_root)
         .env("BIFROST_UI_DEV", "true")
         .stdin(Stdio::inherit())
@@ -194,47 +211,10 @@ async fn spawn_gateway() -> Result<Child> {
         .stderr(Stdio::inherit());
     command
         .spawn()
-        .context("failed to start the Bifrost hot-reload process")
+        .context("failed to start the Bifrost process")
 }
 
-/// Writes a temporary Air configuration with a Windie-owned Bifrost binary
-/// name. The name matters because the normal gateway stop path verifies that
-/// the process listening on the configured port is actually Bifrost.
-fn write_bifrost_air_config(repository_root: &Path, app_dir: &Path, port: &str) -> Result<PathBuf> {
-    let bifrost_root = repository_root.join("vendor/bifrost");
-    let config_dir = repository_root.join("target/windie-dev");
-    fs::create_dir_all(&config_dir)
-        .with_context(|| format!("failed to create {}", config_dir.display()))?;
-    let config_path = config_dir.join("bifrost-air.toml");
-    let config = format!(
-        "root = {root}\ntmp_dir = \"transports/bifrost-http/tmp\"\n\n[build]\ncmd = \"go build -tags dev -o ./transports/bifrost-http/tmp/bifrost-http ./transports/bifrost-http\"\nentrypoint = [{entrypoint}, {host}, {host_value}, {port}, {port_value}, {app_flag}, {app_value}]\ndelay = 1000\nexclude_dir = [\"assets\", \"tmp\", \"vendor\", \"testdata\", \"ui\", \"node_modules\", \"core/tests\", \"tests\", \"docs\"]\nexclude_regex = [\"_test.go\"]\nwatch_dirs = [\"cli\", \"core\", \"framework\", \"plugins\", \"transports/bifrost-http\"]\ninclude_ext = [\"go\", \"tpl\", \"tmpl\", \"html\"]\nkill_delay = \"1s\"\nlog = \"transports/bifrost-http/tmp/build-errors.log\"\nstop_on_error = true\nsend_interrupt = true\n\n[log]\ntime = false\n\n[misc]\nclean_on_exit = false\n",
-        root = toml_string(&bifrost_root),
-        entrypoint = toml_string("transports/bifrost-http/tmp/bifrost-http"),
-        host = toml_string("-host"),
-        host_value = toml_string("127.0.0.1"),
-        port = toml_string("-port"),
-        port_value = toml_string(port),
-        app_flag = toml_string("-app-dir"),
-        app_value = toml_string(app_dir),
-    );
-    fs::write(&config_path, config)
-        .with_context(|| format!("failed to write {}", config_path.display()))?;
-    Ok(config_path)
-}
-
-/// Encodes one path or argument as a TOML basic string.
-fn toml_string(value: impl AsRef<Path>) -> String {
-    format!(
-        "\"{}\"",
-        value
-            .as_ref()
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-    )
-}
-
-/// Waits for the Air-managed Bifrost process to become healthy.
+/// Waits for the directly launched Bifrost process to become healthy.
 async fn wait_for_gateway(child: &mut Child) -> Result<()> {
     let health_url = format!("{}/health", config::gateway_url());
     for _ in 0..(DEV_GATEWAY_START_TIMEOUT.as_millis() / 200) {
@@ -252,7 +232,7 @@ async fn wait_for_gateway(child: &mut Child) -> Result<()> {
     )
 }
 
-/// Creates the local Bifrost Go workspace used by Air's local-module build.
+/// Creates the local Bifrost Go workspace used by the development build.
 async fn prepare_bifrost_workspace(bifrost_root: &Path) -> Result<()> {
     if !bifrost_root.join("go.work").is_file() {
         run_go(
@@ -312,8 +292,8 @@ async fn run_go(directory: &Path, args: &[&str]) -> Result<()> {
     }
 }
 
-/// Starts one foreground child with inherited terminal output.
-fn spawn_component(component: &str) -> Result<Child> {
+/// Builds and starts one foreground development component.
+async fn spawn_component(component: &str) -> Result<Child> {
     let root = repository_root()?;
     let mut command = if component == "inspector" {
         let mut command = Command::new(npm_command());
@@ -323,8 +303,13 @@ fn spawn_component(component: &str) -> Result<Child> {
             .arg(root.join("dev/windie-inspector"));
         command.env("BROWSER", "none");
         command
+    } else if component == "api" {
+        let executable = build_windie_binary(&root).await?;
+        let mut command = Command::new(executable);
+        command.args(["api", "run"]);
+        command
     } else {
-        cargo_component_command(component)
+        bail!("unknown development component {component}");
     };
 
     command
@@ -337,77 +322,64 @@ fn spawn_component(component: &str) -> Result<Child> {
         .with_context(|| format!("failed to start development {component}"))
 }
 
-/// Uses cargo-watch when available so Rust API changes restart automatically.
-fn cargo_component_command(component: &str) -> Command {
-    let command_line = format!("run --bin windie -- {component} run");
-    if let Some(cargo_watch) = tool_path("cargo-watch") {
-        let mut command = Command::new(cargo_watch);
-        command.args(["-x", command_line.as_str()]);
-        command
-    } else {
-        let mut command = Command::new("cargo");
-        command.args(["run", "--bin", "windie", "--", component, "run"]);
-        command
+/// Builds the current Windie API executable and returns its debug path.
+async fn build_windie_binary(root: &Path) -> Result<PathBuf> {
+    let target_directory = cargo_target_directory(root).await?;
+    let status = Command::new("cargo")
+        .args(["build", "--bin", "windie"])
+        .current_dir(root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .context("failed to build the Windie API")?;
+    if !status.success() {
+        bail!("Windie API build exited with {status}");
     }
+
+    let executable = target_directory
+        .join("debug")
+        .join(executable_name("windie"));
+    if !executable.is_file() {
+        bail!(
+            "Windie API executable was not produced at {}",
+            executable.display()
+        );
+    }
+    Ok(executable)
 }
 
-/// Finds a developer tool on PATH or in its conventional user install path.
-///
-/// Go and Cargo intentionally install user tools outside most shell PATHs on
-/// macOS. Resolving those directories here keeps `windie-dev` usable even
-/// when the user has installed the tools but has not restarted their shell.
-fn tool_path(tool: &str) -> Option<PathBuf> {
-    let executable_names = if cfg!(windows) {
-        vec![format!("{tool}.exe"), tool.to_string()]
-    } else {
-        vec![tool.to_string()]
-    };
-    let mut directories = env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
-        .collect::<Vec<_>>();
-
-    if tool == "cargo-watch" {
-        if let Some(cargo_home) = env::var_os("CARGO_HOME") {
-            directories.push(PathBuf::from(cargo_home).join("bin"));
-        } else if let Some(home) = env::var_os("HOME") {
-            directories.push(PathBuf::from(home).join(".cargo/bin"));
-        }
-    }
-    if tool == "air" {
-        if let Some(gobin) = env::var_os("GOBIN").filter(|path| !path.is_empty()) {
-            directories.push(PathBuf::from(gobin));
-        } else if let Some(go_bin) = go_install_bin_dir() {
-            directories.push(go_bin);
-        }
-    }
-
-    directories
-        .into_iter()
-        .flat_map(|directory| {
-            executable_names
-                .iter()
-                .map(move |name| directory.join(name))
-        })
-        .find(|path| path.is_file())
-}
-
-/// Returns Go's user-level binary directory when Go is available.
-fn go_install_bin_dir() -> Option<PathBuf> {
-    let output = std::process::Command::new("go")
-        .args(["env", "GOPATH"])
+/// Finds Cargo's effective target directory for the current workspace.
+async fn cargo_target_directory(root: &Path) -> Result<PathBuf> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root)
         .output()
-        .ok()?;
+        .await
+        .context("failed to inspect the Cargo target directory")?;
     if !output.status.success() {
-        return None;
+        bail!(
+            "Cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-    let gopath = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    if gopath.is_empty() {
-        return None;
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("Cargo metadata returned invalid JSON")?;
+    let target_directory = metadata
+        .get("target_directory")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("Cargo metadata did not report a target directory"))?;
+    Ok(PathBuf::from(target_directory))
+}
+
+/// Adds the platform executable suffix used by local development binaries.
+fn executable_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
     }
-    let gopath = std::ffi::OsString::from(gopath);
-    let paths = env::split_paths(&gopath);
-    Some(paths.into_iter().next()?.join("bin"))
 }
 
 /// Waits until one foreground child exits or Ctrl-C is pressed.
