@@ -59,10 +59,24 @@ pub(super) async fn create_conversation(
     request: Option<Json<CreateConversationRequest>>,
 ) -> ApiResult<ConversationIdResponse> {
     let store = open_store(&state)?;
-    let model = request
+    let requested_model = request
         .and_then(|Json(body)| body.model)
         .filter(|model| !model.trim().is_empty())
-        .unwrap_or_else(|| state.model.clone());
+        .or_else(|| state.model.clone());
+    let model = match requested_model {
+        Some(model) => model,
+        None => operation::list_models(
+            GatewayUrl::new(state.gateway_url.clone()),
+            BaseUrl::new(state.base_url.clone()),
+        )
+        .await?
+        .into_iter()
+        .next()
+        .map(|model| model.id)
+        .ok_or_else(|| {
+            anyhow::anyhow!("no models are available; configure a provider key first")
+        })?,
+    };
     let conversation_id = operation::create_conversation(&store, &ModelName::new(model))?;
 
     Ok(Json(ConversationIdResponse {

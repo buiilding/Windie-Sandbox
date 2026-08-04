@@ -1426,7 +1426,7 @@ fn test_app_with_urls_and_shutdown(
     router(ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
-        model: "openai/test".to_string(),
+        model: Some("openai/test".to_string()),
         store_path: Some(store_path),
         tool_registry,
         session_manager,
@@ -1447,7 +1447,7 @@ fn test_app_with_tool_registry(
     router(ApiState {
         gateway_url: "http://localhost:8080".to_string(),
         base_url: "http://localhost:8080/v1".to_string(),
-        model: "openai/test".to_string(),
+        model: Some("openai/test".to_string()),
         store_path: Some(store_path),
         tool_registry,
         session_manager,

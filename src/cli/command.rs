@@ -51,21 +51,6 @@ pub enum Command {
     Tools {
         provider_id: Option<ToolProviderId>,
     },
-    /// Run one benchmark mode. Conversation mode carries the target
-    /// conversation ID; live mode does not.
-    Bench {
-        mode: BenchmarkMode,
-        conversation_id: Option<ConversationId>,
-        options: BenchmarkOptions,
-    },
-    /// Compare the current local benchmark run with one stored baseline.
-    CompareBaseline {
-        options: BenchmarkOptions,
-    },
-    /// Replace one stored benchmark baseline with the current local run.
-    UpdateBaseline {
-        options: BenchmarkOptions,
-    },
     /// Set, list, remove, or locate Windie's provider-key environment values.
     Env(EnvCommand),
     /// Install or verify one approved Windie dependency.

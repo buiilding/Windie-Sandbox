@@ -1,10 +1,8 @@
-export const DEFAULT_MODEL = "openai/gpt-4o-mini";
-
 export function conversationSummaryFromApi(summary) {
   return {
     id: summary.id,
     name: summary.title || `conversation ${summary.id.slice(0, 8)}`,
-    model: summary.model || DEFAULT_MODEL,
+    model: summary.model || null,
     systemPrompt: "",
     toolApprovalMode: "manual",
     rootId: null,

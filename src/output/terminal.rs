@@ -221,7 +221,7 @@ impl TerminalOutput {
         }
     }
 
-    /// Prints the path written by `windie update baseline`.
+    /// Prints the path written by `windie-dev update baseline`.
     pub fn updated_baseline(&self, path: &Path) {
         println!("updated baseline {}", path.display());
     }

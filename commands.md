@@ -685,7 +685,7 @@ Print the persistent Inspector process log.
 ## Benchmarks
 
 ```text
-windie bench
+windie-dev bench
 ```
 
 Run the full local/free benchmark suite. It uses temporary fixture databases,
@@ -693,38 +693,38 @@ does not start Bifrost, does not call real MCP providers, and does not send a
 provider request.
 
 ```text
-windie bench --persistence
-windie bench --conversation
-windie bench --runtime
-windie bench --tools
-windie bench --mutations
-windie bench --mcp
+windie-dev bench --persistence
+windie-dev bench --conversation
+windie-dev bench --runtime
+windie-dev bench --tools
+windie-dev bench --mutations
+windie-dev bench --mcp
 ```
 
 Category flags filter the benchmark report. They can be combined.
 
 ```text
-windie bench --runs 100
+windie-dev bench --runs 100
 ```
 
 Run repeated local measurements and print min/median/p95/max summaries.
 
 ```text
-windie bench --runs 100 --json
+windie-dev bench --runs 100 --json
 ```
 
 Run the repeated benchmark and write a persistent JSON benchmark artifact to
 stdout.
 
 ```text
-windie update baseline
+windie-dev update baseline
 ```
 
 Run the current local benchmark suite and write
 `benches/baseline.json` in the Windie repository.
 
 ```text
-windie compare baseline
+windie-dev compare baseline
 ```
 
 Run the current local benchmark suite, compare it with

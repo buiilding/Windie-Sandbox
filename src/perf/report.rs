@@ -41,7 +41,7 @@ pub struct ScenarioSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// Persistent benchmark artifact written by `windie bench --json`.
+/// Persistent benchmark artifact written by `windie-dev bench --json`.
 pub struct PerformanceReport {
     pub format_version: u32,
     pub mode: BenchmarkMode,

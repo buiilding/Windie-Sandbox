@@ -86,6 +86,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 ## CLI
 
+- lib.rs: shared module library consumed by both the public `windie` binary
+  and the repository-only `windie-dev` binary.
 - cli/: parses terminal arguments into typed CLI commands.
 - cli/mod.rs: Public boundary and re-exports for cli folder.
 - cli/command.rs: Contract between cli parse and main.rs. Defines parse CLI command types.
@@ -93,9 +95,13 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - cli/session.rs: Parses session commands, `windie run ...`, etc.
 - cli/message.rs: Parses message-related commands, `insert .. message`, `update ... message`, etc.
 - cli/tool_schema.rs: Parses tool schema commands, `windie insert <conversation_id> toolschema ... `, etc.
-- cli/bench.rs: Parses benchmark commands, `windie bench`, etc.
+- bin/windie-dev.rs: Repository-only development supervisor, release workflow,
+  and benchmark command surface. It is not included in public release archives.
 - cli/env.rs: Parses environment variable commands, `windie env KEY=value`, etc.
 - cli/onboard.rs: terminal input/output adapter for onboarding. it prompts for provider choices, api keys, mcp secrets, and displays progress
+- bin/windie-dev.rs: foreground development supervisor, release workflow
+  adapter, and benchmark entry point. It is deliberately excluded from public
+  release archives.
 - process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, and Inspector components.
 - bin/windie-inspector.rs: standalone Inspector static server; its address and
   API endpoint are configurable through the local endpoint environment settings.

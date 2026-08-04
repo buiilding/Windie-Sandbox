@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Source this file to expose the repository development binary in the current
+# shell. Executing it cannot modify the parent shell's PATH.
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  echo "source this file: source ./activate_windie-dev" >&2
+  exit 1
+fi
+
+windie_dev_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cargo build --release --manifest-path "$windie_dev_root/Cargo.toml" --bin windie-dev
+export WINDIE_DEV_ROOT="$windie_dev_root"
+export PATH="$windie_dev_root/target/release:$PATH"
+echo "windie-dev active: $windie_dev_root/target/release/windie-dev"
