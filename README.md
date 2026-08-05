@@ -45,7 +45,7 @@ The public `windie` binary is the runtime CLI. Repository-only development,
 release packaging, and benchmarks live in the separate `windie-dev` binary:
 
 ```bash
-source ./activate_windie-dev
+source ./scripts/activate_windie-dev
 windie-dev dev up                 # build/start gateway and API, HMR Inspector
 windie-dev dev status
 windie-dev dev down
@@ -53,7 +53,7 @@ windie-dev dev down
 windie-dev release build
 windie-dev release install
 windie-dev release verify
-source ./activate_windie
+source ./scripts/activate_windie
 windie status
 ```
 
