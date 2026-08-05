@@ -6,23 +6,23 @@ This changelog is intentionally curated from the repository history. It records
 meaningful product, runtime, and developer-facing changes rather than every
 individual commit or internal edit.
 
-## [Unreleased]
+## [0.2.9] - 2026-08-04
 
-Development after `v0.2.3`.
+### Added
 
-## [0.2.3] - 2026-07-31
+- Added ...
 
-- Added complete Windie uninstall commands with confirmation, `--yes`, and
-  `--dry-run` modes.
-- Added exact-path safety checks and Windows delayed self-cleanup.
-- Added the tray's `Uninstall Windie` action through the shared CLI command.
+### Changed
 
-## [0.2.2] - 2026-07-31
+- Changed ...
 
-- Removed the Blender-specific localhost preflight so Blender MCP uses the
-  normal MCP session and tool error flow.
-- Added concise runtime detection output to the installers.
-- Added animated startup progress feedback to the installers.
+### Fixed
+
+- Fixed ...
+
+### Developer experience
+
+- Added ...
 
 ## [0.2.0] - 2026-07-30
 
