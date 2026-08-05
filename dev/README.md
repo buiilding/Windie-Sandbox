@@ -15,7 +15,7 @@ foreground, keeps their output attached to the terminal, and stops them with
 Ctrl-C:
 
 ```bash
-source ./activate_windie-dev
+source ./scripts/activate_windie-dev
 windie-dev dev up
 ```
 
@@ -50,7 +50,7 @@ For a local release install, use the same repository binary:
 windie-dev release build
 windie-dev release install
 windie-dev release verify
-source ./activate_windie
+source ./scripts/activate_windie
 windie status
 ```
 
