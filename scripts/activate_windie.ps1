@@ -1,5 +1,5 @@
-# Dot-source this file in PowerShell: . .\activate_windie.ps1
-$windieRoot = (Resolve-Path (Join-Path $PSScriptRoot ".")).Path
+# Dot-source this file in PowerShell: . .\scripts\activate_windie.ps1
+$windieRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ($env:WINDIE_INSTALL_DIR) {
     $windieInstallDir = $env:WINDIE_INSTALL_DIR
 } else {

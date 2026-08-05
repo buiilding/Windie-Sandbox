@@ -1,4 +1,5 @@
 /target/
+/dist/
 .playwright-cli/
 /windie-landing-1st/
 /windie-landing-2nd/

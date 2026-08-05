@@ -3,11 +3,11 @@
 # Windie binary in the current shell.
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "source this file: source ./activate_windie" >&2
+  echo "source this file: source ./scripts/activate_windie" >&2
   exit 1
 fi
 
-windie_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+windie_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "${WINDIE_INSTALL_DIR:-}" ]]; then
   windie_install_dir="$WINDIE_INSTALL_DIR"
 else
