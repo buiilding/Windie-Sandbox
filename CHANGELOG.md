@@ -6,23 +6,25 @@ This changelog is intentionally curated from the repository history. It records
 meaningful product, runtime, and developer-facing changes rather than every
 individual commit or internal edit.
 
-## [0.2.9] - 2026-08-04
+## [0.2.9] - 2026-08-05
 
-### Added
-
-- Added ...
-
-### Changed
-
-- Changed ...
-
-### Fixed
-
-- Fixed ...
-
-### Developer experience
-
-- Added ...
+- Added `windie-dev` for local development, release testing, and performance
+  checks.
+- Added performance tracking to help catch slowdowns.
+- Added custom ports so multiple Windie installs can run side by side.
+- Added `windie -v` and simpler help output.
+- Added easier commands for starting, stopping, and checking Windie locally.
+- Moved the Inspector into its own versioned component, making updates and
+  releases more reliable.
+- Combined Continue and Query into one composer action.
+- Windie no longer forces default models.
+- Moved tool approval prompts above the message box.
+- Improved the welcome screen, theme defaults, conversation controls, and
+  overlays.
+- Added clearer setup and developer documentation.
+- Fixed Inspector builds in CI and public releases.
+- Improved macOS release compatibility.
+- Fixed local release testing so it can find the installer.
 
 ## [0.2.0] - 2026-07-30
 
@@ -142,7 +144,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.9
 [0.2.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.2
 [0.2.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.0
 [0.1.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.1.1
