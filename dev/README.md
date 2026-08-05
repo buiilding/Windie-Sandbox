@@ -1,12 +1,14 @@
 # Windie Dev
 
-This folder contains local dev clients used to inspect and exercise Windie
-runtime primitives.
+This folder contains development documentation and local helper context. The
+first-party Inspector component is maintained separately in the pinned
+`vendor/windie-inspector/` submodule.
 
 ## Windie Inspector
 
-`windie-inspector/` is the React browser client for the localhost Windie API.
-It is not part of the runtime boundary: it must call explicit API primitives
+`vendor/windie-inspector/frontend/` is the React browser client for the localhost Windie API, and
+`vendor/windie-inspector/host/` is its optional static-asset host. Neither is part of the
+runtime boundary: the client must call explicit API primitives
 and must not own provider logic, persistence, context construction, runtime
 state transitions, tool execution, or permission policy.
 
@@ -27,7 +29,7 @@ windie-dev dev run inspector
 windie-dev dev run gateway
 ```
 
-`inspector` uses `npm start` and hot reloads browser changes. Rust API changes
+`inspector` uses `npm start` in `vendor/windie-inspector/frontend` and hot reloads browser changes. Rust API changes
 hot reload when `cargo-watch` is installed; otherwise the API runs once and
 must be restarted. The gateway runs Bifrost through Air, rebuilding and
 restarting on Go changes. Install the two optional watchers when needed:

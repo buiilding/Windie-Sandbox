@@ -8,9 +8,10 @@
 #   <dist-dir>     Output directory for the finished tarball
 #
 # The script runs on a runner whose OS already matches <rust-target>, so the
-# Rust build, the embedded-inspector build, and the CGO-backed Bifrost build
-# are all native compilations. Cross-compiling Bifrost is intentionally out of
-# scope: it links SQLite through CGO, which needs a native C toolchain.
+# Rust runtime build, the Inspector host build, the embedded UI build, and the
+# CGO-backed Bifrost build are all native compilations. Cross-compiling Bifrost
+# is intentionally out of scope: it links SQLite through CGO, which needs a
+# native C toolchain.
 #
 # Tarball layout consumed by install.sh:
 #   windie            CLI + API server
@@ -25,7 +26,9 @@ ASSET_LABEL="${2:?usage: package-release.sh <rust-target> <asset-label> <dist-di
 DIST_DIR="${3:?usage: package-release.sh <rust-target> <asset-label> <dist-dir>}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSPECTOR_DIR="$REPO_ROOT/dev/windie-inspector"
+INSPECTOR_REPO_DIR="$REPO_ROOT/vendor/windie-inspector"
+INSPECTOR_DIR="$INSPECTOR_REPO_DIR/frontend"
+INSPECTOR_HOST_MANIFEST="$INSPECTOR_REPO_DIR/host/Cargo.toml"
 BIFROST_DIR="$REPO_ROOT/vendor/bifrost"
 BIFROST_HTTP_DIR="$BIFROST_DIR/transports/bifrost-http"
 BIFROST_BIN="$BIFROST_DIR/tmp/bifrost-http"
@@ -52,19 +55,20 @@ echo "==> windie release: target=$RUST_TARGET label=$ASSET_LABEL version=$VERSIO
 WINDIE_BIN="$REPO_ROOT/target/$RUST_TARGET/release/windie"
 INSPECTOR_BIN="$REPO_ROOT/target/$RUST_TARGET/release/windie-inspector"
 
-# --- 1. Build or reuse the Inspector binary ---------------------------------
-# The Inspector binary embeds the frontend, so its cache key includes both the
-# Rust server and the frontend source. Windie itself is built separately below.
+# --- 1. Build or reuse the Inspector host ------------------------------------
+# The host is a separate Cargo package. It embeds the UI build, but it is not a
+# binary target of the Windie runtime package. Both packages use the repository
+# target directory so the release staging path stays predictable.
 if [ "${WINDIE_REUSE_INSPECTOR:-0}" = "1" ] && [ -f "$INSPECTOR_BIN" ]; then
   echo "==> reusing cached windie inspector"
 else
-  # rust-embed captures dev/windie-inspector/build at compile time, so the UI
-  # must be built before the Inspector binary.
+  # rust-embed captures vendor/windie-inspector/frontend/build at compile time, so the UI must be
+  # built before the independent Inspector host package.
   echo "==> building inspector UI"
   npm ci --prefix "$INSPECTOR_DIR" --legacy-peer-deps
   npm run build --prefix "$INSPECTOR_DIR"
-  echo "==> building windie inspector ($RUST_TARGET)"
-  cargo build --release --target "$RUST_TARGET" --manifest-path "$REPO_ROOT/Cargo.toml" --bin windie-inspector
+  echo "==> building windie inspector host ($RUST_TARGET)"
+  cargo build --release --target "$RUST_TARGET" --target-dir "$REPO_ROOT/target" --manifest-path "$INSPECTOR_HOST_MANIFEST"
 fi
 [ -f "$INSPECTOR_BIN" ] || { echo "windie inspector binary not found at $INSPECTOR_BIN" >&2; exit 1; }
 
@@ -139,6 +143,7 @@ asset_label=$ASSET_LABEL
 rust_target=$RUST_TARGET
 os=$RELEASE_OS
 cpu=$RELEASE_CPU
+inspector_commit=$(git -C "$INSPECTOR_REPO_DIR" rev-parse HEAD)
 contents=windie,bifrost,windie-inspector
 EOF
 

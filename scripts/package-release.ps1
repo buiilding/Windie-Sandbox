@@ -20,7 +20,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$InspectorDir = Join-Path $RepoRoot "dev\windie-inspector"
+$InspectorRepoDir = Join-Path $RepoRoot "vendor\windie-inspector"
+$InspectorDir = Join-Path $InspectorRepoDir "frontend"
+$InspectorHostManifest = Join-Path $InspectorRepoDir "host\Cargo.toml"
 $BifrostDir = Join-Path $RepoRoot "vendor\bifrost"
 $BifrostHttpDir = Join-Path $BifrostDir "transports\bifrost-http"
 $BifrostVersion = "stable"
@@ -56,8 +58,8 @@ try {
         Write-Host "==> building inspector UI"
         Invoke-Native "npm" @("ci", "--prefix", $InspectorDir, "--legacy-peer-deps")
         Invoke-Native "npm" @("run", "build", "--prefix", $InspectorDir)
-        Write-Host "==> building windie inspector ($RustTarget)"
-        Invoke-Native "cargo" @("build", "--release", "--target", $RustTarget, "--manifest-path", (Join-Path $RepoRoot "Cargo.toml"), "--bin", "windie-inspector")
+        Write-Host "==> building windie inspector host ($RustTarget)"
+        Invoke-Native "cargo" @("build", "--release", "--target", $RustTarget, "--target-dir", (Join-Path $RepoRoot "target"), "--manifest-path", $InspectorHostManifest)
     }
     if (-not (Test-Path -LiteralPath $InspectorBinary -PathType Leaf)) {
         throw "windie inspector binary not found at $InspectorBinary"
@@ -149,6 +151,7 @@ try {
         "rust_target=$RustTarget"
         "os=windows"
         "cpu=$(if ($RustTarget.StartsWith('aarch64')) { 'aarch64' } else { 'x86_64' })"
+        "inspector_commit=$((git -C $InspectorRepoDir rev-parse HEAD).Trim())"
         "contents=windie.exe,bifrost.exe,windie-inspector.exe"
     ) | Set-Content -LiteralPath (Join-Path $StagingDir "release-manifest.txt") -Encoding ascii
     Invoke-Native $WindieBinary @("--version")

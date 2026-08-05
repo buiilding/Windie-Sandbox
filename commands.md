@@ -76,7 +76,7 @@ windie api output
 Print the persistent Windie API process log.
 
 The API is a JSON test harness over Windie's existing runtime and store
-primitives. It is intended for local tools such as `dev/windie-inspector` to
+primitives. It is intended for local tools such as `vendor/windie-inspector/frontend` to
 test conversation trees, explicit-head path inspection, message mutation,
 system prompts, attached tools, gateway lifecycle, and session-owned execution
 without shelling out for each operation.
