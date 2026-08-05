@@ -93,7 +93,7 @@ Schema compatibility is not a current goal. `store/` should create the current s
 ## Issue and pull request rules
 
 * Every issue must be closed through a pull request.
-* Every pull request must close an issue.
+* Every pull request except a release pull request must close an issue.
 * Do not close an issue manually when it should be closed by a pull request.
 * Before pushing a branch, verify that an existing issue accurately covers the changes.
 
