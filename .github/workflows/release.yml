@@ -28,8 +28,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Bifrost submodule
-        run: git submodule update --init --depth 1 vendor/bifrost
+      - name: Checkout Windie submodules
+        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: dev/windie-inspector/package-lock.json
+          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:
@@ -50,7 +50,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target/${{ matrix.target }}/release/windie-inspector*
-          key: inspector-v1-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/bin/windie-inspector.rs', 'dev/windie-inspector/**', '!dev/windie-inspector/node_modules/**', '!dev/windie-inspector/build/**') }}
+          key: inspector-v3-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('vendor/windie-inspector/host/Cargo.toml', 'vendor/windie-inspector/host/Cargo.lock', 'vendor/windie-inspector/host/src/**', 'vendor/windie-inspector/frontend/**', '!vendor/windie-inspector/frontend/node_modules/**', '!vendor/windie-inspector/frontend/build/**') }}
       - name: Package release
         env:
           WINDIE_REUSE_BIFROST: "1"
@@ -71,8 +71,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Bifrost submodule
-        run: git submodule update --init --depth 1 vendor/bifrost
+      - name: Checkout Windie submodules
+        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -83,7 +83,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: dev/windie-inspector/package-lock.json
+          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:
@@ -93,7 +93,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target/${{ matrix.target }}/release/windie-inspector*
-          key: inspector-v1-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/bin/windie-inspector.rs', 'dev/windie-inspector/**', '!dev/windie-inspector/node_modules/**', '!dev/windie-inspector/build/**') }}
+          key: inspector-v3-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('vendor/windie-inspector/host/Cargo.toml', 'vendor/windie-inspector/host/Cargo.lock', 'vendor/windie-inspector/host/src/**', 'vendor/windie-inspector/frontend/**', '!vendor/windie-inspector/frontend/node_modules/**', '!vendor/windie-inspector/frontend/build/**') }}
       - name: Package Windows release
         shell: pwsh
         env:

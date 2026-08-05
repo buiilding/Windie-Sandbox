@@ -300,7 +300,7 @@ async fn spawn_component(component: &str) -> Result<Child> {
         command
             .arg("start")
             .arg("--prefix")
-            .arg(root.join("dev/windie-inspector"));
+            .arg(root.join("vendor/windie-inspector/frontend"));
         command.env("BROWSER", "none");
         command
     } else if component == "api" {

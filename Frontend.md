@@ -1,7 +1,6 @@
 # Frontend mental model
 
-The frontend is the browser-based Windie inspector at
-`dev/windie-inspector/`.
+The frontend is the browser-based Windie Inspector at `vendor/windie-inspector/frontend/`.
 
 It is a thin client for the Windie localhost API. The backend owns durable
 conversation, session, message, tool, provider, and gateway state. The browser
@@ -28,7 +27,7 @@ logic into components.
 ## Complete frontend code map
 
 This is the frontend equivalent of the backend file-by-file mental model. The
-paths below are relative to `dev/windie-inspector/`.
+Paths below are relative to `vendor/windie-inspector/frontend/`.
 
 ### Application and build boundary
 

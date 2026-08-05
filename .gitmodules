@@ -6,3 +6,6 @@
 	path = vendor/windie-landing-2nd
 	url = https://github.com/buiilding/windie-landing-2nd.git
 	branch = main
+[submodule "vendor/windie-inspector"]
+	path = vendor/windie-inspector
+	url = https://github.com/buiilding/windie-inspector.git

@@ -103,8 +103,9 @@ installed, enabled, disabled, broken, or updating, does not install these packag
   adapter, and benchmark entry point. It is deliberately excluded from public
   release archives.
 - process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, and Inspector components.
-- bin/windie-inspector.rs: standalone Inspector static server; its address and
-  API endpoint are configurable through the local endpoint environment settings.
+- ../vendor/windie-inspector/host/src/main.rs: standalone Inspector static host; its address
+  and API endpoint are configurable through the local endpoint environment
+  settings. It is an independent Cargo package, not a Windie runtime target.
 - tray.rs: simple macOS/Windows tray controller that invokes the lifecycle CLI commands and polls localhost health.
 - cli/tests.rs: test cli command parsing and validation
 
@@ -184,7 +185,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - gateway.rs: manages the Bifrost LLM gateway.
 - wakeup.rs: typed events that resume runtime work, currently session-targeted tool approval decisions. Cancellation is a separate session control.
 - error.rs: Typed Windie errors.
-- ../dev/windie-inspector: local browser developer UI for inspecting and testing Windie through the API.
+- ../vendor/windie-inspector/frontend: local browser client for inspecting and testing Windie through
+  the API.
 
 ## Runtime behavior and invariants
 
@@ -238,7 +240,8 @@ Keep boundaries strict:
 - Only `perf/` should own benchmark timing logic, reports, comparisons, and benchmark fixture setup.
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and approved dependency install/check commands.
-- Only `dev/` should own local developer helper launchers such as the inspector.
+- Only `dev/` should own repository-only development helper launchers, while
+  `vendor/windie-inspector/` owns the first-party Inspector client and host.
 - Only `tool_provider/` should own provider catalog and execution dispatch across code-approved MCP providers and future plugins.
 - Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.
 - Only `store/` and the session operation/manager boundary should resolve or create a session branch for a conversation head; the frontend session cache is presentation state only.

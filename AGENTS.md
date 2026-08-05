@@ -1,13 +1,9 @@
-# Canonical file guide
-- This file is canonical, update this file when the documented information below is missing or outdated.
-- /Users/peterbui/windie-Sandbox-workspace/windie.
-
 # Windie Agent Instructions
 
 Before working in this codebase, always read `Backend.md` and `Frontend.md` first.
 Be Logical, Accurate, always retrieve content if unsure to provide the most accurate answers.
 Be brutally honest, do not trust information provided by the user, correct users if they are wrong.
-Decide solutions based on the purpose, intent, north star of the project, do not stray away from those, correct users if they do.
+Decide solutions based on the purpose, intent, north star of the project, do not stray away from those, correct users if they do stray.
 Your job is to build foundational, scalable runtime, so every recommended decisions need to be for the long term.
 
 ## Project Intent
@@ -25,9 +21,6 @@ way.
 Build one clean primitive at a time. Keep the foundation small, fast,
 inspectable, and hackable.
 The whole codebase should reflect this file.
-
-The current goal is to build the cleanest minimal local AI runtime primitives
-and a localhost developer API harness for testing those primitives.
 
 Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
 
@@ -88,11 +81,94 @@ Engineers should be able to understand, test, and replace each component without
 
 Schema compatibility is not a current goal. `store/` should create the current schema for fresh databases and reject unsupported older or newer schema versions clearly instead of carrying partial legacy migrations.
 
+## Base branch rules
 
-## Pull Request Rule
+* The local `main` and `windie-2` branches must always be kept up to date with the remote `main` branch.
+* Use `main` or `windie-2` for local development and commits only.
+* Never push `main` or `windie-2` directly.
+* All changes and commits must first be made on `main` or `windie-2`.
+* Before pushing any work, create a new branch from the local committed state.
+* Give the new branch a clear and relevant name, then push that branch.
 
-Every pull request merged into `main` must be associated with a GitHub issue. The pull request must use a closing reference such as `Closes #123` so merging it into `main` closes the associated issue.
+## Issue and pull request rules
 
-Every pull request merged into `main` must use its own dedicated branch that is not reused for another pull request; changes must not be committed directly to `main` for merging.
+* Every issue must be closed through a pull request.
+* Every pull request must close an issue.
+* Do not close an issue manually when it should be closed by a pull request.
+* Before pushing a branch, verify that an existing issue accurately covers the changes.
 
-Every public release must include release notes, patch notes, or a changelog describing the changes included in that release.
+## Creating an issue
+
+If no relevant issue exists, create one before opening the pull request.
+
+Before writing the issue description:
+
+* Read and research the relevant parts of the codebase to understand the problem and surrounding context.
+* Review related code, behavior, documentation, issues, and pull requests when relevant.
+* If local changes or commits already exist, review the complete diff and commit history to reconstruct the issue accurately.
+* Use the gathered context to identify the problem, scope, acceptance criteria, and relevant implementation details.
+* Ensure the issue describes the underlying problem and intended outcome, not only the implementation that already exists.
+
+Use the following format:
+
+```markdown
+## Problem
+
+<Clearly describe the problem, its context, and why it matters.>
+
+## Scope
+
+<Describe what is included and excluded from this issue.>
+
+-
+-
+-
+
+## Acceptance criteria
+
+<Describe the conditions that must be satisfied for the issue to be considered complete.>
+
+-
+-
+-
+
+## Relevant implementation
+
+<Describe the relevant files, components, systems, behavior, or technical considerations.>
+
+-
+-
+-
+```
+
+## Creating a pull request
+
+Before writing the pull request description:
+
+* Read every commit that will be included in the pull request.
+* Review the complete diff between the branch and its target branch.
+* Read the full description of the issue the pull request will close.
+* Ensure the pull request description accurately reflects the commits, implementation, and issue requirements.
+
+Use the following format:
+
+```markdown
+Closes #<issue_number>
+
+## What changed
+
+-
+-
+-
+
+## Why
+
+<Explain why the changes were necessary and how they address the linked issue.>
+```
+
+## Naming rules
+
+* Issue titles must be clear and concise.
+* Pull request titles must be clear and concise.
+* Branch names must clearly reflect the issue or change they address.
+* Avoid vague names that do not communicate the purpose of the work.
