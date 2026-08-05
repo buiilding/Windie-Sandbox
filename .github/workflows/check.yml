@@ -38,6 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Checkout Inspector submodule
+        working-directory: .
         run: git submodule update --init --depth 1 vendor/windie-inspector
       - uses: actions/setup-node@v4
         with:
