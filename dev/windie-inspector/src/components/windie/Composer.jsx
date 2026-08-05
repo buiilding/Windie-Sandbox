@@ -162,6 +162,17 @@ export default function Composer({ onFirstMessage }) {
     continueConversation();
   };
 
+  // The composer has one primary action: continue when it is empty, query
+  // when it contains input, and stop when a run is streaming without new input.
+  const actionIsStop = streaming && !hasSendContent;
+  const actionIsQuery = hasSendContent;
+  const actionHandler = actionIsStop
+    ? stopStreaming
+    : actionIsQuery
+      ? submit
+      : continueQuery;
+  const actionLabel = actionIsStop ? "stop" : actionIsQuery ? "query" : "continue";
+
   return (
     <div className="border-t border-border bg-background" data-testid="composer">
       <div className="px-6 py-3 flex items-start gap-3">
@@ -382,42 +393,27 @@ export default function Composer({ onFirstMessage }) {
 
         <div className="flex items-center gap-2">
           <button
-            data-testid="composer-continue"
-            onClick={continueQuery}
-            disabled={!activeConv}
+            data-testid="composer-action"
+            onClick={actionHandler}
+            disabled={!activeConv || (!streaming && !hasSendContent)}
             className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
-              !activeConv
+              !activeConv || (!streaming && !hasSendContent)
                 ? "border-border text-muted-foreground cursor-not-allowed"
-                : "border-border text-foreground hover:bg-surface-hover"
+                : actionIsStop
+                  ? "border-[hsl(var(--accent))] text-[hsl(var(--accent))] hover:bg-surface-hover"
+                  : actionIsQuery
+                    ? "border-foreground bg-foreground text-background hover:opacity-90"
+                    : "border-border text-foreground hover:bg-surface-hover"
             }`}
           >
-            <Play className="size-3.5" strokeWidth={1.75} />
-            continue
-          </button>
-
-          <button
-            data-testid="composer-send"
-          onClick={streaming && !hasSendContent ? () => stopStreaming() : submit}
-            disabled={!streaming && !hasSendContent}
-            className={`h-10 px-4 flex items-center gap-2 border font-mono text-xs uppercase tracking-widest transition-colors ${
-              streaming && !hasSendContent
-                ? "border-[hsl(var(--accent))] text-[hsl(var(--accent))] hover:bg-surface-hover"
-                : hasSendContent
-                  ? "border-foreground bg-foreground text-background hover:opacity-90"
-                  : "border-border text-muted-foreground cursor-not-allowed"
-            }`}
-          >
-            {streaming && !hasSendContent ? (
-              <>
-                <Square className="size-3 fill-current" />
-                stop
-              </>
+            {actionIsStop ? (
+              <Square className="size-3 fill-current" />
+            ) : actionIsQuery ? (
+              <Send className="size-3.5" strokeWidth={1.75} />
             ) : (
-              <>
-                <Send className="size-3.5" strokeWidth={1.75} />
-                query
-              </>
+              <Play className="size-3.5" strokeWidth={1.75} />
             )}
+            {actionLabel}
           </button>
         </div>
       </div>
