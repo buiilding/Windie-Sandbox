@@ -8,6 +8,7 @@ mod approved;
 mod basic_memory;
 mod blender;
 mod brightdata;
+mod chrome_devtools;
 mod cua;
 mod desktop_commander;
 mod executor;

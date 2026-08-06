@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::mcp::McpArgument;
 use crate::tool::{ToolProviderId, ToolProviderKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +42,7 @@ impl ProviderManifest {
         display_name: impl Into<String>,
         description: impl Into<String>,
         program: impl Into<String>,
-        args: &[&str],
+        args: &[McpArgument],
         platforms: Vec<ProviderPlatform>,
         dependencies: Vec<ProviderDependency>,
         secrets: Vec<ProviderSecret>,
@@ -56,7 +57,11 @@ impl ProviderManifest {
             transport: ProviderTransport::Stdio,
             launch: ProviderLaunch {
                 program: program.into(),
-                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                args: args
+                    .iter()
+                    .copied()
+                    .map(McpArgument::manifest_value)
+                    .collect(),
             },
             platforms,
             dependencies,

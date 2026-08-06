@@ -40,6 +40,10 @@ fn approved_basic_memory_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("basic-memory").unwrap())
 }
 
+fn approved_chrome_devtools_provider() -> McpToolProvider {
+    McpToolProvider::new(approved_mcp_provider("chrome-devtools").unwrap())
+}
+
 #[test]
 fn approved_provider_manifests_describe_their_runtime_requirements() {
     let providers = [
@@ -48,6 +52,7 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
         approved_blender_mcp_provider(),
         approved_brightdata_provider(),
         approved_basic_memory_provider(),
+        approved_chrome_devtools_provider(),
     ];
 
     let ids = providers
@@ -61,7 +66,8 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
             "desktop-commander",
             "blender-mcp",
             "brightdata",
-            "basic-memory"
+            "basic-memory",
+            "chrome-devtools"
         ]
     );
 
@@ -169,6 +175,56 @@ fn brightdata_manifest_declares_required_secret() {
             "BRIGHTDATA_API_TOKEN",
             "Bright Data API token",
         )]
+    );
+}
+
+#[test]
+fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
+    let provider = approved_chrome_devtools_provider();
+    let manifest = provider.manifest();
+
+    assert_eq!(
+        manifest.runtime,
+        crate::tool_provider::ProviderRuntime::Node
+    );
+    assert_eq!(
+        manifest
+            .package
+            .as_ref()
+            .map(|package| package.name.as_str()),
+        Some("chrome-devtools-mcp@1.6.0")
+    );
+    assert_eq!(manifest.launch.program, "npx");
+    assert_eq!(
+        manifest.launch.args,
+        vec![
+            "-y",
+            "chrome-devtools-mcp@1.6.0",
+            "--user-data-dir",
+            "<windie-data-dir>/mcp/chrome-devtools/profile",
+            "--no-usage-statistics",
+        ]
+    );
+    assert!(
+        manifest
+            .permissions
+            .contains(&crate::tool_provider::ProviderPermission::ComputerControl)
+    );
+    assert!(
+        manifest
+            .permissions
+            .contains(&crate::tool_provider::ProviderPermission::Network)
+    );
+    assert!(provider.command.env.iter().any(|variable| {
+        variable.key == "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS"
+            && variable.value == mcp_protocol::McpEnvValue::Literal("true")
+    }));
+    assert!(
+        !provider
+            .command
+            .args
+            .iter()
+            .any(|argument| matches!(argument, mcp_protocol::McpArgument::Literal("--slim")))
     );
 }
 
@@ -493,6 +549,7 @@ fn registry_finds_tools_from_cached_provider_catalog() {
             },
             package_command: None,
             shutdown_command: None,
+            readiness_probe: None,
             setup: None,
         })],
         mcp_session_pool: None,
@@ -539,6 +596,7 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
                 },
                 package_command: None,
                 shutdown_command: None,
+                readiness_probe: None,
                 setup: None,
             }),
             McpToolProvider::new(McpProviderDefinition {
@@ -563,6 +621,7 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
                 },
                 package_command: None,
                 shutdown_command: None,
+                readiness_probe: None,
                 setup: None,
             }),
         ],

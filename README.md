@@ -119,7 +119,7 @@ Two built-in tools drive this:
 
 When a task needs a capability Windie doesn't currently have attached, it looks, finds it, and attaches it — live, in front of you.
 
-### MCPs (5)
+### MCPs (6)
 
 | Provider | Author | Description |
 |---|---|---|
@@ -128,6 +128,7 @@ When a task needs a capability Windie doesn't currently have attached, it looks,
 | **Desktop Commander** | wonderwhy-er | Filesystem, shell, and process control |
 | **Basic Memory** | basicmachines-co | Portable, plain-text, persistent knowledge |
 | **Brightdata** | brightdata | Fetch the live web, at scale |
+| **Chrome DevTools** | Chrome DevTools team | Inspect, debug, and automate a separate persistent Chrome session |
 
 #### Cua Preview
 

@@ -5,6 +5,7 @@
 //! call lives in `execution.rs`.
 
 use anyhow::Result;
+use serde_json::json;
 
 use super::{basic_memory, desktop_commander};
 use crate::mcp::{self, McpCommand, McpTool};
@@ -28,7 +29,15 @@ pub(in crate::tool_provider) struct McpProviderDefinition {
     pub(in crate::tool_provider) command: McpCommand,
     pub(in crate::tool_provider) package_command: Option<McpCommand>,
     pub(in crate::tool_provider) shutdown_command: Option<McpCommand>,
+    pub(in crate::tool_provider) readiness_probe: Option<McpProviderReadinessProbe>,
     pub(in crate::tool_provider) setup: Option<McpProviderSetup>,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// A safe provider-native operation used only by an explicit health check.
+pub(in crate::tool_provider) enum McpProviderReadinessProbe {
+    /// Calls a read-only MCP tool with an empty argument object.
+    Tool(&'static str),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +57,7 @@ pub(in crate::tool_provider) struct McpToolProvider {
     pub(in crate::tool_provider) command: McpCommand,
     pub(in crate::tool_provider) package_command: Option<McpCommand>,
     pub(in crate::tool_provider) shutdown_command: Option<McpCommand>,
+    readiness_probe: Option<McpProviderReadinessProbe>,
     setup: Option<McpProviderSetup>,
 }
 
@@ -62,6 +72,7 @@ impl McpToolProvider {
             command: definition.command,
             package_command: definition.package_command,
             shutdown_command: definition.shutdown_command,
+            readiness_probe: definition.readiness_probe,
             setup: definition.setup,
         }
     }
@@ -94,6 +105,33 @@ impl McpToolProvider {
         };
 
         mcp::run_preparation_command(command)
+    }
+
+    /// Runs the provider's optional non-mutating browser/service readiness
+    /// probe. Catalog discovery intentionally remains separate because some
+    /// MCP servers expose tools before starting their external application.
+    pub(in crate::tool_provider) fn check_readiness(&self) -> Result<()> {
+        let Some(McpProviderReadinessProbe::Tool(tool_name)) = self.readiness_probe else {
+            return Ok(());
+        };
+
+        let result = mcp::call_tool_with_shutdown(
+            self.command,
+            self.shutdown_command,
+            tool_name,
+            json!({}),
+        )?;
+        if result
+            .get("isError")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Err(anyhow::anyhow!(
+                "MCP readiness probe reported an error: {tool_name}"
+            ));
+        }
+
+        Ok(())
     }
 
     /// Converts one MCP tool into Windie's provider-backed tool definition.
