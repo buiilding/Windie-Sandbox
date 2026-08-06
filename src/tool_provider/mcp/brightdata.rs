@@ -49,6 +49,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Node)
+        .with_author("Bright Data")
         .with_package(ProviderPackageManager::Npm, "@brightdata/mcp")
         .with_metadata(
             ProviderScope::Cloud,

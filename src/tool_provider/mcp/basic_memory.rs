@@ -69,6 +69,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Uv)
+        .with_author("Basic Machines")
         .with_package(ProviderPackageManager::Uv, "basic-memory")
         .with_metadata(
             ProviderScope::Local,

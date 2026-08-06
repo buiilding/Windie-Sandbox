@@ -33,6 +33,7 @@ pub(super) fn definition() -> McpProviderDefinition {
                 ProviderPermission::ComputerControl,
             ],
         )
+        .with_author("TryCua")
         .with_metadata(
             ProviderScope::Local,
             ProviderAuthentication::None,

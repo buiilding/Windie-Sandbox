@@ -50,6 +50,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Node)
+        .with_author("wonderwhy-er")
         .with_package(
             ProviderPackageManager::Npm,
             "@wonderwhy-er/desktop-commander",

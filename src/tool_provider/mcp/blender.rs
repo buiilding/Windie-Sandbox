@@ -54,6 +54,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Uv)
+        .with_author("ahujasid")
         .with_package(ProviderPackageManager::Uv, "blender-mcp")
         .with_metadata(
             ProviderScope::Local,
