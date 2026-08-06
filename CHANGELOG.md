@@ -6,6 +6,25 @@ This changelog is intentionally curated from the repository history. It records
 meaningful product, runtime, and developer-facing changes rather than every
 individual commit or internal edit.
 
+## [0.2.10] - 2026-08-06
+
+- Added the pinned Chrome DevTools MCP provider with the full non-slim browser
+  toolset and generic provider lifecycle integration.
+- Added runtime-resolved MCP arguments and a persistent Windie-owned Chrome
+  profile at `~/.windie/mcp/chrome-devtools/profile`.
+- Added separate Chrome readiness checks using a non-mutating `list_pages`
+  probe, plus Inspector onboarding and provider documentation.
+- Added a new activity bar for conversations, the conversation tree, extensions,
+  LLMs, and settings.
+- Added a resizable sidebar with searchable conversation and extension lists.
+- Added extension detail pages with tools, capabilities, setup, and management
+  controls.
+- Added provider author information and clearer extension status displays.
+- Combined Continue, Query, and Stop into one simpler composer action.
+- Made local activation scripts work correctly in zsh.
+- Fixed `windie-dev` activation when the development build fails.
+- Fixed release notes loading during the release workflow.
+
 ## [0.2.9] - 2026-08-05
 
 - Added `windie-dev` for local development, release testing, and performance
@@ -144,7 +163,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.10
 [0.2.9]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.9
 [0.2.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.2
 [0.2.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.0
