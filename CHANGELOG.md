@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added built-in Kimi Code provider support through Bifrost, including API-key setup,
+  model discovery, streaming chat, and tool use.
 - Redesigned the Inspector welcome page with a centered hero, clearer
   typography, and a more visible background grid.
 - Added welcome-page buttons for exploring extensions and configuring LLM
