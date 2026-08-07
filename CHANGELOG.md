@@ -8,6 +8,9 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Prevented stale model-catalog refresh requests from overwriting newer
+  results, while preserving the last known-good catalog during transient
+  provider failures.
 - Added a Motion Primitives-style shimmer effect to the live Inspector thinking
   label, with reduced-motion support and muted theme-aware text.
 - Migrated the Inspector animation dependency from Framer Motion to the
