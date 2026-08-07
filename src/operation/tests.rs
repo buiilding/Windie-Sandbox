@@ -43,6 +43,40 @@ fn builds_conversation_prompt_cache_request() {
 }
 
 #[test]
+fn prefers_the_windie_openrouter_default_when_available() {
+    let model = preferred_model(vec![
+        ModelInfo {
+            id: "openrouter/ai21/jamba-large-1.7".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: DEFAULT_MODEL_ID.to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+    ])
+    .unwrap();
+
+    assert_eq!(model.as_str(), DEFAULT_MODEL_ID);
+}
+
+#[test]
+fn falls_back_to_the_first_catalog_model_without_the_preferred_default() {
+    let model = preferred_model(vec![ModelInfo {
+        id: "anthropic/test".to_string(),
+        context_length: None,
+        max_input_tokens: None,
+        max_output_tokens: None,
+    }])
+    .unwrap();
+
+    assert_eq!(model.as_str(), "anthropic/test");
+}
+
+#[test]
 fn openai_reasoning_effort_requests_visible_summary() {
     let reasoning = reasoning_request_for_model(
         &ModelName::new("openai/gpt-5.5"),

@@ -10,6 +10,32 @@ use crate::local;
 use crate::process::{ManagedComponent, ProcessReport, ProcessState};
 
 pub(in crate::operation) const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
+
+/// OpenRouter model Windie uses when it is present in the current catalog.
+///
+/// This is a preference rather than an unconditional model requirement: users
+/// may configure another provider, and OpenRouter may eventually remove or
+/// rename the model. Callers should use [`preferred_model`] so catalog fallback
+/// remains available.
+pub const DEFAULT_MODEL_ID: &str = "openrouter/openai/gpt-5.6-luna";
+
+/// Chooses Windie's preferred model from the models Bifrost currently exposes.
+///
+/// The explicit preference keeps a fresh OpenRouter installation from landing
+/// on whichever model happens to sort first in Bifrost's catalog. If the
+/// preferred model is unavailable, the first catalog model remains a safe
+/// fallback for other providers and future catalog changes.
+pub fn preferred_model(models: Vec<ModelInfo>) -> Option<ModelName> {
+    let preferred_index = models.iter().position(|model| model.id == DEFAULT_MODEL_ID);
+    match preferred_index {
+        Some(index) => Some(ModelName::new(models[index].id.clone())),
+        None => models
+            .into_iter()
+            .next()
+            .map(|model| ModelName::new(model.id)),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Source of a pre-query input-token count.
 pub enum InputTokenCountSource {
