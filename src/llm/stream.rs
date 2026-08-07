@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::conversation::{MessageMetadata, TokenUsage, ToolCall};
 
+use super::error::LlmError;
 use super::responses::{ResponsesStreamEvent, ResponsesStreamItem, ResponsesStreamResponse};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -253,11 +254,14 @@ impl AssistantStreamState {
                 self.push_response_usage(event.response);
                 self.finish_reason = Some(FinishReason::Length);
             }
-            "response.failed" | "error" => {
-                return Err(anyhow!(
-                    "responses stream failed: {}",
-                    event_error_text(&event)
-                ));
+            "response.failed" | "response.error" | "error" => {
+                return Err(LlmError::from_provider_fields(
+                    event_error_type(&event),
+                    event_error_code(&event),
+                    format!("responses stream failed: {}", event_error_text(&event)),
+                    None,
+                )
+                .into());
             }
             _ => {}
         }
@@ -432,6 +436,32 @@ fn event_error_text(event: &ResponsesStreamEvent) -> String {
         .or_else(|| event.error.as_ref().and_then(|error| error.kind.as_deref()))
         .unwrap_or("unknown responses stream error")
         .to_string()
+}
+
+/// Returns the canonical provider error category from either Responses event
+/// shape supported by OpenRouter.
+fn event_error_type(event: &ResponsesStreamEvent) -> Option<&str> {
+    event.error_type.as_deref().or_else(|| {
+        event
+            .response
+            .as_ref()
+            .and_then(|response| response.error_type.as_deref())
+    })
+}
+
+/// Returns the native provider error code from either Responses event shape.
+fn event_error_code(event: &ResponsesStreamEvent) -> Option<&str> {
+    event
+        .error
+        .as_ref()
+        .and_then(|error| error.code.as_deref())
+        .or_else(|| {
+            event
+                .response
+                .as_ref()
+                .and_then(|response| response.error.as_ref())
+                .and_then(|error| error.code.as_deref())
+        })
 }
 
 /// Appends one text delta into an optional accumulated text field.

@@ -147,6 +147,7 @@ pub(super) struct ResponsesStreamEvent {
     pub(super) arguments: Option<String>,
     pub(super) item: Option<ResponsesStreamItem>,
     pub(super) response: Option<ResponsesStreamResponse>,
+    pub(super) error_type: Option<String>,
     pub(super) error: Option<ResponsesStreamError>,
     pub(super) message: Option<String>,
 }
@@ -166,6 +167,7 @@ pub(super) struct ResponsesStreamItem {
 /// Terminal response body used by failed/incomplete Responses events.
 pub(super) struct ResponsesStreamResponse {
     pub(super) error: Option<ResponsesStreamError>,
+    pub(super) error_type: Option<String>,
     pub(super) usage: Option<serde_json::Value>,
 }
 

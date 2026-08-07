@@ -8,6 +8,9 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added bounded runtime retries for transient model-provider failures, while
+  discarding failed partial assistant output and keeping retries invisible in
+  the Inspector.
 - Added the public release workflow guide for maintainers.
 - Let the Inspector manage structured Bifrost model providers, including
   custom and local providers.

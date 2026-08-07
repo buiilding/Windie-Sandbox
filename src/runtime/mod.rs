@@ -3,6 +3,7 @@
 //! This module exposes the runtime boundary while implementation details live
 //! in turn and tool-execution modules.
 
+mod retry;
 mod tool_execution;
 mod turn;
 

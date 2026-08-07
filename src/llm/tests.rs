@@ -693,6 +693,39 @@ fn parses_stream_content_delta() {
 }
 
 #[test]
+fn classifies_nvidia_resource_exhausted_stream_failure_as_retryable() {
+    let mut state = AssistantStreamState::default();
+    let mut handle_delta = |_event: LlmStreamEvent<'_>| -> Result<()> { Ok(()) };
+
+    let error = process_stream_line(
+        r#"data: {"type":"response.failed","error":{"code":"server_error","message":"Upstream error from Nvidia: ResourceExhausted: Worker local total request limit reached (33/32)"}}"#,
+        &mut state,
+        &mut handle_delta,
+    )
+    .unwrap_err();
+    let llm_error = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<LlmError>())
+        .expect("stream failure should preserve its LLM error");
+
+    assert_eq!(llm_error.kind(), LlmErrorKind::ProviderOverloaded);
+    assert!(llm_error.kind().is_retryable());
+}
+
+#[test]
+fn classifies_authentication_failure_as_non_retryable() {
+    let error = LlmError::from_provider_fields(
+        Some("authentication"),
+        Some("server_error"),
+        "invalid credentials",
+        Some(500),
+    );
+
+    assert_eq!(error.kind(), LlmErrorKind::Authentication);
+    assert!(!error.kind().is_retryable());
+}
+
+#[test]
 fn parses_stream_metadata_lanes() {
     let mut state = AssistantStreamState::default();
     let mut reasoning_deltas = Vec::new();

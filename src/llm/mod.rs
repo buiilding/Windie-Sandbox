@@ -7,6 +7,7 @@
 //! types.
 
 mod client;
+mod error;
 mod management;
 mod model;
 mod responses;
@@ -14,6 +15,7 @@ mod serialization;
 mod stream;
 
 pub use client::BifrostClient;
+pub use error::{LlmError, LlmErrorKind};
 pub use management::{
     BifrostManagementClient, CreateProviderKey, ProviderCatalog, ProviderCatalogEntry, ProviderKey,
     ProviderKeyList,
