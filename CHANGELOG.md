@@ -6,6 +6,11 @@ This changelog is intentionally curated from the repository history. It records
 meaningful product, runtime, and developer-facing changes rather than every
 individual commit or internal edit.
 
+## [Unreleased]
+
+- Added native Streamable HTTP MCP transport support with persistent sessions,
+  SSE/JSON responses, 404 recovery, and safe credential handling.
+
 ## [0.3.0] - 2026-08-06
 
 - Added Chrome DevTools MCP as an extension for browser use.

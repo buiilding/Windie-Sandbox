@@ -17,6 +17,7 @@ use crate::error;
 use crate::local;
 use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
+use crate::mcp::McpTransport;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolDefinition, ToolExecutionResult, ToolProviderId,
     ToolProviderKind, ToolSchemaName,
@@ -344,9 +345,8 @@ impl ToolProviderRegistry {
                 provider_id,
                 schema_prefix,
                 display_name,
-                command,
+                transport: McpTransport::stdio(command),
                 package_command: None,
-                shutdown_command: None,
                 readiness_probe: None,
                 setup: None,
             })],

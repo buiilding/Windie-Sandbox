@@ -7,7 +7,7 @@
 
 use super::McpProviderDefinition;
 use super::provider::McpProviderReadinessProbe;
-use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue};
+use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
@@ -71,7 +71,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         provider_id: "chrome-devtools",
         schema_prefix: "chrome_devtools",
         display_name: "Chrome DevTools",
-        command,
+        transport: McpTransport::stdio(command),
         package_command: Some(McpCommand {
             program: "npx",
             args: &[
@@ -84,7 +84,6 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
             env: CHROME_DEVTOOLS_ENV,
         }),
-        shutdown_command: None,
         readiness_probe: Some(McpProviderReadinessProbe::Tool("list_pages")),
         setup: None,
     }

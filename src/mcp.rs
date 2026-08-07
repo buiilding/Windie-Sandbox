@@ -25,6 +25,9 @@ use serde_json::{Value, json};
 
 use crate::local;
 
+#[path = "mcp_http.rs"]
+mod mcp_http;
+
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_PACKAGE_PREPARATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -96,6 +99,62 @@ pub struct McpCommand {
     pub program: &'static str,
     pub args: &'static [McpArgument],
     pub env: &'static [McpEnv],
+}
+
+/// Transport used to connect Windie to one approved MCP provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpTransport {
+    /// Launch a local MCP process and communicate over stdin/stdout.
+    Stdio {
+        command: McpCommand,
+        shutdown_command: Option<McpCommand>,
+    },
+    /// Connect to a hosted MCP endpoint over Streamable HTTP.
+    StreamableHttp { endpoint: McpHttpEndpoint },
+}
+
+impl McpTransport {
+    /// Creates a local stdio transport without a provider shutdown command.
+    pub const fn stdio(command: McpCommand) -> Self {
+        Self::Stdio {
+            command,
+            shutdown_command: None,
+        }
+    }
+
+    /// Creates a local stdio transport with a best-effort shutdown command.
+    pub const fn stdio_with_shutdown(command: McpCommand, shutdown_command: McpCommand) -> Self {
+        Self::Stdio {
+            command,
+            shutdown_command: Some(shutdown_command),
+        }
+    }
+
+    /// Creates a hosted Streamable HTTP transport.
+    pub const fn streamable_http(endpoint: McpHttpEndpoint) -> Self {
+        Self::StreamableHttp { endpoint }
+    }
+}
+
+/// Hosted MCP endpoint metadata used by the Streamable HTTP transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpHttpEndpoint {
+    /// HTTPS endpoint that accepts MCP POST requests.
+    pub url: &'static str,
+    /// Authentication policy for requests to this endpoint.
+    pub authorization: McpHttpAuthorization,
+}
+
+/// Authentication policy for one hosted MCP endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpHttpAuthorization {
+    /// Do not send an Authorization header.
+    Anonymous,
+    /// Require and send a Bearer header from the named Windie environment
+    /// value.
+    BearerEnv(&'static str),
+    /// Send a Bearer header when the named Windie environment value exists.
+    OptionalBearerEnv(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +271,20 @@ pub fn list_tools(command: McpCommand) -> Result<Vec<McpTool>> {
     Ok(list.tools)
 }
 
+/// Lists tools from either a local stdio or hosted Streamable HTTP provider.
+pub fn list_tools_with_transport(transport: McpTransport) -> Result<Vec<McpTool>> {
+    let result = {
+        let mut session = McpTransportSession::start(transport)?;
+        let result = session.call("tools/list", None)?;
+        serde_json::from_value::<McpToolsList>(result)
+            .context("failed to decode MCP tools/list response")
+            .map(|list| list.tools)
+    };
+
+    run_shutdown_best_effort(transport_shutdown_command(transport));
+    result
+}
+
 /// Runs one provider package preparation command before MCP startup.
 ///
 /// Package runners such as `npx` and `uvx` may download a provider package on
@@ -320,6 +393,28 @@ pub fn call_tool(command: McpCommand, name: &str, arguments: Value) -> Result<Va
     )
 }
 
+/// Calls one tool through either a local stdio or hosted Streamable HTTP
+/// provider.
+pub fn call_tool_with_transport(
+    transport: McpTransport,
+    name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    let result = {
+        let mut session = McpTransportSession::start(transport)?;
+        session.call(
+            "tools/call",
+            Some(json!({
+                "name": name,
+                "arguments": arguments
+            })),
+        )
+    };
+
+    run_shutdown_best_effort(transport_shutdown_command(transport));
+    result
+}
+
 /// Calls one MCP provider tool and runs a provider-specific cleanup hook when
 /// the short-lived MCP process exits.
 pub fn call_tool_with_shutdown(
@@ -387,6 +482,23 @@ impl McpSessionPool {
             .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?;
 
         sessions.call_tool(provider_id, command, shutdown_command, name, arguments)
+    }
+
+    /// Calls one tool through a persistent session for any supported MCP
+    /// transport.
+    pub fn call_tool_with_transport(
+        &self,
+        provider_id: &str,
+        transport: McpTransport,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?;
+
+        sessions.call_tool_with_transport(provider_id, transport, name, arguments)
     }
 }
 
@@ -456,6 +568,46 @@ impl PersistentMcpSessions {
         }
     }
 
+    /// Calls one tool through a persistent session for any supported MCP
+    /// transport.
+    fn call_tool_with_transport(
+        &mut self,
+        provider_id: &str,
+        transport: McpTransport,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        self.ensure_transport_session(provider_id, transport)?;
+
+        let result = {
+            let session = self
+                .sessions
+                .get_mut(provider_id)
+                .ok_or_else(|| anyhow!("persistent MCP session was not started: {provider_id}"))?;
+            session.last_used_at = Instant::now();
+            session.session.call(
+                "tools/call",
+                Some(json!({
+                    "name": name,
+                    "arguments": arguments
+                })),
+            )
+        };
+
+        match result {
+            Ok(result) => {
+                if let Some(session) = self.sessions.get_mut(provider_id) {
+                    session.last_used_at = Instant::now();
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                self.stop_session(provider_id);
+                Err(error)
+            }
+        }
+    }
+
     /// Ensures a matching persistent MCP session exists for one provider.
     fn ensure_session(
         &mut self,
@@ -477,8 +629,44 @@ impl PersistentMcpSessions {
         self.sessions.insert(
             provider_id.to_string(),
             PersistentMcpSession {
+                transport: McpTransport::Stdio {
+                    command,
+                    shutdown_command,
+                },
                 command,
                 shutdown_command,
+                session: McpTransportSession::Stdio(session),
+                last_used_at: Instant::now(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Ensures a matching persistent session exists for any MCP transport.
+    fn ensure_transport_session(
+        &mut self,
+        provider_id: &str,
+        transport: McpTransport,
+    ) -> Result<()> {
+        let transport_changed = self
+            .sessions
+            .get(provider_id)
+            .is_some_and(|session| session.transport != transport);
+        if transport_changed {
+            self.stop_session(provider_id);
+        }
+        if self.sessions.contains_key(provider_id) {
+            return Ok(());
+        }
+
+        let session = McpTransportSession::start(transport)?;
+        self.sessions.insert(
+            provider_id.to_string(),
+            PersistentMcpSession {
+                transport,
+                command: transport_command(transport),
+                shutdown_command: transport_shutdown_command(transport),
                 session,
                 last_used_at: Instant::now(),
             },
@@ -521,10 +709,61 @@ impl PersistentMcpSessions {
 
 /// Runtime state for one persistent MCP provider.
 struct PersistentMcpSession {
+    transport: McpTransport,
     command: McpCommand,
     shutdown_command: Option<McpCommand>,
-    session: McpSession,
+    session: McpTransportSession,
     last_used_at: Instant,
+}
+
+/// One active MCP session over a supported transport.
+enum McpTransportSession {
+    /// Local process-backed MCP session.
+    Stdio(McpSession),
+    /// Hosted HTTP-backed MCP session.
+    StreamableHttp(mcp_http::StreamableHttpSession),
+}
+
+impl McpTransportSession {
+    /// Starts and initializes one transport-specific MCP session.
+    fn start(transport: McpTransport) -> Result<Self> {
+        match transport {
+            McpTransport::Stdio { command, .. } => Ok(Self::Stdio(McpSession::start(command)?)),
+            McpTransport::StreamableHttp { endpoint } => Ok(Self::StreamableHttp(
+                mcp_http::StreamableHttpSession::start(endpoint)?,
+            )),
+        }
+    }
+
+    /// Sends one MCP request and returns its result.
+    fn call(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
+        match self {
+            Self::Stdio(session) => session.call(method, params),
+            Self::StreamableHttp(session) => session.call(method, params),
+        }
+    }
+}
+
+/// Returns the process command for a transport when it has one.
+fn transport_command(transport: McpTransport) -> McpCommand {
+    match transport {
+        McpTransport::Stdio { command, .. } => command,
+        McpTransport::StreamableHttp { .. } => McpCommand {
+            program: "<streamable-http>",
+            args: &[],
+            env: &[],
+        },
+    }
+}
+
+/// Returns the provider cleanup command for a transport when it has one.
+fn transport_shutdown_command(transport: McpTransport) -> Option<McpCommand> {
+    match transport {
+        McpTransport::Stdio {
+            shutdown_command, ..
+        } => shutdown_command,
+        McpTransport::StreamableHttp { .. } => None,
+    }
 }
 
 /// One short-lived stdio MCP session.

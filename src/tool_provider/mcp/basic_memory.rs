@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use super::McpProviderDefinition;
 use super::provider::McpProviderSetup;
 use crate::local;
-use crate::mcp::{McpArgument, McpCommand};
+use crate::mcp::{McpArgument, McpCommand, McpTransport};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
@@ -88,7 +88,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         provider_id: "basic-memory",
         schema_prefix: "basic_memory",
         display_name: "Basic Memory",
-        command,
+        transport: McpTransport::stdio(command),
         package_command: Some(McpCommand {
             program: "uvx",
             args: &[
@@ -100,7 +100,6 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
             env: BASIC_MEMORY_PACKAGE_ENV,
         }),
-        shutdown_command: None,
         readiness_probe: None,
         setup: Some(McpProviderSetup::BasicMemoryProject),
     }

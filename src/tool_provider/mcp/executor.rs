@@ -11,7 +11,7 @@ use super::provider::McpToolProvider;
 use super::result::{mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview};
 use crate::conversation::ToolCall;
 use crate::error;
-use crate::mcp::{self, McpSessionPool};
+use crate::mcp::McpSessionPool;
 use crate::tool::{AttachedTool, ToolExecutionResult};
 
 impl McpToolProvider {
@@ -42,17 +42,15 @@ impl McpToolProvider {
         };
         self.prepare()?;
         let result = match if let Some(session_pool) = session_pool {
-            session_pool.call_tool(
+            session_pool.call_tool_with_transport(
                 self.provider_id.as_str(),
-                self.command,
-                self.shutdown_command,
+                self.transport,
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
             )
         } else {
-            mcp::call_tool_with_shutdown(
-                self.command,
-                self.shutdown_command,
+            crate::mcp::call_tool_with_transport(
+                self.transport,
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
             )

@@ -1,7 +1,7 @@
 //! Bright Data MCP provider definition.
 
 use super::McpProviderDefinition;
-use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue};
+use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
@@ -68,7 +68,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         provider_id: "brightdata",
         schema_prefix: "brightdata",
         display_name: "Bright Data",
-        command,
+        transport: McpTransport::stdio(command),
         package_command: Some(McpCommand {
             program: "npx",
             args: &[
@@ -81,7 +81,6 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
             env: BRIGHTDATA_ENV,
         }),
-        shutdown_command: None,
         readiness_probe: None,
         setup: None,
     }
