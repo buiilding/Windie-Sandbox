@@ -8,6 +8,10 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Let the Inspector manage structured Bifrost model providers, including
+  custom and local providers.
+- Documented the public release workflow, including versioning, checks,
+  submodule pins, pull requests, tags, and release verification.
 - Added native Streamable HTTP MCP transport support with persistent sessions,
   SSE/JSON responses, 404 recovery, and safe credential handling.
 - Added the curated Parallel Search MCP provider with optional Bearer
