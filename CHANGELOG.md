@@ -8,6 +8,7 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added the public release workflow guide for maintainers.
 - Let the Inspector manage structured Bifrost model providers, including
   custom and local providers.
 - Documented the public release workflow, including versioning, checks,
