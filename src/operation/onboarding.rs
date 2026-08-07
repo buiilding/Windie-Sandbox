@@ -150,6 +150,7 @@ async fn run_onboarding_steps<P: OnboardingPrompter>(
             .manifest
             .secrets
             .iter()
+            .filter(|secret| secret.required)
             .map(|secret| {
                 prompter
                     .read_mcp_secret(&provider.manifest, &secret.env_key)

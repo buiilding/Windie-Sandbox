@@ -10,6 +10,8 @@ individual commit or internal edit.
 
 - Added native Streamable HTTP MCP transport support with persistent sessions,
   SSE/JSON responses, 404 recovery, and safe credential handling.
+- Added the curated Parallel Search MCP provider with optional Bearer
+  authentication.
 
 ## [0.3.0] - 2026-08-06
 

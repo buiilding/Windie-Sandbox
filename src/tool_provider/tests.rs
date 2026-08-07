@@ -44,6 +44,10 @@ fn approved_chrome_devtools_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("chrome-devtools").unwrap())
 }
 
+fn approved_parallel_provider() -> McpToolProvider {
+    McpToolProvider::new(approved_mcp_provider("parallel-search").unwrap())
+}
+
 #[test]
 fn approved_provider_manifests_describe_their_runtime_requirements() {
     let providers = [
@@ -53,6 +57,7 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
         approved_brightdata_provider(),
         approved_basic_memory_provider(),
         approved_chrome_devtools_provider(),
+        approved_parallel_provider(),
     ];
 
     let ids = providers
@@ -67,14 +72,19 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
             "blender-mcp",
             "brightdata",
             "basic-memory",
-            "chrome-devtools"
+            "chrome-devtools",
+            "parallel-search"
         ]
     );
 
     for provider in providers {
         let manifest = provider.manifest();
         assert_eq!(manifest.kind, ToolProviderKind::Mcp);
-        assert_eq!(manifest.transport, ProviderTransport::Stdio);
+        if manifest.provider_id.as_str() == "parallel-search" {
+            assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
+        } else {
+            assert_eq!(manifest.transport, ProviderTransport::Stdio);
+        }
         assert!(!manifest.description.is_empty());
         match &manifest.launch {
             crate::tool_provider::manifest::ProviderLaunch::Stdio { program, .. } => {
@@ -236,6 +246,44 @@ fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
             .iter()
             .any(|argument| matches!(argument, mcp_protocol::McpArgument::Literal("--slim")))
     );
+}
+
+#[test]
+fn parallel_manifest_uses_optional_network_authentication() {
+    let provider = approved_parallel_provider();
+    let manifest = provider.manifest();
+
+    assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
+    assert_eq!(
+        manifest.authentication,
+        crate::tool_provider::ProviderAuthentication::OptionalApiKey
+    );
+    assert_eq!(
+        manifest.secrets,
+        vec![ProviderSecret::optional(
+            "PARALLEL_API_KEY",
+            "Parallel API key for higher rate limits",
+        )]
+    );
+    assert!(
+        manifest
+            .permissions
+            .contains(&crate::tool_provider::ProviderPermission::Network)
+    );
+    assert!(
+        matches!(provider.transport, McpTransport::StreamableHttp { endpoint } if endpoint.url == "https://search.parallel.ai/mcp")
+    );
+    let tool = provider.definition_from_mcp_tool(McpTool {
+        name: "web_search".to_string(),
+        description: "Search the web".to_string(),
+        input_schema: serde_json::json!({"type": "object"}),
+        annotations: Some(mcp_protocol::McpToolAnnotations {
+            read_only_hint: Some(true),
+        }),
+    });
+    assert_eq!(tool.schema_name.as_str(), "parallel_search__web_search");
+    assert_eq!(tool.permissions, vec![ToolPermission::Network]);
+    assert_eq!(tool.annotations.read_only, Some(true));
 }
 
 fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {

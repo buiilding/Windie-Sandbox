@@ -12,6 +12,7 @@ mod chrome_devtools;
 mod cua;
 mod desktop_commander;
 mod executor;
+mod parallel;
 mod provider;
 mod result;
 

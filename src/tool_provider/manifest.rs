@@ -207,6 +207,7 @@ pub enum ProviderScope {
 pub enum ProviderAuthentication {
     None,
     ApiKey,
+    OptionalApiKey,
     Environment,
     OAuth,
 }
@@ -298,6 +299,15 @@ impl ProviderSecret {
             env_key: env_key.into(),
             description: description.into(),
             required: true,
+        }
+    }
+
+    /// Creates an optional provider secret declaration.
+    pub fn optional(env_key: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            env_key: env_key.into(),
+            description: description.into(),
+            required: false,
         }
     }
 
