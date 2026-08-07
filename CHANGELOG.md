@@ -10,6 +10,8 @@ individual commit or internal edit.
 
 - Redesigned the Inspector welcome page with a centered hero, clearer
   typography, and a more visible background grid.
+- Added welcome-page buttons for exploring extensions and configuring LLM
+  providers.
 - Added bounded runtime retries for transient model-provider failures, while
   discarding failed partial assistant output and keeping retries invisible in
   the Inspector.
