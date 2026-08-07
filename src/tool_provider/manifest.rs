@@ -310,7 +310,6 @@ impl ProviderSecret {
             required: false,
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

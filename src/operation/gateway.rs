@@ -37,7 +37,12 @@ pub fn preferred_model(models: Vec<ModelInfo>) -> Option<ModelName> {
                 .find(|model| model.id == *preferred_id)
                 .map(|model| ModelName::new(model.id.clone()))
         })
-        .or_else(|| models.into_iter().next().map(|model| ModelName::new(model.id)))
+        .or_else(|| {
+            models
+                .into_iter()
+                .next()
+                .map(|model| ModelName::new(model.id))
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

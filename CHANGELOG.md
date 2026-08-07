@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-07
+
 - Prevented stale model-catalog refresh requests from overwriting newer
   results, while preserving the last known-good catalog during transient
   provider failures.
@@ -191,7 +193,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1
 [0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0
 [0.2.10]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.10
 [0.2.9]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.9
