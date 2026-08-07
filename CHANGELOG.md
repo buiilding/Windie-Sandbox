@@ -23,6 +23,8 @@ individual commit or internal edit.
   models when they are available, with catalog fallback for other providers.
 - Added built-in Kimi Code provider support through Bifrost, including API-key setup,
   model discovery, streaming chat, and tool use.
+- Pinned the reviewed Kimi Code gateway integration to its merged Bifrost
+  stable-branch commit.
 - Redesigned the Inspector welcome page with a centered hero, clearer
   typography, and a more visible background grid.
 - Added welcome-page buttons for exploring extensions and configuring LLM
