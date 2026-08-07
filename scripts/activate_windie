@@ -2,12 +2,23 @@
 # Source this file to put the isolated local release ahead of any installed
 # Windie binary in the current shell.
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
   echo "source this file: source ./scripts/activate_windie" >&2
   exit 1
 fi
 
-windie_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# `$0` names the caller when this file is sourced. Resolve the sourced file
+# explicitly so the script works from both Bash and zsh.
+if [[ -n "${BASH_SOURCE:-}" ]]; then
+  windie_script_path="${BASH_SOURCE[0]}"
+elif [[ -n "${ZSH_VERSION:-}" ]]; then
+  windie_script_path="${funcsourcetrace[1]%:*}"
+else
+  echo "unsupported shell; source this file from bash or zsh" >&2
+  return 1
+fi
+
+windie_root="$(cd "$(dirname "$windie_script_path")/.." && pwd)"
 if [[ -n "${WINDIE_INSTALL_DIR:-}" ]]; then
   windie_install_dir="$WINDIE_INSTALL_DIR"
 else

@@ -177,6 +177,15 @@ impl ToolProviderRegistry {
         provider.prepare_package()
     }
 
+    /// Runs a provider-declared, non-mutating readiness probe after catalog
+    /// discovery. Providers without a probe remain catalog-only health checks.
+    pub fn check_provider_readiness(&self, provider_id: &ToolProviderId) -> Result<()> {
+        let provider = self
+            .mcp_provider(provider_id)
+            .ok_or_else(|| error::not_found(format!("provider does not exist: {provider_id}")))?;
+        provider.check_readiness()
+    }
+
     /// Returns whether provider setup has a package-prefetch phase.
     pub fn provider_requires_package_preparation(
         &self,
@@ -338,6 +347,7 @@ impl ToolProviderRegistry {
                 command,
                 package_command: None,
                 shutdown_command: None,
+                readiness_probe: None,
                 setup: None,
             })],
             mcp_session_pool: None,

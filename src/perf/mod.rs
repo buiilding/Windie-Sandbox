@@ -83,7 +83,10 @@ done"#;
 
 const FAKE_MCP_COMMAND: McpCommand = McpCommand {
     program: "/bin/sh",
-    args: &["-c", FAKE_MCP_SCRIPT],
+    args: &[
+        mcp::McpArgument::Literal("-c"),
+        mcp::McpArgument::Literal(FAKE_MCP_SCRIPT),
+    ],
     env: &[],
 };
 

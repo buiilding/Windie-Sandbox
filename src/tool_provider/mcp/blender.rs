@@ -1,7 +1,7 @@
 //! Blender MCP provider definition.
 
 use super::McpProviderDefinition;
-use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
+use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
@@ -31,7 +31,11 @@ const BLENDER_ENV: &[McpEnv] = &[
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "uvx",
-        args: &["--with", "mcp<2", "blender-mcp"],
+        args: &[
+            McpArgument::Literal("--with"),
+            McpArgument::Literal("mcp<2"),
+            McpArgument::Literal("blender-mcp"),
+        ],
         env: BLENDER_ENV,
     };
 
@@ -54,6 +58,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Uv)
+        .with_author("ahujasid")
         .with_package(ProviderPackageManager::Uv, "blender-mcp")
         .with_metadata(
             ProviderScope::Local,
@@ -73,17 +78,18 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: Some(McpCommand {
             program: "uvx",
             args: &[
-                "--with",
-                "mcp<2",
-                "--from",
-                "blender-mcp",
-                "python",
-                "-c",
-                "pass",
+                McpArgument::Literal("--with"),
+                McpArgument::Literal("mcp<2"),
+                McpArgument::Literal("--from"),
+                McpArgument::Literal("blender-mcp"),
+                McpArgument::Literal("python"),
+                McpArgument::Literal("-c"),
+                McpArgument::Literal("pass"),
             ],
             env: BLENDER_ENV,
         }),
         shutdown_command: None,
+        readiness_probe: None,
         setup: None,
     }
 }

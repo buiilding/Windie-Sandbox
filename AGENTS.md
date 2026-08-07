@@ -89,6 +89,7 @@ Schema compatibility is not a current goal. `store/` should create the current s
 * All changes and commits must first be made on `main` or `windie-2`.
 * Before pushing any work, create a new branch from the local committed state.
 * Give the new branch a clear and relevant name, then push that branch.
+* Every commit must add or update a meaningful entry in `CHANGELOG.md` describing the user-facing, runtime, documentation, or developer-facing changes included in that commit.
 
 ## Issue and pull request rules
 

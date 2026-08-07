@@ -195,7 +195,10 @@ pub fn health_check_provider(
         ProviderInstallState::Installed
     };
 
-    match registry.list_provider_tools(provider_id) {
+    match registry
+        .list_provider_tools(provider_id)
+        .and_then(|_| registry.check_provider_readiness(provider_id))
+    {
         Ok(_) => {
             store.record_provider_health(provider_id, state_after_check, None)?;
         }

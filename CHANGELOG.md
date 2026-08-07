@@ -6,6 +6,19 @@ This changelog is intentionally curated from the repository history. It records
 meaningful product, runtime, and developer-facing changes rather than every
 individual commit or internal edit.
 
+## [0.3.0] - 2026-08-06
+
+- Added Chrome DevTools MCP as an extension for browser use.
+- Added a clearer extension setup flow.
+- Added an activity bar for conversations, the conversation tree, extensions,
+  model providers, and settings.
+- Added sidebars with conversation and extension lists.
+- Added extension READMEs and available tools.
+- Fixed the previous Continue and Query button combination in the composer.
+- Improved local activation scripts for zsh developers.
+- Fixed development activation when the build fails.
+- Fixed release workflows so release notes load correctly.
+
 ## [0.2.9] - 2026-08-05
 
 - Added `windie-dev` for local development, release testing, and performance
@@ -144,7 +157,9 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0
+[0.2.10]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.10
 [0.2.9]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.9
 [0.2.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.2
 [0.2.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.0

@@ -1,7 +1,7 @@
 //! CUA Driver MCP provider definition.
 
 use super::McpProviderDefinition;
-use crate::mcp::McpCommand;
+use crate::mcp::{McpArgument, McpCommand};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
     ProviderPlatform, ProviderScope,
@@ -11,7 +11,7 @@ use crate::tool_provider::{
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "cua-driver",
-        args: &["mcp"],
+        args: &[McpArgument::Literal("mcp")],
         env: &[],
     };
 
@@ -33,6 +33,7 @@ pub(super) fn definition() -> McpProviderDefinition {
                 ProviderPermission::ComputerControl,
             ],
         )
+        .with_author("TryCua")
         .with_metadata(
             ProviderScope::Local,
             ProviderAuthentication::None,
@@ -48,9 +49,10 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: None,
         shutdown_command: Some(McpCommand {
             program: "cua-driver",
-            args: &["stop"],
+            args: &[McpArgument::Literal("stop")],
             env: &[],
         }),
+        readiness_probe: None,
         setup: None,
     }
 }

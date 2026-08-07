@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::mcp::McpArgument;
 use crate::tool::{ToolProviderId, ToolProviderKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +15,7 @@ use crate::tool::{ToolProviderId, ToolProviderKind};
 pub struct ProviderManifest {
     pub provider_id: ToolProviderId,
     pub display_name: String,
+    pub author: String,
     pub description: String,
     pub kind: ToolProviderKind,
     pub transport: ProviderTransport,
@@ -40,7 +42,7 @@ impl ProviderManifest {
         display_name: impl Into<String>,
         description: impl Into<String>,
         program: impl Into<String>,
-        args: &[&str],
+        args: &[McpArgument],
         platforms: Vec<ProviderPlatform>,
         dependencies: Vec<ProviderDependency>,
         secrets: Vec<ProviderSecret>,
@@ -49,12 +51,17 @@ impl ProviderManifest {
         Self {
             provider_id: ToolProviderId::new(provider_id),
             display_name: display_name.into(),
+            author: String::new(),
             description: description.into(),
             kind: ToolProviderKind::Mcp,
             transport: ProviderTransport::Stdio,
             launch: ProviderLaunch {
                 program: program.into(),
-                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                args: args
+                    .iter()
+                    .copied()
+                    .map(McpArgument::manifest_value)
+                    .collect(),
             },
             platforms,
             dependencies,
@@ -69,6 +76,12 @@ impl ProviderManifest {
             documentation_url: None,
             setup_guide: Vec::new(),
         }
+    }
+
+    /// Sets the human-readable author shown in provider catalogs.
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = author.into();
+        self
     }
 
     /// Declares the local runtime required before this provider can start.

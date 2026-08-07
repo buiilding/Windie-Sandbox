@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use super::McpProviderDefinition;
 use super::provider::McpProviderSetup;
 use crate::local;
-use crate::mcp::McpCommand;
+use crate::mcp::{McpArgument, McpCommand};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
@@ -46,7 +46,10 @@ const BASIC_MEMORY_MCP_ENV: &[crate::mcp::McpEnv] = &[
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "uvx",
-        args: &["basic-memory", "mcp"],
+        args: &[
+            McpArgument::Literal("basic-memory"),
+            McpArgument::Literal("mcp"),
+        ],
         env: BASIC_MEMORY_MCP_ENV,
     };
 
@@ -69,6 +72,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Uv)
+        .with_author("Basic Machines")
         .with_package(ProviderPackageManager::Uv, "basic-memory")
         .with_metadata(
             ProviderScope::Local,
@@ -87,10 +91,17 @@ pub(super) fn definition() -> McpProviderDefinition {
         command,
         package_command: Some(McpCommand {
             program: "uvx",
-            args: &["--from", "basic-memory", "python", "-c", "pass"],
+            args: &[
+                McpArgument::Literal("--from"),
+                McpArgument::Literal("basic-memory"),
+                McpArgument::Literal("python"),
+                McpArgument::Literal("-c"),
+                McpArgument::Literal("pass"),
+            ],
             env: BASIC_MEMORY_PACKAGE_ENV,
         }),
         shutdown_command: None,
+        readiness_probe: None,
         setup: Some(McpProviderSetup::BasicMemoryProject),
     }
 }

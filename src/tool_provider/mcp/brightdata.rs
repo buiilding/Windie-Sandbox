@@ -1,7 +1,7 @@
 //! Bright Data MCP provider definition.
 
 use super::McpProviderDefinition;
-use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
+use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
@@ -23,7 +23,10 @@ const BRIGHTDATA_ENV: &[McpEnv] = &[
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "npx",
-        args: &["-y", "@brightdata/mcp"],
+        args: &[
+            McpArgument::Literal("-y"),
+            McpArgument::Literal("@brightdata/mcp"),
+        ],
         env: BRIGHTDATA_ENV,
     };
 
@@ -49,6 +52,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Node)
+        .with_author("Bright Data")
         .with_package(ProviderPackageManager::Npm, "@brightdata/mcp")
         .with_metadata(
             ProviderScope::Cloud,
@@ -67,10 +71,18 @@ pub(super) fn definition() -> McpProviderDefinition {
         command,
         package_command: Some(McpCommand {
             program: "npx",
-            args: &["--yes", "--package", "@brightdata/mcp", "node", "-e", ""],
+            args: &[
+                McpArgument::Literal("--yes"),
+                McpArgument::Literal("--package"),
+                McpArgument::Literal("@brightdata/mcp"),
+                McpArgument::Literal("node"),
+                McpArgument::Literal("-e"),
+                McpArgument::Literal(""),
+            ],
             env: BRIGHTDATA_ENV,
         }),
         shutdown_command: None,
+        readiness_probe: None,
         setup: None,
     }
 }

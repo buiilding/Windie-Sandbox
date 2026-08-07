@@ -94,8 +94,48 @@ pub fn request_timeout_from_error(error: &anyhow::Error) -> Option<&McpRequestTi
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McpCommand {
     pub program: &'static str,
-    pub args: &'static [&'static str],
+    pub args: &'static [McpArgument],
     pub env: &'static [McpEnv],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One approved MCP command argument.
+///
+/// Most provider arguments are fixed literals. A provider can also request a
+/// path below Windie's per-user data directory; that path is resolved only
+/// immediately before the child process starts so the static provider
+/// definition never captures a machine-specific path.
+pub enum McpArgument {
+    /// Use a fixed argument owned by the approved provider definition.
+    Literal(&'static str),
+    /// Resolve this relative path below Windie's per-user data directory.
+    WindieDataDir(&'static str),
+}
+
+impl McpArgument {
+    /// Resolves this argument into the value passed to the provider process.
+    fn resolve(self) -> String {
+        match self {
+            Self::Literal(value) => value.to_string(),
+            Self::WindieDataDir(relative_path) => windie_data_dir()
+                .join(relative_path)
+                .to_string_lossy()
+                .into_owned(),
+        }
+    }
+
+    /// Returns the provider argument representation exposed in its manifest.
+    ///
+    /// A dynamic path is intentionally represented as a placeholder in the
+    /// catalog; the actual absolute path remains private to process launch.
+    pub(crate) fn manifest_value(self) -> String {
+        match self {
+            Self::Literal(value) => value.to_string(),
+            Self::WindieDataDir(relative_path) => {
+                format!("<windie-data-dir>/{relative_path}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -711,7 +751,13 @@ fn run_shutdown_command(command: McpCommand) -> Result<()> {
 fn configure_process(command: McpCommand) -> Result<Command> {
     let program = local::resolve_command(command.program)?;
     let command_path = local::path_with_command_parent(&program);
-    let mut process = windows_command(program, command.args);
+    let args = command
+        .args
+        .iter()
+        .copied()
+        .map(McpArgument::resolve)
+        .collect::<Vec<_>>();
+    let mut process = windows_command(program, &args);
     if let Some(path) = command_path {
         process.env("PATH", path);
     }
@@ -724,7 +770,7 @@ fn configure_process(command: McpCommand) -> Result<Command> {
 
 /// Builds a process command that can launch both native executables and
 /// Windows command shims such as npm's `npx.cmd`.
-fn windows_command(program: PathBuf, args: &[&str]) -> Command {
+fn windows_command(program: PathBuf, args: &[String]) -> Command {
     #[cfg(target_os = "windows")]
     if program
         .extension()
@@ -918,6 +964,25 @@ mod tests {
                 std::path::Path::new(".windie")
                     .join("mcp")
                     .join("desktop-commander")
+            )
+        );
+    }
+
+    #[test]
+    fn literal_mcp_argument_resolves_without_changes() {
+        assert_eq!(McpArgument::Literal("--no-slim").resolve(), "--no-slim");
+    }
+
+    #[test]
+    fn windie_data_dir_mcp_argument_resolves_under_user_home() {
+        let value = McpArgument::WindieDataDir("mcp/chrome-devtools/profile").resolve();
+
+        assert!(
+            std::path::Path::new(&value).ends_with(
+                std::path::Path::new(".windie")
+                    .join("mcp")
+                    .join("chrome-devtools")
+                    .join("profile")
             )
         );
     }

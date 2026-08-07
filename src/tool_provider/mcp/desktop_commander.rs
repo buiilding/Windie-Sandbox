@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::provider::{McpProviderDefinition, McpProviderSetup};
 use crate::local;
-use crate::mcp::{McpCommand, McpEnv, McpEnvValue};
+use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
@@ -24,7 +24,10 @@ const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
 pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "npx",
-        args: &["-y", "@wonderwhy-er/desktop-commander@latest"],
+        args: &[
+            McpArgument::Literal("-y"),
+            McpArgument::Literal("@wonderwhy-er/desktop-commander@latest"),
+        ],
         env: &[McpEnv {
             key: "HOME",
             value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
@@ -50,6 +53,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_runtime(ProviderRuntime::Node)
+        .with_author("wonderwhy-er")
         .with_package(
             ProviderPackageManager::Npm,
             "@wonderwhy-er/desktop-commander",
@@ -72,12 +76,12 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: Some(McpCommand {
             program: "npx",
             args: &[
-                "--yes",
-                "--package",
-                "@wonderwhy-er/desktop-commander@latest",
-                "node",
-                "-e",
-                "",
+                McpArgument::Literal("--yes"),
+                McpArgument::Literal("--package"),
+                McpArgument::Literal("@wonderwhy-er/desktop-commander@latest"),
+                McpArgument::Literal("node"),
+                McpArgument::Literal("-e"),
+                McpArgument::Literal(""),
             ],
             env: &[McpEnv {
                 key: "HOME",
@@ -85,6 +89,7 @@ pub(super) fn definition() -> McpProviderDefinition {
             }],
         }),
         shutdown_command: None,
+        readiness_probe: None,
         setup: Some(McpProviderSetup::DesktopCommanderConfig),
     }
 }
