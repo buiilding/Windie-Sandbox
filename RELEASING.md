@@ -60,8 +60,27 @@ git -C vendor/<vendor> switch -c codex/<vendor-release-name>
 git -C vendor/<vendor> push -u origin codex/<vendor-release-name>
 ```
 
-After the vendor pull request merges, update the pin from the vendor's
-appropriate stable branch. For example:
+The release-relevant vendor repositories use different stable branches and
+therefore require separate vendor pull requests:
+
+- `vendor/bifrost`: open the pull request against Bifrost's `dev` branch, then
+  pin the merged commit from `origin/dev`.
+- `vendor/windie-inspector`: open the pull request against Inspector's `main`
+  branch, then pin the merged commit from `origin/main`.
+- `vendor/windie-landing-2nd`: this submodule is not included in the current
+  release packaging workflow and does not need a release pin unless the
+  packaging workflow changes.
+
+After the vendor pull request merges, update the pin from the vendor's merged
+stable branch. For Bifrost:
+
+```bash
+git -C vendor/bifrost fetch origin dev
+git -C vendor/bifrost switch --detach origin/dev
+git add vendor/bifrost
+```
+
+For the Inspector:
 
 ```bash
 git -C vendor/windie-inspector fetch origin main
