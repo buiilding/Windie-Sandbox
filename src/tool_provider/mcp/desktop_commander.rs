@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::provider::{McpProviderDefinition, McpProviderSetup};
 use crate::local;
-use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue};
+use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
@@ -72,7 +72,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         provider_id: "desktop-commander",
         schema_prefix: "desktop_commander",
         display_name: "Desktop Commander",
-        command,
+        transport: McpTransport::stdio(command),
         package_command: Some(McpCommand {
             program: "npx",
             args: &[
@@ -88,7 +88,6 @@ pub(super) fn definition() -> McpProviderDefinition {
                 value: McpEnvValue::WindieDataDir(DESKTOP_COMMANDER_HOME_RELATIVE),
             }],
         }),
-        shutdown_command: None,
         readiness_probe: None,
         setup: Some(McpProviderSetup::DesktopCommanderConfig),
     }

@@ -931,6 +931,12 @@ impl SessionOutput {
 impl RuntimeOutput for SessionOutput {
     fn start_assistant_message(&self) {}
 
+    fn assistant_attempt_reset(&self) {
+        if let Err(error) = self.record(SessionEvent::AssistantAttemptReset) {
+            eprintln!("failed to append assistant attempt reset event: {error}");
+        }
+    }
+
     fn assistant_delta(&self, text: &str) -> Result<()> {
         self.record(SessionEvent::AssistantDelta {
             text: text.to_string(),

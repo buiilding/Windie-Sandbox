@@ -281,13 +281,9 @@ fn install_target(target: &str) -> Result<()> {
 /// Creates an empty persisted conversation and prints only its ID.
 async fn new_conversation() -> Result<()> {
     let models = operation::list_models(gateway_url(), base_url()).await?;
-    let model = models
-        .into_iter()
-        .next()
-        .map(|model| ModelName::new(model.id))
-        .ok_or_else(|| {
-            anyhow::anyhow!("no models are available; configure a provider key first")
-        })?;
+    let model = operation::preferred_model(models).ok_or_else(|| {
+        anyhow::anyhow!("no models are available; configure a provider key first")
+    })?;
     let store = Store::open()?;
     let output = TerminalOutput;
     let conversation_id = operation::create_conversation(&store, &model)?;

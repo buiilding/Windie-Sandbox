@@ -67,6 +67,9 @@ pub(crate) trait RuntimeOutput {
         Ok(())
     }
     fn end_assistant_message(&self);
+    /// Clears transient output from a failed model attempt before a retry or
+    /// terminal failure. Stateful clients use this to discard partial lanes.
+    fn assistant_attempt_reset(&self) {}
     fn assistant_tool_calls(&self, tool_calls: &[ToolCall]);
 }
 
@@ -515,6 +518,7 @@ impl TerminalOutput {
                 name.as_deref().unwrap_or("(no name)"),
                 arguments_delta.as_deref().unwrap_or("")
             ),
+            SessionEvent::AssistantAttemptReset => {}
             SessionEvent::AssistantMessageSaved { message_id } => {
                 println!("assistant message saved {message_id}");
             }

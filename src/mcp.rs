@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
+use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -24,6 +25,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::local;
+
+#[path = "mcp_http.rs"]
+mod mcp_http;
 
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_PACKAGE_PREPARATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -96,6 +100,62 @@ pub struct McpCommand {
     pub program: &'static str,
     pub args: &'static [McpArgument],
     pub env: &'static [McpEnv],
+}
+
+/// Transport used to connect Windie to one approved MCP provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpTransport {
+    /// Launch a local MCP process and communicate over stdin/stdout.
+    Stdio {
+        command: McpCommand,
+        shutdown_command: Option<McpCommand>,
+    },
+    /// Connect to a hosted MCP endpoint over Streamable HTTP.
+    StreamableHttp { endpoint: McpHttpEndpoint },
+}
+
+impl McpTransport {
+    /// Creates a local stdio transport without a provider shutdown command.
+    pub const fn stdio(command: McpCommand) -> Self {
+        Self::Stdio {
+            command,
+            shutdown_command: None,
+        }
+    }
+
+    /// Creates a local stdio transport with a best-effort shutdown command.
+    pub const fn stdio_with_shutdown(command: McpCommand, shutdown_command: McpCommand) -> Self {
+        Self::Stdio {
+            command,
+            shutdown_command: Some(shutdown_command),
+        }
+    }
+
+    /// Creates a hosted Streamable HTTP transport.
+    pub const fn streamable_http(endpoint: McpHttpEndpoint) -> Self {
+        Self::StreamableHttp { endpoint }
+    }
+}
+
+/// Hosted MCP endpoint metadata used by the Streamable HTTP transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpHttpEndpoint {
+    /// HTTPS endpoint that accepts MCP POST requests.
+    pub url: &'static str,
+    /// Authentication policy for requests to this endpoint.
+    pub authorization: McpHttpAuthorization,
+}
+
+/// Authentication policy for one hosted MCP endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpHttpAuthorization {
+    /// Do not send an Authorization header.
+    Anonymous,
+    /// Require and send a Bearer header from the named Windie environment
+    /// value.
+    BearerEnv(&'static str),
+    /// Send a Bearer header when the named Windie environment value exists.
+    OptionalBearerEnv(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +272,31 @@ pub fn list_tools(command: McpCommand) -> Result<Vec<McpTool>> {
     Ok(list.tools)
 }
 
+/// Lists tools from either a local stdio or hosted Streamable HTTP provider.
+pub fn list_tools_with_transport(transport: McpTransport) -> Result<Vec<McpTool>> {
+    match transport {
+        McpTransport::Stdio {
+            command,
+            shutdown_command,
+        } => list_tools_with_shutdown(command, shutdown_command),
+        McpTransport::StreamableHttp { .. } => {
+            run_async_on_dedicated_thread(list_tools_with_transport_async(transport))
+        }
+    }
+}
+
+/// Lists tools through either transport from an async caller.
+pub async fn list_tools_with_transport_async(transport: McpTransport) -> Result<Vec<McpTool>> {
+    let mut session = McpTransportSession::start(transport).await?;
+    let result = session.call("tools/list", None).await;
+    session.shutdown().await;
+    let result = result?;
+
+    serde_json::from_value::<McpToolsList>(result)
+        .context("failed to decode MCP tools/list response")
+        .map(|list| list.tools)
+}
+
 /// Runs one provider package preparation command before MCP startup.
 ///
 /// Package runners such as `npx` and `uvx` may download a provider package on
@@ -320,6 +405,44 @@ pub fn call_tool(command: McpCommand, name: &str, arguments: Value) -> Result<Va
     )
 }
 
+/// Calls one tool through either a local stdio or hosted Streamable HTTP
+/// provider.
+pub fn call_tool_with_transport(
+    transport: McpTransport,
+    name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    match transport {
+        McpTransport::Stdio {
+            command,
+            shutdown_command,
+        } => call_tool_with_shutdown(command, shutdown_command, name, arguments),
+        McpTransport::StreamableHttp { .. } => run_async_on_dedicated_thread(
+            call_tool_with_transport_async(transport, name.to_string(), arguments),
+        ),
+    }
+}
+
+/// Calls a tool through either transport from an async caller.
+pub async fn call_tool_with_transport_async(
+    transport: McpTransport,
+    name: impl Into<String>,
+    arguments: Value,
+) -> Result<Value> {
+    let mut session = McpTransportSession::start(transport).await?;
+    let result = session
+        .call(
+            "tools/call",
+            Some(json!({
+                "name": name.into(),
+                "arguments": arguments
+            })),
+        )
+        .await;
+    session.shutdown().await;
+    result
+}
+
 /// Calls one MCP provider tool and runs a provider-specific cleanup hook when
 /// the short-lived MCP process exits.
 pub fn call_tool_with_shutdown(
@@ -352,7 +475,8 @@ pub fn call_tool_with_shutdown(
 /// also runs the provider shutdown hook when one is configured.
 #[derive(Clone)]
 pub struct McpSessionPool {
-    sessions: Arc<Mutex<PersistentMcpSessions>>,
+    sessions:
+        Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<PersistentMcpSession>>>>>,
 }
 
 impl std::fmt::Debug for McpSessionPool {
@@ -366,14 +490,14 @@ impl std::fmt::Debug for McpSessionPool {
 impl McpSessionPool {
     /// Creates a registry-owned persistent MCP session pool.
     pub fn new() -> Self {
-        let sessions = Arc::new(Mutex::new(PersistentMcpSessions::default()));
-        spawn_idle_reaper(Arc::clone(&sessions));
+        let sessions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        spawn_idle_reaper(Arc::downgrade(&sessions));
 
         Self { sessions }
     }
 
     /// Calls one MCP provider tool through this pool's persistent session.
-    pub fn call_tool(
+    pub async fn call_tool(
         &self,
         provider_id: &str,
         command: McpCommand,
@@ -381,12 +505,96 @@ impl McpSessionPool {
         name: &str,
         arguments: Value,
     ) -> Result<Value> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| anyhow!("persistent MCP session manager is poisoned"))?;
+        self.call_tool_with_transport(
+            provider_id,
+            McpTransport::Stdio {
+                command,
+                shutdown_command,
+            },
+            name,
+            arguments,
+        )
+        .await
+    }
 
-        sessions.call_tool(provider_id, command, shutdown_command, name, arguments)
+    /// Calls one tool through a persistent session for any supported MCP
+    /// transport.
+    pub async fn call_tool_with_transport(
+        &self,
+        provider_id: &str,
+        transport: McpTransport,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        let session = self.ensure_session(provider_id, transport).await?;
+        let result = {
+            let mut session = session.lock().await;
+            session.last_used_at = Instant::now();
+            session
+                .session
+                .call(
+                    "tools/call",
+                    Some(json!({
+                        "name": name,
+                        "arguments": arguments
+                    })),
+                )
+                .await
+        };
+        if result.is_err() {
+            self.stop_session(provider_id, &session).await;
+        }
+        result
+    }
+
+    /// Returns a matching persistent session, creating it when necessary.
+    async fn ensure_session(
+        &self,
+        provider_id: &str,
+        transport: McpTransport,
+    ) -> Result<Arc<tokio::sync::Mutex<PersistentMcpSession>>> {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get(provider_id).cloned() {
+            if session.lock().await.transport == transport {
+                return Ok(session);
+            }
+            sessions.remove(provider_id);
+            drop(sessions);
+            let mut session = session.lock().await;
+            session.shutdown().await;
+            sessions = self.sessions.lock().await;
+        }
+
+        let session = Arc::new(tokio::sync::Mutex::new(PersistentMcpSession {
+            transport,
+            session: McpTransportSession::start(transport).await?,
+            last_used_at: Instant::now(),
+        }));
+        sessions.insert(provider_id.to_string(), Arc::clone(&session));
+        Ok(session)
+    }
+
+    /// Stops one persistent provider session if it is still the active entry.
+    async fn stop_session(
+        &self,
+        provider_id: &str,
+        expected: &Arc<tokio::sync::Mutex<PersistentMcpSession>>,
+    ) {
+        let removed = {
+            let mut sessions = self.sessions.lock().await;
+            if sessions
+                .get(provider_id)
+                .is_some_and(|session| Arc::ptr_eq(session, expected))
+            {
+                sessions.remove(provider_id)
+            } else {
+                None
+            }
+        };
+        if let Some(session) = removed {
+            let mut session = session.lock().await;
+            session.shutdown().await;
+        }
     }
 }
 
@@ -396,135 +604,118 @@ impl Default for McpSessionPool {
     }
 }
 
-/// Starts a small background loop that stops idle persistent MCP sessions.
-fn spawn_idle_reaper(sessions: Arc<Mutex<PersistentMcpSessions>>) {
-    std::thread::spawn(move || {
+/// Starts a small background task that stops idle persistent MCP sessions.
+fn spawn_idle_reaper(
+    sessions: std::sync::Weak<
+        tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<PersistentMcpSession>>>>,
+    >,
+) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    handle.spawn(async move {
         loop {
-            std::thread::sleep(MCP_IDLE_REAPER_INTERVAL);
-            let Ok(mut sessions) = sessions.lock() else {
+            tokio::time::sleep(MCP_IDLE_REAPER_INTERVAL).await;
+            let Some(sessions) = sessions.upgrade() else {
                 break;
             };
-            sessions.stop_idle_sessions(MCP_IDLE_TIMEOUT);
+            let entries = sessions.lock().await.clone();
+            for (provider_id, session) in entries {
+                let idle = {
+                    let session = session.lock().await;
+                    Instant::now().duration_since(session.last_used_at) >= MCP_IDLE_TIMEOUT
+                };
+                if !idle {
+                    continue;
+                }
+                let removed = {
+                    let mut sessions = sessions.lock().await;
+                    if sessions
+                        .get(&provider_id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &session))
+                    {
+                        sessions.remove(&provider_id)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(session) = removed {
+                    let mut session = session.lock().await;
+                    session.shutdown().await;
+                }
+            }
         }
     });
 }
-
-#[derive(Default)]
-/// Process-wide owner for persistent MCP provider sessions.
-struct PersistentMcpSessions {
-    sessions: HashMap<String, PersistentMcpSession>,
-}
-
-impl PersistentMcpSessions {
-    /// Calls one tool through the persistent session for `provider_id`.
-    fn call_tool(
-        &mut self,
-        provider_id: &str,
-        command: McpCommand,
-        shutdown_command: Option<McpCommand>,
-        name: &str,
-        arguments: Value,
-    ) -> Result<Value> {
-        self.ensure_session(provider_id, command, shutdown_command)?;
-
-        let result = {
-            let session = self
-                .sessions
-                .get_mut(provider_id)
-                .ok_or_else(|| anyhow!("persistent MCP session was not started: {provider_id}"))?;
-            session.last_used_at = Instant::now();
-            session.session.call(
-                "tools/call",
-                Some(json!({
-                    "name": name,
-                    "arguments": arguments
-                })),
-            )
-        };
-
-        match result {
-            Ok(result) => {
-                if let Some(session) = self.sessions.get_mut(provider_id) {
-                    session.last_used_at = Instant::now();
-                }
-                Ok(result)
-            }
-            Err(error) => {
-                self.stop_session(provider_id);
-                Err(error)
-            }
-        }
-    }
-
-    /// Ensures a matching persistent MCP session exists for one provider.
-    fn ensure_session(
-        &mut self,
-        provider_id: &str,
-        command: McpCommand,
-        shutdown_command: Option<McpCommand>,
-    ) -> Result<()> {
-        let command_changed = self.sessions.get(provider_id).is_some_and(|session| {
-            session.command != command || session.shutdown_command != shutdown_command
-        });
-        if command_changed {
-            self.stop_session(provider_id);
-        }
-        if self.sessions.contains_key(provider_id) {
-            return Ok(());
-        }
-
-        let session = McpSession::start(command)?;
-        self.sessions.insert(
-            provider_id.to_string(),
-            PersistentMcpSession {
-                command,
-                shutdown_command,
-                session,
-                last_used_at: Instant::now(),
-            },
-        );
-
-        Ok(())
-    }
-
-    /// Stops sessions that have not received a call within `idle_timeout`.
-    fn stop_idle_sessions(&mut self, idle_timeout: Duration) {
-        let now = Instant::now();
-        let provider_ids = self
-            .sessions
-            .iter()
-            .filter_map(|(provider_id, session)| {
-                if now.duration_since(session.last_used_at) >= idle_timeout {
-                    Some(provider_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        for provider_id in provider_ids {
-            self.stop_session(&provider_id);
-        }
-    }
-
-    /// Stops one persistent session and runs its provider shutdown hook.
-    fn stop_session(&mut self, provider_id: &str) {
-        let Some(session) = self.sessions.remove(provider_id) else {
-            return;
-        };
-        let shutdown_command = session.shutdown_command;
-        drop(session);
-
-        run_shutdown_best_effort(shutdown_command);
-    }
-}
-
 /// Runtime state for one persistent MCP provider.
 struct PersistentMcpSession {
-    command: McpCommand,
-    shutdown_command: Option<McpCommand>,
-    session: McpSession,
+    transport: McpTransport,
+    session: McpTransportSession,
     last_used_at: Instant,
+}
+
+impl PersistentMcpSession {
+    /// Shuts down the provider transport while its per-provider lock is held.
+    async fn shutdown(&mut self) {
+        self.session.shutdown().await;
+    }
+}
+
+/// One active MCP session over a supported transport.
+enum McpTransportSession {
+    /// Local process-backed MCP session.
+    Stdio(McpSession),
+    /// Hosted HTTP-backed MCP session.
+    StreamableHttp(mcp_http::StreamableHttpSession),
+}
+
+impl McpTransportSession {
+    /// Starts and initializes one transport-specific MCP session.
+    async fn start(transport: McpTransport) -> Result<Self> {
+        match transport {
+            McpTransport::Stdio { command, .. } => Ok(Self::Stdio(McpSession::start(command)?)),
+            McpTransport::StreamableHttp { endpoint } => Ok(Self::StreamableHttp(
+                mcp_http::StreamableHttpSession::start(endpoint).await?,
+            )),
+        }
+    }
+
+    /// Sends one MCP request and returns its result.
+    async fn call(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
+        match self {
+            Self::Stdio(session) => session.call(method, params),
+            Self::StreamableHttp(session) => session.call(method, params).await,
+        }
+    }
+
+    /// Shuts down the active transport.
+    async fn shutdown(&mut self) {
+        if let Self::StreamableHttp(session) = self {
+            session.shutdown().await;
+        }
+    }
+}
+
+/// Runs an async transport operation from a legacy synchronous caller.
+///
+/// Catalog and setup operations still expose synchronous operation APIs and
+/// already run on dedicated blocking workers where necessary. This adapter
+/// gives those callers an explicit OS-thread boundary instead of nesting a
+/// Tokio runtime inside an existing async worker.
+fn run_async_on_dedicated_thread<F, T>(future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("failed to build MCP HTTP runtime")?
+            .block_on(future)
+    })
+    .join()
+    .map_err(|_| anyhow!("MCP HTTP worker panicked"))?
 }
 
 /// One short-lived stdio MCP session.

@@ -10,6 +10,41 @@ use crate::local;
 use crate::process::{ManagedComponent, ProcessReport, ProcessState};
 
 pub(in crate::operation) const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
+
+/// Model preferences Windie checks in order when creating a new conversation.
+///
+/// These are preferences rather than unconditional model requirements: users
+/// may configure any provider, and provider catalogs may change. Callers use
+/// [`preferred_model`] so catalog fallback remains available.
+pub const PREFERRED_MODEL_IDS: &[&str] = &[
+    "openrouter/openai/gpt-5.6-luna",
+    "kimi-code/k3-256k",
+    "anthropic/claude-sonnet-4-5",
+];
+
+/// Chooses Windie's preferred model from the models Bifrost currently exposes.
+///
+/// The ordered preferences keep a fresh installation from landing on whichever
+/// model happens to sort first in Bifrost's catalog. If none are available, the
+/// first catalog model remains a safe fallback for other providers and future
+/// catalog changes.
+pub fn preferred_model(models: Vec<ModelInfo>) -> Option<ModelName> {
+    PREFERRED_MODEL_IDS
+        .iter()
+        .find_map(|preferred_id| {
+            models
+                .iter()
+                .find(|model| model.id == *preferred_id)
+                .map(|model| ModelName::new(model.id.clone()))
+        })
+        .or_else(|| {
+            models
+                .into_iter()
+                .next()
+                .map(|model| ModelName::new(model.id))
+        })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Source of a pre-query input-token count.
 pub enum InputTokenCountSource {

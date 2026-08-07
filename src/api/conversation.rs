@@ -65,14 +65,14 @@ pub(super) async fn create_conversation(
         .or_else(|| state.model.clone());
     let model = match requested_model {
         Some(model) => model,
-        None => operation::list_models(
-            GatewayUrl::new(state.gateway_url.clone()),
-            BaseUrl::new(state.base_url.clone()),
+        None => operation::preferred_model(
+            operation::list_models(
+                GatewayUrl::new(state.gateway_url.clone()),
+                BaseUrl::new(state.base_url.clone()),
+            )
+            .await?,
         )
-        .await?
-        .into_iter()
-        .next()
-        .map(|model| model.id)
+        .map(|model| model.as_str().to_string())
         .ok_or_else(|| {
             anyhow::anyhow!("no models are available; configure a provider key first")
         })?,

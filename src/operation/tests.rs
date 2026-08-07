@@ -43,6 +43,73 @@ fn builds_conversation_prompt_cache_request() {
 }
 
 #[test]
+fn prefers_the_windie_model_defaults_in_order() {
+    let model = preferred_model(vec![
+        ModelInfo {
+            id: "openrouter/ai21/jamba-large-1.7".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: "anthropic/claude-sonnet-4-5".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: "kimi-code/k3-256k".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+    ])
+    .unwrap();
+
+    assert_eq!(model.as_str(), "kimi-code/k3-256k");
+}
+
+#[test]
+fn prefers_openrouter_before_kimi_and_anthropic() {
+    let model = preferred_model(vec![
+        ModelInfo {
+            id: "anthropic/claude-sonnet-4-5".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: "openrouter/openai/gpt-5.6-luna".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: "kimi-code/k3-256k".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+    ])
+    .unwrap();
+
+    assert_eq!(model.as_str(), "openrouter/openai/gpt-5.6-luna");
+}
+
+#[test]
+fn falls_back_to_the_first_catalog_model_without_the_preferred_default() {
+    let model = preferred_model(vec![ModelInfo {
+        id: "anthropic/test".to_string(),
+        context_length: None,
+        max_input_tokens: None,
+        max_output_tokens: None,
+    }])
+    .unwrap();
+
+    assert_eq!(model.as_str(), "anthropic/test");
+}
+
+#[test]
 fn openai_reasoning_effort_requests_visible_summary() {
     let reasoning = reasoning_request_for_model(
         &ModelName::new("openai/gpt-5.5"),

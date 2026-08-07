@@ -1,7 +1,7 @@
 //! Blender MCP provider definition.
 
 use super::McpProviderDefinition;
-use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue};
+use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
@@ -74,7 +74,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         provider_id: "blender-mcp",
         schema_prefix: "blender_mcp",
         display_name: "Blender MCP",
-        command,
+        transport: McpTransport::stdio(command),
         package_command: Some(McpCommand {
             program: "uvx",
             args: &[
@@ -88,7 +88,6 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
             env: BLENDER_ENV,
         }),
-        shutdown_command: None,
         readiness_probe: None,
         setup: None,
     }

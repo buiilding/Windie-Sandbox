@@ -1,7 +1,7 @@
 //! CUA Driver MCP provider definition.
 
 use super::McpProviderDefinition;
-use crate::mcp::{McpArgument, McpCommand};
+use crate::mcp::{McpArgument, McpCommand, McpTransport};
 use crate::tool_provider::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
     ProviderPlatform, ProviderScope,
@@ -45,13 +45,15 @@ pub(super) fn definition() -> McpProviderDefinition {
         provider_id: "cua-driver",
         schema_prefix: "cua_driver",
         display_name: "CUA Driver",
-        command,
+        transport: McpTransport::stdio_with_shutdown(
+            command,
+            McpCommand {
+                program: "cua-driver",
+                args: &[McpArgument::Literal("stop")],
+                env: &[],
+            },
+        ),
         package_command: None,
-        shutdown_command: Some(McpCommand {
-            program: "cua-driver",
-            args: &[McpArgument::Literal("stop")],
-            env: &[],
-        }),
         readiness_probe: None,
         setup: None,
     }

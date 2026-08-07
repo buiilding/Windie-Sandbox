@@ -12,7 +12,7 @@ use super::mcp::{
     mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview,
 };
 use crate::conversation::{ToolCall, UnsavedMessagePart};
-use crate::mcp::{self as mcp_protocol, McpCommand, McpTool};
+use crate::mcp::{self as mcp_protocol, McpCommand, McpTool, McpTransport};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchemaName,
@@ -44,6 +44,10 @@ fn approved_chrome_devtools_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("chrome-devtools").unwrap())
 }
 
+fn approved_parallel_provider() -> McpToolProvider {
+    McpToolProvider::new(approved_mcp_provider("parallel-search").unwrap())
+}
+
 #[test]
 fn approved_provider_manifests_describe_their_runtime_requirements() {
     let providers = [
@@ -53,6 +57,7 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
         approved_brightdata_provider(),
         approved_basic_memory_provider(),
         approved_chrome_devtools_provider(),
+        approved_parallel_provider(),
     ];
 
     let ids = providers
@@ -67,16 +72,28 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
             "blender-mcp",
             "brightdata",
             "basic-memory",
-            "chrome-devtools"
+            "chrome-devtools",
+            "parallel-search"
         ]
     );
 
     for provider in providers {
         let manifest = provider.manifest();
         assert_eq!(manifest.kind, ToolProviderKind::Mcp);
-        assert_eq!(manifest.transport, ProviderTransport::Stdio);
+        if manifest.provider_id.as_str() == "parallel-search" {
+            assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
+        } else {
+            assert_eq!(manifest.transport, ProviderTransport::Stdio);
+        }
         assert!(!manifest.description.is_empty());
-        assert!(!manifest.launch.program.is_empty());
+        match &manifest.launch {
+            crate::tool_provider::manifest::ProviderLaunch::Stdio { program, .. } => {
+                assert!(!program.is_empty())
+            }
+            crate::tool_provider::manifest::ProviderLaunch::StreamableHttp { url } => {
+                assert!(url.starts_with("https://"))
+            }
+        }
         assert!(!manifest.platforms.is_empty());
         assert!(!manifest.permissions.is_empty());
     }
@@ -139,17 +156,14 @@ fn basic_memory_manifest_declares_local_runtime_requirements() {
     let provider = approved_basic_memory_provider();
     let manifest = provider.manifest();
 
-    assert_eq!(manifest.launch.program, "uvx");
-    assert_eq!(
-        manifest.launch.args,
-        vec!["basic-memory".to_string(), "mcp".to_string()]
-    );
+    let crate::tool_provider::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch
+    else {
+        panic!("Basic Memory must use stdio");
+    };
+    assert_eq!(program, "uvx");
+    assert_eq!(args, &vec!["basic-memory".to_string(), "mcp".to_string()]);
     assert!(
-        provider
-            .command
-            .env
-            .iter()
-            .any(|variable| { variable.key == "BASIC_MEMORY_MCP_PROJECT" })
+        matches!(provider.transport, McpTransport::Stdio { command, .. } if command.env.iter().any(|variable| variable.key == "BASIC_MEMORY_MCP_PROJECT"))
     );
     assert!(
         manifest
@@ -194,15 +208,19 @@ fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
             .map(|package| package.name.as_str()),
         Some("chrome-devtools-mcp@1.6.0")
     );
-    assert_eq!(manifest.launch.program, "npx");
+    let crate::tool_provider::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch
+    else {
+        panic!("Chrome DevTools must use stdio");
+    };
+    assert_eq!(program, "npx");
     assert_eq!(
-        manifest.launch.args,
-        vec![
-            "-y",
-            "chrome-devtools-mcp@1.6.0",
-            "--user-data-dir",
-            "<windie-data-dir>/mcp/chrome-devtools/profile",
-            "--no-usage-statistics",
+        args,
+        &vec![
+            "-y".to_string(),
+            "chrome-devtools-mcp@1.6.0".to_string(),
+            "--user-data-dir".to_string(),
+            "<windie-data-dir>/mcp/chrome-devtools/profile".to_string(),
+            "--no-usage-statistics".to_string(),
         ]
     );
     assert!(
@@ -215,17 +233,57 @@ fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
             .permissions
             .contains(&crate::tool_provider::ProviderPermission::Network)
     );
-    assert!(provider.command.env.iter().any(|variable| {
+    let McpTransport::Stdio { command, .. } = provider.transport else {
+        panic!("Chrome DevTools must use stdio");
+    };
+    assert!(command.env.iter().any(|variable| {
         variable.key == "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS"
             && variable.value == mcp_protocol::McpEnvValue::Literal("true")
     }));
     assert!(
-        !provider
-            .command
+        !command
             .args
             .iter()
             .any(|argument| matches!(argument, mcp_protocol::McpArgument::Literal("--slim")))
     );
+}
+
+#[test]
+fn parallel_manifest_uses_optional_network_authentication() {
+    let provider = approved_parallel_provider();
+    let manifest = provider.manifest();
+
+    assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
+    assert_eq!(
+        manifest.authentication,
+        crate::tool_provider::ProviderAuthentication::OptionalApiKey
+    );
+    assert_eq!(
+        manifest.secrets,
+        vec![ProviderSecret::optional(
+            "PARALLEL_API_KEY",
+            "Parallel API key for higher rate limits",
+        )]
+    );
+    assert!(
+        manifest
+            .permissions
+            .contains(&crate::tool_provider::ProviderPermission::Network)
+    );
+    assert!(
+        matches!(provider.transport, McpTransport::StreamableHttp { endpoint } if endpoint.url == "https://search.parallel.ai/mcp")
+    );
+    let tool = provider.definition_from_mcp_tool(McpTool {
+        name: "web_search".to_string(),
+        description: "Search the web".to_string(),
+        input_schema: serde_json::json!({"type": "object"}),
+        annotations: Some(mcp_protocol::McpToolAnnotations {
+            read_only_hint: Some(true),
+        }),
+    });
+    assert_eq!(tool.schema_name.as_str(), "parallel_search__web_search");
+    assert_eq!(tool.permissions, vec![ToolPermission::Network]);
+    assert_eq!(tool.annotations.read_only, Some(true));
 }
 
 fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {
@@ -542,13 +600,12 @@ fn registry_finds_tools_from_cached_provider_catalog() {
             provider_id: "missing-mcp",
             schema_prefix: "missing_mcp",
             display_name: "Missing MCP",
-            command: McpCommand {
+            transport: McpTransport::stdio(McpCommand {
                 program: "windie-missing-mcp-provider",
                 args: &[],
                 env: &[],
-            },
+            }),
             package_command: None,
-            shutdown_command: None,
             readiness_probe: None,
             setup: None,
         })],
@@ -589,13 +646,12 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
                 provider_id: "available-mcp",
                 schema_prefix: "available_mcp",
                 display_name: "Available MCP",
-                command: McpCommand {
+                transport: McpTransport::stdio(McpCommand {
                     program: "windie-missing-mcp-provider",
                     args: &[],
                     env: &[],
-                },
+                }),
                 package_command: None,
-                shutdown_command: None,
                 readiness_probe: None,
                 setup: None,
             }),
@@ -614,13 +670,12 @@ fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
                 provider_id: "missing-mcp",
                 schema_prefix: "missing_mcp",
                 display_name: "Missing MCP",
-                command: McpCommand {
+                transport: McpTransport::stdio(McpCommand {
                     program: "windie-missing-mcp-provider",
                     args: &[],
                     env: &[],
-                },
+                }),
                 package_command: None,
-                shutdown_command: None,
                 readiness_probe: None,
                 setup: None,
             }),

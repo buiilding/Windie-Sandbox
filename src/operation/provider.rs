@@ -342,7 +342,7 @@ fn prepare_provider_setup(
     store.set_provider_progress(provider_id, "preparing provider configuration")?;
     registry.prepare_provider_configuration(provider_id)?;
 
-    store.set_provider_progress(provider_id, "starting MCP server")?;
+    store.set_provider_progress(provider_id, "connecting to MCP server")?;
     store.set_provider_progress(provider_id, "checking MCP tools")?;
     registry.list_provider_tools(provider_id)
 }
@@ -362,6 +362,9 @@ fn readiness_for_provider_error(
         || message.contains("api token")
     {
         return ProviderReadiness::MissingSecret;
+    }
+    if message.contains("authentication failed") {
+        return ProviderReadiness::AuthenticationFailed;
     }
     if message.contains("permission")
         || message.contains("access denied")
@@ -412,6 +415,7 @@ fn next_action_for_readiness(readiness: ProviderReadiness) -> &'static str {
         }
         ProviderReadiness::PermissionRequired => "grant the required OS permission and repair",
         ProviderReadiness::MissingSecret => "configure the provider secret and repair",
+        ProviderReadiness::AuthenticationFailed => "check the provider credential and repair",
         ProviderReadiness::UnsupportedPlatform => "use this provider on a supported platform",
         ProviderReadiness::Installing => "wait for provider setup to finish",
         ProviderReadiness::Ready => "none",
@@ -503,6 +507,22 @@ mod tests {
         assert_eq!(
             readiness_for_provider_error(&ToolProviderId::new("blender-mcp"), &manifest, &error,),
             ProviderReadiness::PackageSetupFailed
+        );
+    }
+
+    #[test]
+    fn remote_authentication_failures_are_actionable() {
+        let manifest = blender_manifest();
+        let error =
+            anyhow::anyhow!("MCP HTTP authentication failed during initialize (status 401)");
+
+        assert_eq!(
+            readiness_for_provider_error(
+                &ToolProviderId::new("parallel-search"),
+                &manifest,
+                &error,
+            ),
+            ProviderReadiness::AuthenticationFailed
         );
     }
 }

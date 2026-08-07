@@ -17,6 +17,7 @@ use crate::error;
 use crate::local;
 use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
+use crate::mcp::McpTransport;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolDefinition, ToolExecutionResult, ToolProviderId,
     ToolProviderKind, ToolSchemaName,
@@ -127,6 +128,33 @@ impl ToolProviderRegistry {
         }
     }
 
+    /// Returns one provider's live catalog status through the async transport
+    /// path used by runtime execution.
+    pub async fn provider_status_async(
+        &self,
+        provider_id: &ToolProviderId,
+    ) -> Option<ToolProviderStatus> {
+        let provider = self.mcp_provider(provider_id)?;
+        match self.list_provider_tools_async(provider.id()).await {
+            Ok(tools) => Some(ToolProviderStatus {
+                provider_id: provider.provider_id.clone(),
+                display_name: provider.display_name.to_string(),
+                manifest: provider.manifest().clone(),
+                available: true,
+                tool_count: tools.len(),
+                error: None,
+            }),
+            Err(error) => Some(ToolProviderStatus {
+                provider_id: provider.provider_id.clone(),
+                display_name: provider.display_name.to_string(),
+                manifest: provider.manifest().clone(),
+                available: false,
+                tool_count: 0,
+                error: Some(error.to_string()),
+            }),
+        }
+    }
+
     /// Returns manifests for every provider known to this registry.
     pub fn provider_manifests(&self) -> Vec<super::manifest::ProviderManifest> {
         self.mcp_providers
@@ -209,6 +237,25 @@ impl ToolProviderRegistry {
         }
         if let Some(provider) = self.mcp_provider(provider_id) {
             let tools = provider.list_tools()?;
+            self.cache_provider_tools(provider_id, &tools)?;
+            return Ok(tools);
+        }
+
+        Err(error::not_found(format!(
+            "provider does not exist: {provider_id}"
+        )))
+    }
+
+    /// Lists one provider's tools through the async transport path.
+    pub async fn list_provider_tools_async(
+        &self,
+        provider_id: &ToolProviderId,
+    ) -> Result<Vec<ToolDefinition>> {
+        if let Some(tools) = self.cached_provider_tools(provider_id)? {
+            return Ok(tools);
+        }
+        if let Some(provider) = self.mcp_provider(provider_id) {
+            let tools = provider.list_tools_async().await?;
             self.cache_provider_tools(provider_id, &tools)?;
             return Ok(tools);
         }
@@ -344,9 +391,8 @@ impl ToolProviderRegistry {
                 provider_id,
                 schema_prefix,
                 display_name,
-                command,
+                transport: McpTransport::stdio(command),
                 package_command: None,
-                shutdown_command: None,
                 readiness_probe: None,
                 setup: None,
             })],

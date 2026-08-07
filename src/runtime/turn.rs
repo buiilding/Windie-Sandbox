@@ -10,12 +10,13 @@ use anyhow::Result;
 use crate::context::{ContextBuilder, ModelContext};
 use crate::conversation::{ConversationId, Message, MessageId, Role};
 use crate::error;
-use crate::llm::{LlmStreamEvent, RuntimeLlm};
+use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
 use crate::store::Store;
 use crate::tool::{PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy};
 use crate::tool_provider::ToolProviderRegistry;
 
+use super::retry::stream_with_retry;
 use super::tool_execution::{
     AutomaticToolResolution, PendingToolCall, active_tool_execution, attached_tool_can_execute,
     load_attached_tool_for_call, resolve_next_automatic_tool_call_at_head,
@@ -51,26 +52,8 @@ where
         input.tools,
     )?;
 
-    output.start_assistant_message();
-    let assistant_response = llm
-        .stream(
-            &model_context.messages,
-            &model_context.tool_schemas,
-            input.model_request.reasoning,
-            input.model_request.prompt_cache,
-            |event| match event {
-                LlmStreamEvent::AssistantDelta(text) => output.assistant_delta(text),
-                LlmStreamEvent::ReasoningDelta(text) => output.reasoning_delta(text),
-                LlmStreamEvent::ToolCallDelta {
-                    index,
-                    id,
-                    name,
-                    arguments_delta,
-                } => output.tool_call_delta(index, id, name, arguments_delta),
-            },
-        )
-        .await?;
-    output.end_assistant_message();
+    let assistant_response =
+        stream_with_retry(output, llm, &model_context, input.model_request).await?;
     output.assistant_tool_calls(&assistant_response.metadata.tool_calls);
 
     let metadata = if assistant_response.metadata.is_empty() {

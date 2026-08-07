@@ -167,6 +167,12 @@ impl RuntimeOutput for CliSessionOutput {
         self.terminal.start_assistant_message();
     }
 
+    fn assistant_attempt_reset(&self) {
+        if let Err(error) = self.record(SessionEvent::AssistantAttemptReset) {
+            eprintln!("failed to append assistant attempt reset event: {error}");
+        }
+    }
+
     fn assistant_delta(&self, text: &str) -> Result<()> {
         self.record(SessionEvent::AssistantDelta {
             text: text.to_string(),

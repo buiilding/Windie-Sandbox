@@ -1,12 +1,16 @@
 //! Bifrost Responses HTTP client.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Client;
+use reqwest::header::RETRY_AFTER;
 
 use crate::conversation::Message;
 use crate::tool::ToolSchema;
 
+use super::error::LlmError;
 use super::model::{BaseUrl, ModelName};
 use super::responses::{ResponsesInputTokensRequest, ResponsesRequest};
 use super::serialization::{
@@ -136,12 +140,20 @@ impl BifrostClient {
             .json(&request)
             .send()
             .await
-            .context("failed to send responses request")?;
+            .map_err(|error| {
+                anyhow::Error::new(LlmError::transport(
+                    format!("failed to send responses request: {error}"),
+                    error.is_timeout(),
+                ))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
+            let retry_after = retry_after_from_headers(response.headers());
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("responses request failed with {status}: {body}"));
+            return Err(LlmError::from_http_response(status.as_u16(), &body)
+                .with_retry_after(retry_after)
+                .into());
         }
 
         let mut stream = response.bytes_stream();
@@ -150,7 +162,12 @@ impl BifrostClient {
         let mut state = AssistantStreamState::default();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("failed to read responses stream")?;
+            let chunk = chunk.map_err(|error| {
+                anyhow::Error::new(LlmError::transport(
+                    format!("failed to read responses stream: {error}"),
+                    error.is_timeout(),
+                ))
+            })?;
 
             // Network chunks can split inside UTF-8 characters or SSE lines, so
             // bytes are decoded separately from line parsing.
@@ -171,4 +188,15 @@ impl BifrostClient {
 
         Ok(response)
     }
+}
+
+/// Parses the numeric form of HTTP `Retry-After` used by OpenRouter and
+/// compatible gateways. Date-form retry headers are intentionally ignored
+/// because the local gateway does not expose a trusted clock contract here.
+fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
 }

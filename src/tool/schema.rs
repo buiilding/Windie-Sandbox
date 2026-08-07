@@ -83,6 +83,7 @@ impl ToolSchema {
 /// Permission lane used by policy before a provider execution.
 pub enum ToolPermission {
     ExternalProcess,
+    Network,
     PluginCode,
 }
 

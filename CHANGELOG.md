@@ -6,6 +6,49 @@ This changelog is intentionally curated from the repository history. It records
 meaningful product, runtime, and developer-facing changes rather than every
 individual commit or internal edit.
 
+## [Unreleased]
+
+- Fixed Streamable HTTP MCP tool execution by using async HTTP sessions and
+  per-provider async pooling, preventing Parallel Search calls from panicking
+  inside Tokio workers and leaving sessions stuck as running.
+
+## [0.3.1] - 2026-08-07
+
+- Prevented stale model-catalog refresh requests from overwriting newer
+  results, while preserving the last known-good catalog during transient
+  provider failures.
+- Added a Motion Primitives-style shimmer effect to the live Inspector thinking
+  label, with reduced-motion support and muted theme-aware text.
+- Migrated the Inspector animation dependency from Framer Motion to the
+  current Motion package for future animated components.
+- Added an animated thinking orb to the Inspector reasoning lane while the
+  assistant is actively processing.
+- Prefer GPT-5.6 Luna, Kimi K3, then Claude Sonnet 4.5 as Windie's initial
+  models when they are available, with catalog fallback for other providers.
+- Added built-in Kimi Code provider support through Bifrost, including API-key setup,
+  model discovery, streaming chat, and tool use.
+- Pinned the reviewed Kimi Code gateway integration to its merged Bifrost
+  stable-branch commit.
+- Redesigned the Inspector welcome page with a centered hero, clearer
+  typography, and a more visible background grid.
+- Added welcome-page buttons for exploring extensions and configuring LLM
+  providers.
+- Removed the combined onboarding overlay and made the welcome page switch to
+  a new-chat action after an LLM provider and extension are both ready.
+- Added bounded runtime retries for transient model-provider failures, while
+  discarding failed partial assistant output and keeping retries invisible in
+  the Inspector.
+- Added the public release workflow guide for maintainers, including separate
+  stable-branch and vendor-PR handling for Bifrost and the Inspector.
+- Let the Inspector manage structured Bifrost model providers, including
+  custom and local providers.
+- Documented the public release workflow, including versioning, checks,
+  submodule pins, pull requests, tags, and release verification.
+- Added native Streamable HTTP MCP transport support with persistent sessions,
+  SSE/JSON responses, 404 recovery, and safe credential handling.
+- Added the curated Parallel Search MCP provider with optional Bearer
+  authentication.
+
 ## [0.3.0] - 2026-08-06
 
 - Added Chrome DevTools MCP as an extension for browser use.
@@ -157,7 +200,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1
 [0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0
 [0.2.10]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.10
 [0.2.9]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.9

@@ -55,7 +55,7 @@ impl ProviderManifest {
             description: description.into(),
             kind: ToolProviderKind::Mcp,
             transport: ProviderTransport::Stdio,
-            launch: ProviderLaunch {
+            launch: ProviderLaunch::Stdio {
                 program: program.into(),
                 args: args
                     .iter()
@@ -70,6 +70,39 @@ impl ProviderManifest {
             runtime: ProviderRuntime::Native,
             package: None,
             scope: ProviderScope::Local,
+            authentication: ProviderAuthentication::None,
+            category: "other".to_string(),
+            tags: Vec::new(),
+            documentation_url: None,
+            setup_guide: Vec::new(),
+        }
+    }
+
+    /// Builds the initial manifest shape for a hosted Streamable HTTP MCP.
+    pub fn mcp_streamable_http(
+        provider_id: impl Into<String>,
+        display_name: impl Into<String>,
+        description: impl Into<String>,
+        url: impl Into<String>,
+        platforms: Vec<ProviderPlatform>,
+        secrets: Vec<ProviderSecret>,
+        permissions: Vec<ProviderPermission>,
+    ) -> Self {
+        Self {
+            provider_id: ToolProviderId::new(provider_id),
+            display_name: display_name.into(),
+            author: String::new(),
+            description: description.into(),
+            kind: ToolProviderKind::Mcp,
+            transport: ProviderTransport::StreamableHttp,
+            launch: ProviderLaunch::StreamableHttp { url: url.into() },
+            platforms,
+            dependencies: Vec::new(),
+            secrets,
+            permissions,
+            runtime: ProviderRuntime::Native,
+            package: None,
+            scope: ProviderScope::Cloud,
             authentication: ProviderAuthentication::None,
             category: "other".to_string(),
             tags: Vec::new(),
@@ -174,6 +207,7 @@ pub enum ProviderScope {
 pub enum ProviderAuthentication {
     None,
     ApiKey,
+    OptionalApiKey,
     Environment,
     OAuth,
 }
@@ -183,13 +217,15 @@ pub enum ProviderAuthentication {
 /// Transport used between Windie and a provider.
 pub enum ProviderTransport {
     Stdio,
+    StreamableHttp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Process launch information for a provider manifest.
-pub struct ProviderLaunch {
-    pub program: String,
-    pub args: Vec<String>,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProviderLaunch {
+    Stdio { program: String, args: Vec<String> },
+    StreamableHttp { url: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +299,15 @@ impl ProviderSecret {
             env_key: env_key.into(),
             description: description.into(),
             required: true,
+        }
+    }
+
+    /// Creates an optional provider secret declaration.
+    pub fn optional(env_key: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            env_key: env_key.into(),
+            description: description.into(),
+            required: false,
         }
     }
 }

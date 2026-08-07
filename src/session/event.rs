@@ -28,6 +28,7 @@ pub enum SessionEvent {
         name: Option<String>,
         arguments_delta: Option<String>,
     },
+    AssistantAttemptReset,
     AssistantMessageSaved {
         message_id: String,
     },
@@ -54,6 +55,7 @@ impl SessionEvent {
             Self::AssistantDelta { .. } => "assistant_delta",
             Self::ReasoningDelta { .. } => "reasoning_delta",
             Self::ToolCallDelta { .. } => "tool_call_delta",
+            Self::AssistantAttemptReset => "assistant_attempt_reset",
             Self::AssistantMessageSaved { .. } => "assistant_message_saved",
             Self::ToolResultSaved { .. } => "tool_result_saved",
             Self::WaitingForApproval => "waiting_for_approval",

@@ -9,7 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::*;
 use crate::conversation::{Message, MessageMetadata, ToolCall, ToolCallId};
 use crate::llm::{
-    AssistantResponse, FinishReason, LlmStreamEvent, PromptCacheRequest, ReasoningRequest,
+    AssistantResponse, FinishReason, LlmError, LlmErrorKind, LlmStreamEvent, PromptCacheRequest,
+    ReasoningRequest,
 };
 use crate::mcp::McpCommand;
 use crate::tool::{
@@ -34,6 +35,38 @@ impl RuntimeOutput for NoopOutput {
 
     fn assistant_delta(&self, _text: &str) -> Result<()> {
         Ok(())
+    }
+
+    fn end_assistant_message(&self) {}
+
+    fn assistant_tool_calls(&self, _tool_calls: &[ToolCall]) {}
+}
+
+struct AttemptRecordingOutput {
+    deltas: Mutex<Vec<String>>,
+    resets: Mutex<usize>,
+}
+
+impl AttemptRecordingOutput {
+    fn new() -> Self {
+        Self {
+            deltas: Mutex::new(Vec::new()),
+            resets: Mutex::new(0),
+        }
+    }
+}
+
+impl RuntimeOutput for AttemptRecordingOutput {
+    fn start_assistant_message(&self) {}
+
+    fn assistant_delta(&self, text: &str) -> Result<()> {
+        self.deltas.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+
+    fn assistant_attempt_reset(&self) {
+        *self.resets.lock().unwrap() += 1;
+        self.deltas.lock().unwrap().clear();
     }
 
     fn end_assistant_message(&self) {}
@@ -92,6 +125,50 @@ impl RuntimeLlm for FailingLlm {
         F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
     {
         Err(anyhow!("llm failed"))
+    }
+}
+
+struct RetryOnceLlm {
+    calls: Mutex<usize>,
+}
+
+impl RetryOnceLlm {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(0),
+        }
+    }
+}
+
+impl RuntimeLlm for RetryOnceLlm {
+    async fn stream<F>(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _reasoning: Option<&ReasoningRequest>,
+        _prompt_cache: Option<&PromptCacheRequest>,
+        mut handle_delta: F,
+    ) -> Result<AssistantResponse>
+    where
+        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
+    {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        if *calls == 1 {
+            handle_delta(LlmStreamEvent::AssistantDelta("partial"))?;
+            return Err(LlmError::new(
+                LlmErrorKind::ProviderOverloaded,
+                "provider is temporarily overloaded",
+            )
+            .into());
+        }
+
+        handle_delta(LlmStreamEvent::AssistantDelta("recovered"))?;
+        Ok(AssistantResponse {
+            content: "recovered".to_string(),
+            metadata: MessageMetadata::default(),
+            finish_reason: Some(FinishReason::Stop),
+        })
     }
 }
 
@@ -678,6 +755,36 @@ async fn run_head_saves_assistant_message() {
         messages[1].parent_message_id.as_deref(),
         messages[0].id.as_deref()
     );
+}
+
+#[tokio::test]
+async fn run_head_retries_transient_provider_failure_before_persisting() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let output = AttemptRecordingOutput::new();
+    let llm = RetryOnceLlm::new();
+
+    let assistant_message = run_latest_head_once(&output, &llm, &mut store, &conversation_id)
+        .await
+        .unwrap();
+
+    assert_eq!(assistant_message.content, "recovered");
+    assert_eq!(*llm.calls.lock().unwrap(), 2);
+    assert_eq!(*output.resets.lock().unwrap(), 1);
+    assert_eq!(output.deltas.lock().unwrap().as_slice(), ["recovered"]);
+
+    let messages = store.load_messages(&conversation_id).unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .count(),
+        1
+    );
+    assert_eq!(messages.last().unwrap().content, "recovered");
 }
 
 #[tokio::test]
