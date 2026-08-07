@@ -10,7 +10,7 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use reqwest::blocking::{Client, RequestBuilder, Response};
+use reqwest::{Client, RequestBuilder, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -33,7 +33,7 @@ pub(super) struct StreamableHttpSession {
 
 impl StreamableHttpSession {
     /// Builds the HTTP client and completes the MCP initialization handshake.
-    pub(super) fn start(endpoint: McpHttpEndpoint) -> Result<Self> {
+    pub(super) async fn start(endpoint: McpHttpEndpoint) -> Result<Self> {
         let client = Client::builder()
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
             .build()
@@ -45,24 +45,27 @@ impl StreamableHttpSession {
             protocol_version: MCP_PROTOCOL_VERSION.to_string(),
             next_id: 0,
         };
-        session.initialize()?;
+        session.initialize().await?;
         Ok(session)
     }
 
     /// Sends one MCP request and returns its JSON-RPC result.
-    pub(super) fn call(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
+    pub(super) async fn call(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
         self.next_id += 1;
         let request_id = self.next_id;
         let request = request_value(request_id, method, params);
 
-        match self.send_request(&request, method, Some(request_id)) {
+        match self.send_request(&request, method, Some(request_id)).await {
             Ok(Some(result)) => Ok(result),
             Ok(None) => Err(anyhow!(
                 "MCP HTTP response for {method} did not include a result"
             )),
             Err(error) if is_status(&error, 404) && self.session_id.is_some() => {
-                self.initialize()?;
-                match self.send_request(&request, method, Some(request_id))? {
+                self.initialize().await?;
+                match self
+                    .send_request(&request, method, Some(request_id))
+                    .await?
+                {
                     Some(result) => Ok(result),
                     None => Err(anyhow!(
                         "MCP HTTP response for {method} did not include a result"
@@ -74,14 +77,14 @@ impl StreamableHttpSession {
     }
 
     /// Sends one MCP notification, accepting the normal HTTP 202 response.
-    fn notify(&mut self, method: &str, params: Option<Value>) -> Result<()> {
+    async fn notify(&mut self, method: &str, params: Option<Value>) -> Result<()> {
         let request = notification_value(method, params);
-        self.send_request(&request, method, None)?;
+        self.send_request(&request, method, None).await?;
         Ok(())
     }
 
     /// Performs initialization without carrying over an expired session.
-    fn initialize(&mut self) -> Result<()> {
+    async fn initialize(&mut self) -> Result<()> {
         self.session_id = None;
         self.protocol_version = MCP_PROTOCOL_VERSION.to_string();
         self.next_id = self.next_id.max(1);
@@ -102,17 +105,18 @@ impl StreamableHttpSession {
                 ),
                 "initialize",
                 Some(request_id),
-            )?
+            )
+            .await?
             .ok_or_else(|| anyhow!("MCP HTTP initialize response was empty"))?;
 
         if let Some(protocol_version) = result.get("protocolVersion").and_then(Value::as_str) {
             self.protocol_version = protocol_version.to_string();
         }
-        self.notify("notifications/initialized", None)
+        self.notify("notifications/initialized", None).await
     }
 
     /// Sends one HTTP request and decodes its JSON-RPC response.
-    fn send_request(
+    async fn send_request(
         &mut self,
         request: &Value,
         method: &str,
@@ -137,6 +141,7 @@ impl StreamableHttpSession {
 
         let response = builder
             .send()
+            .await
             .with_context(|| format!("MCP HTTP request failed for {method}"))?;
         self.capture_session_id(&response);
 
@@ -160,6 +165,7 @@ impl StreamableHttpSession {
             .to_ascii_lowercase();
         let body = response
             .text()
+            .await
             .with_context(|| format!("failed to read MCP HTTP response for {method}"))?;
         if body.trim().is_empty() {
             return Ok(None);
@@ -184,9 +190,9 @@ impl StreamableHttpSession {
     }
 }
 
-impl Drop for StreamableHttpSession {
+impl StreamableHttpSession {
     /// Terminates the remote MCP session on idle cleanup or process shutdown.
-    fn drop(&mut self) {
+    pub(super) async fn shutdown(&mut self) {
         let Some(session_id) = self.session_id.take() else {
             return;
         };
@@ -201,7 +207,7 @@ impl Drop for StreamableHttpSession {
             return;
         };
         builder = builder.header("MCP-Protocol-Version", &self.protocol_version);
-        let _ = builder.send();
+        let _ = builder.send().await;
     }
 }
 
@@ -411,8 +417,8 @@ mod tests {
         assert_eq!(timeout.timeout_seconds(), 300);
     }
 
-    #[test]
-    fn session_uses_streamable_http_headers_and_cleans_up() {
+    #[tokio::test]
+    async fn session_uses_streamable_http_headers_and_cleans_up() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let endpoint_url: &'static str =
@@ -452,9 +458,11 @@ mod tests {
                 url: endpoint_url,
                 authorization: McpHttpAuthorization::Anonymous,
             })
+            .await
             .unwrap();
-            let result = session.call("tools/list", None).unwrap();
+            let result = session.call("tools/list", None).await.unwrap();
             assert_eq!(result["tools"], json!([]));
+            session.shutdown().await;
         }
 
         let requests = server.join().unwrap();
@@ -482,8 +490,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn expired_session_reinitializes_and_retries_once() {
+    #[tokio::test]
+    async fn expired_session_reinitializes_and_retries_once() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let endpoint_url: &'static str =
@@ -531,9 +539,11 @@ mod tests {
                 url: endpoint_url,
                 authorization: McpHttpAuthorization::Anonymous,
             })
+            .await
             .unwrap();
-            let result = session.call("tools/list", None).unwrap();
+            let result = session.call("tools/list", None).await.unwrap();
             assert_eq!(result["tools"], json!([]));
+            session.shutdown().await;
         }
 
         let requests = server.join().unwrap();

@@ -93,6 +93,16 @@ impl McpToolProvider {
             .collect())
     }
 
+    /// Lists tools through the async transport path used by runtime execution.
+    pub(in crate::tool_provider) async fn list_tools_async(&self) -> Result<Vec<ToolDefinition>> {
+        self.prepare()?;
+        Ok(mcp::list_tools_with_transport_async(self.transport)
+            .await?
+            .into_iter()
+            .map(|tool| self.definition_from_mcp_tool(tool))
+            .collect())
+    }
+
     /// Prepares the provider package without starting its MCP protocol.
     pub(in crate::tool_provider) fn prepare_package(&self) -> Result<()> {
         let Some(command) = self.package_command else {

@@ -42,18 +42,21 @@ impl McpToolProvider {
         };
         self.prepare()?;
         let result = match if let Some(session_pool) = session_pool {
-            session_pool.call_tool_with_transport(
-                self.provider_id.as_str(),
-                self.transport,
-                attached_tool.provider.tool_name.as_str(),
-                arguments,
-            )
+            session_pool
+                .call_tool_with_transport(
+                    self.provider_id.as_str(),
+                    self.transport,
+                    attached_tool.provider.tool_name.as_str(),
+                    arguments,
+                )
+                .await
         } else {
-            crate::mcp::call_tool_with_transport(
+            crate::mcp::call_tool_with_transport_async(
                 self.transport,
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
             )
+            .await
         } {
             Ok(result) => result,
             Err(error) => {

@@ -8,6 +8,10 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Fixed Streamable HTTP MCP tool execution by using async HTTP sessions and
+  per-provider async pooling, preventing Parallel Search calls from panicking
+  inside Tokio workers and leaving sessions stuck as running.
+
 ## [0.3.1] - 2026-08-07
 
 - Prevented stale model-catalog refresh requests from overwriting newer

@@ -206,7 +206,8 @@ pub(crate) async fn execute_pending_tool_call(
     registry: &ToolProviderRegistry,
 ) -> Result<ToolExecutionResult> {
     if attached_tool.provider.kind == ToolProviderKind::Builtin {
-        return execute_builtin_tool_call(store, conversation_id, pending, attached_tool, registry);
+        return execute_builtin_tool_call(store, conversation_id, pending, attached_tool, registry)
+            .await;
     }
 
     registry.call_tool(attached_tool, &pending.tool_call).await
@@ -312,7 +313,7 @@ pub(crate) fn attached_tool_can_execute(
 }
 
 /// Executes one Windie-owned control tool and returns its compact model result.
-fn execute_builtin_tool_call(
+async fn execute_builtin_tool_call(
     store: &mut Store,
     conversation_id: &ConversationId,
     pending: &PendingToolCall,
@@ -331,7 +332,11 @@ fn execute_builtin_tool_call(
         LIST_PROVIDERS_TOOL_NAME => Ok(ToolExecutionResult {
             tool_call_id: pending.tool_call.id.clone(),
             tool_name: pending.tool_call.name().to_string(),
-            content: list_attachable_providers(store, registry)?,
+            content: list_attachable_providers(
+                registry,
+                enabled_provider_manifests(store, registry)?,
+            )
+            .await?,
             parts: Vec::new(),
             success: true,
         }),
@@ -359,7 +364,8 @@ fn execute_builtin_tool_call(
                 conversation_id,
                 &crate::tool::ToolProviderId::new(provider_id),
                 registry,
-            );
+            )
+            .await;
 
             let Err(error) = attachment else {
                 return Ok(ToolExecutionResult {
@@ -386,13 +392,13 @@ fn execute_builtin_tool_call(
 }
 
 /// Formats the attachable provider list exactly as model-facing plain text.
-fn list_attachable_providers(store: &Store, registry: &ToolProviderRegistry) -> Result<String> {
+async fn list_attachable_providers(
+    registry: &ToolProviderRegistry,
+    manifests: Vec<crate::tool_provider::ProviderManifest>,
+) -> Result<String> {
     let mut lines = vec!["provider_id, description".to_string()];
-    for manifest in registry.provider_manifests() {
-        if !store.provider_is_enabled(&manifest.provider_id)? {
-            continue;
-        }
-        let Some(status) = registry.provider_status(&manifest.provider_id) else {
+    for manifest in manifests {
+        let Some(status) = registry.provider_status_async(&manifest.provider_id).await else {
             continue;
         };
         if status.available {
@@ -407,8 +413,23 @@ fn list_attachable_providers(store: &Store, registry: &ToolProviderRegistry) -> 
     Ok(lines.join("\n"))
 }
 
+/// Loads the enabled provider manifests before entering the async catalog
+/// lookup path. SQLite connections are intentionally not held across awaits.
+fn enabled_provider_manifests(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+) -> Result<Vec<crate::tool_provider::ProviderManifest>> {
+    let mut manifests = Vec::new();
+    for manifest in registry.provider_manifests() {
+        if store.provider_is_enabled(&manifest.provider_id)? {
+            manifests.push(manifest);
+        }
+    }
+    Ok(manifests)
+}
+
 /// Validates and attaches every tool from one enabled, healthy provider.
-fn attach_provider_to_conversation(
+async fn attach_provider_to_conversation(
     store: &mut Store,
     conversation_id: &ConversationId,
     provider_id: &crate::tool::ToolProviderId,
@@ -424,7 +445,7 @@ fn attach_provider_to_conversation(
             "provider is not installed, enabled, and healthy: {provider_id}"
         )));
     }
-    let Some(status) = registry.provider_status(provider_id) else {
+    let Some(status) = registry.provider_status_async(provider_id).await else {
         return Err(error::not_found(format!(
             "provider does not exist: {provider_id}"
         )));
@@ -441,7 +462,8 @@ fn attach_provider_to_conversation(
         .map(|tool| tool.schema_name)
         .collect::<HashSet<_>>();
     let new_tools = registry
-        .list_provider_tools(provider_id)?
+        .list_provider_tools_async(provider_id)
+        .await?
         .into_iter()
         .filter(|tool| !existing_names.contains(&tool.schema_name))
         .map(|tool| tool.attached_tool())
