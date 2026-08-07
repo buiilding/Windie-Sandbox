@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Migrated the Inspector animation dependency from Framer Motion to the
+  current Motion package for future animated components.
 - Added an animated thinking orb to the Inspector reasoning lane while the
   assistant is actively processing.
 - Prefer GPT-5.6 Luna, Kimi K3, then Claude Sonnet 4.5 as Windie's initial
