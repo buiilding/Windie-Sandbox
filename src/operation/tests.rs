@@ -43,7 +43,7 @@ fn builds_conversation_prompt_cache_request() {
 }
 
 #[test]
-fn prefers_the_windie_openrouter_default_when_available() {
+fn prefers_the_windie_model_defaults_in_order() {
     let model = preferred_model(vec![
         ModelInfo {
             id: "openrouter/ai21/jamba-large-1.7".to_string(),
@@ -52,7 +52,13 @@ fn prefers_the_windie_openrouter_default_when_available() {
             max_output_tokens: None,
         },
         ModelInfo {
-            id: DEFAULT_MODEL_ID.to_string(),
+            id: "anthropic/claude-sonnet-4-5".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: "kimi-code/k3-256k".to_string(),
             context_length: None,
             max_input_tokens: None,
             max_output_tokens: None,
@@ -60,7 +66,34 @@ fn prefers_the_windie_openrouter_default_when_available() {
     ])
     .unwrap();
 
-    assert_eq!(model.as_str(), DEFAULT_MODEL_ID);
+    assert_eq!(model.as_str(), "kimi-code/k3-256k");
+}
+
+#[test]
+fn prefers_openrouter_before_kimi_and_anthropic() {
+    let model = preferred_model(vec![
+        ModelInfo {
+            id: "anthropic/claude-sonnet-4-5".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: "openrouter/openai/gpt-5.6-luna".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+        ModelInfo {
+            id: "kimi-code/k3-256k".to_string(),
+            context_length: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+        },
+    ])
+    .unwrap();
+
+    assert_eq!(model.as_str(), "openrouter/openai/gpt-5.6-luna");
 }
 
 #[test]

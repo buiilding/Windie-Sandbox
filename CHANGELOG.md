@@ -8,8 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
-- Prefer OpenRouter's GPT-5.6 Luna as Windie's initial model when it is
-  available, with catalog fallback for other providers.
+- Prefer GPT-5.6 Luna, Kimi K3, then Claude Sonnet 4.5 as Windie's initial
+  models when they are available, with catalog fallback for other providers.
 - Added built-in Kimi Code provider support through Bifrost, including API-key setup,
   model discovery, streaming chat, and tool use.
 - Redesigned the Inspector welcome page with a centered hero, clearer
