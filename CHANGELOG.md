@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Redesigned the Inspector welcome page with a centered hero, clearer
+  typography, and a more visible background grid.
 - Added bounded runtime retries for transient model-provider failures, while
   discarding failed partial assistant output and keeping retries invisible in
   the Inspector.
