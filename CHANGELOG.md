@@ -14,6 +14,8 @@ individual commit or internal edit.
   typography, and a more visible background grid.
 - Added welcome-page buttons for exploring extensions and configuring LLM
   providers.
+- Removed the combined onboarding overlay and made the welcome page switch to
+  a new-chat action after an LLM provider and extension are both ready.
 - Added bounded runtime retries for transient model-provider failures, while
   discarding failed partial assistant output and keeping retries invisible in
   the Inspector.
