@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added an animated thinking orb to the Inspector reasoning lane while the
+  assistant is actively processing.
 - Prefer GPT-5.6 Luna, Kimi K3, then Claude Sonnet 4.5 as Windie's initial
   models when they are available, with catalog fallback for other providers.
 - Added built-in Kimi Code provider support through Bifrost, including API-key setup,
