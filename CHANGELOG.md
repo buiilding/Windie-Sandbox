@@ -8,6 +8,10 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Constrained Basic Memory's LiteLLM dependency below 1.92 during provider
+  setup and launch to avoid unsupported local Rust/maturin builds on macOS.
+- Cleaned up Inspector sidebar behavior with reliable menu dismissal, consistent
+  graph/provider headers, and constrained provider API-key inputs.
 - Fixed Streamable HTTP MCP tool execution by using async HTTP sessions and
   per-provider async pooling, preventing Parallel Search calls from panicking
   inside Tokio workers and leaving sessions stuck as running.
