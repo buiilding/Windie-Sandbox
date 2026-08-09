@@ -8,6 +8,7 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added light and dark Windie app icon assets under `assets/branding/`.
 - Added real provider uninstall cleanup: active MCP sessions stop first,
   provider-owned caches/configuration and secrets are removed, CUA Driver uses
   its official purge uninstaller, and shared Node/uv runtimes are retained
