@@ -15,7 +15,9 @@
   <a href="AGENTS.md"><img src="https://img.shields.io/badge/Agents-AGENTS.md-lightgrey?style=for-the-badge" alt="Agents: AGENTS.md"></a>
 </p>
 
-**AI that lives on your computer.**
+**Control what your AI sees.**
+
+*AI that lives on your computer.*
 
 Windie is a local AI runtime written in Rust that lets you control what your AI sees. Edit, add, or remove messages, branch from any point, and keep every path in one conversation tree. Its daemon keeps sessions running independently of the UI, with permissioned tools and open extensions.
 

@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Aligned the landing design guidelines, navigation lockup, CTA copy, and
+  README headline hierarchy with the current Windie identity.
 - Updated the landing-page marketing identity PRD and clarified the Desktop
   Commander capability preview in the README.
 - Added light and dark Windie app icon assets under `assets/branding/`.
