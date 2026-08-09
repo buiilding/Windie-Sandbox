@@ -27,6 +27,11 @@ const BASIC_MEMORY_PROJECT_NAME: &str = "windie-memory";
 const BASIC_MEMORY_PROJECT_ENV: &str = "BASIC_MEMORY_MCP_PROJECT";
 const BASIC_MEMORY_MEMORY_RELATIVE: &str = "memory";
 const BASIC_MEMORY_UV_CACHE_RELATIVE: &str = "mcp/basic-memory/uv-cache";
+// Basic Memory 0.22.1 allows LiteLLM versions below 2.0, so uv can select
+// LiteLLM 1.95.0, which can require a local Rust/maturin build on macOS.
+// Keep the provider on the last known broadly installable dependency range
+// until Basic Memory publishes its corrected dependency metadata.
+const BASIC_MEMORY_LITELLM_CONSTRAINT: &str = "litellm<1.92";
 const BASIC_MEMORY_PACKAGE_ENV: &[crate::mcp::McpEnv] = &[crate::mcp::McpEnv {
     key: "UV_CACHE_DIR",
     value: crate::mcp::McpEnvValue::WindieDataDir(BASIC_MEMORY_UV_CACHE_RELATIVE),
@@ -47,6 +52,8 @@ pub(super) fn definition() -> McpProviderDefinition {
     let command = McpCommand {
         program: "uvx",
         args: &[
+            McpArgument::Literal("--with"),
+            McpArgument::Literal(BASIC_MEMORY_LITELLM_CONSTRAINT),
             McpArgument::Literal("basic-memory"),
             McpArgument::Literal("mcp"),
         ],
@@ -92,6 +99,8 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: Some(McpCommand {
             program: "uvx",
             args: &[
+                McpArgument::Literal("--with"),
+                McpArgument::Literal(BASIC_MEMORY_LITELLM_CONSTRAINT),
                 McpArgument::Literal("--from"),
                 McpArgument::Literal("basic-memory"),
                 McpArgument::Literal("python"),

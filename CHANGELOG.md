@@ -10,6 +10,8 @@ individual commit or internal edit.
 
 - Constrained Basic Memory's LiteLLM dependency below 1.92 during provider
   setup and launch to avoid unsupported local Rust/maturin builds on macOS.
+- Added regression coverage for Basic Memory's runtime and package-preparation
+  LiteLLM constraints.
 - Cleaned up Inspector sidebar behavior with reliable menu dismissal, consistent
   graph/provider headers, and constrained provider API-key inputs.
 - Fixed Streamable HTTP MCP tool execution by using async HTTP sessions and

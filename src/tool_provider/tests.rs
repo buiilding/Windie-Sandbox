@@ -12,7 +12,7 @@ use super::mcp::{
     mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview,
 };
 use crate::conversation::{ToolCall, UnsavedMessagePart};
-use crate::mcp::{self as mcp_protocol, McpCommand, McpTool, McpTransport};
+use crate::mcp::{self as mcp_protocol, McpArgument, McpCommand, McpTool, McpTransport};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchemaName,
@@ -161,7 +161,27 @@ fn basic_memory_manifest_declares_local_runtime_requirements() {
         panic!("Basic Memory must use stdio");
     };
     assert_eq!(program, "uvx");
-    assert_eq!(args, &vec!["basic-memory".to_string(), "mcp".to_string()]);
+    assert_eq!(
+        args,
+        &vec![
+            "--with".to_string(),
+            "litellm<1.92".to_string(),
+            "basic-memory".to_string(),
+            "mcp".to_string(),
+        ]
+    );
+    assert_eq!(
+        provider.package_command.unwrap().args,
+        &[
+            McpArgument::Literal("--with"),
+            McpArgument::Literal("litellm<1.92"),
+            McpArgument::Literal("--from"),
+            McpArgument::Literal("basic-memory"),
+            McpArgument::Literal("python"),
+            McpArgument::Literal("-c"),
+            McpArgument::Literal("pass"),
+        ]
+    );
     assert!(
         matches!(provider.transport, McpTransport::Stdio { command, .. } if command.env.iter().any(|variable| variable.key == "BASIC_MEMORY_MCP_PROJECT"))
     );
