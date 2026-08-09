@@ -68,7 +68,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Install Desktop Commander.",
                 "Review filesystem permissions.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/desktop-commander.md")),
         provider_id: "desktop-commander",
         schema_prefix: "desktop_commander",
         display_name: "Desktop Commander",

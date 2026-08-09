@@ -67,7 +67,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Log into websites in that profile once; Windie reuses the session later.",
                 "The normal Chrome profile and its open tabs are not used.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/chrome-devtools.md")),
         provider_id: "chrome-devtools",
         schema_prefix: "chrome_devtools",
         display_name: "Chrome DevTools",

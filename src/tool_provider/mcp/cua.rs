@@ -41,7 +41,8 @@ pub(super) fn definition() -> McpProviderDefinition {
             &["computer-use", "local"],
             None,
             &["Install CUA Driver.", "Allow computer-control permissions."],
-        ),
+        )
+        .with_readme(include_str!("readmes/cua-driver.md")),
         provider_id: "cua-driver",
         schema_prefix: "cua_driver",
         display_name: "CUA Driver",

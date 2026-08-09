@@ -1,24 +1,21 @@
 //! Tests for tool provider catalog, MCP mapping, and result normalization.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
 use anyhow::anyhow;
 use serde_json::{Value, json};
 
 use super::ToolProviderRegistry;
 use super::mcp::{
-    McpProviderDefinition, McpToolProvider, approved_mcp_provider, mcp_schema_name,
-    mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview,
+    McpToolProvider, approved_mcp_provider, mcp_schema_name, mcp_tool_call_failure_result,
+    mcp_tool_result_parts, tool_result_preview,
 };
 use crate::conversation::{ToolCall, UnsavedMessagePart};
-use crate::mcp::{self as mcp_protocol, McpArgument, McpCommand, McpTool, McpTransport};
+use crate::mcp::{self as mcp_protocol, McpArgument, McpTool, McpTransport};
 use crate::tool::{
-    AttachedTool, ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission,
-    ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchemaName,
+    AttachedTool, ProviderToolName, ToolAnnotations, ToolPermission, ToolProviderId,
+    ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
+use crate::tool_provider::ProviderSecret;
 use crate::tool_provider::manifest::ProviderTransport;
-use crate::tool_provider::{ProviderManifest, ProviderSecret};
 
 fn approved_cua_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("cua-driver").unwrap())
@@ -86,6 +83,7 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
             assert_eq!(manifest.transport, ProviderTransport::Stdio);
         }
         assert!(!manifest.description.is_empty());
+        assert!(!manifest.readme_markdown.is_empty());
         match &manifest.launch {
             crate::tool_provider::manifest::ProviderLaunch::Stdio { program, .. } => {
                 assert!(!program.is_empty())
@@ -304,26 +302,6 @@ fn parallel_manifest_uses_optional_network_authentication() {
     assert_eq!(tool.schema_name.as_str(), "parallel_search__web_search");
     assert_eq!(tool.permissions, vec![ToolPermission::Network]);
     assert_eq!(tool.annotations.read_only, Some(true));
-}
-
-fn test_cache() -> Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>> {
-    Arc::new(Mutex::new(HashMap::new()))
-}
-
-fn cached_test_tool(provider_id: &str, tool_name: &str) -> ToolDefinition {
-    ToolDefinition {
-        schema_name: ToolSchemaName::new(format!("{provider_id}__{tool_name}")),
-        display_name: tool_name.to_string(),
-        description: format!("{tool_name} description"),
-        parameters: json!({"type":"object"}),
-        provider: ToolProviderRef::new(
-            ToolProviderId::new(provider_id),
-            ProviderToolName::new(tool_name),
-            ToolProviderKind::Mcp,
-        ),
-        permissions: vec![ToolPermission::ExternalProcess],
-        annotations: ToolAnnotations::default(),
-    }
 }
 
 #[test]
@@ -593,118 +571,4 @@ fn registry_recognizes_brightdata_as_approved_provider() {
     };
 
     assert!(registry.can_execute(&attached_tool));
-}
-
-#[test]
-fn registry_finds_tools_from_cached_provider_catalog() {
-    let provider_id = ToolProviderId::new("missing-mcp");
-    let tool = cached_test_tool(provider_id.as_str(), "cached_tool");
-    let catalog_cache = test_cache();
-    catalog_cache
-        .lock()
-        .unwrap()
-        .insert(provider_id.clone(), vec![tool.clone()]);
-    let registry = ToolProviderRegistry {
-        mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
-            manifest: ProviderManifest::mcp_stdio(
-                "missing-mcp",
-                "Missing MCP",
-                "Test MCP provider.",
-                "windie-missing-mcp-provider",
-                &[],
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
-            provider_id: "missing-mcp",
-            schema_prefix: "missing_mcp",
-            display_name: "Missing MCP",
-            transport: McpTransport::stdio(McpCommand {
-                program: "windie-missing-mcp-provider",
-                args: &[],
-                env: &[],
-            }),
-            package_command: None,
-            readiness_probe: None,
-            setup: None,
-        })],
-        mcp_session_pool: None,
-        catalog_cache,
-    };
-
-    let found = registry
-        .find_tool(&provider_id, &ProviderToolName::new("cached_tool"))
-        .unwrap();
-
-    assert_eq!(found, Some(tool));
-}
-
-#[test]
-fn unavailable_mcp_provider_does_not_hide_other_provider_tools() {
-    let available_provider_id = ToolProviderId::new("available-mcp");
-    let available_tool = cached_test_tool(available_provider_id.as_str(), "cached_tool");
-    let catalog_cache = test_cache();
-    catalog_cache
-        .lock()
-        .unwrap()
-        .insert(available_provider_id, vec![available_tool.clone()]);
-    let registry = ToolProviderRegistry {
-        mcp_providers: vec![
-            McpToolProvider::new(McpProviderDefinition {
-                manifest: ProviderManifest::mcp_stdio(
-                    "available-mcp",
-                    "Available MCP",
-                    "Test MCP provider.",
-                    "windie-missing-mcp-provider",
-                    &[],
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                ),
-                provider_id: "available-mcp",
-                schema_prefix: "available_mcp",
-                display_name: "Available MCP",
-                transport: McpTransport::stdio(McpCommand {
-                    program: "windie-missing-mcp-provider",
-                    args: &[],
-                    env: &[],
-                }),
-                package_command: None,
-                readiness_probe: None,
-                setup: None,
-            }),
-            McpToolProvider::new(McpProviderDefinition {
-                manifest: ProviderManifest::mcp_stdio(
-                    "missing-mcp",
-                    "Missing MCP",
-                    "Test MCP provider.",
-                    "windie-missing-mcp-provider",
-                    &[],
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                ),
-                provider_id: "missing-mcp",
-                schema_prefix: "missing_mcp",
-                display_name: "Missing MCP",
-                transport: McpTransport::stdio(McpCommand {
-                    program: "windie-missing-mcp-provider",
-                    args: &[],
-                    env: &[],
-                }),
-                package_command: None,
-                readiness_probe: None,
-                setup: None,
-            }),
-        ],
-        mcp_session_pool: None,
-        catalog_cache,
-    };
-
-    let tools = registry.list_available_tools().unwrap();
-
-    assert_eq!(tools, vec![available_tool]);
 }

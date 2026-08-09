@@ -34,6 +34,8 @@ Mental model:
 - store/mod.rs: Public boundary and re-exports for store folder.
 - store/provider.rs: Persist Windie's tool provider lifecycle records in SQLite:
 installed, enabled, disabled, broken, or updating, does not install these packages.
+- store/provider_tool_catalog.rs: Persists the last discovered MCP tool schemas
+  for each installed provider, including fresh, stale, and unavailable status.
 - store/compaction.rs: summary checkpoint store, saves and loads compaction checkpoints.
 - store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
 - store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
@@ -122,9 +124,9 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tool_provider/: Manages executable tools.
 - tool_provider/builtin.rs: defines Windie-owned control tools that are added to model context at runtime, currently provider discovery and provider attachment; they are not persisted as conversation tools.
 - tool_provider/lifecycle.rs: defines the persisted lifecycle states for tool providers.
-- tool_provider/manifest.rs: defines the metadata contract for a provider: identity, launch command, platform, dependencies, secrets, permissions, scope and setup information.
+- tool_provider/manifest.rs: defines the metadata contract for a provider: identity, launch command, platform, dependencies, secrets, permissions, scope, setup information, and Windie-managed user-facing README content.
 - tool_provider/mod.rs: Public boundary and re-exports for tool_provider folder.
-- tool_provider/registry.rs: Provider-neutral catalog and execution dispatch. The current registry contains approved MCP providers and Windie built-ins; skill and plugin execution are not implemented.
+- tool_provider/registry.rs: Provider-neutral live discovery and execution dispatch. Persisted provider catalogs live in store; the current registry contains approved MCP providers and Windie built-ins; skill and plugin execution are not implemented.
 - tool_provider/mcp/mod.rs: Public boundary and re-exports for tool_provider/mcp folder.
 - tool_provider/mcp/approved.rs: Approved MCP providers for Windie.
 - tool_provider/mcp/blender.rs: Blender MCP definition.

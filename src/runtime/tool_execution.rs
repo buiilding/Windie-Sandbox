@@ -333,10 +333,10 @@ async fn execute_builtin_tool_call(
             tool_call_id: pending.tool_call.id.clone(),
             tool_name: pending.tool_call.name().to_string(),
             content: list_attachable_providers(
+                store,
                 registry,
                 enabled_provider_manifests(store, registry)?,
-            )
-            .await?,
+            )?,
             parts: Vec::new(),
             success: true,
         }),
@@ -364,8 +364,7 @@ async fn execute_builtin_tool_call(
                 conversation_id,
                 &crate::tool::ToolProviderId::new(provider_id),
                 registry,
-            )
-            .await;
+            );
 
             let Err(error) = attachment else {
                 return Ok(ToolExecutionResult {
@@ -392,16 +391,17 @@ async fn execute_builtin_tool_call(
 }
 
 /// Formats the attachable provider list exactly as model-facing plain text.
-async fn list_attachable_providers(
-    registry: &ToolProviderRegistry,
+fn list_attachable_providers(
+    store: &Store,
+    _registry: &ToolProviderRegistry,
     manifests: Vec<crate::tool_provider::ProviderManifest>,
 ) -> Result<String> {
     let mut lines = vec!["provider_id, description".to_string()];
     for manifest in manifests {
-        let Some(status) = registry.provider_status_async(&manifest.provider_id).await else {
+        let Some(catalog) = store.load_provider_tool_catalog(&manifest.provider_id)? else {
             continue;
         };
-        if status.available {
+        if catalog.status != crate::store::ProviderCatalogStatus::Unavailable {
             lines.push(format!(
                 "{}, {}",
                 manifest.provider_id.as_str(),
@@ -429,7 +429,7 @@ fn enabled_provider_manifests(
 }
 
 /// Validates and attaches every tool from one enabled, healthy provider.
-async fn attach_provider_to_conversation(
+fn attach_provider_to_conversation(
     store: &mut Store,
     conversation_id: &ConversationId,
     provider_id: &crate::tool::ToolProviderId,
@@ -445,25 +445,23 @@ async fn attach_provider_to_conversation(
             "provider is not installed, enabled, and healthy: {provider_id}"
         )));
     }
-    let Some(status) = registry.provider_status_async(provider_id).await else {
-        return Err(error::not_found(format!(
-            "provider does not exist: {provider_id}"
-        )));
-    };
-    if !status.available {
-        return Err(error::invalid_request(format!(
-            "provider is not healthy: {provider_id}"
-        )));
-    }
-
     let existing_names = store
         .load_attached_tools(conversation_id)?
         .into_iter()
         .map(|tool| tool.schema_name)
         .collect::<HashSet<_>>();
-    let new_tools = registry
-        .list_provider_tools_async(provider_id)
-        .await?
+    let Some(catalog) = store.load_provider_tool_catalog(provider_id)? else {
+        return Err(error::invalid_request(format!(
+            "provider has no discovered tool catalog: {provider_id}"
+        )));
+    };
+    if catalog.status == crate::store::ProviderCatalogStatus::Unavailable {
+        return Err(error::invalid_request(format!(
+            "provider tool catalog is unavailable: {provider_id}"
+        )));
+    }
+    let new_tools = catalog
+        .tools
         .into_iter()
         .filter(|tool| !existing_names.contains(&tool.schema_name))
         .map(|tool| tool.attached_tool())

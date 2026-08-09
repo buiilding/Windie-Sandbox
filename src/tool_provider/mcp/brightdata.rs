@@ -64,7 +64,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Create a Bright Data API token.",
                 "Enter the token when prompted.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/brightdata.md")),
         provider_id: "brightdata",
         schema_prefix: "brightdata",
         display_name: "Bright Data",

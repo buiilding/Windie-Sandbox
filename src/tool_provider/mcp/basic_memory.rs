@@ -91,7 +91,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Install Basic Memory.",
                 "Create Windie's isolated memory project.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/basic-memory.md")),
         provider_id: "basic-memory",
         schema_prefix: "basic_memory",
         display_name: "Basic Memory",

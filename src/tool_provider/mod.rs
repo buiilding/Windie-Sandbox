@@ -23,4 +23,4 @@ pub use manifest::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
 };
-pub use registry::{ToolProviderRegistry, ToolProviderStatus};
+pub use registry::ToolProviderRegistry;

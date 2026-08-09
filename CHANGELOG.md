@@ -8,6 +8,10 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added Windie-managed provider README content and a SQLite-backed provider
+  tool catalog. Provider setup and health checks refresh the catalog, while
+  tool listings and extension views read the persisted schemas without starting
+  providers.
 - Handled new-conversation attempts without configured LLM keys as setup guidance instead of an uncaught runtime error.
 - Start the Inspector with the sidebar collapsed while keeping the activity bar visible.
 - Let activity-bar buttons toggle the Inspector sidebar like VS Code.

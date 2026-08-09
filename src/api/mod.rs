@@ -33,7 +33,7 @@ use crate::error::{self as windie_error, WindieErrorKind};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::local;
-use crate::operation::{self, InspectionReport, MessageInputPart};
+use crate::operation::{self, InspectionReport, MessageInputPart, ToolProviderStatus};
 use crate::output::TerminalOutput;
 use crate::session::{
     Session, SessionEventRecord, SessionId, SessionManager, SessionStatus, SessionSubscription,
@@ -42,7 +42,7 @@ use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
+use crate::tool_provider::ToolProviderRegistry;
 
 mod conversation;
 mod env;

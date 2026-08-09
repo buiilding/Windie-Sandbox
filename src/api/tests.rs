@@ -733,8 +733,7 @@ async fn system_prompt_and_tools_are_tree_wide() {
 #[tokio::test]
 async fn batch_attach_tools_route_attaches_provider_tools() {
     let db_path = temp_database_path();
-    let app =
-        test_app_with_tool_registry(db_path.clone(), Arc::new(registry_with_cached_test_tool()));
+    let app = test_app_with_tool_registry(db_path.clone(), Arc::new(registry_with_test_tool()));
     let created = response_json(
         app.clone()
             .oneshot(authed_request(Method::POST, "/api/conversations", None))
@@ -746,6 +745,9 @@ async fn batch_attach_tools_route_attaches_provider_tools() {
     let provider_id = crate::tool::ToolProviderId::new("desktop-commander");
     let store = Store::open_at(&db_path).unwrap();
     store.install_provider(&provider_id).unwrap();
+    store
+        .save_provider_tool_catalog(&provider_id, &[desktop_commander_read_file_definition()])
+        .unwrap();
     store
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();
@@ -873,7 +875,7 @@ async fn approve_later_multi_tool_call_records_raw_order_error() {
 #[tokio::test]
 async fn deny_first_multi_tool_call_records_result_without_querying() {
     let db_path = temp_database_path();
-    let registry = Arc::new(registry_with_cached_test_tool());
+    let registry = Arc::new(registry_with_test_tool());
     let app = test_app_with_tool_registry(db_path.clone(), registry.clone());
     let conversation_id = insert_attached_multi_tool_call_assistant(&db_path);
     let head_message_id = latest_message_id(&db_path, &conversation_id);
@@ -1630,7 +1632,7 @@ async fn wait_for_run_event_count(
         .unwrap()
 }
 
-fn registry_with_cached_test_tool() -> ToolProviderRegistry {
+fn registry_with_test_tool() -> ToolProviderRegistry {
     ToolProviderRegistry::with_test_mcp_provider(
         "desktop-commander",
         "desktop_commander",
@@ -1640,7 +1642,6 @@ fn registry_with_cached_test_tool() -> ToolProviderRegistry {
             args: &[],
             env: &[],
         },
-        vec![desktop_commander_read_file_definition()],
     )
 }
 
@@ -1688,9 +1689,12 @@ fn insert_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
 fn insert_attached_multi_tool_call_assistant(db_path: &PathBuf) -> ConversationId {
     let mut store = Store::open_at(db_path).unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let registry = registry_with_cached_test_tool();
+    let registry = registry_with_test_tool();
     let provider_id = crate::tool::ToolProviderId::new("desktop-commander");
     store.install_provider(&provider_id).unwrap();
+    store
+        .save_provider_tool_catalog(&provider_id, &[desktop_commander_read_file_definition()])
+        .unwrap();
     store
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();

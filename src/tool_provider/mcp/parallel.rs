@@ -45,7 +45,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Parallel Search works anonymously for basic usage.",
                 "Add PARALLEL_API_KEY for higher rate limits.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/parallel-search.md")),
         provider_id: "parallel-search",
         schema_prefix: "parallel_search",
         display_name: "Parallel Search",

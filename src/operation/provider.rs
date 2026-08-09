@@ -11,18 +11,31 @@ use std::env;
 
 use crate::error;
 use crate::local;
-use crate::store::{InstalledProvider, Store};
+use crate::store::{InstalledProvider, ProviderCatalogStatus, ProviderToolCatalog, Store};
 use crate::tool::ToolProviderId;
 use crate::tool_provider::{
     ProviderInstallState, ProviderManifest, ProviderReadiness, ToolProviderRegistry,
-    ToolProviderStatus,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 /// One known provider plus its persisted local lifecycle record.
 pub struct ProviderInstallation {
     pub manifest: ProviderManifest,
     pub installation: Option<InstalledProvider>,
+    pub tool_catalog: Option<ProviderToolCatalog>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One provider's persisted tool-catalog status for clients.
+pub struct ToolProviderStatus {
+    pub provider_id: ToolProviderId,
+    pub display_name: String,
+    pub manifest: ProviderManifest,
+    pub available: bool,
+    pub tool_count: usize,
+    pub catalog_status: ProviderCatalogStatus,
+    pub discovered_at: Option<i64>,
+    pub error: Option<String>,
 }
 
 /// Lists every provider known to the registry and its persisted state.
@@ -36,6 +49,7 @@ pub fn list_provider_installations(
         .map(|manifest| {
             Ok(ProviderInstallation {
                 installation: store.load_installed_provider(&manifest.provider_id)?,
+                tool_catalog: store.load_provider_tool_catalog(&manifest.provider_id)?,
                 manifest,
             })
         })
@@ -65,18 +79,18 @@ pub(super) fn require_enabled_provider(
     Ok(())
 }
 
-/// Lists only enabled providers and probes only those providers for tools.
+/// Lists only enabled providers using their persisted catalog state.
 pub fn enabled_provider_statuses(
     store: &Store,
     registry: &ToolProviderRegistry,
 ) -> Result<Vec<ToolProviderStatus>> {
     let mut statuses = Vec::new();
     for manifest in registry.provider_manifests() {
-        if store.provider_is_enabled(&manifest.provider_id)?
-            && let Some(status) = registry.provider_status(&manifest.provider_id)
-        {
-            statuses.push(status);
+        if !store.provider_is_enabled(&manifest.provider_id)? {
+            continue;
         }
+        let catalog = store.load_provider_tool_catalog(&manifest.provider_id)?;
+        statuses.push(provider_tool_status(manifest, catalog));
     }
     Ok(statuses)
 }
@@ -107,20 +121,26 @@ pub fn setup_provider(
     store.install_provider(provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
-    let setup_result = prepare_provider_setup(store, registry, provider_id, &manifest);
+    let setup_result =
+        prepare_provider_setup(store, registry, provider_id, &manifest).and_then(|tools| {
+            store.save_provider_tool_catalog(provider_id, &tools)?;
+            Ok(tools)
+        });
 
     match setup_result {
         Ok(_) => {
             store.record_provider_health(provider_id, ProviderInstallState::Enabled, None)?;
         }
         Err(provider_error) => {
+            let provider_error_text = provider_error.to_string();
+            store.record_provider_tool_catalog_error(provider_id, &provider_error_text)?;
             let readiness = readiness_for_provider_error(provider_id, &manifest, &provider_error);
             store.record_provider_result(
                 provider_id,
                 ProviderInstallState::Broken,
                 readiness,
                 Some(next_action_for_readiness(readiness)),
-                Some(provider_error.to_string().as_str()),
+                Some(provider_error_text.as_str()),
             )?;
         }
     }
@@ -195,21 +215,27 @@ pub fn health_check_provider(
         ProviderInstallState::Installed
     };
 
-    match registry
-        .list_provider_tools(provider_id)
-        .and_then(|_| registry.check_provider_readiness(provider_id))
-    {
+    let discovery = registry
+        .discover_provider_tools(provider_id)
+        .and_then(|tools| {
+            store.save_provider_tool_catalog(provider_id, &tools)?;
+            registry.check_provider_readiness(provider_id)
+        });
+
+    match discovery {
         Ok(_) => {
             store.record_provider_health(provider_id, state_after_check, None)?;
         }
         Err(provider_error) => {
+            let provider_error_text = provider_error.to_string();
+            store.record_provider_tool_catalog_error(provider_id, &provider_error_text)?;
             let readiness = readiness_for_provider_error(provider_id, &manifest, &provider_error);
             store.record_provider_result(
                 provider_id,
                 ProviderInstallState::Broken,
                 readiness,
                 Some(next_action_for_readiness(readiness)),
-                Some(provider_error.to_string().as_str()),
+                Some(provider_error_text.as_str()),
             )?;
         }
     }
@@ -227,20 +253,26 @@ pub fn repair_provider(
     require_installation(store, provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
-    let repair_result = prepare_provider_setup(store, registry, provider_id, &manifest);
+    let repair_result =
+        prepare_provider_setup(store, registry, provider_id, &manifest).and_then(|tools| {
+            store.save_provider_tool_catalog(provider_id, &tools)?;
+            Ok(tools)
+        });
 
     match repair_result {
         Ok(_) => {
             store.record_provider_health(provider_id, ProviderInstallState::Installed, None)?;
         }
         Err(provider_error) => {
+            let provider_error_text = provider_error.to_string();
+            store.record_provider_tool_catalog_error(provider_id, &provider_error_text)?;
             let readiness = readiness_for_provider_error(provider_id, &manifest, &provider_error);
             store.record_provider_result(
                 provider_id,
                 ProviderInstallState::Broken,
                 readiness,
                 Some(next_action_for_readiness(readiness)),
-                Some(provider_error.to_string().as_str()),
+                Some(provider_error_text.as_str()),
             )?;
         }
     }
@@ -344,7 +376,7 @@ fn prepare_provider_setup(
 
     store.set_provider_progress(provider_id, "connecting to MCP server")?;
     store.set_provider_progress(provider_id, "checking MCP tools")?;
-    registry.list_provider_tools(provider_id)
+    registry.discover_provider_tools(provider_id)
 }
 
 /// Maps a setup/health error to the stable UI-facing readiness category.
@@ -431,7 +463,38 @@ fn provider_installation(
     Ok(ProviderInstallation {
         manifest: ensure_manifest(registry, provider_id)?,
         installation: store.load_installed_provider(provider_id)?,
+        tool_catalog: store.load_provider_tool_catalog(provider_id)?,
     })
+}
+
+/// Converts one persisted catalog into the compact API status used by tool
+/// attachment surfaces. The status is intentionally read-only and never starts
+/// the provider process.
+fn provider_tool_status(
+    manifest: ProviderManifest,
+    catalog: Option<ProviderToolCatalog>,
+) -> ToolProviderStatus {
+    let (available, tool_count, catalog_status, discovered_at, error) = match catalog {
+        Some(catalog) => (
+            catalog.status != ProviderCatalogStatus::Unavailable,
+            catalog.tools.len(),
+            catalog.status,
+            catalog.discovered_at,
+            catalog.last_error,
+        ),
+        None => (false, 0, ProviderCatalogStatus::Unavailable, None, None),
+    };
+
+    ToolProviderStatus {
+        provider_id: manifest.provider_id.clone(),
+        display_name: manifest.display_name.clone(),
+        manifest,
+        available,
+        tool_count,
+        catalog_status,
+        discovered_at,
+        error,
+    }
 }
 
 #[cfg(test)]

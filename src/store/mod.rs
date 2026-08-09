@@ -8,6 +8,7 @@ mod compaction;
 mod conversation;
 mod message;
 mod provider;
+mod provider_tool_catalog;
 mod schema;
 mod session;
 mod system_prompt;
@@ -16,6 +17,7 @@ mod tool_schema;
 pub use compaction::Compaction;
 pub use conversation::ConversationInfo;
 pub use provider::InstalledProvider;
+pub use provider_tool_catalog::{ProviderCatalogStatus, ProviderToolCatalog};
 
 #[cfg(test)]
 use schema::DATABASE_SCHEMA_VERSION;

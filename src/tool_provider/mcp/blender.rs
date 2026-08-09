@@ -70,7 +70,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Install Blender MCP.",
                 "Start Blender with its MCP bridge enabled.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/blender-mcp.md")),
         provider_id: "blender-mcp",
         schema_prefix: "blender_mcp",
         display_name: "Blender MCP",
