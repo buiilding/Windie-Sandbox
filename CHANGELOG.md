@@ -8,6 +8,7 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Start the Inspector with the sidebar collapsed while keeping the activity bar visible.
 - Let activity-bar buttons toggle the Inspector sidebar like VS Code.
 - Removed the orange hover highlight from the Inspector sidebar resize handle.
 - Constrained Basic Memory's LiteLLM dependency below 1.92 during provider
