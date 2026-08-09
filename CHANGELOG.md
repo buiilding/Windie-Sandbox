@@ -8,6 +8,7 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Handled new-conversation attempts without configured LLM keys as setup guidance instead of an uncaught runtime error.
 - Start the Inspector with the sidebar collapsed while keeping the activity bar visible.
 - Let activity-bar buttons toggle the Inspector sidebar like VS Code.
 - Removed the orange hover highlight from the Inspector sidebar resize handle.
