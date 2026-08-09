@@ -145,8 +145,10 @@ When a task needs a capability Windie doesn't currently have attached, it looks,
 
 #### Desktop Commander Preview
 
+Desktop Commander capability exposed through Windie; this is not Windie's Inspector.
+
 <p align="center">
-  <img src="assets/DC-preview.png" alt="Desktop Commander Preview" width="100%">
+  <img src="assets/DC-preview.png" alt="Desktop Commander capability exposed through Windie" width="100%">
 </p>
 
 ### Plugins (0)

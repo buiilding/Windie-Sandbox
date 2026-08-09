@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Updated the landing-page marketing identity PRD and clarified the Desktop
+  Commander capability preview in the README.
 - Added light and dark Windie app icon assets under `assets/branding/`.
 - Added real provider uninstall cleanup: active MCP sessions stop first,
   provider-owned caches/configuration and secrets are removed, CUA Driver uses
