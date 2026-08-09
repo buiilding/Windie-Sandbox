@@ -207,6 +207,26 @@ impl ToolProviderRegistry {
         }
     }
 
+    /// Stops one provider's persistent MCP session before its runtime is
+    /// removed.
+    pub async fn stop_provider_sessions(&self, provider_id: &ToolProviderId) {
+        if let Some(session_pool) = &self.mcp_session_pool {
+            session_pool.stop_provider(provider_id.as_str()).await;
+        }
+    }
+
+    /// Removes one provider's Windie-owned runtime after its sessions stop.
+    pub fn uninstall_provider_runtime(
+        &self,
+        provider_id: &ToolProviderId,
+        remove_runtime: bool,
+    ) -> Result<()> {
+        let provider = self
+            .mcp_provider(provider_id)
+            .ok_or_else(|| error::not_found(format!("provider does not exist: {provider_id}")))?;
+        provider.uninstall(remove_runtime)
+    }
+
     /// Finds one approved MCP provider by its stable provider ID.
     fn mcp_provider(&self, provider_id: &ToolProviderId) -> Option<&McpToolProvider> {
         self.mcp_providers
@@ -245,6 +265,7 @@ impl ToolProviderRegistry {
                 package_command: None,
                 readiness_probe: None,
                 setup: None,
+                cleanup: crate::tool_provider::ProviderCleanup::None,
             })],
             mcp_session_pool: None,
         }

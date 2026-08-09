@@ -7,8 +7,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpHttpAuthorization, McpHttpEndpoint, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderManifest, ProviderPermission, ProviderPlatform, ProviderScope,
-    ProviderSecret,
+    ProviderAuthentication, ProviderCleanup, ProviderManifest, ProviderPermission,
+    ProviderPlatform, ProviderScope, ProviderSecret,
 };
 
 const PARALLEL_MCP_URL: &str = "https://search.parallel.ai/mcp";
@@ -54,5 +54,6 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: None,
         readiness_probe: None,
         setup: None,
+        cleanup: ProviderCleanup::None,
     }
 }

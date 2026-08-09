@@ -3,8 +3,9 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
-    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
+    ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
+    ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
+    ProviderSecret,
 };
 
 const BRIGHTDATA_NPM_CACHE_RELATIVE: &str = "mcp/brightdata/npm-cache";
@@ -84,5 +85,6 @@ pub(super) fn definition() -> McpProviderDefinition {
         }),
         readiness_probe: None,
         setup: None,
+        cleanup: ProviderCleanup::WindieDirectories(&["mcp/brightdata"]),
     }
 }

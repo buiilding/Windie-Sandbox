@@ -132,10 +132,23 @@ pub(super) async fn uninstall_provider(
     State(state): State<ApiState>,
     Path(provider_id): Path<String>,
 ) -> ApiResult<DeletedResponse> {
-    let store = open_store(&state)?;
     let provider_id = ToolProviderId::new(provider_id);
+    state
+        .tool_registry
+        .stop_provider_sessions(&provider_id)
+        .await;
 
-    operation::uninstall_provider(&store, &state.tool_registry, &provider_id)?;
+    let store_path = state.store_path;
+    let registry = state.tool_registry;
+    tokio::task::spawn_blocking(move || {
+        let mut store = match store_path.as_ref() {
+            Some(path) => Store::open_at(path),
+            None => Store::open(),
+        }?;
+        operation::uninstall_provider(&mut store, &registry, &provider_id)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("provider uninstall worker failed: {error}"))??;
 
     Ok(Json(DeletedResponse { deleted: true }))
 }

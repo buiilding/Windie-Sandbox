@@ -14,4 +14,7 @@ pub use setup::{
     user_home_dir, windie_home_dir,
 };
 
-pub(crate) use runtime::{ensure_runtime, path_with_command_parent, resolve_command};
+pub(crate) use runtime::{
+    ensure_runtime, path_with_command_parent, remove_managed_runtime, resolve_command,
+};
+pub(crate) use setup::{remove_windie_directories, uninstall_cua_driver};

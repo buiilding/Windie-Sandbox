@@ -19,8 +19,8 @@ use super::provider::McpProviderSetup;
 use crate::local;
 use crate::mcp::{McpArgument, McpCommand, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
-    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
+    ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
+    ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
 };
 
 const BASIC_MEMORY_PROJECT_NAME: &str = "windie-memory";
@@ -112,6 +112,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         }),
         readiness_probe: None,
         setup: Some(McpProviderSetup::BasicMemoryProject),
+        cleanup: ProviderCleanup::BasicMemory,
     }
 }
 
@@ -189,6 +190,79 @@ pub(super) fn prepare() -> Result<()> {
         ));
     }
 
+    Ok(())
+}
+
+/// Removes Windie's Basic Memory project registration and package cache.
+///
+/// The project registration is global to Basic Memory, so it must be removed
+/// through Basic Memory's CLI. The `memory` directory itself is user data and
+/// remains intact. A project pointing anywhere else is rejected rather than
+/// allowing an uninstall to mutate another user's project.
+pub(in crate::tool_provider) fn uninstall() -> Result<()> {
+    let project_name = project_name()?;
+    let memory_dir = windie_data_dir().join(BASIC_MEMORY_MEMORY_RELATIVE);
+    let uvx = local::resolve_command("uvx")?;
+    let mut projects_command = Command::new(&uvx);
+    if let Some(path) = local::path_with_command_parent(&uvx) {
+        projects_command.env("PATH", path);
+    }
+    projects_command.env(
+        "UV_CACHE_DIR",
+        windie_data_dir().join(BASIC_MEMORY_UV_CACHE_RELATIVE),
+    );
+    let projects = projects_command
+        .args(["basic-memory", "project", "list", "--json"])
+        .output()
+        .context("failed to list Basic Memory projects during uninstall")?;
+    if !projects.status.success() {
+        return Err(anyhow!(
+            "Basic Memory project listing failed during uninstall: {}",
+            command_error(&projects.stderr)
+        ));
+    }
+
+    let project_list: Value = serde_json::from_slice(&projects.stdout)
+        .context("failed to decode Basic Memory project list during uninstall")?;
+    if let Some(configured_path) = project_path(&project_list, &project_name) {
+        let expected_path = canonical_path(&memory_dir)?;
+        let actual_path = canonical_path(Path::new(configured_path))?;
+        if actual_path != expected_path {
+            return Err(anyhow!(
+                "refusing to remove Basic Memory project {project_name}: it points to {} instead of {}",
+                actual_path.display(),
+                expected_path.display()
+            ));
+        }
+
+        let mut remove_command = Command::new(&uvx);
+        if let Some(path) = local::path_with_command_parent(&uvx) {
+            remove_command.env("PATH", path);
+        }
+        remove_command.env(
+            "UV_CACHE_DIR",
+            windie_data_dir().join(BASIC_MEMORY_UV_CACHE_RELATIVE),
+        );
+        let removed = remove_command
+            .args([
+                "basic-memory",
+                "project",
+                "remove",
+                project_name.as_str(),
+                "--local",
+            ])
+            .output()
+            .context("failed to remove Basic Memory Windie project")?;
+        if !removed.status.success() {
+            return Err(anyhow!(
+                "failed to remove Basic Memory project {project_name}: {}",
+                command_error(&removed.stderr)
+            ));
+        }
+    }
+
+    local::remove_windie_directories(&["mcp/basic-memory"])?;
+    local::unset_env_values(&[BASIC_MEMORY_PROJECT_ENV.to_string()])?;
     Ok(())
 }
 

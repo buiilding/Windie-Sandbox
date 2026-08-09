@@ -14,8 +14,8 @@ use super::provider::{McpProviderDefinition, McpProviderSetup};
 use crate::local;
 use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
-    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
+    ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
+    ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
 };
 
 const DESKTOP_COMMANDER_HOME_RELATIVE: &str = "mcp/desktop-commander";
@@ -91,6 +91,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         }),
         readiness_probe: None,
         setup: Some(McpProviderSetup::DesktopCommanderConfig),
+        cleanup: ProviderCleanup::WindieDirectories(&["mcp/desktop-commander"]),
     }
 }
 

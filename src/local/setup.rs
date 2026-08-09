@@ -46,6 +46,8 @@ const LLM_ENV_KEYS: &[&str] = &[
 ];
 const CUA_DRIVER_INSTALL_URL: &str =
     "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh";
+const CUA_DRIVER_UNINSTALL_URL: &str =
+    "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/uninstall.sh";
 
 /// Returns the current user's home directory across supported operating
 /// systems. Unix environments conventionally expose `HOME`; native Windows
@@ -330,6 +332,59 @@ pub fn unset_env_values(keys: &[String]) -> Result<PathBuf> {
     write_env_lines(&layout.env_file, &lines)?;
 
     Ok(layout.env_file)
+}
+
+/// Removes exact provider-owned directories beneath Windie's data root.
+///
+/// Provider cleanup supplies relative paths only. Symlinks and non-directory
+/// targets are rejected so an unexpected filesystem entry cannot redirect a
+/// recursive deletion outside Windie's boundary.
+pub(crate) fn remove_windie_directories(paths: &[&str]) -> Result<()> {
+    let root = absolute_path(&windie_home_dir()?)?;
+    for relative in paths {
+        let relative_path = Path::new(relative);
+        if relative_path.is_absolute()
+            || relative_path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(anyhow!(
+                "provider cleanup path must be relative and cannot contain '..': {relative}"
+            ));
+        }
+
+        let target = absolute_path(&root.join(relative_path))?;
+        if !target.starts_with(&root) {
+            return Err(anyhow!(
+                "provider cleanup path escapes Windie's data root: {relative}"
+            ));
+        }
+
+        let metadata = match fs::symlink_metadata(&target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect provider cleanup path: {}",
+                        target.display()
+                    )
+                });
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(anyhow!(
+                "refusing to remove provider cleanup path that is not a directory: {}",
+                target.display()
+            ));
+        }
+
+        fs::remove_dir_all(&target).with_context(|| {
+            format!("failed to remove provider directory: {}", target.display())
+        })?;
+    }
+
+    Ok(())
 }
 
 /// Installs or verifies one approved Windie runtime dependency.
@@ -684,6 +739,54 @@ fn install_cua_driver() -> Result<InstallReport> {
     })
 }
 
+/// Runs CUA Driver's official platform-specific uninstaller with purge mode.
+///
+/// The upstream scripts own process shutdown, permission revocation, app
+/// removal, and retained identity cleanup. Windie does not duplicate those
+/// platform-specific permission operations.
+pub(crate) fn uninstall_cua_driver() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "$ErrorActionPreference = 'Stop'; $env:CUA_DRIVER_RS_UNINSTALL_FORCE = '1'; $env:CUA_DRIVER_RS_UNINSTALL_PURGE = '1'; $path = Join-Path $env:TEMP 'windie-cua-uninstall.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{CUA_DRIVER_UNINSTALL_URL}' -OutFile $path; $code = 0; try {{ & $path; $code = if ($null -eq $LASTEXITCODE) {{ 0 }} else {{ $LASTEXITCODE }} }} finally {{ Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }}; exit $code"
+        );
+        let status = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
+            .status()
+            .context("failed to start cua-driver uninstaller")?;
+        if !status.success() {
+            return Err(anyhow!("cua-driver uninstaller failed"));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        require_command("curl")?;
+        require_command("bash")?;
+        let status = Command::new("bash")
+            .args([
+                "-c",
+                &format!(
+                    "curl -fsSL --proto '=https' --tlsv1.2 {CUA_DRIVER_UNINSTALL_URL} | bash -s -- --purge"
+                ),
+            ])
+            .status()
+            .context("failed to start cua-driver uninstaller")?;
+        if !status.success() {
+            return Err(anyhow!("cua-driver uninstaller failed"));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn install_cua_driver_windows() -> Result<()> {
     const INSTALL_URL: &str =
@@ -833,6 +936,9 @@ fn write_env_lines(path: &Path, lines: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn uninstall_rejects_home_root_and_overlapping_paths() {
@@ -878,6 +984,38 @@ mod tests {
         assert!(!windie_binary.exists());
         assert!(unrelated_file.exists());
         assert!(install_dir.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn provider_cleanup_removes_only_declared_directory() {
+        let _lock = ENVIRONMENT_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "windie-provider-cleanup-test-{}",
+            std::process::id()
+        ));
+        let cache = root.join("mcp/brightdata");
+        let sibling = root.join("mcp/keep");
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(cache.join("package.json"), "owned").unwrap();
+        fs::write(sibling.join("notes.txt"), "preserve").unwrap();
+
+        let previous_home = std::env::var_os("WINDIE_HOME");
+        unsafe {
+            std::env::set_var("WINDIE_HOME", &root);
+        }
+        let result = remove_windie_directories(&["mcp/brightdata"]);
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("WINDIE_HOME", value),
+                None => std::env::remove_var("WINDIE_HOME"),
+            }
+        }
+
+        result.unwrap();
+        assert!(!cache.exists());
+        assert!(sibling.join("notes.txt").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

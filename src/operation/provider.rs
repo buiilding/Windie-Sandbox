@@ -14,7 +14,8 @@ use crate::local;
 use crate::store::{InstalledProvider, ProviderCatalogStatus, ProviderToolCatalog, Store};
 use crate::tool::ToolProviderId;
 use crate::tool_provider::{
-    ProviderInstallState, ProviderManifest, ProviderReadiness, ToolProviderRegistry,
+    ProviderInstallState, ProviderManifest, ProviderReadiness, ProviderRuntime,
+    ToolProviderRegistry,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -282,11 +283,11 @@ pub fn repair_provider(
 
 /// Removes one provider from the persisted manager state.
 pub fn uninstall_provider(
-    store: &Store,
+    store: &mut Store,
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<()> {
-    ensure_manifest(registry, provider_id)?;
+    let manifest = ensure_manifest(registry, provider_id)?;
     let installation = require_installation(store, provider_id)?;
     if installation.state == ProviderInstallState::Updating {
         return Err(error::invalid_request(format!(
@@ -294,7 +295,46 @@ pub fn uninstall_provider(
         )));
     }
 
+    let remove_runtime =
+        !runtime_is_used_by_another_provider(store, registry, provider_id, manifest.runtime)?;
+    registry.uninstall_provider_runtime(provider_id, remove_runtime)?;
+
+    let secret_keys = manifest
+        .secrets
+        .iter()
+        .map(|secret| secret.env_key.clone())
+        .collect::<Vec<_>>();
+    if !secret_keys.is_empty() {
+        local::unset_env_values(&secret_keys)?;
+    }
+
     store.uninstall_provider(provider_id)
+}
+
+/// Returns whether another installed provider still needs this shared runtime.
+fn runtime_is_used_by_another_provider(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+    provider_id: &ToolProviderId,
+    runtime: ProviderRuntime,
+) -> Result<bool> {
+    if runtime == ProviderRuntime::Native {
+        return Ok(false);
+    }
+
+    for manifest in registry.provider_manifests() {
+        if manifest.provider_id == *provider_id || manifest.runtime != runtime {
+            continue;
+        }
+        if store
+            .load_installed_provider(&manifest.provider_id)?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn ensure_manifest(

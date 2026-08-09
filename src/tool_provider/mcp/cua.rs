@@ -3,8 +3,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpArgument, McpCommand, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPermission,
-    ProviderPlatform, ProviderScope,
+    ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
+    ProviderPermission, ProviderPlatform, ProviderScope,
 };
 
 /// Returns the code-approved CUA Driver MCP provider definition.
@@ -57,5 +57,6 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: None,
         readiness_probe: None,
         setup: None,
+        cleanup: ProviderCleanup::CuaDriver,
     }
 }

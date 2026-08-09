@@ -415,7 +415,7 @@ fn batch_attaches_available_provider_tools() {
 
 #[test]
 fn provider_manager_persists_lifecycle_transitions_and_health() {
-    let store = Store::open_memory().unwrap();
+    let mut store = Store::open_memory().unwrap();
     let registry = registry_with_test_tool();
     let provider_id = ToolProviderId::new("desktop-commander");
 
@@ -443,7 +443,7 @@ fn provider_manager_persists_lifecycle_transitions_and_health() {
         ProviderInstallState::Disabled
     );
 
-    uninstall_provider(&store, &registry, &provider_id).unwrap();
+    uninstall_provider(&mut store, &registry, &provider_id).unwrap();
     assert!(
         store
             .load_installed_provider(&provider_id)

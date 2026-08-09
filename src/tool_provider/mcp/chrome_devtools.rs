@@ -9,16 +9,23 @@ use super::McpProviderDefinition;
 use super::provider::McpProviderReadinessProbe;
 use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
-    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
+    ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
+    ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
 };
 
 const CHROME_DEVTOOLS_PACKAGE: &str = "chrome-devtools-mcp@1.6.0";
 const CHROME_DEVTOOLS_PROFILE_RELATIVE: &str = "mcp/chrome-devtools/profile";
-const CHROME_DEVTOOLS_ENV: &[McpEnv] = &[McpEnv {
-    key: "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS",
-    value: McpEnvValue::Literal("true"),
-}];
+const CHROME_DEVTOOLS_NPM_CACHE_RELATIVE: &str = "mcp/chrome-devtools/npm-cache";
+const CHROME_DEVTOOLS_ENV: &[McpEnv] = &[
+    McpEnv {
+        key: "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS",
+        value: McpEnvValue::Literal("true"),
+    },
+    McpEnv {
+        key: "NPM_CONFIG_CACHE",
+        value: McpEnvValue::WindieDataDir(CHROME_DEVTOOLS_NPM_CACHE_RELATIVE),
+    },
+];
 
 /// Returns the code-approved Chrome DevTools MCP provider definition.
 pub(super) fn definition() -> McpProviderDefinition {
@@ -87,6 +94,7 @@ pub(super) fn definition() -> McpProviderDefinition {
         }),
         readiness_probe: Some(McpProviderReadinessProbe::Tool("list_pages")),
         setup: None,
+        cleanup: ProviderCleanup::WindieDirectories(&[CHROME_DEVTOOLS_NPM_CACHE_RELATIVE]),
     }
 }
 

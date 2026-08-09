@@ -8,6 +8,13 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added real provider uninstall cleanup: active MCP sessions stop first,
+  provider-owned caches/configuration and secrets are removed, CUA Driver uses
+  its official purge uninstaller, and shared Node/uv runtimes are retained
+  while another installed provider needs them. Known limitation: Windie does
+  not yet persist ownership for pre-existing CUA installations or Basic Memory
+  project registrations, so uninstall may remove those resources if they are
+  configured through Windie's provider boundary.
 - Added Windie-managed provider README content and a SQLite-backed provider
   tool catalog. Provider setup and health checks refresh the catalog, while
   tool listings and extension views read the persisted schemas without starting

@@ -547,6 +547,16 @@ impl McpSessionPool {
         result
     }
 
+    /// Stops and forgets one provider's persistent session before its runtime
+    /// is removed from disk.
+    pub async fn stop_provider(&self, provider_id: &str) {
+        let session = self.sessions.lock().await.remove(provider_id);
+        if let Some(session) = session {
+            let mut session = session.lock().await;
+            session.shutdown().await;
+        }
+    }
+
     /// Returns a matching persistent session, creating it when necessary.
     async fn ensure_session(
         &self,

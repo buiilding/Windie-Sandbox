@@ -13,6 +13,7 @@ use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
+use crate::tool_provider::ProviderCleanup;
 use crate::tool_provider::manifest::ProviderManifest;
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,7 @@ pub(in crate::tool_provider) struct McpProviderDefinition {
     pub(in crate::tool_provider) package_command: Option<McpCommand>,
     pub(in crate::tool_provider) readiness_probe: Option<McpProviderReadinessProbe>,
     pub(in crate::tool_provider) setup: Option<McpProviderSetup>,
+    pub(in crate::tool_provider) cleanup: ProviderCleanup,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +59,7 @@ pub(in crate::tool_provider) struct McpToolProvider {
     pub(in crate::tool_provider) package_command: Option<McpCommand>,
     readiness_probe: Option<McpProviderReadinessProbe>,
     setup: Option<McpProviderSetup>,
+    cleanup: ProviderCleanup,
 }
 
 impl McpToolProvider {
@@ -71,6 +74,7 @@ impl McpToolProvider {
             package_command: definition.package_command,
             readiness_probe: definition.readiness_probe,
             setup: definition.setup,
+            cleanup: definition.cleanup,
         }
     }
 
@@ -170,6 +174,24 @@ impl McpToolProvider {
             Some(McpProviderSetup::DesktopCommanderConfig) => desktop_commander::prepare(),
             None => Ok(()),
         }
+    }
+
+    /// Removes this provider's Windie-owned local runtime and configuration.
+    pub(in crate::tool_provider) fn uninstall(&self, remove_runtime: bool) -> Result<()> {
+        match self.cleanup {
+            ProviderCleanup::None => {}
+            ProviderCleanup::CuaDriver => crate::local::uninstall_cua_driver()?,
+            ProviderCleanup::WindieDirectories(paths) => {
+                crate::local::remove_windie_directories(paths)?;
+            }
+            ProviderCleanup::BasicMemory => basic_memory::uninstall()?,
+        }
+
+        if remove_runtime {
+            crate::local::remove_managed_runtime(self.manifest.runtime)?;
+        }
+
+        Ok(())
     }
 
     /// Returns the permission lane required by the provider transport.
