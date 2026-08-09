@@ -8,6 +8,7 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Removed the orange hover highlight from the Inspector sidebar resize handle.
 - Constrained Basic Memory's LiteLLM dependency below 1.92 during provider
   setup and launch to avoid unsupported local Rust/maturin builds on macOS.
 - Added regression coverage for Basic Memory's runtime and package-preparation
