@@ -41,6 +41,9 @@ individual commit or internal edit.
 - Fixed Streamable HTTP MCP tool execution by using async HTTP sessions and
   per-provider async pooling, preventing Parallel Search calls from panicking
   inside Tokio workers and leaving sessions stuck as running.
+- Fixed the landing page mobile menu by making the open navigation an opaque,
+  full-height overlay with separated links, a full-width install CTA, and
+  background scroll locking.
 
 ## [0.3.1] - 2026-08-07
 
