@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Updated the Inspector submodule to merged commit `3509b03` in preparation for
+  the next release.
 - Replaced the Inspector's placeholder square branding with the circular Windie
   icon in the browser favicon and top bar.
 - Moved LLM Providers above Extensions in the Inspector activity bar.
