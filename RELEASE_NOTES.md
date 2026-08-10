@@ -10,10 +10,10 @@ for GitHub release descriptions; the detailed engineering history is kept in
   bar.
 - Improved conversation reading and navigation, including more reliable
   scrolling and clearer branch and fork actions.
+- Introduced Chrome DevTools setup for connecting to existing user Chrome profile.
 - Made Chrome DevTools setup clearer and safer when connecting to an existing
   Chrome profile.
-- Improved extension setup, provider cleanup, tool discovery, and provider
-  status information.
+- Improved extension description, setup, provider cleanup, and tool discovery.
 - Added clearer guidance when a model provider still needs to be configured.
 - Improved the landing page, community link, and release presentation.
 - Improved release communication with concise public notes alongside the
