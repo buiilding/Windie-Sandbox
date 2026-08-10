@@ -62,6 +62,10 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/tools/{provider_id}", get(list_provider_tools))
         .route("/api/providers", get(list_providers))
         .route(
+            "/api/providers/chrome-devtools/remote-debugging",
+            get(chrome_devtools_remote_debugging),
+        )
+        .route(
             "/api/providers/{provider_id}",
             get(get_provider).delete(uninstall_provider),
         )
@@ -70,6 +74,10 @@ fn api_router(state: ApiState) -> Router {
             post(install_provider),
         )
         .route("/api/providers/{provider_id}/setup", post(setup_provider))
+        .route(
+            "/api/providers/{provider_id}/configuration",
+            post(configure_provider),
+        )
         .route("/api/providers/{provider_id}/enable", post(enable_provider))
         .route(
             "/api/providers/{provider_id}/disable",

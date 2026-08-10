@@ -181,7 +181,7 @@ fn basic_memory_manifest_declares_local_runtime_requirements() {
         ]
     );
     assert!(
-        matches!(provider.transport, McpTransport::Stdio { command, .. } if command.env.iter().any(|variable| variable.key == "BASIC_MEMORY_MCP_PROJECT"))
+        matches!(provider.transport(), McpTransport::Stdio { command, .. } if command.env.iter().any(|variable| variable.key == "BASIC_MEMORY_MCP_PROJECT"))
     );
     assert!(
         manifest
@@ -251,7 +251,7 @@ fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
             .permissions
             .contains(&crate::tool_provider::ProviderPermission::Network)
     );
-    let McpTransport::Stdio { command, .. } = provider.transport else {
+    let McpTransport::Stdio { command, .. } = provider.transport() else {
         panic!("Chrome DevTools must use stdio");
     };
     assert!(command.env.iter().any(|variable| {
@@ -289,7 +289,7 @@ fn parallel_manifest_uses_optional_network_authentication() {
             .contains(&crate::tool_provider::ProviderPermission::Network)
     );
     assert!(
-        matches!(provider.transport, McpTransport::StreamableHttp { endpoint } if endpoint.url == "https://search.parallel.ai/mcp")
+        matches!(provider.transport(), McpTransport::StreamableHttp { endpoint } if endpoint.url == "https://search.parallel.ai/mcp")
     );
     let tool = provider.definition_from_mcp_tool(McpTool {
         name: "web_search".to_string(),

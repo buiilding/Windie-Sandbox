@@ -7,6 +7,26 @@
 
 use super::*;
 
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct ProviderSetupRequest {
+    pub(super) chrome_devtools_mode: Option<crate::tool_provider::ChromeDevToolsConnectionMode>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ProviderConfigurationRequest {
+    pub(super) chrome_devtools_mode: crate::tool_provider::ChromeDevToolsConnectionMode,
+}
+
+pub(super) async fn chrome_devtools_remote_debugging(
+    State(_state): State<ApiState>,
+) -> ApiResult<operation::ChromeDevToolsRemoteDebuggingStatus> {
+    Ok(Json(
+        tokio::task::spawn_blocking(operation::chrome_devtools_remote_debugging_status)
+            .await
+            .map_err(|error| anyhow::anyhow!("remote debugging probe failed: {error}"))?,
+    ))
+}
+
 pub(super) async fn list_providers(
     State(state): State<ApiState>,
 ) -> ApiResult<Vec<operation::ProviderInstallation>> {
@@ -51,9 +71,38 @@ pub(super) async fn install_provider(
 pub(super) async fn setup_provider(
     State(state): State<ApiState>,
     Path(provider_id): Path<String>,
+    body: Option<Json<ProviderSetupRequest>>,
 ) -> ApiResult<operation::ProviderInstallation> {
+    let mode = body.and_then(|Json(body)| body.chrome_devtools_mode);
     Ok(Json(
-        run_blocking_provider_operation(state, provider_id, operation::setup_provider).await?,
+        run_blocking_provider_setup(state, provider_id, mode).await?,
+    ))
+}
+
+pub(super) async fn configure_provider(
+    State(state): State<ApiState>,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ProviderConfigurationRequest>,
+) -> ApiResult<operation::ProviderInstallation> {
+    let provider_id_typed = ToolProviderId::new(provider_id.clone());
+    state
+        .tool_registry
+        .stop_provider_sessions(&provider_id_typed)
+        .await;
+    let store_path = state.store_path;
+    let registry = state.tool_registry;
+    let mode = body.chrome_devtools_mode;
+    Ok(Json(
+        tokio::task::spawn_blocking(move || {
+            let store = match store_path.as_ref() {
+                Some(path) => Store::open_at(path),
+                None => Store::open(),
+            }?;
+            let provider_id = ToolProviderId::new(provider_id);
+            operation::configure_provider(&store, &registry, &provider_id, mode)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider configuration worker failed: {error}"))??,
     ))
 }
 
@@ -116,6 +165,26 @@ async fn run_blocking_provider_operation(
     })
     .await
     .map_err(|error| anyhow::anyhow!("provider operation worker failed: {error}"))?
+}
+
+/// Runs provider setup with its optional connection mode on a blocking worker.
+async fn run_blocking_provider_setup(
+    state: ApiState,
+    provider_id: String,
+    mode: Option<crate::tool_provider::ChromeDevToolsConnectionMode>,
+) -> anyhow::Result<operation::ProviderInstallation> {
+    let store_path = state.store_path;
+    let registry = state.tool_registry;
+    tokio::task::spawn_blocking(move || {
+        let store = match store_path.as_ref() {
+            Some(path) => Store::open_at(path),
+            None => Store::open(),
+        }?;
+        let provider_id = ToolProviderId::new(provider_id);
+        operation::setup_provider_with_mode(&store, &registry, &provider_id, mode)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("provider setup worker failed: {error}"))?
 }
 
 pub(super) async fn health_check_provider(

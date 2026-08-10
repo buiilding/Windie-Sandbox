@@ -14,8 +14,8 @@ use crate::local;
 use crate::store::{InstalledProvider, ProviderCatalogStatus, ProviderToolCatalog, Store};
 use crate::tool::ToolProviderId;
 use crate::tool_provider::{
-    ProviderInstallState, ProviderManifest, ProviderReadiness, ProviderRuntime,
-    ToolProviderRegistry,
+    ChromeDevToolsConnectionMode, ProviderInstallState, ProviderManifest, ProviderReadiness,
+    ProviderRuntime, ToolProviderRegistry,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -24,6 +24,7 @@ pub struct ProviderInstallation {
     pub manifest: ProviderManifest,
     pub installation: Option<InstalledProvider>,
     pub tool_catalog: Option<ProviderToolCatalog>,
+    pub chrome_devtools_mode: Option<ChromeDevToolsConnectionMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +40,63 @@ pub struct ToolProviderStatus {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Result of Windie's backend-only Chrome remote-debugging preflight.
+pub struct ChromeDevToolsRemoteDebuggingStatus {
+    pub available: bool,
+    pub address: String,
+    pub browser: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Checks whether the user's Chrome remote-debugging server is reachable.
+pub fn chrome_devtools_remote_debugging_status() -> ChromeDevToolsRemoteDebuggingStatus {
+    let address = crate::tool_provider::remote_debugging_url();
+    let client = match reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(400))
+        .timeout(std::time::Duration::from_secs(1))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return ChromeDevToolsRemoteDebuggingStatus {
+                available: false,
+                address: address.to_string(),
+                browser: None,
+                error: Some(error.to_string()),
+            };
+        }
+    };
+
+    match client.get(address).send() {
+        Ok(response) if response.status().is_success() => {
+            let browser = response.json::<serde_json::Value>().ok().and_then(|body| {
+                body.get("Browser")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            });
+            ChromeDevToolsRemoteDebuggingStatus {
+                available: true,
+                address: address.to_string(),
+                browser,
+                error: None,
+            }
+        }
+        Ok(response) => ChromeDevToolsRemoteDebuggingStatus {
+            available: false,
+            address: address.to_string(),
+            browser: None,
+            error: Some(format!("Chrome returned {}", response.status())),
+        },
+        Err(error) => ChromeDevToolsRemoteDebuggingStatus {
+            available: false,
+            address: address.to_string(),
+            browser: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
 /// Lists every provider known to the registry and its persisted state.
 pub fn list_provider_installations(
     store: &Store,
@@ -51,6 +109,11 @@ pub fn list_provider_installations(
             Ok(ProviderInstallation {
                 installation: store.load_installed_provider(&manifest.provider_id)?,
                 tool_catalog: store.load_provider_tool_catalog(&manifest.provider_id)?,
+                chrome_devtools_mode: if manifest.provider_id.as_str() == "chrome-devtools" {
+                    Some(store.load_chrome_devtools_mode()?.unwrap_or_default())
+                } else {
+                    None
+                },
                 manifest,
             })
         })
@@ -117,9 +180,29 @@ pub fn setup_provider(
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
+    setup_provider_with_mode(store, registry, provider_id, None)
+}
+
+/// Installs and enables one provider using an optional provider-specific mode.
+pub fn setup_provider_with_mode(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+    provider_id: &ToolProviderId,
+    requested_chrome_devtools_mode: Option<ChromeDevToolsConnectionMode>,
+) -> Result<ProviderInstallation> {
     let manifest = ensure_manifest(registry, provider_id)?;
 
-    store.install_provider(provider_id)?;
+    if provider_id.as_str() == "chrome-devtools" {
+        let mode = requested_chrome_devtools_mode
+            .or(store.load_chrome_devtools_mode()?)
+            .unwrap_or_default();
+        ensure_chrome_connection_available(mode)?;
+        registry.set_chrome_devtools_mode(mode)?;
+        store.install_provider(provider_id)?;
+        store.set_chrome_devtools_mode(mode)?;
+    } else {
+        store.install_provider(provider_id)?;
+    }
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
     let setup_result =
@@ -204,6 +287,7 @@ pub fn health_check_provider(
 ) -> Result<ProviderInstallation> {
     let manifest = ensure_manifest(registry, provider_id)?;
     let installation = require_installation(store, provider_id)?;
+    configure_runtime_mode(store, registry, provider_id)?;
     if installation.state == ProviderInstallState::Updating {
         return Err(error::invalid_request(format!(
             "provider is updating: {provider_id}"
@@ -252,6 +336,7 @@ pub fn repair_provider(
 ) -> Result<ProviderInstallation> {
     let manifest = ensure_manifest(registry, provider_id)?;
     require_installation(store, provider_id)?;
+    configure_runtime_mode(store, registry, provider_id)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
 
     let repair_result =
@@ -309,6 +394,84 @@ pub fn uninstall_provider(
     }
 
     store.uninstall_provider(provider_id)
+}
+
+/// Switches an installed provider's runtime configuration and re-discovers its
+/// catalog without reinstalling its package or managed runtime.
+pub fn configure_provider(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+    provider_id: &ToolProviderId,
+    mode: ChromeDevToolsConnectionMode,
+) -> Result<ProviderInstallation> {
+    let manifest = ensure_manifest(registry, provider_id)?;
+    require_installation(store, provider_id)?;
+    if provider_id.as_str() != "chrome-devtools" {
+        return Err(error::invalid_request(
+            "configuration is only supported for Chrome DevTools",
+        ));
+    }
+
+    ensure_chrome_connection_available(mode)?;
+    registry.set_chrome_devtools_mode(mode)?;
+    store.set_chrome_devtools_mode(mode)?;
+    store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
+
+    match registry
+        .discover_provider_tools(provider_id)
+        .and_then(|tools| {
+            store.save_provider_tool_catalog(provider_id, &tools)?;
+            registry.check_provider_readiness(provider_id)
+        }) {
+        Ok(()) => {
+            store.record_provider_health(provider_id, ProviderInstallState::Enabled, None)?;
+        }
+        Err(provider_error) => {
+            let error_text = provider_error.to_string();
+            let readiness = readiness_for_provider_error(provider_id, &manifest, &provider_error);
+            store.record_provider_result(
+                provider_id,
+                ProviderInstallState::Broken,
+                readiness,
+                Some(next_action_for_readiness(readiness)),
+                Some(error_text.as_str()),
+            )?;
+        }
+    }
+
+    provider_installation(store, registry, provider_id)
+}
+
+/// Applies the persisted runtime mode to the live registry before a provider
+/// operation starts a new MCP process.
+fn configure_runtime_mode(
+    store: &Store,
+    registry: &ToolProviderRegistry,
+    provider_id: &ToolProviderId,
+) -> Result<()> {
+    if provider_id.as_str() == "chrome-devtools" {
+        registry
+            .set_chrome_devtools_mode(store.load_chrome_devtools_mode()?.unwrap_or_default())?;
+    }
+    Ok(())
+}
+
+/// Prevents an existing-Chrome installation or switch from starting an MCP
+/// process before Chrome has exposed the explicitly enabled debugging server.
+fn ensure_chrome_connection_available(mode: ChromeDevToolsConnectionMode) -> Result<()> {
+    if mode == ChromeDevToolsConnectionMode::Existing {
+        let status = chrome_devtools_remote_debugging_status();
+        if !status.available {
+            return Err(anyhow::anyhow!(
+                "Chrome remote debugging is not available at {}: {}",
+                status.address,
+                status
+                    .error
+                    .unwrap_or_else(|| "enable remote debugging in Chrome".to_string())
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Returns whether another installed provider still needs this shared runtime.
@@ -442,6 +605,7 @@ fn readiness_for_provider_error(
         || message.contains("access denied")
         || message.contains("uac")
         || message.contains("operation not permitted")
+        || message.contains("chrome remote debugging")
     {
         return ProviderReadiness::PermissionRequired;
     }
@@ -504,6 +668,11 @@ fn provider_installation(
         manifest: ensure_manifest(registry, provider_id)?,
         installation: store.load_installed_provider(provider_id)?,
         tool_catalog: store.load_provider_tool_catalog(provider_id)?,
+        chrome_devtools_mode: if provider_id.as_str() == "chrome-devtools" {
+            Some(store.load_chrome_devtools_mode()?.unwrap_or_default())
+        } else {
+            None
+        },
     })
 }
 

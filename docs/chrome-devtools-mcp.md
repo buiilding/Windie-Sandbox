@@ -3,7 +3,25 @@
 Windie provides the official Chrome DevTools MCP as the `chrome-devtools`
 provider.
 
-## First-version behavior
+## Connection modes
+
+Windie offers two explicit connection modes when Chrome DevTools is installed:
+
+- **Windie-managed Chrome** launches the persistent profile described below.
+  This is the default and keeps Windie's browser state separate from the
+  user's normal Chrome.
+- **Existing Chrome** attaches to the user's already-running Chrome. Chrome
+  144 or newer must be running with remote debugging enabled from
+  `chrome://inspect/#remote-debugging`. Windie waits for
+  `http://127.0.0.1:9222/json/version`, then launches the MCP with
+  `--auto-connect` and waits for Chrome's explicit permission approval.
+
+The existing-Chrome flow does not pass Windie's `--user-data-dir`. Windie only
+marks the provider enabled after MCP tool discovery and the read-only
+`list_pages` readiness check succeed. A listening port by itself is not proof
+that MCP has permission to control Chrome.
+
+## Managed Chrome behavior
 
 - Windie launches `chrome-devtools-mcp@1.6.0` through `npx` over stdio.
 - Windie uses the normal, full Chrome DevTools MCP tool catalog. It does not
@@ -24,6 +42,16 @@ provider.
 - An explicit provider health check runs the safe `list_pages` probe to verify
   Chrome/profile readiness without navigating or changing page state.
 
+## Switching modes
+
+The provider's **Configure** action switches between the two modes. Windie
+stops the current MCP session, updates the saved mode, starts MCP with the new
+arguments, and rediscovers the catalog and readiness state. The npm package
+and managed runtime are reused; they are not downloaded again.
+
+Stopping an existing-Chrome MCP session only disconnects Windie's MCP process;
+it does not terminate the user's Chrome process.
+
 ## Safety and scope
 
 The provider declares external-process, computer-control, and network
@@ -32,9 +60,9 @@ conversation; individual tools still need to be attached to a conversation and
 approved by Windie's tool policy.
 
 Experimental tools, Chrome extension tools, unrestricted filesystem paths, and
-existing-browser attachment are not enabled in this version. The provider does
-not use `--autoConnect`, remote-debugging ports, `--browser-url`, or
-`--wsEndpoint`.
+manual `--browser-url`/`--wsEndpoint` attachment are not enabled. Existing
+Chrome attachment is available only through Chrome's `--auto-connect` approval
+flow.
 
 The user's normal Chrome profile and its open tabs are not used. Windie also
 does not currently provide a profile reset/deletion action; remove the profile

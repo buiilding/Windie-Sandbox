@@ -17,6 +17,7 @@ mod provider;
 mod result;
 
 pub(in crate::tool_provider) use approved::approved_mcp_providers;
+pub(crate) use chrome_devtools::{ChromeDevToolsConnectionMode, remote_debugging_url};
 pub(in crate::tool_provider) use provider::{McpProviderDefinition, McpToolProvider};
 
 #[cfg(test)]

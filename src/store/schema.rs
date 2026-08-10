@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 20;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 21;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -158,6 +158,15 @@ impl Store {
                     installed_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     last_health_check_at INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS chrome_devtools_settings (
+                    provider_id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (provider_id) REFERENCES installed_providers(provider_id)
+                        ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS provider_tool_catalogs (

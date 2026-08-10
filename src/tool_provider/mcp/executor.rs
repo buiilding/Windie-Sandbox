@@ -45,14 +45,14 @@ impl McpToolProvider {
             session_pool
                 .call_tool_with_transport(
                     self.provider_id.as_str(),
-                    self.transport,
+                    self.transport(),
                     attached_tool.provider.tool_name.as_str(),
                     arguments,
                 )
                 .await
         } else {
             crate::mcp::call_tool_with_transport_async(
-                self.transport,
+                self.transport(),
                 attached_tool.provider.tool_name.as_str(),
                 arguments,
             )

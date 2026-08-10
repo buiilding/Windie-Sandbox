@@ -20,6 +20,7 @@ use crate::tool::{
     AttachedTool, ToolDefinition, ToolExecutionResult, ToolProviderId, ToolProviderKind,
     ToolSchemaName,
 };
+use crate::tool_provider::ChromeDevToolsConnectionMode;
 use crate::tool_provider::ProviderRuntime;
 
 #[derive(Debug, Clone)]
@@ -70,6 +71,16 @@ impl ToolProviderRegistry {
             .iter()
             .map(|provider| provider.manifest().clone())
             .collect()
+    }
+
+    /// Applies the persisted Chrome DevTools connection mode to the live
+    /// provider definition. The caller must stop any active session first.
+    pub fn set_chrome_devtools_mode(&self, mode: ChromeDevToolsConnectionMode) -> Result<()> {
+        let provider = self
+            .mcp_provider(&ToolProviderId::new("chrome-devtools"))
+            .ok_or_else(|| error::not_found("provider does not exist: chrome-devtools"))?;
+        provider.set_chrome_devtools_mode(mode);
+        Ok(())
     }
 
     /// Returns one known provider manifest by stable provider ID.

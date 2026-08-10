@@ -4,6 +4,7 @@
 //! attached tools, and tool schemas. Other modules should not know about
 //! SQLite tables or queries.
 
+mod chrome_devtools;
 mod compaction;
 mod conversation;
 mod message;

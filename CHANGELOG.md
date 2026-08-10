@@ -8,6 +8,12 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Added Chrome DevTools MCP browser ownership selection: install and configure
+  can use a Windie-managed profile or an explicitly approved existing Chrome,
+  with remote-debugging preflight, MCP readiness validation, and safe mode
+  switching without reinstalling the package.
+- Added a full-access action to the inline Inspector tool-approval prompt so
+  approval-waiting sessions can switch to automatic approval from the prompt.
 - Updated the README Discord badge to use the active Windie community invite.
 - Fixed Basic Memory provider uninstall when Windie's project is the CLI
   default, stopped new Windie projects from changing the global Basic Memory
