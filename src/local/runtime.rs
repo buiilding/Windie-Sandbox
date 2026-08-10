@@ -49,6 +49,38 @@ pub(crate) fn ensure_runtime(runtime: ProviderRuntime) -> Result<bool> {
     }
 }
 
+/// Removes a Windie-managed runtime family after its last provider is gone.
+///
+/// Runtime directories are never removed while another installed provider
+/// still depends on the same runtime. The caller performs that ownership
+/// check; this function only validates and removes the exact managed path.
+pub(crate) fn remove_managed_runtime(runtime: ProviderRuntime) -> Result<()> {
+    let name = match runtime {
+        ProviderRuntime::Native => return Ok(()),
+        ProviderRuntime::Node => "node",
+        ProviderRuntime::Uv => "uv",
+    };
+    let root = windie_home_dir()?.join("runtimes").join(name);
+    let metadata = match fs::symlink_metadata(&root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect managed runtime: {}", root.display()));
+        }
+    };
+
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(anyhow!(
+            "refusing to remove managed runtime that is not a directory: {}",
+            root.display()
+        ));
+    }
+
+    fs::remove_dir_all(&root)
+        .with_context(|| format!("failed to remove managed runtime: {}", root.display()))
+}
+
 /// Resolves an approved provider command without relying on shell lookup.
 pub(crate) fn resolve_command(program: &str) -> Result<PathBuf> {
     if managed_runtime_program(program) {
@@ -608,9 +640,7 @@ pub(crate) fn archive_fingerprint(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+    use crate::local::ENVIRONMENT_LOCK;
 
     #[test]
     fn archive_suffix_matches_format() {
@@ -635,6 +665,34 @@ mod tests {
             runtime_directory_under(home, ProviderRuntime::Node, "22.14.0").unwrap(),
             home.join("runtimes/node/22.14.0")
         );
+    }
+
+    #[test]
+    fn removes_one_managed_runtime_family() {
+        let _lock = ENVIRONMENT_LOCK.lock().unwrap();
+        let root = env::temp_dir().join(format!(
+            "windie-runtime-cleanup-test-{}",
+            std::process::id()
+        ));
+        let runtime = root.join("runtimes/node");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("node"), b"owned").unwrap();
+
+        let previous_home = env::var_os("WINDIE_HOME");
+        unsafe {
+            env::set_var("WINDIE_HOME", &root);
+        }
+        let result = remove_managed_runtime(ProviderRuntime::Node);
+        unsafe {
+            match previous_home {
+                Some(value) => env::set_var("WINDIE_HOME", value),
+                None => env::remove_var("WINDIE_HOME"),
+            }
+        }
+
+        result.unwrap();
+        assert!(!root.join("runtimes/node").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

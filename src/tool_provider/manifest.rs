@@ -32,6 +32,8 @@ pub struct ProviderManifest {
     pub tags: Vec<String>,
     pub documentation_url: Option<String>,
     pub setup_guide: Vec<String>,
+    /// Windie-managed user-facing documentation for this provider.
+    pub readme_markdown: String,
 }
 
 impl ProviderManifest {
@@ -75,6 +77,7 @@ impl ProviderManifest {
             tags: Vec::new(),
             documentation_url: None,
             setup_guide: Vec::new(),
+            readme_markdown: String::new(),
         }
     }
 
@@ -108,6 +111,7 @@ impl ProviderManifest {
             tags: Vec::new(),
             documentation_url: None,
             setup_guide: Vec::new(),
+            readme_markdown: String::new(),
         }
     }
 
@@ -153,6 +157,12 @@ impl ProviderManifest {
         self.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
         self.documentation_url = documentation_url.map(str::to_string);
         self.setup_guide = setup_guide.iter().map(|step| (*step).to_string()).collect();
+        self
+    }
+
+    /// Sets the Windie-managed provider README shown in the Inspector.
+    pub fn with_readme(mut self, readme_markdown: impl Into<String>) -> Self {
+        self.readme_markdown = readme_markdown.into();
         self
     }
 }

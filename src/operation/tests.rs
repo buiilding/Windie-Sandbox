@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TEMP_MCP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn inserts_text_message() {
@@ -359,15 +360,9 @@ fn inspection_snapshot_includes_runtime_state() {
 fn attaches_available_provider_tool() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
-    let registry = registry_with_cached_test_tool();
+    let registry = registry_with_test_tool();
     enable_test_provider(&store);
-    let read_file = registry
-        .find_tool(
-            &ToolProviderId::new("desktop-commander"),
-            &ProviderToolName::new("read_file"),
-        )
-        .unwrap()
-        .unwrap();
+    let read_file = desktop_commander_read_file_definition();
 
     let schema_name = attach_tool_with_registry(
         &mut store,
@@ -394,7 +389,7 @@ fn batch_attaches_available_provider_tools() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
 
-    let registry = registry_with_cached_test_tool();
+    let registry = registry_with_test_tool();
     enable_test_provider(&store);
     let schema_names = attach_tools_with_registry(
         &mut store,
@@ -420,8 +415,8 @@ fn batch_attaches_available_provider_tools() {
 
 #[test]
 fn provider_manager_persists_lifecycle_transitions_and_health() {
-    let store = Store::open_memory().unwrap();
-    let registry = registry_with_cached_test_tool();
+    let mut store = Store::open_memory().unwrap();
+    let registry = registry_with_test_tool();
     let provider_id = ToolProviderId::new("desktop-commander");
 
     let installed = install_provider(&store, &registry, &provider_id).unwrap();
@@ -448,7 +443,7 @@ fn provider_manager_persists_lifecycle_transitions_and_health() {
         ProviderInstallState::Disabled
     );
 
-    uninstall_provider(&store, &registry, &provider_id).unwrap();
+    uninstall_provider(&mut store, &registry, &provider_id).unwrap();
     assert!(
         store
             .load_installed_provider(&provider_id)
@@ -460,7 +455,7 @@ fn provider_manager_persists_lifecycle_transitions_and_health() {
 #[test]
 fn desktop_commander_setup_verifies_and_enables_provider() {
     let store = Store::open_memory().unwrap();
-    let registry = registry_with_cached_test_tool();
+    let registry = registry_with_test_tool();
     let provider_id = ToolProviderId::new("desktop-commander");
 
     let setup = setup_provider(&store, &registry, &provider_id).unwrap();
@@ -483,7 +478,7 @@ fn desktop_commander_setup_verifies_and_enables_provider() {
 fn uninstalled_provider_is_not_exposed_to_tool_catalog_or_attachment() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
-    let registry = registry_with_cached_test_tool();
+    let registry = registry_with_test_tool();
     let provider_id = ToolProviderId::new("desktop-commander");
 
     assert!(
@@ -673,23 +668,103 @@ fn temp_image_path(extension: &str) -> PathBuf {
     ))
 }
 
-fn registry_with_cached_test_tool() -> ToolProviderRegistry {
+fn registry_with_test_tool() -> ToolProviderRegistry {
     ToolProviderRegistry::with_test_mcp_provider(
         "desktop-commander",
         "desktop_commander",
         "Desktop Commander",
-        McpCommand {
-            program: "windie-test-unused-mcp-provider",
-            args: &[],
-            env: &[],
-        },
-        vec![desktop_commander_read_file_definition()],
+        test_mcp_command(),
     )
+}
+
+fn test_mcp_command() -> McpCommand {
+    let path = write_test_mcp_server();
+    let program = Box::leak(path.into_boxed_str());
+
+    McpCommand {
+        program,
+        args: &[],
+        env: &[],
+    }
+}
+
+fn write_test_mcp_server() -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let counter = TEMP_MCP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "windie-operation-test-mcp-{}-{nanos}-{counter}.sh",
+            std::process::id()
+        ));
+        let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"windie-test-mcp","version":"0"}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_file","description":"Test tool","inputSchema":{"type":"object"}}]}}'
+      ;;
+  esac
+done
+"#;
+        fs::write(&path, script).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+
+        path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(windows)]
+    {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let counter = TEMP_MCP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir();
+        let script_path = root.join(format!(
+            "windie-operation-test-mcp-{}-{nanos}-{counter}.ps1",
+            std::process::id()
+        ));
+        let command_path = root.join(format!(
+            "windie-operation-test-mcp-{}-{nanos}-{counter}.cmd",
+            std::process::id()
+        ));
+        let script = r#"$line = [Console]::ReadLine()
+while ($null -ne $line) {
+  if ($line.Contains('"method":"initialize"')) {
+    [Console]::WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"windie-test-mcp","version":"0"}}}')
+  } elseif ($line.Contains('"method":"tools/list"')) {
+    [Console]::WriteLine('{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_file","description":"Test tool","inputSchema":{"type":"object"}}]}}')
+  }
+  $line = [Console]::ReadLine()
+}
+"#;
+        fs::write(&script_path, script).unwrap();
+        let command = format!(
+            "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"\r\n",
+            script_path.display()
+        );
+        fs::write(&command_path, command).unwrap();
+
+        command_path.to_string_lossy().into_owned()
+    }
 }
 
 fn enable_test_provider(store: &Store) {
     let provider_id = ToolProviderId::new("desktop-commander");
     store.install_provider(&provider_id).unwrap();
+    store
+        .save_provider_tool_catalog(&provider_id, &[desktop_commander_read_file_definition()])
+        .unwrap();
     store
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();

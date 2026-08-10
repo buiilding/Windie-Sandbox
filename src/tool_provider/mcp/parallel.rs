@@ -7,8 +7,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpHttpAuthorization, McpHttpEndpoint, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderManifest, ProviderPermission, ProviderPlatform, ProviderScope,
-    ProviderSecret,
+    ProviderAuthentication, ProviderCleanup, ProviderManifest, ProviderPermission,
+    ProviderPlatform, ProviderScope, ProviderSecret,
 };
 
 const PARALLEL_MCP_URL: &str = "https://search.parallel.ai/mcp";
@@ -45,7 +45,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Parallel Search works anonymously for basic usage.",
                 "Add PARALLEL_API_KEY for higher rate limits.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/parallel-search.md")),
         provider_id: "parallel-search",
         schema_prefix: "parallel_search",
         display_name: "Parallel Search",
@@ -53,5 +54,6 @@ pub(super) fn definition() -> McpProviderDefinition {
         package_command: None,
         readiness_probe: None,
         setup: None,
+        cleanup: ProviderCleanup::None,
     }
 }

@@ -7,6 +7,9 @@
 mod runtime;
 mod setup;
 
+#[cfg(test)]
+pub(crate) static ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub use setup::{
     InstallReport, InstallStatus, UninstallCleanup, UninstallPlan, component_log_file_path,
     component_pid_file_path, ensure_windie_layout, env_file_path, env_value, install_target,
@@ -14,4 +17,7 @@ pub use setup::{
     user_home_dir, windie_home_dir,
 };
 
-pub(crate) use runtime::{ensure_runtime, path_with_command_parent, resolve_command};
+pub(crate) use runtime::{
+    ensure_runtime, path_with_command_parent, remove_managed_runtime, resolve_command,
+};
+pub(crate) use setup::{remove_windie_directories, uninstall_cua_driver};

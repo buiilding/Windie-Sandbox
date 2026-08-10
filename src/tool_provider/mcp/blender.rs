@@ -3,8 +3,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
-    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
+    ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
+    ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
 };
 
 const BLENDER_UV_CACHE_RELATIVE: &str = "mcp/blender-mcp/uv-cache";
@@ -70,7 +70,8 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Install Blender MCP.",
                 "Start Blender with its MCP bridge enabled.",
             ],
-        ),
+        )
+        .with_readme(include_str!("readmes/blender-mcp.md")),
         provider_id: "blender-mcp",
         schema_prefix: "blender_mcp",
         display_name: "Blender MCP",
@@ -90,5 +91,6 @@ pub(super) fn definition() -> McpProviderDefinition {
         }),
         readiness_probe: None,
         setup: None,
+        cleanup: ProviderCleanup::WindieDirectories(&["mcp/blender-mcp"]),
     }
 }

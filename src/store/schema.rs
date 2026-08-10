@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 19;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 21;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -160,6 +160,26 @@ impl Store {
                     last_health_check_at INTEGER
                 );
 
+                CREATE TABLE IF NOT EXISTS chrome_devtools_settings (
+                    provider_id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+
+                    FOREIGN KEY (provider_id) REFERENCES installed_providers(provider_id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS provider_tool_catalogs (
+                    provider_id TEXT PRIMARY KEY,
+                    tools_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    discovered_at INTEGER,
+                    last_error TEXT,
+
+                    FOREIGN KEY (provider_id) REFERENCES installed_providers(provider_id)
+                        ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
                 ON messages(conversation_id, created_at);
 
@@ -183,6 +203,9 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS installed_providers_updated_idx
                 ON installed_providers(updated_at);
+
+                CREATE INDEX IF NOT EXISTS provider_tool_catalogs_status_idx
+                ON provider_tool_catalogs(status);
                 ",
             )
             .context("failed to migrate database")?;

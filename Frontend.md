@@ -92,6 +92,9 @@ Paths below are relative to `vendor/windie-inspector/frontend/`.
 - `src/components/windie/ExtensionsPanel.jsx`: executable tool-provider
   installation lifecycle controls: setup, enable, disable, repair, and
   uninstall.
+- `src/components/windie/ExtensionDetailPage.jsx`: renders the provider's
+  Windie-managed README in Overview and the persisted discovered tool schemas
+  in Tools; it does not invent provider documentation or discover tools itself.
 - `src/components/windie/LlmProvidersPanel.jsx`: LLM provider discovery,
   provider enablement, and provider-key creation through the API.
 - `src/components/windie/FloatingDeleteMenu.jsx`: positioned reusable delete
@@ -478,8 +481,10 @@ The tools overlay manages two separate catalogs:
   backend gateway;
 - executable tool providers, whose schemas can be attached to a conversation.
 
-Provider setup actions refresh provider installation status and the available
-tool catalog. Model changes refresh model parameters and conversation metadata.
+Provider setup actions refresh provider installation status and the persisted
+provider tool catalog. Model changes refresh model parameters and conversation
+metadata. The Overview tab renders provider README content; the Tools tab
+renders the provider schemas returned by the backend.
 
 ## Component responsibilities
 

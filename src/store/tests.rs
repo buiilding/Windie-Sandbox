@@ -6,7 +6,10 @@ use crate::conversation::{
 };
 use crate::session::{SessionEvent, SessionId, SessionResolution, SessionStatus};
 use crate::tool::ToolProviderId;
-use crate::tool::{ToolApprovalMode, ToolSchema, ToolSchemaName};
+use crate::tool::{
+    ToolAnnotations, ToolApprovalMode, ToolDefinition, ToolPermission, ToolProviderKind,
+    ToolProviderRef, ToolSchema, ToolSchemaName,
+};
 use crate::tool_provider::ProviderInstallState;
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
@@ -67,6 +70,58 @@ fn provider_lifecycle_state_persists_and_uninstalls() {
     assert!(
         store
             .load_installed_provider(&provider_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn provider_tool_catalog_persists_stale_state_and_cascades_on_uninstall() {
+    let store = Store::open_memory().unwrap();
+    let provider_id = ToolProviderId::new("desktop-commander");
+    let tool = ToolDefinition {
+        schema_name: ToolSchemaName::new("desktop_commander__read_file"),
+        display_name: "Read file".to_string(),
+        description: "Read a file.".to_string(),
+        parameters: serde_json::json!({"type": "object"}),
+        provider: ToolProviderRef::new(
+            provider_id.clone(),
+            crate::tool::ProviderToolName::new("read_file"),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: vec![ToolPermission::ExternalProcess],
+        annotations: ToolAnnotations::default(),
+    };
+
+    store.install_provider(&provider_id).unwrap();
+    store
+        .save_provider_tool_catalog(&provider_id, std::slice::from_ref(&tool))
+        .unwrap();
+
+    let catalog = store
+        .load_provider_tool_catalog(&provider_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(catalog.status, ProviderCatalogStatus::Fresh);
+    assert_eq!(catalog.tools, vec![tool.clone()]);
+    assert!(catalog.discovered_at.is_some());
+    assert!(catalog.last_error.is_none());
+
+    store
+        .record_provider_tool_catalog_error(&provider_id, "provider unavailable")
+        .unwrap();
+    let stale = store
+        .load_provider_tool_catalog(&provider_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stale.status, ProviderCatalogStatus::Stale);
+    assert_eq!(stale.tools, vec![tool]);
+    assert_eq!(stale.last_error.as_deref(), Some("provider unavailable"));
+
+    store.uninstall_provider(&provider_id).unwrap();
+    assert!(
+        store
+            .load_provider_tool_catalog(&provider_id)
             .unwrap()
             .is_none()
     );

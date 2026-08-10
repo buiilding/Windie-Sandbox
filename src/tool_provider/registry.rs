@@ -1,13 +1,11 @@
 //! Provider-neutral tool registry.
 //!
-//! The registry owns catalog caching and dispatch across executable backend
-//! families. It does not know backend-specific setup details such as Desktop
-//! Commander configuration or MCP result normalization.
+//! The registry owns live discovery and dispatch across executable backend
+//! families. The Store owns persisted provider catalogs. This module does not
+//! know backend-specific setup details such as Desktop Commander configuration
+//! or MCP result normalization.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 use super::builtin;
 use super::mcp::McpProviderDefinition;
@@ -19,25 +17,11 @@ use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
 use crate::mcp::McpTransport;
 use crate::tool::{
-    AttachedTool, ProviderToolName, ToolDefinition, ToolExecutionResult, ToolProviderId,
-    ToolProviderKind, ToolSchemaName,
+    AttachedTool, ToolDefinition, ToolExecutionResult, ToolProviderId, ToolProviderKind,
+    ToolSchemaName,
 };
+use crate::tool_provider::ChromeDevToolsConnectionMode;
 use crate::tool_provider::ProviderRuntime;
-
-#[derive(Debug, Clone)]
-/// Catalog status for one approved provider.
-///
-/// The aggregate tool list must not hide provider startup failures. Clients use
-/// this record to show which approved providers are ready and which need local
-/// setup such as a missing command or provider key.
-pub struct ToolProviderStatus {
-    pub provider_id: ToolProviderId,
-    pub display_name: String,
-    pub manifest: super::manifest::ProviderManifest,
-    pub available: bool,
-    pub tool_count: usize,
-    pub error: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -48,7 +32,6 @@ pub struct ToolProviderStatus {
 pub struct ToolProviderRegistry {
     pub(super) mcp_providers: Vec<McpToolProvider>,
     pub(super) mcp_session_pool: Option<McpSessionPool>,
-    pub(super) catalog_cache: Arc<Mutex<HashMap<ToolProviderId, Vec<ToolDefinition>>>>,
 }
 
 impl ToolProviderRegistry {
@@ -82,85 +65,22 @@ impl ToolProviderRegistry {
         }
     }
 
-    /// Lists every provider tool that clients may attach to conversations.
-    ///
-    /// Availability does not grant model access. Clients still need to attach a
-    /// returned definition before the model sees the function schema. Provider
-    /// catalogs loaded here are cached for later attachment requests in the same
-    /// process.
-    #[cfg(test)]
-    pub fn list_available_tools(&self) -> Result<Vec<ToolDefinition>> {
-        let mut tools = Vec::new();
-        for provider in &self.mcp_providers {
-            if let Ok(provider_tools) = self.list_provider_tools(provider.id()) {
-                tools.extend(provider_tools);
-            }
-        }
-
-        Ok(tools)
-    }
-
-    /// Returns one provider's live catalog status without probing other
-    /// providers.
-    ///
-    /// Lifecycle filtering belongs to the operation/store boundary. This
-    /// method only asks the executable provider whether its catalog is
-    /// reachable after the caller has decided that the provider is eligible.
-    pub fn provider_status(&self, provider_id: &ToolProviderId) -> Option<ToolProviderStatus> {
-        let provider = self.mcp_provider(provider_id)?;
-        match self.list_provider_tools(provider.id()) {
-            Ok(tools) => Some(ToolProviderStatus {
-                provider_id: provider.provider_id.clone(),
-                display_name: provider.display_name.to_string(),
-                manifest: provider.manifest().clone(),
-                available: true,
-                tool_count: tools.len(),
-                error: None,
-            }),
-            Err(error) => Some(ToolProviderStatus {
-                provider_id: provider.provider_id.clone(),
-                display_name: provider.display_name.to_string(),
-                manifest: provider.manifest().clone(),
-                available: false,
-                tool_count: 0,
-                error: Some(error.to_string()),
-            }),
-        }
-    }
-
-    /// Returns one provider's live catalog status through the async transport
-    /// path used by runtime execution.
-    pub async fn provider_status_async(
-        &self,
-        provider_id: &ToolProviderId,
-    ) -> Option<ToolProviderStatus> {
-        let provider = self.mcp_provider(provider_id)?;
-        match self.list_provider_tools_async(provider.id()).await {
-            Ok(tools) => Some(ToolProviderStatus {
-                provider_id: provider.provider_id.clone(),
-                display_name: provider.display_name.to_string(),
-                manifest: provider.manifest().clone(),
-                available: true,
-                tool_count: tools.len(),
-                error: None,
-            }),
-            Err(error) => Some(ToolProviderStatus {
-                provider_id: provider.provider_id.clone(),
-                display_name: provider.display_name.to_string(),
-                manifest: provider.manifest().clone(),
-                available: false,
-                tool_count: 0,
-                error: Some(error.to_string()),
-            }),
-        }
-    }
-
     /// Returns manifests for every provider known to this registry.
     pub fn provider_manifests(&self) -> Vec<super::manifest::ProviderManifest> {
         self.mcp_providers
             .iter()
             .map(|provider| provider.manifest().clone())
             .collect()
+    }
+
+    /// Applies the persisted Chrome DevTools connection mode to the live
+    /// provider definition. The caller must stop any active session first.
+    pub fn set_chrome_devtools_mode(&self, mode: ChromeDevToolsConnectionMode) -> Result<()> {
+        let provider = self
+            .mcp_provider(&ToolProviderId::new("chrome-devtools"))
+            .ok_or_else(|| error::not_found("provider does not exist: chrome-devtools"))?;
+        provider.set_chrome_devtools_mode(mode);
+        Ok(())
     }
 
     /// Returns one known provider manifest by stable provider ID.
@@ -225,39 +145,17 @@ impl ToolProviderRegistry {
         Ok(provider.manifest().package.is_some())
     }
 
-    /// Lists available tools for one provider ID.
+    /// Discovers one provider's tools by starting its MCP backend.
     ///
-    /// MCP provider catalogs can require starting a provider process for
-    /// `tools/list`. The API server keeps one registry for the process, so this
-    /// method caches successful catalog loads and lets later attachment
-    /// resolution reuse the backend-owned schema copy.
-    pub fn list_provider_tools(&self, provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
-        if let Some(tools) = self.cached_provider_tools(provider_id)? {
-            return Ok(tools);
-        }
-        if let Some(provider) = self.mcp_provider(provider_id) {
-            let tools = provider.list_tools()?;
-            self.cache_provider_tools(provider_id, &tools)?;
-            return Ok(tools);
-        }
-
-        Err(error::not_found(format!(
-            "provider does not exist: {provider_id}"
-        )))
-    }
-
-    /// Lists one provider's tools through the async transport path.
-    pub async fn list_provider_tools_async(
+    /// This is an explicit refresh operation used by provider setup, repair,
+    /// and health checks. Normal catalog reads go through SQLite instead of
+    /// starting provider processes.
+    pub fn discover_provider_tools(
         &self,
         provider_id: &ToolProviderId,
     ) -> Result<Vec<ToolDefinition>> {
-        if let Some(tools) = self.cached_provider_tools(provider_id)? {
-            return Ok(tools);
-        }
         if let Some(provider) = self.mcp_provider(provider_id) {
-            let tools = provider.list_tools_async().await?;
-            self.cache_provider_tools(provider_id, &tools)?;
-            return Ok(tools);
+            return provider.list_tools();
         }
 
         Err(error::not_found(format!(
@@ -265,17 +163,18 @@ impl ToolProviderRegistry {
         )))
     }
 
-    /// Finds one available provider tool by provider ID and provider-native
-    /// tool name.
-    pub fn find_tool(
+    /// Discovers one provider's tools through the async transport path.
+    pub async fn discover_provider_tools_async(
         &self,
         provider_id: &ToolProviderId,
-        tool_name: &ProviderToolName,
-    ) -> Result<Option<ToolDefinition>> {
-        Ok(self
-            .list_provider_tools(provider_id)?
-            .into_iter()
-            .find(|tool| tool.provider.tool_name == *tool_name))
+    ) -> Result<Vec<ToolDefinition>> {
+        if let Some(provider) = self.mcp_provider(provider_id) {
+            return provider.list_tools_async().await;
+        }
+
+        Err(error::not_found(format!(
+            "provider does not exist: {provider_id}"
+        )))
     }
 
     /// Returns whether this process has an executor for the attached provider
@@ -319,6 +218,26 @@ impl ToolProviderRegistry {
         }
     }
 
+    /// Stops one provider's persistent MCP session before its runtime is
+    /// removed.
+    pub async fn stop_provider_sessions(&self, provider_id: &ToolProviderId) {
+        if let Some(session_pool) = &self.mcp_session_pool {
+            session_pool.stop_provider(provider_id.as_str()).await;
+        }
+    }
+
+    /// Removes one provider's Windie-owned runtime after its sessions stop.
+    pub fn uninstall_provider_runtime(
+        &self,
+        provider_id: &ToolProviderId,
+        remove_runtime: bool,
+    ) -> Result<()> {
+        let provider = self
+            .mcp_provider(provider_id)
+            .ok_or_else(|| error::not_found(format!("provider does not exist: {provider_id}")))?;
+        provider.uninstall(remove_runtime)
+    }
+
     /// Finds one approved MCP provider by its stable provider ID.
     fn mcp_provider(&self, provider_id: &ToolProviderId) -> Option<&McpToolProvider> {
         self.mcp_providers
@@ -326,40 +245,6 @@ impl ToolProviderRegistry {
             .find(|provider| provider.id() == provider_id)
     }
 
-    /// Returns a cached provider catalog when this process has already loaded
-    /// one.
-    fn cached_provider_tools(
-        &self,
-        provider_id: &ToolProviderId,
-    ) -> Result<Option<Vec<ToolDefinition>>> {
-        let cache = self
-            .catalog_cache
-            .lock()
-            .map_err(|_| anyhow!("tool provider catalog cache lock was poisoned"))?;
-
-        Ok(cache.get(provider_id).cloned())
-    }
-
-    /// Stores one backend-owned provider catalog for reuse by later operations.
-    fn cache_provider_tools(
-        &self,
-        provider_id: &ToolProviderId,
-        tools: &[ToolDefinition],
-    ) -> Result<()> {
-        let mut cache = self
-            .catalog_cache
-            .lock()
-            .map_err(|_| anyhow!("tool provider catalog cache lock was poisoned"))?;
-        cache.insert(provider_id.clone(), tools.to_vec());
-
-        Ok(())
-    }
-
-    /// Builds a test registry with one fake MCP provider and an already-loaded
-    /// catalog.
-    ///
-    /// Runtime tests use this to exercise provider dispatch without depending
-    /// on user-installed MCP binaries.
     /// Builds a deterministic fake MCP registry for provider-path benchmarks.
     ///
     /// The fake command still crosses the same registry, provider adapter, and
@@ -370,11 +255,7 @@ impl ToolProviderRegistry {
         schema_prefix: &'static str,
         display_name: &'static str,
         command: McpCommand,
-        tools: Vec<ToolDefinition>,
     ) -> Self {
-        let provider_id_value = ToolProviderId::new(provider_id);
-        let catalog_cache = Arc::new(Mutex::new(HashMap::from([(provider_id_value, tools)])));
-
         Self {
             mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
                 manifest: crate::tool_provider::ProviderManifest::mcp_stdio(
@@ -395,9 +276,9 @@ impl ToolProviderRegistry {
                 package_command: None,
                 readiness_probe: None,
                 setup: None,
+                cleanup: crate::tool_provider::ProviderCleanup::None,
             })],
             mcp_session_pool: None,
-            catalog_cache,
         }
     }
 
@@ -407,9 +288,8 @@ impl ToolProviderRegistry {
         schema_prefix: &'static str,
         display_name: &'static str,
         command: McpCommand,
-        tools: Vec<ToolDefinition>,
     ) -> Self {
-        Self::with_benchmark_mcp_provider(provider_id, schema_prefix, display_name, command, tools)
+        Self::with_benchmark_mcp_provider(provider_id, schema_prefix, display_name, command)
     }
 }
 
@@ -421,7 +301,6 @@ impl Default for ToolProviderRegistry {
                 .map(McpToolProvider::new)
                 .collect(),
             mcp_session_pool: None,
-            catalog_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

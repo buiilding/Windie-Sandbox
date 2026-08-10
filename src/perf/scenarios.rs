@@ -579,7 +579,6 @@ async fn benchmark_registry_mcp_call() -> Result<Duration> {
         "benchmark",
         "Benchmark",
         FAKE_MCP_COMMAND,
-        vec![tool.clone()],
     );
     let attached = tool.attached_tool();
     let call = ToolCall::function("benchmark-call", schema_name.as_str(), "{}");

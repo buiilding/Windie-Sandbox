@@ -15,8 +15,11 @@ pub fn available_tools_with_registry(
 ) -> Result<Vec<ToolDefinition>> {
     let mut tools = Vec::new();
     for manifest in registry.provider_manifests() {
-        if store.provider_is_enabled(&manifest.provider_id)? {
-            tools.extend(registry.list_provider_tools(&manifest.provider_id)?);
+        if store.provider_is_enabled(&manifest.provider_id)?
+            && let Some(catalog) = store.load_provider_tool_catalog(&manifest.provider_id)?
+            && catalog.status != crate::store::ProviderCatalogStatus::Unavailable
+        {
+            tools.extend(catalog.tools);
         }
     }
     Ok(tools)
@@ -34,7 +37,7 @@ pub fn available_provider_tools_with_registry(
     provider_id: &ToolProviderId,
 ) -> Result<Vec<ToolDefinition>> {
     super::provider::require_enabled_provider(store, registry, provider_id)?;
-    registry.list_provider_tools(provider_id)
+    stored_provider_tools(store, provider_id)
 }
 
 pub fn attach_tool(
@@ -55,9 +58,12 @@ pub fn attach_tool_with_registry(
     registry: &ToolProviderRegistry,
 ) -> Result<ToolSchemaName> {
     super::provider::require_enabled_provider(store, registry, provider_id)?;
-    let definition = registry.find_tool(provider_id, tool_name)?.ok_or_else(|| {
-        error::not_found(format!("tool does not exist: {provider_id}/{tool_name}"))
-    })?;
+    let definition = stored_provider_tools(store, provider_id)?
+        .into_iter()
+        .find(|tool| tool.provider.tool_name == *tool_name)
+        .ok_or_else(|| {
+            error::not_found(format!("tool does not exist: {provider_id}/{tool_name}"))
+        })?;
     let attached_tool = definition.attached_tool();
     let schema_name = attached_tool.schema_name.clone();
     store.insert_attached_tool(conversation_id, &attached_tool)?;
@@ -94,7 +100,7 @@ pub fn attach_tools_with_registry(
         if provider_catalogs.contains_key(&request.provider_id) {
             continue;
         }
-        let provider_tools = registry.list_provider_tools(&request.provider_id)?;
+        let provider_tools = stored_provider_tools(store, &request.provider_id)?;
         provider_catalogs.insert(
             request.provider_id.clone(),
             provider_tools
@@ -123,6 +129,26 @@ pub fn attach_tools_with_registry(
 
     store.insert_attached_tools(conversation_id, &attached_tools)?;
     Ok(schema_names)
+}
+
+/// Loads the provider catalog without starting or probing the provider.
+fn stored_provider_tools(
+    store: &Store,
+    provider_id: &ToolProviderId,
+) -> Result<Vec<ToolDefinition>> {
+    let Some(catalog) = store.load_provider_tool_catalog(provider_id)? else {
+        return Err(error::invalid_request(format!(
+            "provider has no discovered tool catalog: {provider_id}"
+        )));
+    };
+
+    if catalog.status == crate::store::ProviderCatalogStatus::Unavailable {
+        return Err(error::invalid_request(format!(
+            "provider tool catalog is unavailable: {provider_id}"
+        )));
+    }
+
+    Ok(catalog.tools)
 }
 
 pub fn insert_tool_schema(

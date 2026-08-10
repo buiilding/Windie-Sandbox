@@ -1,16 +1,83 @@
 # Changelog
 
-All notable changes to Windie are documented here.
-
-This changelog is intentionally curated from the repository history. It records
-meaningful product, runtime, and developer-facing changes rather than every
-individual commit or internal edit.
+This is Windie's detailed engineering changelog. It records meaningful
+product, runtime, documentation, and developer-facing changes with enough
+context to preserve the project's history. Concise public release highlights
+are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- No unreleased changes yet.
+
+## [0.3.2] - 2026-08-10
+
+- Updated the runtime for the current Rust Clippy checks used by release CI.
+- Serialized environment-sensitive tests so the default parallel test run is
+  reliable in CI.
+- Added separate concise public release notes while retaining detailed
+  engineering history in this changelog, with CI validation for both files.
+- Updated the Inspector submodule to merged commit `3509b03` in preparation for
+  the next release.
+- Replaced the Inspector's placeholder square branding with the circular Windie
+  icon in the browser favicon and top bar.
+- Moved LLM Providers above Extensions in the Inspector activity bar.
+- Changed the Inspector transcript to scroll to the bottom when switching
+  conversations while preserving the user's position during new messages and
+  streaming updates.
+- Removed the Chrome remote-debugging server check from existing-Chrome MCP
+  setup; users now confirm the Chrome setting directly before installation or
+  reconfiguration starts.
+- Fixed the existing-Chrome setup link so Windie opens Chrome's remote-
+  debugging settings through the local backend instead of blocked page script.
+- Closed the Chrome ownership dialog immediately after existing-Chrome
+  confirmation so provider setup can continue in the extension status view.
+- Restored a TCP-only `127.0.0.1:9222` check for existing Chrome, skipping the
+  settings instructions when debugging is already enabled and polling after
+  Windie opens Chrome's settings page.
+- Clarified message actions with a dedicated branch label/icon and a separate
+  fork icon.
+- Added Chrome DevTools MCP browser ownership selection: install and configure
+  can use a Windie-managed profile or an explicitly approved existing Chrome,
+  with remote-debugging preflight, MCP readiness validation, and safe mode
+  switching without reinstalling the package.
+- Added a full-access action to the inline Inspector tool-approval prompt so
+  approval-waiting sessions can switch to automatic approval from the prompt.
+- Updated the README Discord badge to use the active Windie community invite.
+- Fixed Basic Memory provider uninstall when Windie's project is the CLI
+  default, stopped new Windie projects from changing the global Basic Memory
+  default, and preserved provider command diagnostics written to stdout.
+- Aligned the landing design guidelines, navigation lockup, CTA copy, and
+  README headline hierarchy with the current Windie identity.
+- Updated the landing-page marketing identity PRD and clarified the Desktop
+  Commander capability preview in the README.
+- Added light and dark Windie app icon assets under `assets/branding/`.
+- Added real provider uninstall cleanup: active MCP sessions stop first,
+  provider-owned caches/configuration and secrets are removed, CUA Driver uses
+  its official purge uninstaller, and shared Node/uv runtimes are retained
+  while another installed provider needs them. Known limitation: Windie does
+  not yet persist ownership for pre-existing CUA installations or Basic Memory
+  project registrations, so uninstall may remove those resources if they are
+  configured through Windie's provider boundary.
+- Added Windie-managed provider README content and a SQLite-backed provider
+  tool catalog. Provider setup and health checks refresh the catalog, while
+  tool listings and extension views read the persisted schemas without starting
+  providers.
+- Handled new-conversation attempts without configured LLM keys as setup guidance instead of an uncaught runtime error.
+- Start the Inspector with the sidebar collapsed while keeping the activity bar visible.
+- Let activity-bar buttons toggle the Inspector sidebar like VS Code.
+- Removed the orange hover highlight from the Inspector sidebar resize handle.
+- Constrained Basic Memory's LiteLLM dependency below 1.92 during provider
+  setup and launch to avoid unsupported local Rust/maturin builds on macOS.
+- Added regression coverage for Basic Memory's runtime and package-preparation
+  LiteLLM constraints.
+- Cleaned up Inspector sidebar behavior with reliable menu dismissal, consistent
+  graph/provider headers, and constrained provider API-key inputs.
 - Fixed Streamable HTTP MCP tool execution by using async HTTP sessions and
   per-provider async pooling, preventing Parallel Search calls from panicking
   inside Tokio workers and leaving sessions stuck as running.
+- Fixed the landing page mobile menu by making the open navigation an opaque,
+  full-height overlay with separated links, a full-width install CTA, and
+  background scroll locking.
 
 ## [0.3.1] - 2026-08-07
 
@@ -200,7 +267,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
 [0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1
 [0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0
 [0.2.10]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.10

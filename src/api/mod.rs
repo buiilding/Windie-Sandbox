@@ -33,7 +33,7 @@ use crate::error::{self as windie_error, WindieErrorKind};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::local;
-use crate::operation::{self, InspectionReport, MessageInputPart};
+use crate::operation::{self, InspectionReport, MessageInputPart, ToolProviderStatus};
 use crate::output::TerminalOutput;
 use crate::session::{
     Session, SessionEventRecord, SessionId, SessionManager, SessionStatus, SessionSubscription,
@@ -42,7 +42,7 @@ use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::{ToolProviderRegistry, ToolProviderStatus};
+use crate::tool_provider::ToolProviderRegistry;
 
 mod conversation;
 mod env;
@@ -87,6 +87,12 @@ const API_JSON_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Result<()> {
     let output = TerminalOutput;
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let startup_store = Store::open()?;
+    tool_registry.set_chrome_devtools_mode(
+        startup_store
+            .load_chrome_devtools_mode()?
+            .unwrap_or_default(),
+    )?;
     let session_manager = Arc::new(SessionManager::new(
         None,
         gateway_url.to_string(),
@@ -132,6 +138,15 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
 /// benchmark and integration callers.
 pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let startup_store = Store::open_at(&store_path).expect("benchmark store should open");
+    tool_registry
+        .set_chrome_devtools_mode(
+            startup_store
+                .load_chrome_devtools_mode()
+                .expect("benchmark Chrome DevTools settings should load")
+                .unwrap_or_default(),
+        )
+        .expect("Chrome DevTools provider should be registered");
     let session_manager = Arc::new(SessionManager::new(
         Some(store_path.clone()),
         "http://127.0.0.1:8080".to_string(),

@@ -16,6 +16,8 @@ pub(super) struct ToolProviderStatusResponse {
     pub(super) manifest: ProviderManifest,
     pub(super) available: bool,
     pub(super) tool_count: usize,
+    pub(super) catalog_status: crate::store::ProviderCatalogStatus,
+    pub(super) discovered_at: Option<i64>,
     pub(super) error: Option<String>,
 }
 
@@ -27,6 +29,8 @@ impl ToolProviderStatusResponse {
             manifest: status.manifest,
             available: status.available,
             tool_count: status.tool_count,
+            catalog_status: status.catalog_status,
+            discovered_at: status.discovered_at,
             error: status.error,
         }
     }

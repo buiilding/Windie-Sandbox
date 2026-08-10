@@ -1746,6 +1746,9 @@ async fn builtin_provider_tools_list_and_attach_through_existing_conversation_st
     let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
     store.install_provider(&provider_id).unwrap();
     store
+        .save_provider_tool_catalog(&provider_id, &[test_tool_definition()])
+        .unwrap();
+    store
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();
 
@@ -1819,6 +1822,9 @@ async fn runtime_attaches_provider_then_queries_with_provider_tools() {
         .unwrap();
     let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
     store.install_provider(&provider_id).unwrap();
+    store
+        .save_provider_tool_catalog(&provider_id, &[test_tool_definition()])
+        .unwrap();
     store
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();
@@ -1907,6 +1913,9 @@ fn attach_test_mcp_tool(store: &mut Store, conversation_id: &ConversationId) {
     let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
     store.install_provider(&provider_id).unwrap();
     store
+        .save_provider_tool_catalog(&provider_id, &[test_tool_definition()])
+        .unwrap();
+    store
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();
     store
@@ -1920,7 +1929,6 @@ fn test_mcp_registry() -> ToolProviderRegistry {
         TEST_PROVIDER_PREFIX,
         TEST_PROVIDER_DISPLAY_NAME,
         test_mcp_command(),
-        vec![test_tool_definition()],
     )
 }
 
