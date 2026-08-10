@@ -8,6 +8,9 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Changed the Inspector transcript to scroll to the bottom when switching
+  conversations while preserving the user's position during new messages and
+  streaming updates.
 - Clarified message actions with a dedicated branch label/icon and a separate
   fork icon.
 - Added Chrome DevTools MCP browser ownership selection: install and configure
