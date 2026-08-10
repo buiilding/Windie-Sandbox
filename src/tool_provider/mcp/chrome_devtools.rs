@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 const CHROME_DEVTOOLS_PACKAGE: &str = "chrome-devtools-mcp@1.6.0";
 const CHROME_DEVTOOLS_PROFILE_RELATIVE: &str = "mcp/chrome-devtools/profile";
 const CHROME_DEVTOOLS_NPM_CACHE_RELATIVE: &str = "mcp/chrome-devtools/npm-cache";
-const CHROME_DEVTOOLS_REMOTE_DEBUGGING_URL: &str = "http://127.0.0.1:9222/json/version";
 const CHROME_DEVTOOLS_ENV: &[McpEnv] = &[
     McpEnv {
         key: "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS",
@@ -88,12 +87,6 @@ pub(super) fn command(mode: ChromeDevToolsConnectionMode) -> McpCommand {
         },
         env: CHROME_DEVTOOLS_ENV,
     }
-}
-
-/// Returns the localhost endpoint Chrome exposes after remote debugging is
-/// enabled.
-pub(crate) fn remote_debugging_url() -> &'static str {
-    CHROME_DEVTOOLS_REMOTE_DEBUGGING_URL
 }
 
 /// Returns the code-approved Chrome DevTools MCP provider definition.

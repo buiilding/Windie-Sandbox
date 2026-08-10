@@ -8,6 +8,9 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::env;
+use std::net::TcpStream;
+use std::process::Command;
+use std::time::Duration;
 
 use crate::error;
 use crate::local;
@@ -41,59 +44,81 @@ pub struct ToolProviderStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-/// Result of Windie's backend-only Chrome remote-debugging preflight.
+/// Result of the TCP-only Chrome remote-debugging preflight.
 pub struct ChromeDevToolsRemoteDebuggingStatus {
     pub available: bool,
     pub address: String,
-    pub browser: Option<String>,
-    pub error: Option<String>,
 }
 
-/// Checks whether the user's Chrome remote-debugging server is reachable.
+/// Checks whether Chrome is listening for remote debugging on its documented
+/// localhost port. This intentionally checks only TCP reachability; the MCP
+/// process remains responsible for Chrome's permission and tool handshake.
 pub fn chrome_devtools_remote_debugging_status() -> ChromeDevToolsRemoteDebuggingStatus {
-    let address = crate::tool_provider::remote_debugging_url();
-    let client = match reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_millis(400))
-        .timeout(std::time::Duration::from_secs(1))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return ChromeDevToolsRemoteDebuggingStatus {
-                available: false,
-                address: address.to_string(),
-                browser: None,
-                error: Some(error.to_string()),
-            };
-        }
-    };
+    const ADDRESS: &str = "127.0.0.1:9222";
+    ChromeDevToolsRemoteDebuggingStatus {
+        available: TcpStream::connect_timeout(
+            &ADDRESS.parse().expect("Chrome debugging address is valid"),
+            Duration::from_millis(400),
+        )
+        .is_ok(),
+        address: ADDRESS.to_string(),
+    }
+}
 
-    match client.get(address).send() {
-        Ok(response) if response.status().is_success() => {
-            let browser = response.json::<serde_json::Value>().ok().and_then(|body| {
-                body.get("Browser")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            });
-            ChromeDevToolsRemoteDebuggingStatus {
-                available: true,
-                address: address.to_string(),
-                browser,
-                error: None,
+/// Opens Chrome's user-facing remote-debugging settings page.
+///
+/// Normal web pages cannot navigate to `chrome://` URLs because Chrome blocks
+/// those schemes from page JavaScript. The Inspector therefore asks Windie's
+/// localhost backend to open this fixed page through the operating system.
+/// This helper intentionally accepts no caller-provided URL.
+pub fn open_chrome_devtools_remote_debugging() -> Result<()> {
+    const PAGE: &str = "chrome://inspect/#remote-debugging";
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .args(["-a", "Google Chrome", PAGE])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("Google Chrome could not open its remote-debugging settings");
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", PAGE])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("Chrome could not open its remote-debugging settings");
+        }
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for executable in [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+        ] {
+            if Command::new("sh")
+                .args(["-c", &format!("command -v {executable}")])
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                Command::new(executable).arg(PAGE).spawn()?;
+                return Ok(());
             }
         }
-        Ok(response) => ChromeDevToolsRemoteDebuggingStatus {
-            available: false,
-            address: address.to_string(),
-            browser: None,
-            error: Some(format!("Chrome returned {}", response.status())),
-        },
-        Err(error) => ChromeDevToolsRemoteDebuggingStatus {
-            available: false,
-            address: address.to_string(),
-            browser: None,
-            error: Some(error.to_string()),
-        },
+        anyhow::bail!("Google Chrome was not found to open its remote-debugging settings");
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
+    {
+        anyhow::bail!("opening Chrome remote-debugging settings is unsupported on this platform");
     }
 }
 
@@ -196,7 +221,6 @@ pub fn setup_provider_with_mode(
         let mode = requested_chrome_devtools_mode
             .or(store.load_chrome_devtools_mode()?)
             .unwrap_or_default();
-        ensure_chrome_connection_available(mode)?;
         registry.set_chrome_devtools_mode(mode)?;
         store.install_provider(provider_id)?;
         store.set_chrome_devtools_mode(mode)?;
@@ -412,7 +436,6 @@ pub fn configure_provider(
         ));
     }
 
-    ensure_chrome_connection_available(mode)?;
     registry.set_chrome_devtools_mode(mode)?;
     store.set_chrome_devtools_mode(mode)?;
     store.set_provider_state(provider_id, ProviderInstallState::Updating, None)?;
@@ -452,24 +475,6 @@ fn configure_runtime_mode(
     if provider_id.as_str() == "chrome-devtools" {
         registry
             .set_chrome_devtools_mode(store.load_chrome_devtools_mode()?.unwrap_or_default())?;
-    }
-    Ok(())
-}
-
-/// Prevents an existing-Chrome installation or switch from starting an MCP
-/// process before Chrome has exposed the explicitly enabled debugging server.
-fn ensure_chrome_connection_available(mode: ChromeDevToolsConnectionMode) -> Result<()> {
-    if mode == ChromeDevToolsConnectionMode::Existing {
-        let status = chrome_devtools_remote_debugging_status();
-        if !status.available {
-            return Err(anyhow::anyhow!(
-                "Chrome remote debugging is not available at {}: {}",
-                status.address,
-                status
-                    .error
-                    .unwrap_or_else(|| "enable remote debugging in Chrome".to_string())
-            ));
-        }
     }
     Ok(())
 }

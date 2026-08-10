@@ -17,16 +17,6 @@ pub(super) struct ProviderConfigurationRequest {
     pub(super) chrome_devtools_mode: crate::tool_provider::ChromeDevToolsConnectionMode,
 }
 
-pub(super) async fn chrome_devtools_remote_debugging(
-    State(_state): State<ApiState>,
-) -> ApiResult<operation::ChromeDevToolsRemoteDebuggingStatus> {
-    Ok(Json(
-        tokio::task::spawn_blocking(operation::chrome_devtools_remote_debugging_status)
-            .await
-            .map_err(|error| anyhow::anyhow!("remote debugging probe failed: {error}"))?,
-    ))
-}
-
 pub(super) async fn list_providers(
     State(state): State<ApiState>,
 ) -> ApiResult<Vec<operation::ProviderInstallation>> {
@@ -36,6 +26,24 @@ pub(super) async fn list_providers(
         &store,
         &state.tool_registry,
     )?))
+}
+
+pub(super) async fn chrome_devtools_remote_debugging(
+    State(_state): State<ApiState>,
+) -> ApiResult<operation::ChromeDevToolsRemoteDebuggingStatus> {
+    Ok(Json(
+        tokio::task::spawn_blocking(operation::chrome_devtools_remote_debugging_status)
+            .await
+            .map_err(|error| anyhow::anyhow!("remote debugging check failed: {error}"))?,
+    ))
+}
+
+pub(super) async fn open_chrome_devtools_remote_debugging() -> ApiResult<serde_json::Value> {
+    tokio::task::spawn_blocking(operation::open_chrome_devtools_remote_debugging)
+        .await
+        .map_err(|error| anyhow::anyhow!("Chrome settings opener failed: {error}"))??;
+
+    Ok(Json(serde_json::json!({ "opened": true })))
 }
 
 pub(super) async fn get_provider(

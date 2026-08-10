@@ -25,5 +25,5 @@ pub use manifest::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
 };
-pub(crate) use mcp::{ChromeDevToolsConnectionMode, remote_debugging_url};
+pub(crate) use mcp::ChromeDevToolsConnectionMode;
 pub use registry::ToolProviderRegistry;

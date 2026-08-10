@@ -12,14 +12,14 @@ Windie offers two explicit connection modes when Chrome DevTools is installed:
   user's normal Chrome.
 - **Existing Chrome** attaches to the user's already-running Chrome. Chrome
   144 or newer must be running with remote debugging enabled from
-  `chrome://inspect/#remote-debugging`. Windie waits for
-  `http://127.0.0.1:9222/json/version`, then launches the MCP with
-  `--auto-connect` and waits for Chrome's explicit permission approval.
+  `chrome://inspect/#remote-debugging`. Windie first checks TCP reachability at
+  `127.0.0.1:9222`. If the port is not listening, the Inspector opens Chrome's
+  settings page and waits until the user enables the setting. Windie then
+  launches the MCP with `--auto-connect`.
 
-The existing-Chrome flow does not pass Windie's `--user-data-dir`. Windie only
-marks the provider enabled after MCP tool discovery and the read-only
-`list_pages` readiness check succeed. A listening port by itself is not proof
-that MCP has permission to control Chrome.
+The existing-Chrome flow does not pass Windie's `--user-data-dir`. The TCP
+check only confirms that Chrome is listening; MCP still handles its own
+approval and readiness handshake.
 
 ## Managed Chrome behavior
 

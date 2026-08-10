@@ -11,6 +11,16 @@ individual commit or internal edit.
 - Changed the Inspector transcript to scroll to the bottom when switching
   conversations while preserving the user's position during new messages and
   streaming updates.
+- Removed the Chrome remote-debugging server check from existing-Chrome MCP
+  setup; users now confirm the Chrome setting directly before installation or
+  reconfiguration starts.
+- Fixed the existing-Chrome setup link so Windie opens Chrome's remote-
+  debugging settings through the local backend instead of blocked page script.
+- Closed the Chrome ownership dialog immediately after existing-Chrome
+  confirmation so provider setup can continue in the extension status view.
+- Restored a TCP-only `127.0.0.1:9222` check for existing Chrome, skipping the
+  settings instructions when debugging is already enabled and polling after
+  Windie opens Chrome's settings page.
 - Clarified message actions with a dedicated branch label/icon and a separate
   fork icon.
 - Added Chrome DevTools MCP browser ownership selection: install and configure

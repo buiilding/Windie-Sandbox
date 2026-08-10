@@ -66,6 +66,10 @@ fn api_router(state: ApiState) -> Router {
             get(chrome_devtools_remote_debugging),
         )
         .route(
+            "/api/providers/chrome-devtools/open-remote-debugging",
+            post(open_chrome_devtools_remote_debugging),
+        )
+        .route(
             "/api/providers/{provider_id}",
             get(get_provider).delete(uninstall_provider),
         )
