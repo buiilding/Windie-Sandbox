@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Clarified message actions with a dedicated branch label/icon and a separate
+  fork icon.
 - Added Chrome DevTools MCP browser ownership selection: install and configure
   can use a Windie-managed profile or an explicitly approved existing Chrome,
   with remote-debugging preflight, MCP readiness validation, and safe mode
