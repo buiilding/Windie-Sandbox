@@ -7,6 +7,13 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- No unreleased changes yet.
+
+## [0.3.2] - 2026-08-10
+
+- Updated the runtime for the current Rust Clippy checks used by release CI.
+- Serialized environment-sensitive tests so the default parallel test run is
+  reliable in CI.
 - Added separate concise public release notes while retaining detailed
   engineering history in this changelog, with CI validation for both files.
 - Updated the Inspector submodule to merged commit `3509b03` in preparation for
@@ -260,7 +267,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
 [0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1
 [0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0
 [0.2.10]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.10

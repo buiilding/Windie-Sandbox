@@ -15,12 +15,11 @@ pub fn available_tools_with_registry(
 ) -> Result<Vec<ToolDefinition>> {
     let mut tools = Vec::new();
     for manifest in registry.provider_manifests() {
-        if store.provider_is_enabled(&manifest.provider_id)? {
-            if let Some(catalog) = store.load_provider_tool_catalog(&manifest.provider_id)? {
-                if catalog.status != crate::store::ProviderCatalogStatus::Unavailable {
-                    tools.extend(catalog.tools);
-                }
-            }
+        if store.provider_is_enabled(&manifest.provider_id)?
+            && let Some(catalog) = store.load_provider_tool_catalog(&manifest.provider_id)?
+            && catalog.status != crate::store::ProviderCatalogStatus::Unavailable
+        {
+            tools.extend(catalog.tools);
         }
     }
     Ok(tools)

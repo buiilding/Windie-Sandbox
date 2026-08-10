@@ -82,7 +82,7 @@ pub fn open_chrome_devtools_remote_debugging() -> Result<()> {
         if !status.success() {
             anyhow::bail!("Google Chrome could not open its remote-debugging settings");
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]

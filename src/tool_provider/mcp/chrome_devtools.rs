@@ -27,21 +27,16 @@ const CHROME_DEVTOOLS_ENV: &[McpEnv] = &[
     },
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// Selects which Chrome browser owns a Chrome DevTools MCP session.
 pub(crate) enum ChromeDevToolsConnectionMode {
     /// Start a separate persistent browser profile owned by Windie.
+    #[default]
     Managed,
     /// Attach to the user's already-running Chrome through Chrome's local
     /// remote-debugging approval flow.
     Existing,
-}
-
-impl Default for ChromeDevToolsConnectionMode {
-    fn default() -> Self {
-        Self::Managed
-    }
 }
 
 impl ChromeDevToolsConnectionMode {

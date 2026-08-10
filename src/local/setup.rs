@@ -936,9 +936,7 @@ fn write_env_lines(path: &Path, lines: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+    use crate::local::ENVIRONMENT_LOCK;
 
     #[test]
     fn uninstall_rejects_home_root_and_overlapping_paths() {

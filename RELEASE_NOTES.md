@@ -6,12 +6,15 @@ for GitHub release descriptions; the detailed engineering history is kept in
 
 ## [Unreleased]
 
+- No unreleased changes yet.
+
+## [0.3.2] - 2026-08-10
+
 - Refreshed the Inspector's branding and improved the layout of its activity
   bar.
 - Improved conversation reading and navigation, including more reliable
   scrolling and clearer branch and fork actions.
-- Introduced Chrome DevTools setup for connecting to existing user Chrome profile.
-- Made Chrome DevTools setup clearer and safer when connecting to an existing
+- Added clearer and safer Chrome DevTools setup for connecting to an existing
   Chrome profile.
 - Improved extension description, setup, provider cleanup, and tool discovery.
 - Added clearer guidance when a model provider still needs to be configured.
@@ -81,7 +84,8 @@ tool providers.
 - Added the localhost API, local setup commands, the one-line installer, and
   release packaging.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
 [0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1
 [0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0
 [0.2.9]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.2.9

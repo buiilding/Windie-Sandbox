@@ -1158,6 +1158,7 @@ mod tests {
 
     #[test]
     fn windie_data_dir_env_value_resolves_under_user_home() {
+        let _lock = crate::local::ENVIRONMENT_LOCK.lock().unwrap();
         let value = resolve_env_value(McpEnvValue::WindieDataDir("mcp/desktop-commander")).unwrap();
 
         assert!(
@@ -1176,6 +1177,7 @@ mod tests {
 
     #[test]
     fn windie_data_dir_mcp_argument_resolves_under_user_home() {
+        let _lock = crate::local::ENVIRONMENT_LOCK.lock().unwrap();
         let value = McpArgument::WindieDataDir("mcp/chrome-devtools/profile").resolve();
 
         assert!(

@@ -640,9 +640,7 @@ pub(crate) fn archive_fingerprint(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+    use crate::local::ENVIRONMENT_LOCK;
 
     #[test]
     fn archive_suffix_matches_format() {
