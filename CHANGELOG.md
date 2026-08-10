@@ -8,6 +8,8 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Replaced the Inspector's placeholder square branding with the circular Windie
+  icon in the browser favicon and top bar.
 - Moved LLM Providers above Extensions in the Inspector activity bar.
 - Changed the Inspector transcript to scroll to the bottom when switching
   conversations while preserving the user's position during new messages and
