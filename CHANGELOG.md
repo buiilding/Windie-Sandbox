@@ -8,6 +8,10 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Updated the README Discord badge to use the active Windie community invite.
+- Fixed Basic Memory provider uninstall when Windie's project is the CLI
+  default, stopped new Windie projects from changing the global Basic Memory
+  default, and preserved provider command diagnostics written to stdout.
 - Aligned the landing design guidelines, navigation lockup, CTA copy, and
   README headline hierarchy with the current Windie identity.
 - Updated the landing-page marketing identity PRD and clarified the Desktop
