@@ -1,13 +1,14 @@
 # Changelog
 
-All notable changes to Windie are documented here.
-
-This changelog is intentionally curated from the repository history. It records
-meaningful product, runtime, and developer-facing changes rather than every
-individual commit or internal edit.
+This is Windie's detailed engineering changelog. It records meaningful
+product, runtime, documentation, and developer-facing changes with enough
+context to preserve the project's history. Concise public release highlights
+are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added separate concise public release notes while retaining detailed
+  engineering history in this changelog, with CI validation for both files.
 - Updated the Inspector submodule to merged commit `3509b03` in preparation for
   the next release.
 - Replaced the Inspector's placeholder square branding with the circular Windie

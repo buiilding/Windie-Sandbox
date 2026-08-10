@@ -114,17 +114,29 @@ Update the version in the root `Cargo.toml`:
 version = "X.Y.Z"
 ```
 
-Update `CHANGELOG.md` with a user-facing section:
+Update both `CHANGELOG.md` and `RELEASE_NOTES.md` with the planned version
+section. `CHANGELOG.md` is the detailed engineering record; `RELEASE_NOTES.md`
+contains the shorter, user-friendly text that will be published on GitHub.
+
+The detailed changelog can include implementation, reliability, and developer
+context:
 
 ```markdown
 ## [X.Y.Z] - YYYY-MM-DD
 
-- Describe the meaningful user-facing changes.
-- Keep implementation details out unless they affect users, release
-  reliability, or contributors.
+- Describe the detailed changes and relevant implementation context.
 ```
 
-Update the links at the bottom of the changelog:
+The public release notes should group related work and omit internal details:
+
+```markdown
+## [X.Y.Z] - YYYY-MM-DD
+
+- Describe the meaningful user-facing changes in clear language.
+- Group related fixes and improvements into a small number of bullets.
+```
+
+Update the links at the bottom of both files:
 
 ```markdown
 [Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/vX.Y.Z...HEAD
@@ -132,7 +144,8 @@ Update the links at the bottom of the changelog:
 ```
 
 The release workflow extracts the text between `## [X.Y.Z]` and the next
-version heading. The section must therefore exist and contain release notes.
+version heading from `RELEASE_NOTES.md`. The matching sections in both files
+must therefore exist and contain release notes.
 
 ## 4. Regenerate and verify Rust metadata
 
@@ -180,11 +193,12 @@ Windows build paths. A local macOS run does not replace the Windows CI job.
 
 ## 6. Commit and open the release pull request
 
-Every release-preparation commit must include a meaningful changelog entry.
+Every release-preparation commit must include meaningful entries in both the
+detailed changelog and the public release notes.
 Stage the release metadata and any intentionally updated submodule pins:
 
 ```bash
-git add CHANGELOG.md Cargo.toml Cargo.lock
+git add CHANGELOG.md RELEASE_NOTES.md Cargo.toml Cargo.lock
 git add vendor/<updated-submodule>  # only when this pin changed
 git diff --cached --check
 git commit -m "Prepare Windie vX.Y.Z release"
@@ -267,8 +281,8 @@ gh release view vX.Y.Z
 
 The workflow publishes the platform archives and their SHA-256 files only
 after every packaging job succeeds. Confirm that the release exists, that the
-notes match the `CHANGELOG.md` section, and that all expected platform assets
-are present before announcing the release.
+notes match the `RELEASE_NOTES.md` section, and that all expected platform
+assets are present before announcing the release.
 
 If the workflow fails, diagnose and fix the failure in a follow-up pull
 request. Do not move an existing release tag to a different commit without a

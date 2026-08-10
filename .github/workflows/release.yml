@@ -114,6 +114,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Validate release notes
+        run: scripts/check-release-notes.sh
       - name: Prepare release notes
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -121,7 +123,7 @@ jobs:
             $0 ~ "^## \\[" version "\\]" { found = 1; next }
             found && /^## \[/ { exit }
             found { print }
-          ' CHANGELOG.md > release-notes.md
+          ' RELEASE_NOTES.md > release-notes.md
           test -s release-notes.md
       - env:
           GH_TOKEN: ${{ github.token }}
