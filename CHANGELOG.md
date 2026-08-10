@@ -8,6 +8,7 @@ individual commit or internal edit.
 
 ## [Unreleased]
 
+- Moved LLM Providers above Extensions in the Inspector activity bar.
 - Changed the Inspector transcript to scroll to the bottom when switching
   conversations while preserving the user's position during new messages and
   streaming updates.
