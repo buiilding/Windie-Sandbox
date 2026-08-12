@@ -7,7 +7,7 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+- Made the Inspector's available tool schemas section expanded by default.
 
 ## [0.3.2] - 2026-08-10
 
