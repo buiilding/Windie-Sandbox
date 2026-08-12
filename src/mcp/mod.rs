@@ -1,4 +1,4 @@
-//! Minimal MCP stdio client.
+//! MCP protocol, server lifecycle, and execution boundary.
 //!
 //! This module owns the protocol boundary for approved MCP providers. It runs a
 //! configured command, speaks line-delimited JSON-RPC 2.0 over stdin/stdout,
@@ -26,8 +26,30 @@ use serde_json::{Value, json};
 
 use crate::local;
 
-#[path = "mcp_http.rs"]
-mod mcp_http;
+mod cleanup;
+mod http;
+mod lifecycle;
+mod manifest;
+mod registry;
+pub(crate) mod servers;
+
+#[cfg(test)]
+mod provider_tests;
+
+pub(crate) use cleanup::ProviderCleanup;
+pub use lifecycle::{ProviderInstallState, ProviderReadiness};
+pub use manifest::{
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
+    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
+};
+pub use registry::McpRegistry;
+pub(crate) use servers::ChromeDevToolsConnectionMode;
+
+#[cfg(test)]
+pub(crate) use servers::{
+    approved_mcp_provider, mcp_schema_name, mcp_tool_call_failure_result, mcp_tool_result_parts,
+    tool_result_preview,
+};
 
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_PACKAGE_PREPARATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -676,7 +698,7 @@ enum McpTransportSession {
     /// Local process-backed MCP session.
     Stdio(McpSession),
     /// Hosted HTTP-backed MCP session.
-    StreamableHttp(mcp_http::StreamableHttpSession),
+    StreamableHttp(http::StreamableHttpSession),
 }
 
 impl McpTransportSession {
@@ -685,7 +707,7 @@ impl McpTransportSession {
         match transport {
             McpTransport::Stdio { command, .. } => Ok(Self::Stdio(McpSession::start(command)?)),
             McpTransport::StreamableHttp { endpoint } => Ok(Self::StreamableHttp(
-                mcp_http::StreamableHttpSession::start(endpoint).await?,
+                http::StreamableHttpSession::start(endpoint).await?,
             )),
         }
     }

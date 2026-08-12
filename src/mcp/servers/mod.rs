@@ -16,15 +16,13 @@ mod parallel;
 mod provider;
 mod result;
 
-pub(in crate::tool_provider) use approved::approved_mcp_providers;
+pub(crate) use approved::approved_mcp_providers;
 pub(crate) use chrome_devtools::ChromeDevToolsConnectionMode;
-pub(in crate::tool_provider) use provider::{McpProviderDefinition, McpToolProvider};
+pub(crate) use provider::{McpProviderDefinition, McpToolProvider};
 
 #[cfg(test)]
-pub(in crate::tool_provider) use approved::approved_mcp_provider;
+pub(crate) use approved::approved_mcp_provider;
 #[cfg(test)]
-pub(in crate::tool_provider) use provider::mcp_schema_name;
+pub(crate) use provider::mcp_schema_name;
 #[cfg(test)]
-pub(in crate::tool_provider) use result::{
-    mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview,
-};
+pub(crate) use result::{mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview};

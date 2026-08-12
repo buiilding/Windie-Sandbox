@@ -7,6 +7,12 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added the first curated plugin composition layer with a driver skill,
+  model-facing skill loading and plugin attachment tools, and reuse of the
+  existing MCP provider catalogs and conversation tool attachment flow.
+- Separated builtin tools, skills, plugins, and MCP into explicit module
+  boundaries. The shared `tool/` contracts are now used by both builtin and
+  discovered MCP tools.
 - Made the Inspector's available tool schemas section expanded by default.
 
 ## [0.3.2] - 2026-08-10

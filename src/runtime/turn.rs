@@ -7,14 +7,16 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
+use crate::builtin_tools;
 use crate::context::{ContextBuilder, ModelContext};
 use crate::conversation::{ConversationId, Message, MessageId, Role};
 use crate::error;
 use crate::llm::RuntimeLlm;
+use crate::mcp::McpRegistry;
 use crate::output::RuntimeOutput;
+use crate::plugins::PluginRegistry;
 use crate::store::Store;
 use crate::tool::{PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy};
-use crate::tool_provider::ToolProviderRegistry;
 
 use super::retry::stream_with_retry;
 use super::tool_execution::{
@@ -181,7 +183,7 @@ pub(crate) fn prepare_head_turn(
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
-    tools: &ToolProviderRegistry,
+    tools: &McpRegistry,
     events: &impl RuntimeEventSink,
 ) -> Result<()> {
     store_policy_denied_tool_results_at_head(
@@ -228,7 +230,7 @@ fn store_policy_denied_tool_results_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
-    tools: &ToolProviderRegistry,
+    tools: &McpRegistry,
     events: &impl RuntimeEventSink,
 ) -> Result<()> {
     let policy = ToolPolicy;
@@ -277,7 +279,7 @@ pub(crate) fn build_model_context(
     store: &Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<ModelContext> {
     let mut context = ContextBuilder::build_model_context(store, conversation_id, head_message_id)?;
     let mut names = context
@@ -286,13 +288,35 @@ pub(crate) fn build_model_context(
         .map(|tool| tool.name.as_str().to_string())
         .collect::<HashSet<_>>();
 
-    for definition in registry.builtin_tools() {
+    for definition in builtin_tools::definitions() {
         if names.insert(definition.schema_name.as_str().to_string()) {
             context
                 .tool_schemas
                 .push(definition.attached_tool().schema());
         }
     }
+
+    // Plugin discovery is runtime context, not a persisted conversation
+    // message. It tells the model which curated skills and MCP server groups
+    // exist while keeping full skill instructions and MCP schemas on demand.
+    let plugin_prompt = PluginRegistry::default().catalog_prompt(store, registry);
+    let insertion_index = usize::from(
+        context
+            .messages
+            .first()
+            .is_some_and(|message| message.role == Role::System),
+    );
+    context.messages.insert(
+        insertion_index,
+        Message {
+            id: None,
+            parent_message_id: None,
+            role: Role::System,
+            content: plugin_prompt,
+            parts: Vec::new(),
+            metadata: None,
+        },
+    );
 
     Ok(context)
 }

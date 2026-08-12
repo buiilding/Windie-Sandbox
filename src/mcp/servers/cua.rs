@@ -2,7 +2,7 @@
 
 use super::McpProviderDefinition;
 use crate::mcp::{McpArgument, McpCommand, McpTransport};
-use crate::tool_provider::{
+use crate::mcp::{
     ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
     ProviderPermission, ProviderPlatform, ProviderScope,
 };

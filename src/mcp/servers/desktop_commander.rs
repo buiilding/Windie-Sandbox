@@ -13,7 +13,7 @@ use serde_json::json;
 use super::provider::{McpProviderDefinition, McpProviderSetup};
 use crate::local;
 use crate::mcp::{McpArgument, McpCommand, McpEnv, McpEnvValue, McpTransport};
-use crate::tool_provider::{
+use crate::mcp::{
     ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
     ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
 };

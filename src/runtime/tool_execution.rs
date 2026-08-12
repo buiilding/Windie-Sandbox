@@ -5,18 +5,15 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
-use serde_json::Value;
-
+use crate::builtin_tools;
 use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, ToolCallId};
 use crate::error;
+use crate::mcp::McpRegistry;
 use crate::store::Store;
 use crate::tool::{
     AttachedTool, PolicyDecision, ToolExecutionResult, ToolPolicy, ToolProviderKind, ToolSchemaName,
 };
-use crate::tool_provider::{
-    ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME, ToolProviderRegistry,
-};
+use anyhow::Result;
 
 use super::RuntimeEventSink;
 use super::turn::load_path_at_head;
@@ -31,7 +28,7 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
-    tools: &ToolProviderRegistry,
+    tools: &McpRegistry,
     events: &impl RuntimeEventSink,
 ) -> Result<AutomaticToolResolution> {
     let messages = load_path_at_head(store, conversation_id, head_message_id.as_ref())?;
@@ -166,7 +163,7 @@ pub(crate) fn prepare_pending_tool_execution(
     store: &Store,
     conversation_id: &ConversationId,
     pending: &PendingToolCall,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<PendingToolExecution> {
     let policy = ToolPolicy;
     let attached_tool =
@@ -203,11 +200,16 @@ pub(crate) async fn execute_pending_tool_call(
     conversation_id: &ConversationId,
     pending: &PendingToolCall,
     attached_tool: &AttachedTool,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<ToolExecutionResult> {
     if attached_tool.provider.kind == ToolProviderKind::Builtin {
-        return execute_builtin_tool_call(store, conversation_id, pending, attached_tool, registry)
-            .await;
+        return builtin_tools::execute(
+            store,
+            conversation_id,
+            &pending.tool_call,
+            attached_tool,
+            registry,
+        );
     }
 
     registry.call_tool(attached_tool, &pending.tool_call).await
@@ -218,7 +220,7 @@ pub(crate) async fn execute_provider_tool_call(
     conversation_id: &ConversationId,
     pending: &PendingToolCall,
     attached_tool: Option<&AttachedTool>,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<ToolExecutionResult> {
     let Some(attached_tool) = attached_tool else {
         return Err(error::invalid_request(format!(
@@ -283,26 +285,24 @@ pub(crate) fn load_attached_tool_for_call(
     store: &Store,
     conversation_id: &ConversationId,
     tool_call: &ToolCall,
-    registry: &ToolProviderRegistry,
+    _registry: &McpRegistry,
 ) -> Result<Option<AttachedTool>> {
     let schema_name = ToolSchemaName::new(tool_call.name());
     if let Some(attached_tool) = store.load_attached_tool(conversation_id, &schema_name)? {
         return Ok(Some(attached_tool));
     }
 
-    Ok(registry
-        .builtin_tool(&schema_name)
-        .map(|definition| definition.attached_tool()))
+    Ok(builtin_tools::find(&schema_name).map(|definition| definition.attached_tool()))
 }
 
 pub(crate) fn attached_tool_can_execute(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     attached_tool: Option<&AttachedTool>,
 ) -> bool {
     attached_tool.is_some_and(|attached_tool| {
         if attached_tool.provider.kind == ToolProviderKind::Builtin {
-            return registry.can_execute(attached_tool);
+            return builtin_tools::can_execute(attached_tool);
         }
 
         store
@@ -310,163 +310,6 @@ pub(crate) fn attached_tool_can_execute(
             .unwrap_or(false)
             && registry.can_execute(attached_tool)
     })
-}
-
-/// Executes one Windie-owned control tool and returns its compact model result.
-async fn execute_builtin_tool_call(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    pending: &PendingToolCall,
-    attached_tool: &AttachedTool,
-    registry: &ToolProviderRegistry,
-) -> Result<ToolExecutionResult> {
-    if attached_tool.provider.provider_id.as_str() != BUILTIN_PROVIDER_ID {
-        return Ok(ToolExecutionResult::failure(
-            pending.tool_call.id.clone(),
-            pending.tool_call.name(),
-            "unknown built-in tool",
-        ));
-    }
-
-    match attached_tool.provider.tool_name.as_str() {
-        LIST_PROVIDERS_TOOL_NAME => Ok(ToolExecutionResult {
-            tool_call_id: pending.tool_call.id.clone(),
-            tool_name: pending.tool_call.name().to_string(),
-            content: list_attachable_providers(
-                store,
-                registry,
-                enabled_provider_manifests(store, registry)?,
-            )?,
-            parts: Vec::new(),
-            success: true,
-        }),
-        ATTACH_PROVIDER_TOOL_NAME => {
-            let arguments = match serde_json::from_str::<Value>(pending.tool_call.arguments()) {
-                Ok(arguments) => arguments,
-                Err(error) => {
-                    return Ok(ToolExecutionResult::failure(
-                        pending.tool_call.id.clone(),
-                        pending.tool_call.name(),
-                        format!("invalid tool arguments: {error}"),
-                    ));
-                }
-            };
-            let Some(provider_id) = arguments.get("provider_id").and_then(Value::as_str) else {
-                return Ok(ToolExecutionResult::failure(
-                    pending.tool_call.id.clone(),
-                    pending.tool_call.name(),
-                    "provider_id is required",
-                ));
-            };
-
-            let attachment = attach_provider_to_conversation(
-                store,
-                conversation_id,
-                &crate::tool::ToolProviderId::new(provider_id),
-                registry,
-            );
-
-            let Err(error) = attachment else {
-                return Ok(ToolExecutionResult {
-                    tool_call_id: pending.tool_call.id.clone(),
-                    tool_name: pending.tool_call.name().to_string(),
-                    content: "provider attached".to_string(),
-                    parts: Vec::new(),
-                    success: true,
-                });
-            };
-
-            Ok(ToolExecutionResult::failure(
-                pending.tool_call.id.clone(),
-                pending.tool_call.name(),
-                error.to_string(),
-            ))
-        }
-        _ => Ok(ToolExecutionResult::failure(
-            pending.tool_call.id.clone(),
-            pending.tool_call.name(),
-            "unknown built-in tool",
-        )),
-    }
-}
-
-/// Formats the attachable provider list exactly as model-facing plain text.
-fn list_attachable_providers(
-    store: &Store,
-    _registry: &ToolProviderRegistry,
-    manifests: Vec<crate::tool_provider::ProviderManifest>,
-) -> Result<String> {
-    let mut lines = vec!["provider_id, description".to_string()];
-    for manifest in manifests {
-        let Some(catalog) = store.load_provider_tool_catalog(&manifest.provider_id)? else {
-            continue;
-        };
-        if catalog.status != crate::store::ProviderCatalogStatus::Unavailable {
-            lines.push(format!(
-                "{}, {}",
-                manifest.provider_id.as_str(),
-                manifest.description
-            ));
-        }
-    }
-
-    Ok(lines.join("\n"))
-}
-
-/// Loads the enabled provider manifests before entering the async catalog
-/// lookup path. SQLite connections are intentionally not held across awaits.
-fn enabled_provider_manifests(
-    store: &Store,
-    registry: &ToolProviderRegistry,
-) -> Result<Vec<crate::tool_provider::ProviderManifest>> {
-    let mut manifests = Vec::new();
-    for manifest in registry.provider_manifests() {
-        if store.provider_is_enabled(&manifest.provider_id)? {
-            manifests.push(manifest);
-        }
-    }
-    Ok(manifests)
-}
-
-/// Validates and attaches every tool from one enabled, healthy provider.
-fn attach_provider_to_conversation(
-    store: &mut Store,
-    conversation_id: &ConversationId,
-    provider_id: &crate::tool::ToolProviderId,
-    registry: &ToolProviderRegistry,
-) -> Result<()> {
-    if registry.provider_manifest(provider_id).is_none() {
-        return Err(error::not_found(format!(
-            "provider does not exist: {provider_id}"
-        )));
-    }
-    if !store.provider_is_enabled(provider_id)? {
-        return Err(error::invalid_request(format!(
-            "provider is not installed, enabled, and healthy: {provider_id}"
-        )));
-    }
-    let existing_names = store
-        .load_attached_tools(conversation_id)?
-        .into_iter()
-        .map(|tool| tool.schema_name)
-        .collect::<HashSet<_>>();
-    let Some(catalog) = store.load_provider_tool_catalog(provider_id)? else {
-        return Err(error::invalid_request(format!(
-            "provider has no discovered tool catalog: {provider_id}"
-        )));
-    };
-    if catalog.status == crate::store::ProviderCatalogStatus::Unavailable {
-        return Err(error::invalid_request(format!(
-            "provider tool catalog is unavailable: {provider_id}"
-        )));
-    }
-    let new_tools = catalog
-        .tools
-        .into_iter()
-        .filter(|tool| !existing_names.contains(&tool.schema_name))
-        .map(|tool| tool.attached_tool())
-        .collect::<Vec<_>>();
-    store.insert_attached_tools(conversation_id, &new_tools)
 }
 
 pub(crate) fn store_pending_tool_result_at_head(

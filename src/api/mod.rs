@@ -33,6 +33,7 @@ use crate::error::{self as windie_error, WindieErrorKind};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::local;
+use crate::mcp::McpRegistry;
 use crate::operation::{self, InspectionReport, MessageInputPart, ToolProviderStatus};
 use crate::output::TerminalOutput;
 use crate::session::{
@@ -42,7 +43,6 @@ use crate::store::{ConversationInfo, Store};
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::ToolProviderRegistry;
 
 mod conversation;
 mod env;
@@ -86,7 +86,7 @@ const API_JSON_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 /// Sessions the local developer API server until the process is stopped.
 pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Result<()> {
     let output = TerminalOutput;
-    let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let tool_registry = Arc::new(McpRegistry::with_persistent_mcp_sessions());
     let startup_store = Store::open()?;
     tool_registry.set_chrome_devtools_mode(
         startup_store
@@ -137,7 +137,7 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
 /// Builds the production route table against an isolated store for local
 /// benchmark and integration callers.
 pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
-    let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let tool_registry = Arc::new(McpRegistry::with_persistent_mcp_sessions());
     let startup_store = Store::open_at(&store_path).expect("benchmark store should open");
     tool_registry
         .set_chrome_devtools_mode(

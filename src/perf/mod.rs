@@ -23,6 +23,7 @@ use crate::conversation::{
 };
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
+use crate::mcp::McpRegistry;
 use crate::mcp::{self, McpCommand};
 use crate::runtime::{NoopRuntimeEventSink, prepare_head_turn};
 use crate::store::Store;
@@ -30,7 +31,6 @@ use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef,
 };
-use crate::tool_provider::ToolProviderRegistry;
 
 mod comparison;
 mod fixture;

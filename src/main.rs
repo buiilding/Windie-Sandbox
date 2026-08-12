@@ -11,13 +11,13 @@ use windie::cli::{Command, EnvCommand, InsertPart};
 use windie::conversation::{ConversationId, MessageId, Role, ToolCallId};
 use windie::gateway::GatewayUrl;
 use windie::llm::{BaseUrl, ModelName};
+use windie::mcp::McpRegistry;
 use windie::operation::MessageInputPart;
 use windie::output::TerminalOutput;
 use windie::process::ManagedComponent;
 use windie::session::SessionId;
 use windie::store::Store;
 use windie::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
-use windie::tool_provider::ToolProviderRegistry;
 use windie::{cli, config, local, operation, tray};
 
 const INVALID_USAGE_EXIT_CODE: i32 = 2;
@@ -608,7 +608,7 @@ fn session_events(session_id: SessionId) -> Result<()> {
 fn session_approvals(session_id: SessionId) -> Result<()> {
     let store = Store::open()?;
     let output = TerminalOutput;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let session = store.load_session(&session_id)?;
     let approvals = operation::list_session_approvals_with_registry(&store, &session, &registry)?;
 

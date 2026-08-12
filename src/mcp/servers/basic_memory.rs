@@ -18,7 +18,7 @@ use super::McpProviderDefinition;
 use super::provider::McpProviderSetup;
 use crate::local;
 use crate::mcp::{McpArgument, McpCommand, McpTransport};
-use crate::tool_provider::{
+use crate::mcp::{
     ProviderAuthentication, ProviderCleanup, ProviderDependency, ProviderManifest,
     ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
 };
@@ -198,7 +198,7 @@ pub(super) fn prepare() -> Result<()> {
 /// through Basic Memory's CLI. The `memory` directory itself is user data and
 /// remains intact. A project pointing anywhere else is rejected rather than
 /// allowing an uninstall to mutate another user's project.
-pub(in crate::tool_provider) fn uninstall() -> Result<()> {
+pub(crate) fn uninstall() -> Result<()> {
     let project_name = project_name()?;
     let memory_dir = windie_data_dir().join(BASIC_MEMORY_MEMORY_RELATIVE);
     let uvx = local::resolve_command("uvx")?;

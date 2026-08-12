@@ -9,12 +9,12 @@ use super::*;
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct ProviderSetupRequest {
-    pub(super) chrome_devtools_mode: Option<crate::tool_provider::ChromeDevToolsConnectionMode>,
+    pub(super) chrome_devtools_mode: Option<crate::mcp::ChromeDevToolsConnectionMode>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct ProviderConfigurationRequest {
-    pub(super) chrome_devtools_mode: crate::tool_provider::ChromeDevToolsConnectionMode,
+    pub(super) chrome_devtools_mode: crate::mcp::ChromeDevToolsConnectionMode,
 }
 
 pub(super) async fn list_providers(
@@ -157,7 +157,7 @@ async fn run_blocking_provider_operation(
     provider_id: String,
     operation: fn(
         &Store,
-        &ToolProviderRegistry,
+        &McpRegistry,
         &ToolProviderId,
     ) -> anyhow::Result<operation::ProviderInstallation>,
 ) -> anyhow::Result<operation::ProviderInstallation> {
@@ -179,7 +179,7 @@ async fn run_blocking_provider_operation(
 async fn run_blocking_provider_setup(
     state: ApiState,
     provider_id: String,
-    mode: Option<crate::tool_provider::ChromeDevToolsConnectionMode>,
+    mode: Option<crate::mcp::ChromeDevToolsConnectionMode>,
 ) -> anyhow::Result<operation::ProviderInstallation> {
     let store_path = state.store_path;
     let registry = state.tool_registry;

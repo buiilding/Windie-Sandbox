@@ -6,7 +6,7 @@
 
 use super::McpProviderDefinition;
 use crate::mcp::{McpHttpAuthorization, McpHttpEndpoint, McpTransport};
-use crate::tool_provider::{
+use crate::mcp::{
     ProviderAuthentication, ProviderCleanup, ProviderManifest, ProviderPermission,
     ProviderPlatform, ProviderScope, ProviderSecret,
 };

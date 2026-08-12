@@ -18,7 +18,7 @@ use crate::tool::{ToolExecutionResult, ToolProviderId};
 /// failed result lets runtime persist a linked `role: tool` message so the next
 /// model turn can observe the failure instead of losing the tool-call contract
 /// to an outer operation error.
-pub(in crate::tool_provider) fn mcp_tool_call_failure_result(
+pub(crate) fn mcp_tool_call_failure_result(
     provider_id: &ToolProviderId,
     tool_call: &ToolCall,
     error: &anyhow::Error,
@@ -56,9 +56,7 @@ pub(in crate::tool_provider) fn mcp_tool_call_failure_result(
 /// MCP can return text and binary images in the same content array. Windie
 /// stores those images through `message_parts` and `image_assets` so the
 /// Responses request can replay them as image blocks instead of base64 text.
-pub(in crate::tool_provider) fn mcp_tool_result_parts(
-    result: &Value,
-) -> Result<Vec<UnsavedMessagePart>> {
+pub(crate) fn mcp_tool_result_parts(result: &Value) -> Result<Vec<UnsavedMessagePart>> {
     let mut parts = Vec::new();
 
     if let Some(content) = result.get("content").and_then(Value::as_array) {
@@ -111,7 +109,7 @@ pub(in crate::tool_provider) fn mcp_tool_result_parts(
 }
 
 /// Builds the compact visible text stored on the tool message row.
-pub(in crate::tool_provider) fn tool_result_preview(parts: &[UnsavedMessagePart]) -> String {
+pub(crate) fn tool_result_preview(parts: &[UnsavedMessagePart]) -> String {
     let mut lines = Vec::new();
 
     for part in parts {

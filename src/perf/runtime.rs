@@ -4,7 +4,7 @@ use super::*;
 
 /// Prepares the latest conversation head using the production runtime path.
 fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let events = NoopRuntimeEventSink;
     let mut head_message_id = latest_message_id(store, conversation_id)?;
 

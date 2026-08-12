@@ -21,7 +21,7 @@ pub(crate) use turn::{advance_turn, build_model_context};
 
 use crate::conversation::{ConversationId, MessageId};
 use crate::llm::{PromptCacheRequest, ReasoningRequest};
-use crate::tool_provider::ToolProviderRegistry;
+use crate::mcp::McpRegistry;
 
 #[cfg(test)]
 use crate::conversation::Role;
@@ -64,7 +64,7 @@ impl<'a> RuntimeModelRequest<'a> {
 pub(crate) struct RuntimeInput<'a> {
     pub(crate) conversation_id: &'a ConversationId,
     pub(crate) head_message_id: Option<&'a MessageId>,
-    pub(crate) tools: &'a ToolProviderRegistry,
+    pub(crate) tools: &'a McpRegistry,
     pub(crate) model_request: RuntimeModelRequest<'a>,
 }
 

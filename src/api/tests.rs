@@ -13,9 +13,9 @@ use tower::ServiceExt;
 
 use crate::conversation::{MessageMetadata, MessagePart, Role, ToolCall};
 use crate::mcp::McpCommand;
+use crate::mcp::ProviderInstallState;
 use crate::session::{SessionEvent, SessionId, SessionStatus};
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
-use crate::tool_provider::ProviderInstallState;
 
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1418,7 +1418,7 @@ fn test_app_with_urls_and_shutdown(
     base_url: &str,
     shutdown_tx: watch::Sender<bool>,
 ) -> Router {
-    let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let tool_registry = Arc::new(McpRegistry::with_persistent_mcp_sessions());
     let session_manager = Arc::new(SessionManager::new(
         Some(store_path.clone()),
         gateway_url.to_string(),
@@ -1436,10 +1436,7 @@ fn test_app_with_urls_and_shutdown(
     })
 }
 
-fn test_app_with_tool_registry(
-    store_path: PathBuf,
-    tool_registry: Arc<ToolProviderRegistry>,
-) -> Router {
+fn test_app_with_tool_registry(store_path: PathBuf, tool_registry: Arc<McpRegistry>) -> Router {
     let session_manager = Arc::new(SessionManager::new(
         Some(store_path.clone()),
         "http://localhost:8080".to_string(),
@@ -1632,8 +1629,8 @@ async fn wait_for_run_event_count(
         .unwrap()
 }
 
-fn registry_with_test_tool() -> ToolProviderRegistry {
-    ToolProviderRegistry::with_test_mcp_provider(
+fn registry_with_test_tool() -> McpRegistry {
+    McpRegistry::with_test_mcp_provider(
         "desktop-commander",
         "desktop_commander",
         "Desktop Commander",

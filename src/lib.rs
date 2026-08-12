@@ -7,6 +7,7 @@
 #![allow(dead_code, private_bounds, private_interfaces)]
 
 pub mod api;
+pub mod builtin_tools;
 pub mod cli;
 pub mod config;
 pub mod context;
@@ -20,11 +21,12 @@ pub mod mcp;
 pub mod operation;
 pub mod output;
 pub mod perf;
+pub mod plugins;
 pub mod process;
 pub mod runtime;
 pub mod session;
+pub mod skills;
 pub mod store;
 pub mod tool;
-pub mod tool_provider;
 pub mod tray;
 pub mod wakeup;

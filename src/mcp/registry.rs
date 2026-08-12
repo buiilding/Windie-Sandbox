@@ -7,21 +7,17 @@
 
 use anyhow::Result;
 
-use super::builtin;
-use super::mcp::McpProviderDefinition;
-use super::mcp::{McpToolProvider, approved_mcp_providers};
+use super::{ChromeDevToolsConnectionMode, ProviderRuntime};
 use crate::conversation::ToolCall;
 use crate::error;
 use crate::local;
-use crate::mcp::McpCommand;
-use crate::mcp::McpSessionPool;
-use crate::mcp::McpTransport;
+use crate::mcp::servers::{McpProviderDefinition, McpToolProvider, approved_mcp_providers};
+use crate::mcp::{McpCommand, McpSessionPool, McpTransport, ProviderInstallState};
+use crate::store::{ProviderCatalogStatus, Store};
 use crate::tool::{
     AttachedTool, ToolDefinition, ToolExecutionResult, ToolProviderId, ToolProviderKind,
     ToolSchemaName,
 };
-use crate::tool_provider::ChromeDevToolsConnectionMode;
-use crate::tool_provider::ProviderRuntime;
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -29,27 +25,15 @@ use crate::tool_provider::ProviderRuntime;
 /// The registry deliberately exposes provider-neutral operations. Runtime does
 /// not branch on shell, MCP, or plugin details; it resolves the conversation's
 /// attached tool to a provider reference and calls this registry.
-pub struct ToolProviderRegistry {
+pub struct McpRegistry {
     pub(super) mcp_providers: Vec<McpToolProvider>,
     pub(super) mcp_session_pool: Option<McpSessionPool>,
 }
 
-impl ToolProviderRegistry {
+impl McpRegistry {
     /// Builds the default registry for the local Windie process.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Returns Windie-owned control tools that are always model-visible.
-    pub fn builtin_tools(&self) -> Vec<ToolDefinition> {
-        builtin::definitions()
-    }
-
-    /// Finds one Windie-owned control tool by its model-facing schema name.
-    pub fn builtin_tool(&self, schema_name: &ToolSchemaName) -> Option<ToolDefinition> {
-        self.builtin_tools()
-            .into_iter()
-            .find(|tool| tool.schema_name == *schema_name)
     }
 
     /// Builds a registry whose MCP tool calls reuse persistent provider
@@ -92,6 +76,59 @@ impl ToolProviderRegistry {
             .iter()
             .find(|provider| provider.id() == provider_id)
             .map(|provider| provider.manifest().clone())
+    }
+
+    /// Attaches one enabled MCP server's persisted tool catalog to a
+    /// conversation. Discovery itself is separate and happens during setup
+    /// or an explicit refresh.
+    pub fn attach_provider_tools(
+        &self,
+        store: &mut Store,
+        conversation_id: &crate::conversation::ConversationId,
+        provider_id: &ToolProviderId,
+    ) -> Result<Vec<ToolSchemaName>> {
+        if self.provider_manifest(provider_id).is_none() {
+            return Err(error::not_found(format!(
+                "MCP server does not exist: {provider_id}"
+            )));
+        }
+        let Some(installation) = store.load_installed_provider(provider_id)? else {
+            return Err(error::invalid_request(format!(
+                "MCP server is not installed: {provider_id}"
+            )));
+        };
+        if installation.state != ProviderInstallState::Enabled || installation.error.is_some() {
+            return Err(error::invalid_request(format!(
+                "MCP server is not enabled and healthy: {provider_id}"
+            )));
+        }
+        let Some(catalog) = store.load_provider_tool_catalog(provider_id)? else {
+            return Err(error::invalid_request(format!(
+                "MCP server has no discovered tool catalog: {provider_id}"
+            )));
+        };
+        if catalog.status == ProviderCatalogStatus::Unavailable {
+            return Err(error::invalid_request(format!(
+                "MCP server tool catalog is unavailable: {provider_id}"
+            )));
+        }
+        let existing_names = store
+            .load_attached_tools(conversation_id)?
+            .into_iter()
+            .map(|tool| tool.schema_name)
+            .collect::<std::collections::HashSet<_>>();
+        let new_tools = catalog
+            .tools
+            .iter()
+            .filter(|tool| !existing_names.contains(&tool.schema_name))
+            .map(|tool| tool.attached_tool())
+            .collect::<Vec<_>>();
+        let names = new_tools
+            .iter()
+            .map(|tool| tool.schema_name.clone())
+            .collect::<Vec<_>>();
+        store.insert_attached_tools(conversation_id, &new_tools)?;
+        Ok(names)
     }
 
     /// Runs provider-specific configuration without starting MCP.
@@ -181,11 +218,11 @@ impl ToolProviderRegistry {
     /// tool.
     pub fn can_execute(&self, attached_tool: &AttachedTool) -> bool {
         match attached_tool.provider.kind {
-            ToolProviderKind::Builtin => true,
+            ToolProviderKind::Builtin => false,
             ToolProviderKind::Mcp => self
                 .mcp_provider(&attached_tool.provider.provider_id)
                 .is_some(),
-            ToolProviderKind::Plugin => false,
+            ToolProviderKind::Manual => false,
         }
     }
 
@@ -211,7 +248,7 @@ impl ToolProviderRegistry {
                     .call_tool(attached_tool, tool_call, self.mcp_session_pool.as_ref())
                     .await
             }
-            ToolProviderKind::Plugin => Err(error::invalid_request(format!(
+            ToolProviderKind::Manual => Err(error::invalid_request(format!(
                 "unknown tool: {}",
                 tool_call.name()
             ))),
@@ -258,7 +295,7 @@ impl ToolProviderRegistry {
     ) -> Self {
         Self {
             mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
-                manifest: crate::tool_provider::ProviderManifest::mcp_stdio(
+                manifest: crate::mcp::ProviderManifest::mcp_stdio(
                     provider_id,
                     display_name,
                     "Test MCP provider.",
@@ -276,7 +313,7 @@ impl ToolProviderRegistry {
                 package_command: None,
                 readiness_probe: None,
                 setup: None,
-                cleanup: crate::tool_provider::ProviderCleanup::None,
+                cleanup: crate::mcp::ProviderCleanup::None,
             })],
             mcp_session_pool: None,
         }
@@ -293,7 +330,7 @@ impl ToolProviderRegistry {
     }
 }
 
-impl Default for ToolProviderRegistry {
+impl Default for McpRegistry {
     fn default() -> Self {
         Self {
             mcp_providers: approved_mcp_providers()

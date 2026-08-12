@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 use crate::conversation::{ConversationId, MessageId, ToolCallId};
 use crate::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName, ReasoningRequest};
+use crate::mcp::McpRegistry;
 use crate::operation::{self, MessageInputPart, RuntimeDependencies};
 use crate::output::RuntimeOutput;
 use crate::runtime::RuntimeEventSink;
@@ -25,7 +26,6 @@ use crate::session::{
     SessionQueryResult, SessionResolution, SessionStatus,
 };
 use crate::store::Store;
-use crate::tool_provider::ToolProviderRegistry;
 use crate::wakeup::{ToolDecisionWakeup, Wakeup};
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -56,7 +56,7 @@ pub struct SessionManager {
     store_path: Option<PathBuf>,
     gateway_url: String,
     base_url: String,
-    tools: Arc<ToolProviderRegistry>,
+    tools: Arc<McpRegistry>,
     /// Live running tasks, keyed by session. A task is removed when it finishes,
     /// including when the session pauses for approval.
     active: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
@@ -85,7 +85,7 @@ impl SessionManager {
         store_path: Option<PathBuf>,
         gateway_url: String,
         base_url: String,
-        tools: Arc<ToolProviderRegistry>,
+        tools: Arc<McpRegistry>,
     ) -> Self {
         Self {
             store_path,

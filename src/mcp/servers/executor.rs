@@ -16,7 +16,7 @@ use crate::tool::{AttachedTool, ToolExecutionResult};
 
 impl McpToolProvider {
     /// Executes one approved MCP tool call.
-    pub(in crate::tool_provider) async fn call_tool(
+    pub(crate) async fn call_tool(
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,

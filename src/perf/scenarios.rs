@@ -574,7 +574,7 @@ async fn benchmark_registry_mcp_call() -> Result<Duration> {
         permissions: vec![ToolPermission::ExternalProcess],
         annotations: ToolAnnotations::default(),
     };
-    let registry = ToolProviderRegistry::with_benchmark_mcp_provider(
+    let registry = McpRegistry::with_benchmark_mcp_provider(
         "benchmark-mcp",
         "benchmark",
         "Benchmark",
@@ -822,12 +822,12 @@ fn benchmark_provider_state_lifecycle() -> Result<Duration> {
         store.install_provider(&provider_id)?;
         store.set_provider_state(
             &provider_id,
-            crate::tool_provider::ProviderInstallState::Enabled,
+            crate::mcp::ProviderInstallState::Enabled,
             None,
         )?;
         store.set_provider_state(
             &provider_id,
-            crate::tool_provider::ProviderInstallState::Disabled,
+            crate::mcp::ProviderInstallState::Disabled,
             None,
         )?;
         store.uninstall_provider(&provider_id)?;

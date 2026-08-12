@@ -1,7 +1,7 @@
 //! Tool catalog and tree-wide tool mutation API handlers.
 
 use super::*;
-use crate::tool_provider::ProviderManifest;
+use crate::mcp::ProviderManifest;
 
 #[derive(Debug, Serialize)]
 pub(super) struct ToolCatalogResponse {

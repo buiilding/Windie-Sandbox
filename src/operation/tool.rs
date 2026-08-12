@@ -5,13 +5,13 @@ use super::*;
 
 pub fn available_tools() -> Result<Vec<ToolDefinition>> {
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     available_tools_with_registry(&store, &registry)
 }
 
 pub fn available_tools_with_registry(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<Vec<ToolDefinition>> {
     let mut tools = Vec::new();
     for manifest in registry.provider_manifests() {
@@ -27,13 +27,13 @@ pub fn available_tools_with_registry(
 
 pub fn available_provider_tools(provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     available_provider_tools_with_registry(&store, &registry, provider_id)
 }
 
 pub fn available_provider_tools_with_registry(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<Vec<ToolDefinition>> {
     super::provider::require_enabled_provider(store, registry, provider_id)?;
@@ -46,7 +46,7 @@ pub fn attach_tool(
     provider_id: &ToolProviderId,
     tool_name: &ProviderToolName,
 ) -> Result<ToolSchemaName> {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     attach_tool_with_registry(store, conversation_id, provider_id, tool_name, &registry)
 }
 
@@ -55,7 +55,7 @@ pub fn attach_tool_with_registry(
     conversation_id: &ConversationId,
     provider_id: &ToolProviderId,
     tool_name: &ProviderToolName,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<ToolSchemaName> {
     super::provider::require_enabled_provider(store, registry, provider_id)?;
     let definition = stored_provider_tools(store, provider_id)?
@@ -90,7 +90,7 @@ pub fn attach_tools_with_registry(
     store: &mut Store,
     conversation_id: &ConversationId,
     requests: &[ToolAttachmentInput],
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<Vec<ToolSchemaName>> {
     let mut provider_catalogs: HashMap<ToolProviderId, HashMap<ProviderToolName, ToolDefinition>> =
         HashMap::new();

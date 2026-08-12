@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::mcp::McpCommand;
+use crate::mcp::ProviderInstallState;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
-use crate::tool_provider::ProviderInstallState;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -506,7 +506,7 @@ fn uninstalled_provider_is_not_exposed_to_tool_catalog_or_attachment() {
 #[test]
 fn one_click_setup_rejects_unknown_provider() {
     let store = Store::open_memory().unwrap();
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
 
     let error =
         setup_provider(&store, &registry, &ToolProviderId::new("unknown-provider")).unwrap_err();
@@ -668,8 +668,8 @@ fn temp_image_path(extension: &str) -> PathBuf {
     ))
 }
 
-fn registry_with_test_tool() -> ToolProviderRegistry {
-    ToolProviderRegistry::with_test_mcp_provider(
+fn registry_with_test_tool() -> McpRegistry {
+    McpRegistry::with_test_mcp_provider(
         "desktop-commander",
         "desktop_commander",
         "Desktop Commander",

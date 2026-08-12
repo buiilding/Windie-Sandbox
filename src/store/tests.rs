@@ -4,13 +4,13 @@ use super::*;
 use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
+use crate::mcp::ProviderInstallState;
 use crate::session::{SessionEvent, SessionId, SessionResolution, SessionStatus};
 use crate::tool::ToolProviderId;
 use crate::tool::{
     ToolAnnotations, ToolApprovalMode, ToolDefinition, ToolPermission, ToolProviderKind,
     ToolProviderRef, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::ProviderInstallState;
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
     UnsavedMessagePart::Text(text.to_string())

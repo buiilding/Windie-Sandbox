@@ -1,13 +1,13 @@
 //! Persisted provider-manager state.
 //!
 //! This module stores lifecycle records only. Provider manifests remain owned
-//! by `tool_provider`, and installation processes will be added by the next
+//! by `mcp`, and installation processes will be added by the next
 //! provider-manager phase.
 
 use super::*;
 use serde::{Deserialize, Serialize};
 
-use crate::tool_provider::{ProviderInstallState, ProviderReadiness};
+use crate::mcp::{ProviderInstallState, ProviderReadiness};
 
 impl Store {
     /// Returns whether a provider is installed, enabled, and has no recorded

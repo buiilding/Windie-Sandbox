@@ -166,7 +166,7 @@ impl AttachedTool {
             provider: ToolProviderRef::new(
                 ToolProviderId::new("manual"),
                 ProviderToolName::new(schema.name.as_str()),
-                ToolProviderKind::Plugin,
+                ToolProviderKind::Manual,
             ),
             permissions: Vec::new(),
             annotations: ToolAnnotations::default(),

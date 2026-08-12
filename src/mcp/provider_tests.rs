@@ -3,19 +3,20 @@
 use anyhow::anyhow;
 use serde_json::{Value, json};
 
-use super::ToolProviderRegistry;
-use super::mcp::{
-    McpToolProvider, approved_mcp_provider, mcp_schema_name, mcp_tool_call_failure_result,
-    mcp_tool_result_parts, tool_result_preview,
-};
+use super::McpRegistry;
 use crate::conversation::{ToolCall, UnsavedMessagePart};
+use crate::mcp::ProviderSecret;
+use crate::mcp::manifest::ProviderTransport;
+use crate::mcp::servers::McpToolProvider;
 use crate::mcp::{self as mcp_protocol, McpArgument, McpTool, McpTransport};
+use crate::mcp::{
+    approved_mcp_provider, mcp_schema_name, mcp_tool_call_failure_result, mcp_tool_result_parts,
+    tool_result_preview,
+};
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
-use crate::tool_provider::ProviderSecret;
-use crate::tool_provider::manifest::ProviderTransport;
 
 fn approved_cua_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("cua-driver").unwrap())
@@ -85,10 +86,10 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
         assert!(!manifest.description.is_empty());
         assert!(!manifest.readme_markdown.is_empty());
         match &manifest.launch {
-            crate::tool_provider::manifest::ProviderLaunch::Stdio { program, .. } => {
+            crate::mcp::manifest::ProviderLaunch::Stdio { program, .. } => {
                 assert!(!program.is_empty())
             }
-            crate::tool_provider::manifest::ProviderLaunch::StreamableHttp { url } => {
+            crate::mcp::manifest::ProviderLaunch::StreamableHttp { url } => {
                 assert!(url.starts_with("https://"))
             }
         }
@@ -102,7 +103,7 @@ fn approved_provider_definitions_separate_runtime_and_package_setup() {
     let desktop_commander = approved_desktop_commander_provider();
     assert_eq!(
         desktop_commander.manifest().runtime,
-        crate::tool_provider::ProviderRuntime::Node
+        crate::mcp::ProviderRuntime::Node
     );
     assert_eq!(
         desktop_commander
@@ -121,10 +122,7 @@ fn approved_provider_definitions_separate_runtime_and_package_setup() {
     );
 
     let blender = approved_blender_mcp_provider();
-    assert_eq!(
-        blender.manifest().runtime,
-        crate::tool_provider::ProviderRuntime::Uv
-    );
+    assert_eq!(blender.manifest().runtime, crate::mcp::ProviderRuntime::Uv);
     assert_eq!(
         blender
             .package_command
@@ -142,10 +140,7 @@ fn approved_provider_definitions_separate_runtime_and_package_setup() {
     );
 
     let cua = approved_cua_provider();
-    assert_eq!(
-        cua.manifest().runtime,
-        crate::tool_provider::ProviderRuntime::Native
-    );
+    assert_eq!(cua.manifest().runtime, crate::mcp::ProviderRuntime::Native);
     assert!(cua.package_command.is_none());
 }
 
@@ -154,19 +149,19 @@ fn basic_memory_manifest_declares_local_runtime_requirements() {
     let provider = approved_basic_memory_provider();
     let manifest = provider.manifest();
 
-    let crate::tool_provider::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch
-    else {
+    let crate::mcp::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch else {
         panic!("Basic Memory must use stdio");
     };
     assert_eq!(program, "uvx");
     assert_eq!(
-        args,
-        &vec![
+        args.as_slice(),
+        [
             "--with".to_string(),
             "litellm<1.92".to_string(),
             "basic-memory".to_string(),
             "mcp".to_string(),
         ]
+        .as_slice()
     );
     assert_eq!(
         provider.package_command.unwrap().args,
@@ -192,7 +187,7 @@ fn basic_memory_manifest_declares_local_runtime_requirements() {
     assert!(
         manifest
             .permissions
-            .contains(&crate::tool_provider::ProviderPermission::Filesystem)
+            .contains(&crate::mcp::ProviderPermission::Filesystem)
     );
 }
 
@@ -215,10 +210,7 @@ fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
     let provider = approved_chrome_devtools_provider();
     let manifest = provider.manifest();
 
-    assert_eq!(
-        manifest.runtime,
-        crate::tool_provider::ProviderRuntime::Node
-    );
+    assert_eq!(manifest.runtime, crate::mcp::ProviderRuntime::Node);
     assert_eq!(
         manifest
             .package
@@ -226,30 +218,30 @@ fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
             .map(|package| package.name.as_str()),
         Some("chrome-devtools-mcp@1.6.0")
     );
-    let crate::tool_provider::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch
-    else {
+    let crate::mcp::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch else {
         panic!("Chrome DevTools must use stdio");
     };
     assert_eq!(program, "npx");
     assert_eq!(
-        args,
-        &vec![
+        args.as_slice(),
+        [
             "-y".to_string(),
             "chrome-devtools-mcp@1.6.0".to_string(),
             "--user-data-dir".to_string(),
             "<windie-data-dir>/mcp/chrome-devtools/profile".to_string(),
             "--no-usage-statistics".to_string(),
         ]
+        .as_slice()
     );
     assert!(
         manifest
             .permissions
-            .contains(&crate::tool_provider::ProviderPermission::ComputerControl)
+            .contains(&crate::mcp::ProviderPermission::ComputerControl)
     );
     assert!(
         manifest
             .permissions
-            .contains(&crate::tool_provider::ProviderPermission::Network)
+            .contains(&crate::mcp::ProviderPermission::Network)
     );
     let McpTransport::Stdio { command, .. } = provider.transport() else {
         panic!("Chrome DevTools must use stdio");
@@ -274,7 +266,7 @@ fn parallel_manifest_uses_optional_network_authentication() {
     assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
     assert_eq!(
         manifest.authentication,
-        crate::tool_provider::ProviderAuthentication::OptionalApiKey
+        crate::mcp::ProviderAuthentication::OptionalApiKey
     );
     assert_eq!(
         manifest.secrets,
@@ -286,7 +278,7 @@ fn parallel_manifest_uses_optional_network_authentication() {
     assert!(
         manifest
             .permissions
-            .contains(&crate::tool_provider::ProviderPermission::Network)
+            .contains(&crate::mcp::ProviderPermission::Network)
     );
     assert!(
         matches!(provider.transport(), McpTransport::StreamableHttp { endpoint } if endpoint.url == "https://search.parallel.ai/mcp")
@@ -499,7 +491,7 @@ fn mcp_tool_call_process_error_becomes_failed_tool_result() {
 
 #[test]
 fn registry_executes_only_approved_mcp_provider_ids() {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let attached_tool = AttachedTool {
         schema_name: ToolSchemaName::new("other__click"),
         description: "Click somewhere".to_string(),
@@ -518,7 +510,7 @@ fn registry_executes_only_approved_mcp_provider_ids() {
 
 #[test]
 fn registry_recognizes_cua_driver_as_approved_mcp_provider() {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let attached_tool = AttachedTool {
         schema_name: ToolSchemaName::new("cua_driver__click"),
         description: "Click somewhere".to_string(),
@@ -537,7 +529,7 @@ fn registry_recognizes_cua_driver_as_approved_mcp_provider() {
 
 #[test]
 fn registry_recognizes_blender_mcp_as_approved_provider() {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let attached_tool = AttachedTool {
         schema_name: ToolSchemaName::new("blender_mcp__get_scene_info"),
         description: "Get scene info".to_string(),
@@ -556,7 +548,7 @@ fn registry_recognizes_blender_mcp_as_approved_provider() {
 
 #[test]
 fn registry_recognizes_brightdata_as_approved_provider() {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let attached_tool = AttachedTool {
         schema_name: ToolSchemaName::new("brightdata__search_engine"),
         description: "Search live web results".to_string(),

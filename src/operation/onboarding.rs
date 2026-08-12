@@ -12,9 +12,9 @@ use crate::llm::{
     list_models,
 };
 use crate::local;
+use crate::mcp::{McpRegistry, ProviderInstallState, ProviderManifest};
 use crate::store::Store;
 use crate::tool::ToolProviderId;
-use crate::tool_provider::{ProviderInstallState, ProviderManifest, ToolProviderRegistry};
 
 use super::{
     ProviderInstallation, enable_provider, health_check_provider, list_provider_installations,
@@ -134,7 +134,7 @@ async fn run_onboarding_steps<P: OnboardingPrompter>(
     prompter.models_available(model_count);
 
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let installations = list_provider_installations(&store, &registry)?;
     let selected_mcp_ids = prompter.choose_mcp_providers(&installations)?;
 

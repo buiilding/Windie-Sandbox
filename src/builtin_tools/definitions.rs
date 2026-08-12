@@ -20,9 +20,13 @@ pub const LIST_PROVIDERS_TOOL_NAME: &str = "list_providers";
 
 /// Provider-native name for provider attachment.
 pub const ATTACH_PROVIDER_TOOL_NAME: &str = "attach_provider";
+/// Provider-native name for curated plugin skill loading.
+pub const READ_SKILL_TOOL_NAME: &str = "read_skill";
+/// Provider-native name for curated plugin attachment.
+pub const ATTACH_PLUGIN_TOOL_NAME: &str = "attach_plugin";
 
-/// Returns the two Windie-owned tools that are always sent to the model.
-pub(super) fn definitions() -> Vec<ToolDefinition> {
+/// Returns Windie-owned model-control tools that are always sent to the model.
+pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             schema_name: ToolSchemaName::new("windie__list_providers"),
@@ -56,6 +60,42 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
             provider: builtin_ref(ATTACH_PROVIDER_TOOL_NAME),
+            permissions: Vec::<ToolPermission>::new(),
+            annotations: ToolAnnotations::default(),
+        },
+        ToolDefinition {
+            schema_name: ToolSchemaName::new("windie__read_skill"),
+            display_name: "Windie read skill".to_string(),
+            description: "Read the instructions for one skill from an available plugin. Use the exact plugin_id and skill_id from the available plugins context.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "plugin_id": {"type": "string"},
+                    "skill_id": {"type": "string"}
+                },
+                "required": ["plugin_id", "skill_id"],
+                "additionalProperties": false
+            }),
+            provider: builtin_ref(READ_SKILL_TOOL_NAME),
+            permissions: Vec::<ToolPermission>::new(),
+            annotations: ToolAnnotations {
+                title: Some("Read skill".to_string()),
+                read_only: Some(true),
+            },
+        },
+        ToolDefinition {
+            schema_name: ToolSchemaName::new("windie__attach_plugin"),
+            display_name: "Windie attach plugin".to_string(),
+            description: "Expose the approved tools belonging to one available plugin to the current conversation. Use the exact plugin_id from the available plugins context. The newly attached tools are available on the next turn.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "plugin_id": {"type": "string"}
+                },
+                "required": ["plugin_id"],
+                "additionalProperties": false
+            }),
+            provider: builtin_ref(ATTACH_PLUGIN_TOOL_NAME),
             permissions: Vec::<ToolPermission>::new(),
             annotations: ToolAnnotations::default(),
         },

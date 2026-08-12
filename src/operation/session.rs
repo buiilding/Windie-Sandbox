@@ -28,7 +28,7 @@ pub struct RuntimeDependencies<'a> {
     pub(in crate::operation) base_url: BaseUrl,
     pub(in crate::operation) model_override: Option<ModelName>,
     pub(in crate::operation) reasoning: Option<ReasoningRequest>,
-    pub(in crate::operation) tools: &'a ToolProviderRegistry,
+    pub(in crate::operation) tools: &'a McpRegistry,
 }
 
 impl<'a> RuntimeDependencies<'a> {
@@ -38,7 +38,7 @@ impl<'a> RuntimeDependencies<'a> {
         base_url: BaseUrl,
         model_override: Option<ModelName>,
         reasoning: Option<ReasoningRequest>,
-        tools: &'a ToolProviderRegistry,
+        tools: &'a McpRegistry,
     ) -> Self {
         Self {
             gateway_url,

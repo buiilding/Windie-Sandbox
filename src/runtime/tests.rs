@@ -7,17 +7,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
+use crate::builtin_tools;
 use crate::conversation::{Message, MessageMetadata, ToolCall, ToolCallId};
 use crate::llm::{
     AssistantResponse, FinishReason, LlmError, LlmErrorKind, LlmStreamEvent, PromptCacheRequest,
     ReasoningRequest,
 };
 use crate::mcp::McpCommand;
+use crate::mcp::{McpRegistry, ProviderInstallState};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolExecutionResult, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::{ProviderInstallState, ToolProviderRegistry};
 
 const TEST_PROVIDER_ID: &str = "desktop-commander";
 const TEST_PROVIDER_PREFIX: &str = "desktop_commander";
@@ -470,7 +471,7 @@ fn path(store: &Store, conversation_id: &ConversationId) -> Vec<Message> {
 }
 
 fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let events = NoopRuntimeEventSink;
     let mut head_message_id = latest_head(store, conversation_id);
 
@@ -489,7 +490,7 @@ fn pending_latest_head_approvals(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Vec<crate::tool::ToolApprovalRequest>> {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let head_message_id = latest_head(store, conversation_id);
 
     pending_approvals_at_head(
@@ -508,7 +509,7 @@ fn validate_latest_head_availability(
     conversation_id: &ConversationId,
 ) -> Result<()> {
     let head_message_id = latest_head(store, conversation_id);
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
 
     pending_approvals_at_head(
         store,
@@ -546,7 +547,7 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let events = NoopRuntimeEventSink;
 
     run_latest_head_once_with_registry_and_events(
@@ -566,7 +567,7 @@ async fn run_latest_head_once_with_registry_and_events<O, L, E>(
     llm: &L,
     store: &mut Store,
     conversation_id: &ConversationId,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     events: &E,
     model_request: RuntimeModelRequest<'_>,
 ) -> Result<Message>
@@ -598,7 +599,7 @@ async fn run_latest_head_until_blocked<O, L>(
     llm: &L,
     store: &mut Store,
     conversation_id: &ConversationId,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     reasoning: Option<&ReasoningRequest>,
     prompt_cache: Option<&PromptCacheRequest>,
 ) -> Result<Message>
@@ -625,7 +626,7 @@ async fn run_latest_head_until_blocked_with_events<O, L, E>(
     llm: &L,
     store: &mut Store,
     conversation_id: &ConversationId,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     events: &E,
     model_request: RuntimeModelRequest<'_>,
 ) -> Result<Message>
@@ -671,7 +672,7 @@ async fn approve_latest_head_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
 
     approve_latest_head_tool_call_with_registry(store, conversation_id, tool_call_id, &registry)
         .await
@@ -681,7 +682,7 @@ async fn approve_latest_head_tool_call_with_registry(
     store: &mut Store,
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<ToolExecutionResult> {
     let head_message_id = latest_head(store, conversation_id);
     let pending = load_pending_tool_call_at_head(
@@ -794,7 +795,7 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "branch here", None)
         .unwrap();
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let events = NoopRuntimeEventSink;
 
     let first_outcome = advance_until_blocked(
@@ -885,7 +886,7 @@ async fn run_head_uses_requested_head_path() {
         .unwrap();
     let llm = CapturingLlm::new();
     let events = NoopRuntimeEventSink;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
 
     advance_turn(
         &NoopOutput,
@@ -904,9 +905,11 @@ async fn run_head_uses_requested_head_path() {
 
     let captured = llm.messages.lock().unwrap();
 
-    assert_eq!(captured.len(), 2);
-    assert_eq!(captured[0].content, "root");
-    assert_eq!(captured[1].content, "active");
+    assert_eq!(captured.len(), 3);
+    assert_eq!(captured[0].role, Role::System);
+    assert!(captured[0].content.contains("Available plugins:"));
+    assert_eq!(captured[1].content, "root");
+    assert_eq!(captured[2].content, "active");
 }
 
 #[tokio::test]
@@ -932,8 +935,7 @@ async fn run_head_passes_tool_schemas_to_llm() {
 
     let mut expected_tools = vec![tool_schema];
     expected_tools.extend(
-        ToolProviderRegistry::new()
-            .builtin_tools()
+        builtin_tools::definitions()
             .into_iter()
             .map(|tool| tool.attached_tool().schema()),
     );
@@ -976,7 +978,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
 
     let llm = CapturingLlm::new();
     let events = NoopRuntimeEventSink;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
 
     // Run from branch head
     advance_turn(
@@ -1000,8 +1002,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
         assert_eq!(captured_messages[0].content, "global prompt");
         let mut expected_tools = vec![global_tool.clone()];
         expected_tools.extend(
-            registry
-                .builtin_tools()
+            builtin_tools::definitions()
                 .into_iter()
                 .map(|tool| tool.attached_tool().schema()),
         );
@@ -1030,8 +1031,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
     assert_eq!(captured_messages[0].content, "global prompt");
     let mut expected_tools = vec![global_tool];
     expected_tools.extend(
-        registry
-            .builtin_tools()
+        builtin_tools::definitions()
             .into_iter()
             .map(|tool| tool.attached_tool().schema()),
     );
@@ -1090,9 +1090,9 @@ async fn session_approve_run_composes_provider_tool_flow() {
         Some("call_123")
     );
     assert_eq!(messages[3].role, Role::Assistant);
-    assert_eq!(second_turn_messages.len(), 3);
-    assert_eq!(second_turn_messages[2].role, Role::Tool);
-    assert!(second_turn_messages[2].content.contains(TEST_TOOL_RESULT));
+    assert_eq!(second_turn_messages.len(), 4);
+    assert_eq!(second_turn_messages[3].role, Role::Tool);
+    assert!(second_turn_messages[3].content.contains(TEST_TOOL_RESULT));
 }
 
 #[tokio::test]
@@ -1132,8 +1132,8 @@ async fn auto_approval_executes_tool_and_queries_again() {
     assert!(messages[2].content.contains(TEST_TOOL_RESULT));
     assert_eq!(messages[3].role, Role::Assistant);
     assert!(approvals.is_empty());
-    assert_eq!(second_turn_messages.len(), 3);
-    assert_eq!(second_turn_messages[2].role, Role::Tool);
+    assert_eq!(second_turn_messages.len(), 4);
+    assert_eq!(second_turn_messages[3].role, Role::Tool);
 }
 
 #[tokio::test]
@@ -1360,11 +1360,11 @@ async fn prepare_latest_head_turn_resolves_existing_policy_denied_tool_call_befo
         .unwrap();
     let captured = llm.messages.lock().unwrap();
 
-    assert_eq!(captured.len(), 3);
-    assert_eq!(captured[2].role, Role::Tool);
-    assert!(captured[2].content.contains("unknown tool: unknown_tool"));
+    assert_eq!(captured.len(), 4);
+    assert_eq!(captured[3].role, Role::Tool);
+    assert!(captured[3].content.contains("unknown tool: unknown_tool"));
     assert_eq!(
-        captured[2]
+        captured[3]
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.tool_call_id.as_ref())
@@ -1627,7 +1627,13 @@ async fn multi_tool_approvals_store_results_as_linear_chain() {
             .iter()
             .map(|message| message.role)
             .collect::<Vec<_>>(),
-        vec![Role::User, Role::Assistant, Role::Tool, Role::Tool]
+        vec![
+            Role::System,
+            Role::User,
+            Role::Assistant,
+            Role::Tool,
+            Role::Tool
+        ]
     );
 }
 
@@ -1717,7 +1723,7 @@ async fn run_head_reports_llm_failure() {
 fn builtin_tools_are_always_model_visible_but_not_persisted() {
     let store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
 
     let context = build_model_context(&store, &conversation_id, None, &registry).unwrap();
     let names = context
@@ -1728,7 +1734,12 @@ fn builtin_tools_are_always_model_visible_but_not_persisted() {
 
     assert_eq!(
         names,
-        vec!["windie__list_providers", "windie__attach_provider"]
+        vec![
+            "windie__list_providers",
+            "windie__attach_provider",
+            "windie__read_skill",
+            "windie__attach_plugin",
+        ]
     );
     assert!(
         store
@@ -1752,9 +1763,8 @@ async fn builtin_provider_tools_list_and_attach_through_existing_conversation_st
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();
 
-    let list_definition = registry
-        .builtin_tool(&ToolSchemaName::new("windie__list_providers"))
-        .unwrap();
+    let list_definition =
+        builtin_tools::find(&ToolSchemaName::new("windie__list_providers")).unwrap();
     let user_id = store
         .insert_message(
             &conversation_id,
@@ -1782,9 +1792,8 @@ async fn builtin_provider_tools_list_and_attach_through_existing_conversation_st
         "provider_id, description\ndesktop-commander, Test MCP provider."
     );
 
-    let attach_definition = registry
-        .builtin_tool(&ToolSchemaName::new("windie__attach_provider"))
-        .unwrap();
+    let attach_definition =
+        builtin_tools::find(&ToolSchemaName::new("windie__attach_provider")).unwrap();
     let attach_pending = PendingToolCall {
         result_parent_message_id: user_id,
         tool_call: ToolCall::function(
@@ -1923,8 +1932,8 @@ fn attach_test_mcp_tool(store: &mut Store, conversation_id: &ConversationId) {
         .unwrap();
 }
 
-fn test_mcp_registry() -> ToolProviderRegistry {
-    ToolProviderRegistry::with_test_mcp_provider(
+fn test_mcp_registry() -> McpRegistry {
+    McpRegistry::with_test_mcp_provider(
         TEST_PROVIDER_ID,
         TEST_PROVIDER_PREFIX,
         TEST_PROVIDER_DISPLAY_NAME,

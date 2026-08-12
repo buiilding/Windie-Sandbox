@@ -17,7 +17,7 @@ pub fn list_session_tool_approvals_with_registry(
     store: &Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<Vec<ToolApprovalRequest>> {
     pending_approvals_at_head(
         store,
@@ -33,7 +33,7 @@ pub fn list_session_tool_approvals_with_registry(
 pub fn list_session_approvals_with_registry(
     store: &Store,
     session: &Session,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<Vec<SessionToolApprovalRequest>> {
     let approvals = list_session_tool_approvals_with_registry(
         store,
@@ -57,7 +57,7 @@ pub fn list_session_approvals_with_registry(
 pub fn list_conversation_session_approvals_with_registry(
     store: &Store,
     conversation_id: &ConversationId,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<Vec<SessionToolApprovalRequest>> {
     let mut approvals = Vec::new();
 

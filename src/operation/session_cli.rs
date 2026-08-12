@@ -40,7 +40,7 @@ pub async fn approve_cli_session_tool(
 ) -> Result<()> {
     let mut store = Store::open()?;
     let session = store.load_session(&session_id)?;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let runtime = RuntimeDependencies::new(
         gateway_url,
         base_url,
@@ -74,7 +74,7 @@ pub async fn deny_cli_session_tool(
 ) -> Result<()> {
     let mut store = Store::open()?;
     let session = store.load_session(&session_id)?;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let runtime = RuntimeDependencies::new(
         gateway_url,
         base_url,
@@ -116,7 +116,7 @@ async fn continue_cli_session(
 ) -> Result<()> {
     let session = store.load_session(session_id)?;
     store.update_session_status(session_id, SessionStatus::Running, None)?;
-    let registry = ToolProviderRegistry::new();
+    let registry = McpRegistry::new();
     let runtime = RuntimeDependencies::new(
         gateway_url,
         base_url,

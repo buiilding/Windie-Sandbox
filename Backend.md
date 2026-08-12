@@ -111,7 +111,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tray.rs: simple macOS/Windows tray controller that invokes the lifecycle CLI commands and polls localhost health.
 - cli/tests.rs: test cli command parsing and validation
 
-## Tools and providers
+## Tools, builtin tools, skills, plugins, and MCP
 
 - tool/: common tool schema Windie uses for all tool systems.
 - tool/mod.rs: Public boundary and re-exports for tool folder.
@@ -119,25 +119,35 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tool/policy/mod.rs: Approval decision rules: allow, ask, or deny a pending tool call.
 - tool/policy/tests.rs:
 - tool/provider.rs: Provider identity types: typed references from Windie tools to executable backends.
-- tool/result.rs: Tool execution result shape, including the `role: tool` message preview, tool-call link, and optional text/image parts.
+- tool/result.rs: Tool execution result shape, including the `role: tool` message preview, tool-call link, and optional text/image parts. Both builtin and MCP tools use this contract.
 - tool/schema.rs: Model-facing tool schema.
-- tool_provider/: Manages executable tools.
-- tool_provider/builtin.rs: defines Windie-owned control tools that are added to model context at runtime, currently provider discovery and provider attachment; they are not persisted as conversation tools.
-- tool_provider/lifecycle.rs: defines the persisted lifecycle states for tool providers.
-- tool_provider/manifest.rs: defines the metadata contract for a provider: identity, launch command, platform, dependencies, secrets, permissions, scope, setup information, and Windie-managed user-facing README content.
-- tool_provider/mod.rs: Public boundary and re-exports for tool_provider folder.
-- tool_provider/registry.rs: Provider-neutral live discovery and execution dispatch. Persisted provider catalogs live in store; the current registry contains approved MCP providers and Windie built-ins; skill and plugin execution are not implemented.
-- tool_provider/mcp/mod.rs: Public boundary and re-exports for tool_provider/mcp folder.
-- tool_provider/mcp/approved.rs: Approved MCP providers for Windie.
-- tool_provider/mcp/blender.rs: Blender MCP definition.
-- tool_provider/mcp/brightdata.rs: Brightdata MCP definition.
-- tool_provider/mcp/cua.rs: Cua Driver MCP definition.
-- tool_provider/mcp/desktop_commander.rs: Desktop Commander MCP definition.
-- tool_provider/mcp/basic_memory.rs: basic memory mcp provider definition and creates windie's isolated local memory project.
-- tool_provider/mcp/provider.rs: Generic MCP backend adapter; lists MCP tools, converts them into Windie ToolDefinitions, and dispatches approved calls.
-- tool_provider/mcp/executor.rs: Executes already-approved MCP tool calls.
-- tool_provider/mcp/result.rs: MCP result normalization, errors into output, text, image to message parts, build the visible preview stored on the tool message row.
-- tool_provider/tests.rs:
+- builtin_tools/: Windie-owned control-plane tools. Their schemas are always available to the model and are not persisted as conversation tools.
+- builtin_tools/definitions.rs: definitions for `read_skill`, `attach_plugin`, `list_providers`, and `attach_provider`.
+- builtin_tools/mod.rs: builtin tool lookup, execution, and delegation to the skill, plugin, and MCP registries.
+- skills/: reusable, non-executable instructions for supported workflows.
+- skills/manifest.rs: typed skill identity and metadata.
+- skills/registry.rs: curated skill catalog and full instruction loading.
+- skills/curated/: bundled first-party Markdown skill assets.
+- plugins/: model-facing composition of reusable skills and approved MCP servers. Plugins do not implement transport or execution.
+- plugins/manifest.rs: typed plugin metadata and references to skill IDs and MCP server IDs.
+- plugins/registry.rs: curated plugin catalog, compact runtime catalog prompt, skill loading, and MCP server activation.
+- mcp/: MCP protocol and transport boundary.
+- mcp/mod.rs: MCP stdio/HTTP client, JSON-RPC handshake, session pooling, tool listing, and tool calls.
+- mcp/http.rs: Streamable HTTP MCP transport.
+- mcp/registry.rs: MCP server lifecycle, discovery, persisted catalog attachment, and execution dispatch.
+- mcp/manifest.rs: metadata contract for one MCP server's launch command, platform, dependencies, secrets, permissions, scope, and setup information.
+- mcp/lifecycle.rs: persisted MCP server installation and readiness states.
+- mcp/cleanup.rs: cleanup actions for approved MCP server runtimes.
+- mcp/servers/mod.rs: MCP adapter boundary and approved MCP provider re-exports.
+- mcp/servers/approved.rs: code-approved MCP provider catalog.
+- mcp/servers/blender.rs: Blender MCP definition.
+- mcp/servers/brightdata.rs: Brightdata MCP definition.
+- mcp/servers/cua.rs: Cua Driver MCP definition.
+- mcp/servers/desktop_commander.rs: Desktop Commander MCP definition.
+- mcp/servers/basic_memory.rs: Basic Memory MCP definition and isolated local memory project setup.
+- mcp/servers/provider.rs: generic MCP backend adapter; lists MCP tools and converts them into Windie ToolDefinitions.
+- mcp/servers/executor.rs: executes already-approved MCP tool calls.
+- mcp/servers/result.rs: normalizes MCP results into Windie tool output, text, and image message parts.
 
 ## Sessions
 
@@ -244,7 +254,7 @@ Keep boundaries strict:
 - Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and approved dependency install/check commands.
 - Only `dev/` should own repository-only development helper launchers, while
   `vendor/windie-inspector/` owns the first-party Inspector client and host.
-- Only `tool_provider/` should own provider catalog and execution dispatch across code-approved MCP providers and future plugins.
+- Only `builtin_tools/` should own Windie control-tool definitions and execution. Only `skills/` should own skill assets and loading. Only `plugins/` should compose skills with MCP server references. Only `mcp/` should own MCP lifecycle, transport, discovery, and execution.
 - Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.
 - Only `store/` and the session operation/manager boundary should resolve or create a session branch for a conversation head; the frontend session cache is presentation state only.
 - Only `tool/` should own tool provider, attachment, approval, and execution result data shared across runtime, output, policy, store, and executors.

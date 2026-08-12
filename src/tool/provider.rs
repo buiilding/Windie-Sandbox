@@ -2,7 +2,7 @@
 //!
 //! Provider types describe the concrete executor behind a model-facing tool
 //! schema. They do not load provider catalogs or execute calls; that behavior
-//! belongs to `tool_provider`.
+//! belongs to the concrete builtin or MCP execution boundary.
 
 use serde::{Deserialize, Serialize};
 
@@ -63,7 +63,7 @@ impl std::fmt::Display for ProviderToolName {
 pub enum ToolProviderKind {
     Builtin,
     Mcp,
-    Plugin,
+    Manual,
 }
 
 impl ToolProviderKind {
@@ -72,7 +72,7 @@ impl ToolProviderKind {
         match value {
             "builtin" => Some(Self::Builtin),
             "mcp" => Some(Self::Mcp),
-            "plugin" => Some(Self::Plugin),
+            "manual" => Some(Self::Manual),
             _ => None,
         }
     }
@@ -82,7 +82,7 @@ impl ToolProviderKind {
         match self {
             Self::Builtin => "builtin",
             Self::Mcp => "mcp",
-            Self::Plugin => "plugin",
+            Self::Manual => "manual",
         }
     }
 }

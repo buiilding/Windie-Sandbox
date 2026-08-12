@@ -4,7 +4,7 @@
 //! user-selected runtime mode that changes how the approved provider connects.
 
 use super::*;
-use crate::tool_provider::ChromeDevToolsConnectionMode;
+use crate::mcp::ChromeDevToolsConnectionMode;
 
 impl Store {
     /// Loads the user's selected Chrome DevTools connection mode.

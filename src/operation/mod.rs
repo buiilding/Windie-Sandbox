@@ -55,6 +55,7 @@ use crate::llm::{
     self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName, ModelParameter,
     ModelParameterOption, PromptCacheRequest, ReasoningRequest,
 };
+use crate::mcp::McpRegistry;
 use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::runtime::{
     PendingToolExecution, RuntimeEventSink, RuntimeInput, RuntimeModelRequest, RuntimeOutcome,
@@ -68,7 +69,6 @@ use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
     ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::ToolProviderRegistry;
 use crate::wakeup::Wakeup;
 
 #[cfg(test)]

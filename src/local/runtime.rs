@@ -16,7 +16,7 @@ use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
 
 use super::windie_home_dir;
-use crate::tool_provider::ProviderRuntime;
+use crate::mcp::ProviderRuntime;
 
 const NODE_VERSION: &str = "22.14.0";
 const UV_VERSION: &str = "latest";

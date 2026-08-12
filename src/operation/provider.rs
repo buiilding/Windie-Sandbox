@@ -14,12 +14,12 @@ use std::time::Duration;
 
 use crate::error;
 use crate::local;
+use crate::mcp::{
+    ChromeDevToolsConnectionMode, McpRegistry, ProviderInstallState, ProviderManifest,
+    ProviderReadiness, ProviderRuntime,
+};
 use crate::store::{InstalledProvider, ProviderCatalogStatus, ProviderToolCatalog, Store};
 use crate::tool::ToolProviderId;
-use crate::tool_provider::{
-    ChromeDevToolsConnectionMode, ProviderInstallState, ProviderManifest, ProviderReadiness,
-    ProviderRuntime, ToolProviderRegistry,
-};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 /// One known provider plus its persisted local lifecycle record.
@@ -125,7 +125,7 @@ pub fn open_chrome_devtools_remote_debugging() -> Result<()> {
 /// Lists every provider known to the registry and its persisted state.
 pub fn list_provider_installations(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<Vec<ProviderInstallation>> {
     registry
         .provider_manifests()
@@ -148,7 +148,7 @@ pub fn list_provider_installations(
 /// Returns whether a known provider is eligible for conversation access.
 pub(super) fn require_enabled_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<()> {
     ensure_manifest(registry, provider_id)?;
@@ -171,7 +171,7 @@ pub(super) fn require_enabled_provider(
 /// Lists only enabled providers using their persisted catalog state.
 pub fn enabled_provider_statuses(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
 ) -> Result<Vec<ToolProviderStatus>> {
     let mut statuses = Vec::new();
     for manifest in registry.provider_manifests() {
@@ -187,7 +187,7 @@ pub fn enabled_provider_statuses(
 /// Records one known provider as installed.
 pub fn install_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     ensure_manifest(registry, provider_id)?;
@@ -202,7 +202,7 @@ pub fn install_provider(
 /// can show the actionable error and offer repair without losing the record.
 pub fn setup_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     setup_provider_with_mode(store, registry, provider_id, None)
@@ -211,7 +211,7 @@ pub fn setup_provider(
 /// Installs and enables one provider using an optional provider-specific mode.
 pub fn setup_provider_with_mode(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
     requested_chrome_devtools_mode: Option<ChromeDevToolsConnectionMode>,
 ) -> Result<ProviderInstallation> {
@@ -259,7 +259,7 @@ pub fn setup_provider_with_mode(
 /// Enables one installed provider.
 pub fn enable_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     ensure_manifest(registry, provider_id)?;
@@ -288,7 +288,7 @@ pub fn enable_provider(
 /// Disables one installed provider without deleting its manager record.
 pub fn disable_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     ensure_manifest(registry, provider_id)?;
@@ -306,7 +306,7 @@ pub fn disable_provider(
 /// Re-checks one provider and records whether it is healthy.
 pub fn health_check_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     let manifest = ensure_manifest(registry, provider_id)?;
@@ -355,7 +355,7 @@ pub fn health_check_provider(
 /// Re-checks a provider after moving it through the updating state.
 pub fn repair_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     let manifest = ensure_manifest(registry, provider_id)?;
@@ -393,7 +393,7 @@ pub fn repair_provider(
 /// Removes one provider from the persisted manager state.
 pub fn uninstall_provider(
     store: &mut Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<()> {
     let manifest = ensure_manifest(registry, provider_id)?;
@@ -424,7 +424,7 @@ pub fn uninstall_provider(
 /// catalog without reinstalling its package or managed runtime.
 pub fn configure_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
     mode: ChromeDevToolsConnectionMode,
 ) -> Result<ProviderInstallation> {
@@ -469,7 +469,7 @@ pub fn configure_provider(
 /// operation starts a new MCP process.
 fn configure_runtime_mode(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<()> {
     if provider_id.as_str() == "chrome-devtools" {
@@ -482,7 +482,7 @@ fn configure_runtime_mode(
 /// Returns whether another installed provider still needs this shared runtime.
 fn runtime_is_used_by_another_provider(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
     runtime: ProviderRuntime,
 ) -> Result<bool> {
@@ -506,7 +506,7 @@ fn runtime_is_used_by_another_provider(
 }
 
 fn ensure_manifest(
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderManifest> {
     registry
@@ -524,7 +524,7 @@ fn require_installation(store: &Store, provider_id: &ToolProviderId) -> Result<I
 /// process is started. These checks intentionally read only the provider
 /// manifest and Windie's explicit environment file.
 fn prepare_provider(manifest: &ProviderManifest) -> Result<()> {
-    if !crate::tool_provider::ProviderPlatform::supports_current(&manifest.platforms) {
+    if !crate::mcp::ProviderPlatform::supports_current(&manifest.platforms) {
         return Err(anyhow::anyhow!(
             "provider does not support the current operating system"
         ));
@@ -554,7 +554,7 @@ fn prepare_provider(manifest: &ProviderManifest) -> Result<()> {
 /// gives the Inspector a useful progress message while the operation runs.
 fn prepare_provider_setup(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
     manifest: &ProviderManifest,
 ) -> Result<Vec<crate::tool::ToolDefinition>> {
@@ -594,7 +594,7 @@ fn readiness_for_provider_error(
     error: &anyhow::Error,
 ) -> ProviderReadiness {
     let message = error.to_string().to_ascii_lowercase();
-    if !crate::tool_provider::ProviderPlatform::supports_current(&manifest.platforms) {
+    if !crate::mcp::ProviderPlatform::supports_current(&manifest.platforms) {
         return ProviderReadiness::UnsupportedPlatform;
     }
     if message.contains("missing required provider secret")
@@ -666,7 +666,7 @@ fn next_action_for_readiness(readiness: ProviderReadiness) -> &'static str {
 
 fn provider_installation(
     store: &Store,
-    registry: &ToolProviderRegistry,
+    registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
     Ok(ProviderInstallation {
@@ -714,7 +714,7 @@ fn provider_tool_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_provider::ProviderPlatform;
+    use crate::mcp::ProviderPlatform;
 
     fn blender_manifest() -> ProviderManifest {
         ProviderManifest::mcp_stdio(

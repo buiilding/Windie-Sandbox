@@ -24,6 +24,21 @@ pub struct ToolExecutionResult {
 }
 
 impl ToolExecutionResult {
+    /// Creates a successful text-only tool result.
+    pub fn success(
+        tool_call_id: ToolCallId,
+        tool_name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool_call_id,
+            tool_name: tool_name.into(),
+            content: content.into(),
+            parts: Vec::new(),
+            success: true,
+        }
+    }
+
     /// Creates a successful rich tool result with ordered model-facing parts.
     pub fn success_with_parts(
         tool_call_id: ToolCallId,
