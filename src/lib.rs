@@ -22,7 +22,6 @@ pub mod operation;
 pub mod output;
 pub mod perf;
 pub mod plugins;
-pub mod process;
 pub mod runtime;
 pub mod session;
 pub mod skills;

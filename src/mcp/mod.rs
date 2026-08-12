@@ -28,21 +28,28 @@ use crate::local;
 
 mod cleanup;
 mod http;
+mod installation;
 mod lifecycle;
 mod manifest;
 mod registry;
+mod runtime;
 pub(crate) mod servers;
 
 #[cfg(test)]
 mod provider_tests;
 
 pub(crate) use cleanup::ProviderCleanup;
+pub use installation::{InstallReport, InstallStatus, install_target};
+pub(crate) use installation::{remove_windie_directories, uninstall_cua_driver};
 pub use lifecycle::{ProviderInstallState, ProviderReadiness};
 pub use manifest::{
     ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
 };
 pub use registry::McpRegistry;
+pub(crate) use runtime::{
+    ensure_runtime, path_with_command_parent, remove_managed_runtime, resolve_command,
+};
 pub(crate) use servers::ChromeDevToolsConnectionMode;
 
 #[cfg(test)]
@@ -972,8 +979,8 @@ fn run_shutdown_command(command: McpCommand) -> Result<()> {
 
 /// Applies the static command definition to a spawned provider process.
 fn configure_process(command: McpCommand) -> Result<Command> {
-    let program = local::resolve_command(command.program)?;
-    let command_path = local::path_with_command_parent(&program);
+    let program = crate::mcp::resolve_command(command.program)?;
+    let command_path = crate::mcp::path_with_command_parent(&program);
     let args = command
         .args
         .iter()

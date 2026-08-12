@@ -129,9 +129,9 @@ pub(super) fn prepare() -> Result<()> {
     let project_name = project_name()?;
     local::set_env_values(&[(BASIC_MEMORY_PROJECT_ENV.to_string(), project_name.clone())])?;
 
-    let uvx = local::resolve_command("uvx")?;
+    let uvx = crate::mcp::resolve_command("uvx")?;
     let mut projects_command = Command::new(&uvx);
-    if let Some(path) = local::path_with_command_parent(&uvx) {
+    if let Some(path) = crate::mcp::path_with_command_parent(&uvx) {
         projects_command.env("PATH", path);
     }
     projects_command.env(
@@ -165,7 +165,7 @@ pub(super) fn prepare() -> Result<()> {
     }
 
     let mut created_command = Command::new(&uvx);
-    if let Some(path) = local::path_with_command_parent(&uvx) {
+    if let Some(path) = crate::mcp::path_with_command_parent(&uvx) {
         created_command.env("PATH", path);
     }
     created_command.env(
@@ -201,9 +201,9 @@ pub(super) fn prepare() -> Result<()> {
 pub(crate) fn uninstall() -> Result<()> {
     let project_name = project_name()?;
     let memory_dir = windie_data_dir().join(BASIC_MEMORY_MEMORY_RELATIVE);
-    let uvx = local::resolve_command("uvx")?;
+    let uvx = crate::mcp::resolve_command("uvx")?;
     let mut projects_command = Command::new(&uvx);
-    if let Some(path) = local::path_with_command_parent(&uvx) {
+    if let Some(path) = crate::mcp::path_with_command_parent(&uvx) {
         projects_command.env("PATH", path);
     }
     projects_command.env(
@@ -249,7 +249,7 @@ pub(crate) fn uninstall() -> Result<()> {
         }
 
         let mut remove_command = Command::new(&uvx);
-        if let Some(path) = local::path_with_command_parent(&uvx) {
+        if let Some(path) = crate::mcp::path_with_command_parent(&uvx) {
             remove_command.env("PATH", path);
         }
         remove_command.env(
@@ -277,7 +277,7 @@ pub(crate) fn uninstall() -> Result<()> {
         }
     }
 
-    local::remove_windie_directories(&["mcp/basic-memory"])?;
+    crate::mcp::remove_windie_directories(&["mcp/basic-memory"])?;
     local::unset_env_values(&[BASIC_MEMORY_PROJECT_ENV.to_string()])?;
     Ok(())
 }
@@ -414,7 +414,7 @@ fn replacement_project_name(project_list: &Value, removed_project_name: &str) ->
 /// Makes another local project the Basic Memory CLI default.
 fn set_default_project(uvx: &Path, project_name: &str, windie_home: &Path) -> Result<()> {
     let mut command = Command::new(uvx);
-    if let Some(path) = local::path_with_command_parent(uvx) {
+    if let Some(path) = crate::mcp::path_with_command_parent(uvx) {
         command.env("PATH", path);
     }
     command.env(

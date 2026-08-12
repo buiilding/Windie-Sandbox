@@ -1,18 +1,16 @@
-//! User-local Windie setup, environment, and approved dependency installation.
+//! User-local Windie filesystem and environment setup.
 //!
-//! This module owns filesystem setup under `~/.windie`, edits Windie's explicit
-//! provider-key environment file, and runs install/check commands for
-//! code-approved runtime dependencies. It deliberately does not configure
-//! arbitrary MCP servers or read project-local `.env` files.
+//! This module owns filesystem setup under `~/.windie` and edits Windie's
+//! explicit provider-key environment file. MCP installation and runtime
+//! provisioning are owned by `mcp/installation.rs` and `mcp/runtime.rs`.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
-
-use super::runtime;
 
 const ENV_FILE_NAME: &str = ".env";
 const BIFROST_DIR: &str = "bifrost";
@@ -44,10 +42,6 @@ const LLM_ENV_KEYS: &[&str] = &[
     "AWS_SECRET_ACCESS_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
 ];
-const CUA_DRIVER_INSTALL_URL: &str =
-    "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh";
-const CUA_DRIVER_UNINSTALL_URL: &str =
-    "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/uninstall.sh";
 
 /// Returns the current user's home directory across supported operating
 /// systems. Unix environments conventionally expose `HOME`; native Windows
@@ -73,21 +67,6 @@ pub fn windie_home_dir() -> Result<PathBuf> {
     }
 
     Ok(user_home_dir()?.join(".windie"))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Result of one approved installation request.
-pub struct InstallReport {
-    pub target: String,
-    pub message: String,
-    pub status: InstallStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Describes whether an approved dependency was reused or installed.
-pub enum InstallStatus {
-    Detected,
-    Installed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,24 +124,24 @@ pub fn env_file_path() -> Result<PathBuf> {
 }
 
 /// Returns the persistent log file for one managed component.
-pub fn component_log_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
+pub fn component_log_file_path(component: crate::local::ManagedComponent) -> Result<PathBuf> {
     let layout = ensure_windie_layout()?;
     Ok(match component {
-        crate::process::ManagedComponent::Gateway => layout.gateway_log_file,
-        crate::process::ManagedComponent::Api => layout.api_log_file,
-        crate::process::ManagedComponent::Inspector => layout.inspector_log_file,
-        crate::process::ManagedComponent::Tray => layout.tray_log_file,
+        crate::local::ManagedComponent::Gateway => layout.gateway_log_file,
+        crate::local::ManagedComponent::Api => layout.api_log_file,
+        crate::local::ManagedComponent::Inspector => layout.inspector_log_file,
+        crate::local::ManagedComponent::Tray => layout.tray_log_file,
     })
 }
 
 /// Returns the persistent PID file for one managed component.
-pub fn component_pid_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
+pub fn component_pid_file_path(component: crate::local::ManagedComponent) -> Result<PathBuf> {
     let layout = ensure_windie_layout()?;
     Ok(match component {
-        crate::process::ManagedComponent::Gateway => layout.gateway_pid_file,
-        crate::process::ManagedComponent::Api => layout.api_pid_file,
-        crate::process::ManagedComponent::Inspector => layout.inspector_pid_file,
-        crate::process::ManagedComponent::Tray => layout.tray_pid_file,
+        crate::local::ManagedComponent::Gateway => layout.gateway_pid_file,
+        crate::local::ManagedComponent::Api => layout.api_pid_file,
+        crate::local::ManagedComponent::Inspector => layout.inspector_pid_file,
+        crate::local::ManagedComponent::Tray => layout.tray_pid_file,
     })
 }
 
@@ -332,123 +311,6 @@ pub fn unset_env_values(keys: &[String]) -> Result<PathBuf> {
     write_env_lines(&layout.env_file, &lines)?;
 
     Ok(layout.env_file)
-}
-
-/// Removes exact provider-owned directories beneath Windie's data root.
-///
-/// Provider cleanup supplies relative paths only. Symlinks and non-directory
-/// targets are rejected so an unexpected filesystem entry cannot redirect a
-/// recursive deletion outside Windie's boundary.
-pub(crate) fn remove_windie_directories(paths: &[&str]) -> Result<()> {
-    let root = absolute_path(&windie_home_dir()?)?;
-    for relative in paths {
-        let relative_path = Path::new(relative);
-        if relative_path.is_absolute()
-            || relative_path
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            return Err(anyhow!(
-                "provider cleanup path must be relative and cannot contain '..': {relative}"
-            ));
-        }
-
-        let target = absolute_path(&root.join(relative_path))?;
-        if !target.starts_with(&root) {
-            return Err(anyhow!(
-                "provider cleanup path escapes Windie's data root: {relative}"
-            ));
-        }
-
-        let metadata = match fs::symlink_metadata(&target) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to inspect provider cleanup path: {}",
-                        target.display()
-                    )
-                });
-            }
-        };
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(anyhow!(
-                "refusing to remove provider cleanup path that is not a directory: {}",
-                target.display()
-            ));
-        }
-
-        fs::remove_dir_all(&target).with_context(|| {
-            format!("failed to remove provider directory: {}", target.display())
-        })?;
-    }
-
-    Ok(())
-}
-
-/// Installs or verifies one approved Windie runtime dependency.
-pub fn install_target(target: &str) -> Result<InstallReport> {
-    ensure_windie_layout()?;
-
-    match target {
-        "bifrost" => Ok(InstallReport {
-            target: target.to_string(),
-            message: "Bifrost is provided by the Windie-owned bundled binary".to_string(),
-            status: InstallStatus::Detected,
-        }),
-        "cua-driver" => install_cua_driver(),
-        "desktop-commander" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed Node.js runtime is ready for Desktop Commander"
-                    .to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
-        "blender-mcp" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed uv runtime is ready for Blender MCP".to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
-        "brightdata" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed Node.js runtime is ready for Bright Data MCP".to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
-        "basic-memory" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed uv runtime is ready for Basic Memory".to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
-        _ => Err(anyhow!("unknown install target: {target}")),
-    }
 }
 
 /// Returns the current user-local Windie layout without creating directories.
@@ -676,177 +538,6 @@ fn schedule_windows_cleanup(_plan: &UninstallPlan) -> Result<()> {
     Ok(())
 }
 
-/// Installs CUA Driver using its public upstream installer when needed.
-fn install_cua_driver() -> Result<InstallReport> {
-    #[cfg(target_os = "windows")]
-    {
-        if runtime::resolve_command("cua-driver").is_err() {
-            install_cua_driver_windows()?;
-        }
-        runtime::resolve_command("cua-driver")?;
-        return Ok(InstallReport {
-            target: "cua-driver".to_string(),
-            message: "installed or verified cua-driver with its official Windows installer"
-                .to_string(),
-            status: InstallStatus::Detected,
-        });
-    }
-
-    #[cfg(target_os = "macos")]
-    if runtime::resolve_command("cua-driver").is_ok() && runtime::cua_driver_app_available() {
-        return Ok(InstallReport {
-            target: "cua-driver".to_string(),
-            message: "cua-driver and its macOS application are already available".to_string(),
-            status: InstallStatus::Detected,
-        });
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    if command_exists("cua-driver") {
-        return Ok(InstallReport {
-            target: "cua-driver".to_string(),
-            message: "cua-driver is already available on PATH".to_string(),
-            status: InstallStatus::Detected,
-        });
-    }
-
-    require_command("curl")?;
-    require_command("bash")?;
-
-    let status = Command::new("bash")
-        .arg("-c")
-        .arg(format!("curl -fsSL {CUA_DRIVER_INSTALL_URL} | bash"))
-        .status()
-        .context("failed to start cua-driver installer")?;
-    if !status.success() {
-        return Err(anyhow!("cua-driver installer failed"));
-    }
-
-    runtime::resolve_command("cua-driver")
-        .context("cua-driver installer completed but cua-driver is not resolvable")?;
-
-    #[cfg(target_os = "macos")]
-    if !runtime::cua_driver_app_available() {
-        return Err(anyhow!(
-            "cua-driver installer completed but /Applications/CuaDriver.app is not installed"
-        ));
-    }
-
-    Ok(InstallReport {
-        target: "cua-driver".to_string(),
-        message: "installed cua-driver with the public trycua installer".to_string(),
-        status: InstallStatus::Installed,
-    })
-}
-
-/// Runs CUA Driver's official platform-specific uninstaller with purge mode.
-///
-/// The upstream scripts own process shutdown, permission revocation, app
-/// removal, and retained identity cleanup. Windie does not duplicate those
-/// platform-specific permission operations.
-pub(crate) fn uninstall_cua_driver() -> Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            "$ErrorActionPreference = 'Stop'; $env:CUA_DRIVER_RS_UNINSTALL_FORCE = '1'; $env:CUA_DRIVER_RS_UNINSTALL_PURGE = '1'; $path = Join-Path $env:TEMP 'windie-cua-uninstall.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{CUA_DRIVER_UNINSTALL_URL}' -OutFile $path; $code = 0; try {{ & $path; $code = if ($null -eq $LASTEXITCODE) {{ 0 }} else {{ $LASTEXITCODE }} }} finally {{ Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }}; exit $code"
-        );
-        let status = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &script,
-            ])
-            .status()
-            .context("failed to start cua-driver uninstaller")?;
-        if !status.success() {
-            return Err(anyhow!("cua-driver uninstaller failed"));
-        }
-        return Ok(());
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        require_command("curl")?;
-        require_command("bash")?;
-        let status = Command::new("bash")
-            .args([
-                "-c",
-                &format!(
-                    "curl -fsSL --proto '=https' --tlsv1.2 {CUA_DRIVER_UNINSTALL_URL} | bash -s -- --purge"
-                ),
-            ])
-            .status()
-            .context("failed to start cua-driver uninstaller")?;
-        if !status.success() {
-            return Err(anyhow!("cua-driver uninstaller failed"));
-        }
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn install_cua_driver_windows() -> Result<()> {
-    const INSTALL_URL: &str =
-        "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1";
-    let script = format!(
-        "$ErrorActionPreference = 'Stop'; $path = Join-Path $env:TEMP 'windie-cua-install.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{INSTALL_URL}' -OutFile $path; & $path; $code = $LASTEXITCODE; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit $code"
-    );
-    let status = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status()
-        .context("failed to start the CUA Driver Windows installer")?;
-    if !status.success() {
-        return Err(anyhow!(
-            "CUA Driver Windows installer failed with status {status}"
-        ));
-    }
-    runtime::resolve_command("cua-driver")
-        .context("CUA Driver installer completed but cua-driver is not resolvable")?;
-    Ok(())
-}
-
-/// Requires one executable to be available on PATH.
-fn require_command(program: &str) -> Result<()> {
-    if command_exists(program) {
-        return Ok(());
-    }
-
-    Err(anyhow!(
-        "required command is not available on PATH: {program}"
-    ))
-}
-
-/// Returns whether one executable is available on PATH.
-fn command_exists(program: &str) -> bool {
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
-
-    env::split_paths(&paths).any(|path| {
-        if path.join(program).is_file() {
-            return true;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            return [".exe", ".cmd", ".bat"]
-                .iter()
-                .any(|suffix| path.join(format!("{program}{suffix}")).is_file());
-        }
-        #[cfg(not(target_os = "windows"))]
-        false
-    })
-}
-
 /// Validates a `.env` key that Windie is allowed to write.
 fn validate_env_key(key: &str) -> Result<()> {
     if key.is_empty() {
@@ -1003,7 +694,7 @@ mod tests {
         unsafe {
             std::env::set_var("WINDIE_HOME", &root);
         }
-        let result = remove_windie_directories(&["mcp/brightdata"]);
+        let result = crate::mcp::remove_windie_directories(&["mcp/brightdata"]);
         unsafe {
             match previous_home {
                 Some(value) => std::env::set_var("WINDIE_HOME", value),

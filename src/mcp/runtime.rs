@@ -1,6 +1,6 @@
-//! User-local runtime provisioning and executable resolution.
+//! MCP managed-runtime provisioning and executable resolution.
 //!
-//! Approved providers must not depend on a user's shell, global Node.js/uv
+//! Approved MCP servers must not depend on a user's shell, global Node.js/uv
 //! installation, or Windows command shims. This module provisions the shared
 //! runtimes Windie needs with Rust's HTTP and archive libraries, then resolves
 //! executable paths immediately before a child process starts.
@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
 
-use super::windie_home_dir;
+use crate::local::windie_home_dir;
 use crate::mcp::ProviderRuntime;
 
 const NODE_VERSION: &str = "22.14.0";
@@ -31,7 +31,7 @@ enum ArchiveFormat {
 }
 
 /// Ensures the runtime needed by one approved provider is available.
-pub(super) fn ensure_provider_runtime(target: &str) -> Result<bool> {
+pub(crate) fn ensure_provider_runtime(target: &str) -> Result<bool> {
     match target {
         "desktop-commander" | "brightdata" => ensure_runtime(ProviderRuntime::Node),
         "blender-mcp" | "basic-memory" => ensure_runtime(ProviderRuntime::Uv),

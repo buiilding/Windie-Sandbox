@@ -10,7 +10,6 @@ use anyhow::Result;
 use super::{ChromeDevToolsConnectionMode, ProviderRuntime};
 use crate::conversation::ToolCall;
 use crate::error;
-use crate::local;
 use crate::mcp::servers::{McpProviderDefinition, McpToolProvider, approved_mcp_providers};
 use crate::mcp::{McpCommand, McpSessionPool, McpTransport, ProviderInstallState};
 use crate::store::{ProviderCatalogStatus, Store};
@@ -149,8 +148,8 @@ impl McpRegistry {
         }
 
         match provider.manifest().runtime {
-            ProviderRuntime::Native => local::install_target(provider_id.as_str()).map(|_| ()),
-            runtime => local::ensure_runtime(runtime).map(|_| ()),
+            ProviderRuntime::Native => crate::mcp::install_target(provider_id.as_str()).map(|_| ()),
+            runtime => crate::mcp::ensure_runtime(runtime).map(|_| ()),
         }
     }
 

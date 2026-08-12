@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use super::*;
 
 use crate::local;
-use crate::process::{ManagedComponent, ProcessReport, ProcessState};
+use crate::local::{ManagedComponent, ProcessReport, ProcessState};
 
 pub(in crate::operation) const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
 

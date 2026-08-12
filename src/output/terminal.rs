@@ -11,11 +11,11 @@ use anyhow::{Context, Result};
 
 use crate::conversation::{ConversationId, Message, MessageId, ToolCall};
 use crate::llm::{ModelInfo, ModelName};
-use crate::local::{InstallReport, InstallStatus};
+use crate::local::{ManagedComponent, ProcessReport, ProcessState};
+use crate::mcp::{InstallReport, InstallStatus};
 use crate::operation::InspectionReport;
 use crate::operation::UninstallReport;
 use crate::perf::{PerformanceBaseline, PerformanceComparison, PerformanceReport};
-use crate::process::{ManagedComponent, ProcessReport, ProcessState};
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
 use crate::store::ConversationInfo;
 use crate::tool::{ToolDefinition, ToolSchemaName};

@@ -6,7 +6,7 @@
 
 use anyhow::{Result, anyhow};
 
-pub use crate::process::{ManagedComponent, ProcessReport};
+pub use crate::local::{ManagedComponent, ProcessReport};
 
 /// Complete result of one Windie uninstall operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,27 +20,27 @@ pub struct UninstallReport {
 
 /// Starts the detached Windie API process.
 pub fn start_api() -> Result<ProcessReport> {
-    crate::process::start_api()
+    crate::local::start_api()
 }
 
 /// Stops the Windie API process without affecting Bifrost.
 pub fn stop_api() -> Result<ProcessReport> {
-    crate::process::stop_api()
+    crate::local::stop_api()
 }
 
 /// Starts the detached Inspector process.
 pub fn start_inspector() -> Result<ProcessReport> {
-    crate::process::start_inspector()
+    crate::local::start_inspector()
 }
 
 /// Stops the Inspector process without affecting Windie API or Bifrost.
 pub fn stop_inspector() -> Result<ProcessReport> {
-    crate::process::stop_inspector()
+    crate::local::stop_inspector()
 }
 
 /// Reads one component's persisted stdout/stderr output.
 pub fn component_output(component: ManagedComponent) -> Result<String> {
-    crate::process::read_output(component)
+    crate::local::read_output(component)
 }
 
 /// Plans or performs complete Windie cleanup.
@@ -63,7 +63,7 @@ pub async fn uninstall_windie(
         });
     }
 
-    let process_result = crate::process::stop_windie_processes();
+    let process_result = crate::local::stop_windie_processes();
     let gateway_result = crate::operation::stop_gateway(gateway_url).await;
     let mut failures = Vec::new();
     let processes = match process_result {

@@ -207,15 +207,15 @@ impl McpToolProvider {
     pub(crate) fn uninstall(&self, remove_runtime: bool) -> Result<()> {
         match self.cleanup {
             ProviderCleanup::None => {}
-            ProviderCleanup::CuaDriver => crate::local::uninstall_cua_driver()?,
+            ProviderCleanup::CuaDriver => crate::mcp::uninstall_cua_driver()?,
             ProviderCleanup::WindieDirectories(paths) => {
-                crate::local::remove_windie_directories(paths)?;
+                crate::mcp::remove_windie_directories(paths)?;
             }
             ProviderCleanup::BasicMemory => basic_memory::uninstall()?,
         }
 
         if remove_runtime {
-            crate::local::remove_managed_runtime(self.manifest.runtime)?;
+            crate::mcp::remove_managed_runtime(self.manifest.runtime)?;
         }
 
         Ok(())

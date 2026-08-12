@@ -1,23 +1,24 @@
-//! User-local Windie environment boundary.
+//! User-local operating-environment boundary.
 //!
-//! This folder owns files and commands tied to the local user's Windie runtime
-//! environment, such as `~/.windie`, provider-key env editing, and
-//! approved dependency checks.
+//! This folder owns Windie's user-local filesystem layout, environment files,
+//! detached component processes, and uninstall lifecycle. MCP-specific
+//! installation and managed runtime provisioning live in `mcp/`.
 
-mod runtime;
+mod process;
 mod setup;
 
 #[cfg(test)]
 pub(crate) static ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub use setup::{
-    InstallReport, InstallStatus, UninstallCleanup, UninstallPlan, component_log_file_path,
-    component_pid_file_path, ensure_windie_layout, env_file_path, env_value, install_target,
-    list_env_keys, remove_uninstall_plan, set_env_values, uninstall_plan, unset_env_values,
-    user_home_dir, windie_home_dir,
+    UninstallCleanup, UninstallPlan, component_log_file_path, component_pid_file_path,
+    ensure_windie_layout, env_file_path, env_value, list_env_keys, remove_uninstall_plan,
+    set_env_values, uninstall_plan, unset_env_values, user_home_dir, windie_home_dir,
 };
 
-pub(crate) use runtime::{
-    ensure_runtime, path_with_command_parent, remove_managed_runtime, resolve_command,
+pub use process::{
+    ManagedComponent, ProcessReport, ProcessState, read_output, start_api, start_inspector,
+    stop_api, stop_inspector, stop_tray, stop_windie_processes,
 };
-pub(crate) use setup::{remove_windie_directories, uninstall_cua_driver};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub use process::{register_tray, unregister_tray};

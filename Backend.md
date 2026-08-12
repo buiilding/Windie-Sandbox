@@ -104,7 +104,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - bin/windie-dev.rs: foreground development supervisor, release workflow
   adapter, and benchmark entry point. It is deliberately excluded from public
   release archives.
-- process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, and Inspector components.
+- local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, Inspector, and tray components.
 - ../vendor/windie-inspector/host/src/main.rs: standalone Inspector static host; its address
   and API endpoint are configurable through the local endpoint environment
   settings. It is an independent Cargo package, not a Windie runtime target.
@@ -135,6 +135,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - mcp/mod.rs: MCP stdio/HTTP client, JSON-RPC handshake, session pooling, tool listing, and tool calls.
 - mcp/http.rs: Streamable HTTP MCP transport.
 - mcp/registry.rs: MCP server lifecycle, discovery, persisted catalog attachment, and execution dispatch.
+- mcp/installation.rs: approved MCP installation targets, provider cleanup, and CUA Driver installation/uninstallation.
+- mcp/runtime.rs: Windie-managed Node.js/uv provisioning and executable resolution for MCP servers.
 - mcp/manifest.rs: metadata contract for one MCP server's launch command, platform, dependencies, secrets, permissions, scope, and setup information.
 - mcp/lifecycle.rs: persisted MCP server installation and readiness states.
 - mcp/cleanup.rs: cleanup actions for approved MCP server runtimes.
@@ -148,6 +150,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - mcp/servers/provider.rs: generic MCP backend adapter; lists MCP tools and converts them into Windie ToolDefinitions.
 - mcp/servers/executor.rs: executes already-approved MCP tool calls.
 - mcp/servers/result.rs: normalizes MCP results into Windie tool output, text, and image message parts.
+- store/chrome_devtools.rs: persists the user-selected Chrome DevTools MCP connection mode; connection behavior remains owned by `mcp/`.
 
 ## Sessions
 
@@ -252,7 +255,8 @@ Keep boundaries strict:
 - Only `perf/` should own benchmark timing logic, reports, comparisons, and benchmark fixture setup.
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and approved dependency install/check commands.
-- Only `dev/` should own repository-only development helper launchers, while
+- `src/bin/windie-dev.rs` owns repository-only development helper launchers and
+  `docs/development.md` documents that workflow, while
   `vendor/windie-inspector/` owns the first-party Inspector client and host.
 - Only `builtin_tools/` should own Windie control-tool definitions and execution. Only `skills/` should own skill assets and loading. Only `plugins/` should compose skills with MCP server references. Only `mcp/` should own MCP lifecycle, transport, discovery, and execution.
 - Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.

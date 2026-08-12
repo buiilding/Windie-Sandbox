@@ -13,6 +13,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 - Separated builtin tools, skills, plugins, and MCP into explicit module
   boundaries. The shared `tool/` contracts are now used by both builtin and
   discovered MCP tools.
+- Removed the redundant `dev/` documentation folder, moved component process
+  management under `local/`, and moved MCP installation and managed runtime
+  provisioning under `mcp/`.
 - Made the Inspector's available tool schemas section expanded by default.
 
 ## [0.3.2] - 2026-08-10

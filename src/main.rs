@@ -11,10 +11,10 @@ use windie::cli::{Command, EnvCommand, InsertPart};
 use windie::conversation::{ConversationId, MessageId, Role, ToolCallId};
 use windie::gateway::GatewayUrl;
 use windie::llm::{BaseUrl, ModelName};
+use windie::local::ManagedComponent;
 use windie::mcp::McpRegistry;
 use windie::operation::MessageInputPart;
 use windie::output::TerminalOutput;
-use windie::process::ManagedComponent;
 use windie::session::SessionId;
 use windie::store::Store;
 use windie::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
@@ -271,7 +271,7 @@ fn env_command(command: EnvCommand) -> Result<()> {
 
 /// Installs or verifies one approved Windie dependency.
 fn install_target(target: &str) -> Result<()> {
-    let report = local::install_target(target)?;
+    let report = windie::mcp::install_target(target)?;
     let output = TerminalOutput;
     output.install_report(&report);
 

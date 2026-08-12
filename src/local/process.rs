@@ -1,7 +1,7 @@
-//! Detached local component process management.
+//! Detached Windie component process management.
 //!
 //! This module owns the small amount of operating-system integration needed by
-//! the CLI lifecycle commands: persistent PID files, detached stdout/stderr
+//! local component lifecycle commands: persistent PID files, detached stdout/stderr
 //! logs, process identity checks, graceful API shutdown requests, and platform
 //! process termination. It does not own component-specific runtime behavior.
 
