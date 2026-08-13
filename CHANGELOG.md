@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Simplified extension detail views by removing redundant section and metadata
+  headings, leaving the selected skill file or discovered tool content as the
+  primary Inspector surface.
 - Fixed extension inspection to distinguish plugin identity from the
   underlying MCP transport and added a Skills tab that renders every installed
   Markdown file in a plugin skill bundle on demand.
