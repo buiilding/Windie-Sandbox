@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -90,6 +90,11 @@ impl PluginPackage {
     /// Returns the human-facing package description.
     pub fn description(&self) -> &str {
         &self.manifest.description
+    }
+
+    /// Returns the declared package owner when the package provides one.
+    pub fn author(&self) -> Option<&str> {
+        self.manifest.author.as_ref().map(PackageAuthor::name)
     }
 
     /// Returns the optional marketplace display name.
@@ -207,12 +212,35 @@ struct PackageManifest {
     version: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    author: Option<PackageAuthor>,
     #[serde(default = "default_skills_path")]
     skills: String,
     #[serde(rename = "mcpServers")]
     mcp_servers: Option<String>,
     #[serde(default)]
     interface: Option<PackageInterface>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum PackageAuthor {
+    Name(String),
+    Metadata {
+        name: String,
+        #[serde(default)]
+        email: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+    },
+}
+
+impl PackageAuthor {
+    fn name(&self) -> &str {
+        match self {
+            Self::Name(name) | Self::Metadata { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -353,7 +381,7 @@ fn load_mcp_servers(
 fn skill_files(root: &Path) -> Result<Vec<SkillPath>> {
     let mut files = Vec::new();
     collect_skill_files(root, root, &mut files)?;
-    files.sort();
+    files.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     Ok(files)
 }
 
@@ -479,10 +507,28 @@ pub fn install_local_package(
         .join(package.plugin_id().as_str())
         .join(package.version().as_str());
     if destination.exists() {
+        let installed = PluginPackage::load(&destination).with_context(|| {
+            format!(
+                "existing installed plugin is invalid: {}",
+                destination.display()
+            )
+        })?;
+        if installed.content_hash() != package.content_hash() {
+            bail!(
+                "plugin destination already contains different content: {}",
+                destination.display()
+            );
+        }
         return Ok(destination);
     }
     copy_directory(package.root(), &destination)?;
     Ok(destination)
+}
+
+/// Installs a local package into Windie's user-local package store.
+pub fn install_local_package_into_windie(source: impl AsRef<Path>) -> Result<PathBuf> {
+    let destination_root = crate::local::windie_home_dir()?.join("plugins");
+    install_local_package(source, destination_root)
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> Result<()> {

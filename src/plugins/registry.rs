@@ -185,6 +185,9 @@ impl PluginRegistry {
             lines.push(String::new());
             lines.push(format!("{} ({}):", plugin.plugin_id, plugin.display_name));
             lines.push(format!("  Purpose: {}", plugin.description));
+            if let Some(author) = entry.package.author() {
+                lines.push(format!("  Owner: {author}"));
+            }
             lines.push("  Skills:".to_string());
             for skill_id in &plugin.skills {
                 let description = entry

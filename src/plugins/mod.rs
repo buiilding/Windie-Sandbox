@@ -6,9 +6,13 @@
 
 mod curated;
 mod manifest;
+mod marketplace;
 mod package;
 mod registry;
 
 pub use manifest::{PluginId, PluginManifest, PluginVersion};
-pub use package::{PackageMcpServer, PluginPackage, install_local_package};
+pub use marketplace::{MarketplaceManifest, MarketplacePlugin, MarketplaceSource};
+pub use package::{
+    install_local_package, install_local_package_into_windie, PackageMcpServer, PluginPackage,
+};
 pub use registry::PluginRegistry;
