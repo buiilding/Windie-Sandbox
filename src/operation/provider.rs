@@ -408,6 +408,8 @@ pub fn uninstall_provider(
         !runtime_is_used_by_another_provider(store, registry, provider_id, manifest.runtime)?;
     registry.uninstall_provider_runtime(provider_id, remove_runtime)?;
 
+    crate::plugins::remove_curated_plugin_for_provider(provider_id)?;
+
     let secret_keys = manifest
         .secrets
         .iter()
@@ -569,6 +571,10 @@ fn prepare_provider_setup(
             .unwrap_or_else(|| "installing provider runtime".to_string());
         store.set_provider_progress(provider_id, &runtime_message)?;
         registry.prepare_provider_runtime(provider_id)?;
+    }
+
+    if crate::plugins::install_curated_plugin_for_provider(provider_id)? {
+        store.set_provider_progress(provider_id, "installing CUA Driver skills")?;
     }
 
     if registry.provider_requires_package_preparation(provider_id)? {

@@ -4,32 +4,27 @@ use anyhow::Result;
 
 use crate::error;
 
-use super::embedded::EMBEDDED_SKILLS;
-use super::manifest::{SkillBundle, SkillDocument, SkillFile, SkillId, SkillManifest};
+use super::manifest::{SkillBundle, SkillDocument, SkillId, SkillManifest};
 use super::path::SkillPath;
 
 #[derive(Debug, Clone)]
-/// Registry of skills bundled with this Windie build.
+/// Registry of skill bundles that are owned by the current runtime.
+///
+/// Curated upstream skills are installed as file-based plugin packages and
+/// loaded by `PluginRegistry`; this registry remains available for future
+/// Windie-owned skills and test fixtures.
 pub struct SkillRegistry {
     pub(crate) skills: Vec<SkillBundle>,
 }
 
 impl SkillRegistry {
-    /// Returns the reviewed skills shipped by this Windie build.
+    /// Returns Windie-owned skill fixtures compiled into this build.
+    ///
+    /// The current curated set has no Windie-owned skill files. Upstream skill
+    /// packs are materialized into the user-local plugin store during
+    /// installation.
     pub fn curated() -> Self {
-        let files = embedded_files("cua-driver");
-        Self {
-            skills: vec![SkillBundle {
-                manifest: SkillManifest {
-                    skill_id: SkillId::new("cua-driver"),
-                    display_name: "CUA Driver workflow".to_string(),
-                    description: "Guidance for using Windie's approved computer-control provider safely and deliberately.".to_string(),
-                    entrypoint: SkillPath::entrypoint(),
-                    files: files.iter().map(|file| file.path.clone()).collect(),
-                },
-                files,
-            }],
-        }
+        Self { skills: Vec::new() }
     }
 
     /// Returns every skill in deterministic catalog order.
@@ -93,22 +88,6 @@ impl SkillDocument {
     }
 }
 
-fn embedded_files(skill_id: &str) -> Vec<SkillFile> {
-    let definition = EMBEDDED_SKILLS
-        .iter()
-        .find(|definition| definition.skill_id == skill_id)
-        .unwrap_or_else(|| panic!("missing embedded curated skill: {skill_id}"));
-
-    definition
-        .files
-        .iter()
-        .map(|file| SkillFile {
-            path: SkillPath::new(file.path).expect("invalid embedded skill file path"),
-            content: file.content.to_string(),
-        })
-        .collect()
-}
-
 impl Default for SkillRegistry {
     fn default() -> Self {
         Self::curated()
@@ -120,43 +99,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn curated_skill_is_a_directory_shaped_bundle() {
-        let registry = SkillRegistry::curated();
-        let skill = registry
-            .skills()
-            .find(|skill| skill.skill_id.as_str() == "cua-driver")
-            .unwrap();
-
-        assert_eq!(skill.entrypoint.as_str(), "SKILL.md");
-        assert!(skill.files.iter().any(|path| path.as_str() == "MACOS.md"));
-        assert!(skill.files.iter().any(|path| path.as_str() == "README.md"));
-    }
-
-    #[test]
-    fn reads_entrypoint_and_supporting_reference_on_demand() {
-        let registry = SkillRegistry::curated();
-        let skill_id = SkillId::new("cua-driver");
-        let macos = SkillPath::new("MACOS.md").unwrap();
-
-        let entrypoint = registry.read(&skill_id, None).unwrap();
-        assert_eq!(entrypoint.path.as_str(), "SKILL.md");
-        assert!(entrypoint.content.contains("MACOS.md"));
-        assert!(entrypoint.available_files.iter().any(|path| path == &macos));
-
-        let reference = registry.read(&skill_id, Some(&macos)).unwrap();
-        assert_eq!(reference.path, macos);
-        assert!(reference.content.contains("macOS"));
-    }
-
-    #[test]
-    fn unknown_skill_file_is_rejected() {
-        let registry = SkillRegistry::curated();
-        let unknown = SkillPath::new("missing.md").unwrap();
-
-        assert!(
-            registry
-                .read(&SkillId::new("cua-driver"), Some(&unknown))
-                .is_err()
-        );
+    fn curated_registry_does_not_embed_upstream_skill_content() {
+        assert!(SkillRegistry::curated().skills().next().is_none());
     }
 }

@@ -7,10 +7,13 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- Reshaped the code-owned CUA Driver plugin into a directory-shaped embedded
-  skill bundle with safe, on-demand supporting-reference loading. The model's
-  initial extension surface now exposes only plugin-level skill reading and
-  plugin attachment, while provider-level MCP operations remain internal.
+- Materialized curated plugins through the same versioned package store as
+  file-based plugins. CUA Driver installation now installs its upstream MCP
+  executable and upstream multi-file skill pack, generates validated package
+  manifests and provenance, and removes the materialized package on uninstall.
+- Removed the embedded CUA Driver skill bundle from the Windie binary. Curated
+  Rust definitions now own trust and installation policy while upstream skill
+  contents remain updateable package files.
 - Separated builtin tools, skills, plugins, and MCP into explicit module
   boundaries. The shared `tool/` contracts are now used by both builtin and
   discovered MCP tools.

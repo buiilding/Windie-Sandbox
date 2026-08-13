@@ -127,11 +127,10 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - skills/: reusable, directory-shaped, non-executable instructions for supported workflows.
 - skills/manifest.rs: typed skill identity, entrypoint, bounded file list, and model-facing skill document types.
 - skills/path.rs: validates bundle-relative skill reference paths and rejects traversal/absolute paths.
-- skills/embedded.rs: compile-time embedded asset definitions generated from curated skill directories.
-- skills/registry.rs: curated skill catalog and on-demand entrypoint/reference-file loading.
-- skills/curated/: bundled first-party Markdown skill directories, including `cua-driver/SKILL.md` and supporting references.
+- skills/registry.rs: Windie-owned skill fixtures and on-demand entrypoint/reference-file loading. Upstream plugin skills are loaded by `plugins/registry.rs` from the installed package store.
 - plugins/: model-facing composition of reusable skills and approved MCP servers. Plugins do not implement transport or execution.
-- plugins/curated.rs: trusted code-owned plugin compositions, currently the CUA Driver plugin.
+- plugins/curated.rs: trusted code-owned plugin definitions and installation policy, currently the CUA Driver plugin.
+- plugins/installation.rs: materializes trusted upstream plugin artifacts into the versioned package store and removes curated installations.
 - plugins/manifest.rs: typed plugin metadata and references to skill IDs and MCP server IDs.
 - plugins/package.rs: validated file-based plugin package loader and local package cache boundary. Package discovery is separate from MCP process activation.
 - plugins/registry.rs: curated plugin catalog, compact runtime catalog prompt, skill loading, and MCP server activation.
@@ -139,7 +138,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - mcp/mod.rs: MCP stdio/HTTP client, JSON-RPC handshake, session pooling, tool listing, and tool calls.
 - mcp/http.rs: Streamable HTTP MCP transport.
 - mcp/registry.rs: MCP server lifecycle, discovery, persisted catalog attachment, and execution dispatch.
-- mcp/installation.rs: approved MCP installation targets, provider cleanup, and CUA Driver installation/uninstallation.
+- mcp/installation.rs: approved MCP installation targets, provider cleanup, CUA Driver executable installation, and upstream skill-pack installation.
 - mcp/runtime.rs: Windie-managed Node.js/uv provisioning and executable resolution for MCP servers.
 - mcp/manifest.rs: metadata contract for one MCP server's launch command, platform, dependencies, secrets, permissions, scope, and setup information.
 - mcp/lifecycle.rs: persisted MCP server installation and readiness states.

@@ -39,6 +39,7 @@ pub(crate) mod servers;
 mod provider_tests;
 
 pub(crate) use cleanup::ProviderCleanup;
+pub(crate) use installation::{CuaDriverSkillPack, install_cua_driver_skills};
 pub use installation::{InstallReport, InstallStatus, install_target};
 pub(crate) use installation::{remove_windie_directories, uninstall_cua_driver};
 pub use lifecycle::{ProviderInstallState, ProviderReadiness};

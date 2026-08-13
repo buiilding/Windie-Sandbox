@@ -8,10 +8,10 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use super::package::{install_local_package, PluginPackage};
+use super::package::{PluginPackage, install_local_package};
 
 /// A marketplace index loaded from a local JSON file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

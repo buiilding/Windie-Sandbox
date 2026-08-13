@@ -21,7 +21,7 @@ struct PackageEntry {
 }
 
 #[derive(Debug, Clone)]
-/// Registry of plugins bundled and curated by Windie.
+/// Registry of curated definitions and installed file-based plugins.
 pub struct PluginRegistry {
     plugins: Vec<PluginManifest>,
     skills: SkillRegistry,
@@ -30,7 +30,7 @@ pub struct PluginRegistry {
 }
 
 impl PluginRegistry {
-    /// Returns the plugins and skills shipped by this Windie build.
+    /// Returns the curated plugin definitions before package discovery.
     pub fn curated() -> Self {
         Self {
             plugins: vec![curated::cua_driver()],
@@ -85,13 +85,9 @@ impl PluginRegistry {
                 Ok(package) => {
                     let manifest = package.plugin_manifest();
                     if self
-                        .plugins
+                        .packages
                         .iter()
-                        .any(|plugin| plugin.plugin_id == manifest.plugin_id)
-                        || self
-                            .packages
-                            .iter()
-                            .any(|entry| entry.manifest.plugin_id == manifest.plugin_id)
+                        .any(|entry| entry.manifest.plugin_id == manifest.plugin_id)
                     {
                         self.package_errors.push(format!(
                             "ignored package with duplicate plugin id: {}",
@@ -99,6 +95,12 @@ impl PluginRegistry {
                         ));
                         continue;
                     }
+                    // A materialized curated plugin is the installed
+                    // realization of its code-owned recipe. Once present, it
+                    // replaces the recipe in the runtime catalog so its
+                    // file-backed skills and manifests are authoritative.
+                    self.plugins
+                        .retain(|plugin| plugin.plugin_id != manifest.plugin_id);
                     self.packages.push(PackageEntry { package, manifest });
                 }
                 Err(error) => self.package_errors.push(error.to_string()),
@@ -161,16 +163,26 @@ impl PluginRegistry {
             lines.push(format!("{} ({}):", plugin.plugin_id, plugin.display_name));
             lines.push(format!("  Purpose: {}", plugin.description));
             lines.push("  Skills:".to_string());
+            let mut described_skill = false;
             for skill_id in &plugin.skills {
                 if let Some(skill) = self
                     .skills
                     .skills()
                     .find(|skill| skill.skill_id == *skill_id)
                 {
+                    described_skill = true;
                     lines.push(format!(
                         "    - {}: {}",
                         skill.skill_id.as_str(),
                         skill.description
+                    ));
+                }
+            }
+            if !described_skill {
+                for skill_id in &plugin.skills {
+                    lines.push(format!(
+                        "    - {}: install this plugin to load its upstream skill",
+                        skill_id
                     ));
                 }
             }
@@ -377,9 +389,7 @@ mod tests {
                     &SkillId::new("cua-driver"),
                     None,
                 )
-                .unwrap()
-                .content
-                .contains("Windie CUA Driver")
+                .is_err()
         );
     }
 
@@ -396,19 +406,18 @@ mod tests {
     }
 
     #[test]
-    fn plugin_reads_supporting_skill_files_only_when_requested() {
+    fn uninstalled_curated_plugin_does_not_read_upstream_skill_files() {
         let registry = PluginRegistry::default();
         let path = SkillPath::new("MACOS.md").unwrap();
-        let document = registry
-            .read_skill(
-                &PluginId::new("cua-driver"),
-                &SkillId::new("cua-driver"),
-                Some(&path),
-            )
-            .unwrap();
-
-        assert_eq!(document.path, path);
-        assert!(document.content.contains("macOS"));
+        assert!(
+            registry
+                .read_skill(
+                    &PluginId::new("cua-driver"),
+                    &SkillId::new("cua-driver"),
+                    Some(&path),
+                )
+                .is_err()
+        );
     }
 
     #[test]

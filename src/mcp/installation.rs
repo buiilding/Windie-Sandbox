@@ -20,6 +20,16 @@ const CUA_DRIVER_INSTALL_URL: &str =
 const CUA_DRIVER_UNINSTALL_URL: &str =
     "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/uninstall.sh";
 
+/// An upstream CUA Driver skill pack that Windie can materialize into a
+/// versioned plugin package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CuaDriverSkillPack {
+    /// The CUA Driver release version reported by its executable.
+    pub(crate) driver_version: String,
+    /// The validated upstream directory containing `SKILL.md`.
+    pub(crate) root: std::path::PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Result of one approved MCP installation request.
 pub struct InstallReport {
@@ -206,6 +216,120 @@ fn install_cua_driver() -> Result<InstallReport> {
         message: "installed cua-driver with the public trycua installer".to_string(),
         status: InstallStatus::Installed,
     })
+}
+
+/// Installs and resolves CUA Driver's upstream skill pack.
+///
+/// The executable installer and the agent-skill installer are intentionally
+/// separate upstream operations. Windie calls this only after the executable
+/// is available, then copies the validated directory into the installed
+/// plugin package. The command's own agent links are not used as Windie's
+/// runtime source of truth.
+pub(crate) fn install_cua_driver_skills() -> Result<CuaDriverSkillPack> {
+    let executable = runtime::resolve_command("cua-driver")
+        .context("cannot install CUA Driver skills before cua-driver is available")?;
+    let path_env = runtime::path_with_command_parent(&executable);
+
+    let mut install = Command::new(&executable);
+    install.args(["skills", "install", "--all-platforms"]);
+    if let Some(path) = path_env.as_ref() {
+        install.env("PATH", path);
+    }
+    let output = install
+        .output()
+        .context("failed to start cua-driver skills installer")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "cua-driver skills install failed: {}",
+            command_output(&output)
+        ));
+    }
+
+    let version_output = run_cua_driver_command(&executable, path_env.as_ref(), &["--version"])?;
+    let driver_version = parse_cua_driver_version(&version_output)?;
+    let path_output = run_cua_driver_command(&executable, path_env.as_ref(), &["skills", "path"])?;
+    let root = resolve_skill_pack_path(&path_output)?;
+
+    Ok(CuaDriverSkillPack {
+        driver_version,
+        root,
+    })
+}
+
+fn run_cua_driver_command(
+    executable: &Path,
+    path_env: Option<&std::ffi::OsString>,
+    arguments: &[&str],
+) -> Result<String> {
+    let mut command = Command::new(executable);
+    command.args(arguments);
+    if let Some(path) = path_env {
+        command.env("PATH", path);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run cua-driver {}", arguments.join(" ")))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "cua-driver {} failed: {}",
+            arguments.join(" "),
+            command_output(&output)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn parse_cua_driver_version(output: &str) -> Result<String> {
+    let version = output
+        .split_whitespace()
+        .last()
+        .ok_or_else(|| anyhow!("cua-driver --version returned no version"))?;
+    if version.is_empty()
+        || !version.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+        })
+    {
+        return Err(anyhow!("cua-driver returned an invalid version: {version}"));
+    }
+    Ok(version.to_string())
+}
+
+fn resolve_skill_pack_path(output: &str) -> Result<std::path::PathBuf> {
+    for line in output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let candidate = Path::new(line.trim_matches('"'));
+        if candidate.join("SKILL.md").is_file() {
+            return candidate.canonicalize().with_context(|| {
+                format!("failed to resolve CUA Driver skill pack: {candidate:?}")
+            });
+        }
+    }
+    Err(anyhow!(
+        "cua-driver skills path did not return a directory containing SKILL.md"
+    ))
+}
+
+fn command_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!(
+        "{}{}",
+        stdout.trim(),
+        if stderr.trim().is_empty() {
+            ""
+        } else {
+            " — "
+        }
+    );
+    if stderr.trim().is_empty() {
+        combined
+    } else {
+        format!("{combined}{}", stderr.trim())
+    }
 }
 
 /// Runs CUA Driver's official platform-specific uninstaller with purge mode.

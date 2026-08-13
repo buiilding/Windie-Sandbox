@@ -9,7 +9,13 @@ The provider exposes computer-control tools to an AI session. Windie only makes 
 ## Requirements
 
 - CUA Driver installed locally.
+- The upstream CUA Driver skill pack installed into Windie's plugin store.
 - Computer-control permissions granted to the required applications.
+
+Windie installs the executable first, then runs `cua-driver skills install
+--all-platforms` and materializes the returned skill pack as the installed
+`cua-driver` plugin. The MCP process and its tool schemas remain unavailable
+to conversations until the plugin is explicitly attached.
 
 ## Safety
 

@@ -1,8 +1,10 @@
-//! Trusted plugins compiled into Windie.
+//! Trusted plugin definitions compiled into Windie.
 //!
-//! Curated plugins are explicit product-owned compositions. Their skill
-//! assets are embedded by the build, while their MCP servers must still be
-//! present in the approved MCP catalog before attachment can succeed.
+//! Curated plugins are trusted Windie-owned installation recipes.
+//!
+//! The recipe and approval policy are compiled into Windie, but upstream
+//! plugin files are materialized into the normal versioned package store when
+//! the user installs the plugin.
 
 use crate::skills::SkillId;
 use crate::tool::ToolProviderId;
@@ -18,7 +20,7 @@ pub const CUA_DRIVER_SKILL_ID: &str = "cua-driver";
 /// Stable identity of the approved CUA Driver MCP server.
 pub const CUA_DRIVER_MCP_ID: &str = "cua-driver";
 
-/// Returns the trusted CUA Driver plugin composition.
+/// Returns the trusted CUA Driver plugin definition before installation.
 pub(crate) fn cua_driver() -> PluginManifest {
     PluginManifest {
         plugin_id: PluginId::new(CUA_DRIVER_PLUGIN_ID),

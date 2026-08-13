@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -272,9 +272,7 @@ fn default_skills_path() -> String {
 impl PackageManifest {
     fn validate(&self) -> Result<()> {
         validate_identifier("plugin name", &self.name)?;
-        if self.version.trim().is_empty() {
-            bail!("plugin version cannot be empty");
-        }
+        validate_identifier("plugin version", &self.version)?;
         if self.skills.trim().is_empty() {
             bail!("plugin skills path cannot be empty");
         }
@@ -531,7 +529,8 @@ pub fn install_local_package_into_windie(source: impl AsRef<Path>) -> Result<Pat
     install_local_package(source, destination_root)
 }
 
-fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
+/// Copies a validated directory tree without following symlinks.
+pub(crate) fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)
         .with_context(|| format!("failed to create package cache: {}", destination.display()))?;
     for entry in fs::read_dir(source)? {

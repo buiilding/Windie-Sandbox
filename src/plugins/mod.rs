@@ -5,14 +5,18 @@
 //! `skills`, `mcp`, and the runtime policy boundary.
 
 mod curated;
+mod installation;
 mod manifest;
 mod marketplace;
 mod package;
 mod registry;
 
+pub(crate) use installation::{
+    install_curated_plugin_for_provider, remove_curated_plugin_for_provider,
+};
 pub use manifest::{PluginId, PluginManifest, PluginVersion};
 pub use marketplace::{MarketplaceManifest, MarketplacePlugin, MarketplaceSource};
 pub use package::{
-    install_local_package, install_local_package_into_windie, PackageMcpServer, PluginPackage,
+    PackageMcpServer, PluginPackage, install_local_package, install_local_package_into_windie,
 };
 pub use registry::PluginRegistry;
