@@ -22,8 +22,8 @@ pub const LIST_PROVIDERS_TOOL_NAME: &str = "list_providers";
 pub const ATTACH_PROVIDER_TOOL_NAME: &str = "attach_provider";
 /// Provider-native name for curated plugin skill loading.
 pub const READ_SKILL_TOOL_NAME: &str = "read_skill";
-/// Provider-native name for curated plugin attachment.
-pub const ATTACH_PLUGIN_TOOL_NAME: &str = "attach_plugin";
+/// Provider-native name for extension attachment.
+pub const ATTACH_EXTENSION_TOOL_NAME: &str = "attach_extension";
 
 /// Returns all Windie-owned control tools, including internal compatibility
 /// tools used by runtime and test workflows.
@@ -67,7 +67,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             schema_name: ToolSchemaName::new("windie__read_skill"),
             display_name: "Windie read skill".to_string(),
-            description: "Read the instructions for one skill from an available plugin. Use the exact plugin_id and skill_id from the available plugins context.".to_string(),
+            description: "Read the instructions for one skill from an available plugin or standalone skill package. Use the exact plugin_id and skill_id from the available extensions context.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -89,18 +89,21 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
             },
         },
         ToolDefinition {
-            schema_name: ToolSchemaName::new("windie__attach_plugin"),
-            display_name: "Windie attach plugin".to_string(),
-            description: "Expose the approved tools belonging to one available plugin to the current conversation. Use the exact plugin_id from the available plugins context. The newly attached tools are available on the next turn.".to_string(),
+            schema_name: ToolSchemaName::new("windie__attach_extension"),
+            display_name: "Windie attach extension".to_string(),
+            description: "Attach tools from an available plugin or standalone MCP server. Use target `plugin:<plugin_id>` for a plugin or `mcp:<server_id>` for a standalone MCP server. The newly attached tools are available on the next turn.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "plugin_id": {"type": "string"}
+                    "target": {
+                        "type": "string",
+                        "description": "Use plugin:<plugin_id> or mcp:<server_id> from the available extensions context."
+                    }
                 },
-                "required": ["plugin_id"],
+                "required": ["target"],
                 "additionalProperties": false
             }),
-            provider: builtin_ref(ATTACH_PLUGIN_TOOL_NAME),
+            provider: builtin_ref(ATTACH_EXTENSION_TOOL_NAME),
             permissions: Vec::<ToolPermission>::new(),
             annotations: ToolAnnotations::default(),
         },
@@ -116,7 +119,7 @@ pub(crate) fn model_definitions() -> Vec<ToolDefinition> {
         .filter(|definition| {
             matches!(
                 definition.provider.tool_name.as_str(),
-                READ_SKILL_TOOL_NAME | ATTACH_PLUGIN_TOOL_NAME
+                READ_SKILL_TOOL_NAME | ATTACH_EXTENSION_TOOL_NAME
             )
         })
         .collect()

@@ -61,6 +61,7 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))
         .route("/api/providers", get(list_providers))
+        .route("/api/extensions", get(list_extensions))
         .route("/api/plugins/{plugin_id}/skills", get(get_plugin_skills))
         .route(
             "/api/providers/chrome-devtools/remote-debugging",

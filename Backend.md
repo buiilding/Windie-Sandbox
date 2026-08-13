@@ -122,7 +122,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tool/result.rs: Tool execution result shape, including the `role: tool` message preview, tool-call link, and optional text/image parts. Both builtin and MCP tools use this contract.
 - tool/schema.rs: Model-facing tool schema.
 - builtin_tools/: Windie-owned control-plane tools. Their schemas are always available to the model and are not persisted as conversation tools.
-- builtin_tools/definitions.rs: internal Windie control definitions plus the model-facing `read_skill` and `attach_plugin` definitions.
+- builtin_tools/definitions.rs: internal Windie control definitions plus the model-facing `read_skill` and `attach_extension` definitions.
 - builtin_tools/mod.rs: builtin tool lookup, execution, and delegation to the skill, plugin, and MCP registries. Provider-level compatibility operations remain host/runtime operations and are not exposed on the initial model request.
 - skills/: reusable, directory-shaped, non-executable instructions for supported workflows.
 - skills/manifest.rs: typed skill identity, entrypoint, bounded file list, and model-facing skill document types.
@@ -133,7 +133,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - plugins/installation.rs: materializes trusted upstream plugin artifacts into the versioned package store and removes curated installations.
 - plugins/manifest.rs: typed plugin metadata and references to skill IDs and MCP server IDs.
 - plugins/package.rs: validated file-based plugin package loader and local package cache boundary. Package discovery is separate from MCP process activation.
-- plugins/registry.rs: curated plugin catalog, compact runtime catalog prompt, skill loading, and MCP server activation.
+- plugins/registry.rs: curated/package extension catalog, compact runtime catalog prompt, skill loading, and MCP server activation.
 - mcp/: MCP protocol and transport boundary.
 - mcp/mod.rs: MCP stdio/HTTP client, JSON-RPC handshake, session pooling, tool listing, and tool calls.
 - mcp/http.rs: Streamable HTTP MCP transport.

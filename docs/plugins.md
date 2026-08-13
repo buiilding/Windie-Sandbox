@@ -14,12 +14,21 @@ package store as a package plugin. The curated Rust definition remains the
 source of trust, permissions, and installation policy; the installed package
 owns the file-backed manifest, skills, provenance, and package MCP declaration.
 
-Both origins expose the same composition model:
+Both origins expose the same composition model. A package may contain either
+primitive independently or both together:
 
 - a plugin manifest gives the model a compact purpose and ownership summary;
 - skills provide instructions that Windie reads on demand;
 - MCP declarations describe tools that are registered and discovered only
   when the model attaches the plugin.
+
+The runtime classifies the package by its contents:
+
+```text
+skills + MCP declarations = plugin
+skills only              = standalone skill package
+MCP declarations only    = standalone MCP package
+```
 
 ## Package layout
 
@@ -29,13 +38,13 @@ The canonical package shape is:
 my-plugin/
 ├── .codex-plugin/
 │   └── plugin.json
-├── skills/
+├── skills/                   # optional when .mcp.json is present
 │   └── workflow/
 │       ├── SKILL.md
 │       ├── MACOS.md
 │       └── references/
 │           └── example.md
-├── .mcp.json                 # optional
+├── .mcp.json                 # optional when skills/ is present
 ├── bin/                      # optional MCP launcher or package assets
 ├── assets/                   # optional icons and other package assets
 └── README.md                 # optional human documentation
@@ -76,9 +85,10 @@ symlinks.
 }
 ```
 
-Loading a package never starts its command. Windie validates the manifest,
-indexes skills, rejects unsafe paths and symlinks, and computes a content hash.
-MCP processes start only after `attach_plugin` and the existing provider setup,
+At least one of `skills` or `.mcp.json` is required. Loading a package never
+starts its command. Windie validates the manifest, indexes skills when present,
+rejects unsafe paths and symlinks, and computes a content hash.
+MCP processes start only after `attach_extension` and the existing provider setup,
 permission, discovery, and catalog flow succeeds.
 
 ## Runtime flow
@@ -86,8 +96,8 @@ permission, discovery, and catalog flow succeeds.
 The initial model context contains only:
 
 - `read_skill(plugin_id, skill_id, path?)`;
-- `attach_plugin(plugin_id)`;
-- a compact `Available plugins` system message.
+- `attach_extension(target)` where target is `plugin:<id>` or `mcp:<id>`;
+- a compact catalog of plugins, standalone skills, and standalone MCP servers.
 
 The system message is rebuilt for each model-context build, so it reflects the
 current discovered package set and MCP setup state. Full skill content and MCP
@@ -95,7 +105,7 @@ tool schemas are intentionally absent until requested.
 
 `read_skill` loads one file from the installed package directory. Before a
 curated plugin is installed, its skill is listed but cannot be read. Once
-installed, `attach_plugin` registers the package MCP declaration with the
+installed, `attach_extension` registers the package MCP declaration with the
 existing MCP registry, installs/discovers the provider catalog through the
 existing Store lifecycle, and attaches the persisted tool schemas to the
 conversation. The newly attached MCP tools are available on the next model

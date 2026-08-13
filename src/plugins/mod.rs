@@ -14,7 +14,9 @@ mod registry;
 pub(crate) use installation::{
     install_curated_plugin_for_provider, remove_curated_plugin_for_provider,
 };
-pub use manifest::{PluginId, PluginManifest, PluginVersion};
+pub use manifest::{
+    ExtensionComposition, ExtensionTarget, PluginId, PluginManifest, PluginVersion,
+};
 pub use marketplace::{MarketplaceManifest, MarketplacePlugin, MarketplaceSource};
 pub use package::{
     PackageMcpServer, PluginPackage, install_local_package, install_local_package_into_windie,

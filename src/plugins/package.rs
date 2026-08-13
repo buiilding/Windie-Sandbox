@@ -58,9 +58,19 @@ impl PluginPackage {
             .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
         manifest.validate()?;
 
-        let skills_root = resolve_package_path(&root, &manifest.skills)?;
-        let skills = load_skills(&skills_root)?;
+        let skills = manifest
+            .skills
+            .as_deref()
+            .map(|skills_path| {
+                let skills_root = resolve_package_path(&root, skills_path)?;
+                load_skills(&skills_root)
+            })
+            .transpose()?
+            .unwrap_or_default();
         let mcp_servers = load_mcp_servers(&root, manifest.mcp_servers.as_deref())?;
+        if skills.is_empty() && mcp_servers.is_empty() {
+            bail!("plugin package must declare at least one skill or MCP server");
+        }
         let content_hash = hash_package(&root)?;
 
         Ok(Self {
@@ -177,6 +187,16 @@ impl PluginPackage {
         self.mcp_servers.values()
     }
 
+    /// Returns whether this package contains at least one skill bundle.
+    pub fn has_skills(&self) -> bool {
+        !self.skills.is_empty()
+    }
+
+    /// Returns whether this package declares at least one MCP server.
+    pub fn has_mcp_servers(&self) -> bool {
+        !self.mcp_servers.is_empty()
+    }
+
     /// Returns one MCP declaration by package server ID.
     pub fn mcp_server(&self, provider_id: &ToolProviderId) -> Option<&PackageMcpServer> {
         self.mcp_servers.get(provider_id)
@@ -229,8 +249,8 @@ struct PackageManifest {
     description: String,
     #[serde(default)]
     author: Option<PackageAuthor>,
-    #[serde(default = "default_skills_path")]
-    skills: String,
+    #[serde(default)]
+    skills: Option<String>,
     #[serde(rename = "mcpServers")]
     mcp_servers: Option<String>,
     #[serde(default)]
@@ -280,15 +300,11 @@ struct McpFileServer {
     env_vars: Vec<String>,
 }
 
-fn default_skills_path() -> String {
-    "./skills/".to_string()
-}
-
 impl PackageManifest {
     fn validate(&self) -> Result<()> {
         validate_identifier("plugin name", &self.name)?;
         validate_identifier("plugin version", &self.version)?;
-        if self.skills.trim().is_empty() {
+        if self.skills.as_deref().is_some_and(str::is_empty) {
             bail!("plugin skills path cannot be empty");
         }
         Ok(())
@@ -652,6 +668,65 @@ mod tests {
 
         let error = PluginPackage::load(&root).unwrap_err().to_string();
         assert!(error.contains("cannot escape"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn loads_skill_only_package_without_mcp_declaration() {
+        let root = fixture_root();
+        fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+        fs::create_dir_all(root.join("skills/notes")).unwrap();
+        fs::write(
+            root.join(".codex-plugin/plugin.json"),
+            r#"{"name":"notes","version":"1","skills":"./skills/"}"#,
+        )
+        .unwrap();
+        fs::write(root.join("skills/notes/SKILL.md"), "Take notes.").unwrap();
+
+        let package = PluginPackage::load(&root).unwrap();
+        assert!(package.has_skills());
+        assert!(!package.has_mcp_servers());
+        assert_eq!(package.mcp_servers().count(), 0);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn loads_mcp_only_package_without_skills_directory() {
+        let root = fixture_root();
+        fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+        fs::write(
+            root.join(".codex-plugin/plugin.json"),
+            r#"{"name":"clock","version":"1","mcpServers":"./.mcp.json"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join(".mcp.json"),
+            r#"{"mcpServers":{"clock":{"command":"clock-mcp"}}}"#,
+        )
+        .unwrap();
+
+        let package = PluginPackage::load(&root).unwrap();
+        assert!(!package.has_skills());
+        assert!(package.has_mcp_servers());
+        assert_eq!(package.mcp_servers().count(), 1);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_package_without_skills_or_mcp() {
+        let root = fixture_root();
+        fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+        fs::write(
+            root.join(".codex-plugin/plugin.json"),
+            r#"{"name":"empty","version":"1"}"#,
+        )
+        .unwrap();
+
+        let error = PluginPackage::load(&root).unwrap_err().to_string();
+        assert!(error.contains("at least one skill or MCP server"));
+
         fs::remove_dir_all(root).unwrap();
     }
 }

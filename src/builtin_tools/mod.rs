@@ -7,7 +7,7 @@
 mod definitions;
 
 pub(crate) use definitions::{
-    ATTACH_PLUGIN_TOOL_NAME, ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID,
+    ATTACH_EXTENSION_TOOL_NAME, ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID,
     LIST_PROVIDERS_TOOL_NAME, READ_SKILL_TOOL_NAME, definitions, model_definitions,
 };
 
@@ -17,7 +17,7 @@ use serde_json::Value;
 use crate::conversation::ConversationId;
 use crate::error;
 use crate::mcp::{McpRegistry, ProviderManifest};
-use crate::plugins::{PluginId, PluginRegistry};
+use crate::plugins::{ExtensionTarget, PluginId, PluginRegistry};
 use crate::skills::{SkillId, SkillPath};
 use crate::store::{ProviderCatalogStatus, Store};
 use crate::tool::{
@@ -133,26 +133,50 @@ pub(crate) fn execute(
                 )),
             }
         }
-        ATTACH_PLUGIN_TOOL_NAME => {
+        ATTACH_EXTENSION_TOOL_NAME => {
             let arguments = parse_arguments(tool_call)?;
-            let Some(plugin_id) = arguments.get("plugin_id").and_then(Value::as_str) else {
+            let Some(target) = arguments.get("target").and_then(Value::as_str) else {
                 return Ok(ToolExecutionResult::failure(
                     tool_call.id.clone(),
                     tool_call.name(),
-                    "plugin_id is required",
+                    "target is required",
                 ));
             };
-            match PluginRegistry::default().attach_plugin(
+            let target = match target.strip_prefix("plugin:") {
+                Some(plugin_id) if !plugin_id.is_empty() => {
+                    ExtensionTarget::Plugin(PluginId::new(plugin_id))
+                }
+                None => match target.strip_prefix("mcp:") {
+                    Some(provider_id) if !provider_id.is_empty() => {
+                        ExtensionTarget::Mcp(ToolProviderId::new(provider_id))
+                    }
+                    _ => {
+                        return Ok(ToolExecutionResult::failure(
+                            tool_call.id.clone(),
+                            tool_call.name(),
+                            "target must use plugin:<plugin_id> or mcp:<server_id>",
+                        ));
+                    }
+                },
+                _ => {
+                    return Ok(ToolExecutionResult::failure(
+                        tool_call.id.clone(),
+                        tool_call.name(),
+                        "target must use plugin:<plugin_id> or mcp:<server_id>",
+                    ));
+                }
+            };
+            match PluginRegistry::default().attach_extension(
                 store,
                 conversation_id,
-                &PluginId::new(plugin_id),
+                &target,
                 registry,
             ) {
                 Ok(names) => Ok(ToolExecutionResult::success(
                     tool_call.id.clone(),
                     tool_call.name(),
                     serde_json::json!({
-                        "plugin_id": plugin_id,
+                        "target": target_label(&target),
                         "attached_tools": names.iter().map(ToString::to_string).collect::<Vec<_>>()
                     })
                     .to_string(),
@@ -169,6 +193,13 @@ pub(crate) fn execute(
             tool_call.name(),
             "unknown built-in tool",
         )),
+    }
+}
+
+fn target_label(target: &ExtensionTarget) -> String {
+    match target {
+        ExtensionTarget::Plugin(plugin_id) => format!("plugin:{plugin_id}"),
+        ExtensionTarget::Mcp(provider_id) => format!("mcp:{provider_id}"),
     }
 }
 

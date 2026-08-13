@@ -6,6 +6,10 @@
 
 use super::*;
 
+pub(super) async fn list_extensions() -> ApiResult<Vec<operation::ExtensionInstallation>> {
+    Ok(Json(operation::list_extensions()))
+}
+
 pub(super) async fn get_plugin_skills(
     Path(plugin_id): Path<String>,
 ) -> ApiResult<operation::PluginSkillsResponse> {

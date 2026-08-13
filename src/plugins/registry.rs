@@ -11,7 +11,7 @@ use crate::store::Store;
 use crate::tool::ToolSchemaName;
 
 use super::curated;
-use super::manifest::{PluginId, PluginManifest};
+use super::manifest::{ExtensionComposition, ExtensionTarget, PluginId, PluginManifest};
 use super::package::PluginPackage;
 
 #[derive(Debug, Clone)]
@@ -115,7 +115,26 @@ impl PluginRegistry {
 
     /// Returns valid package plugins discovered from the local package store.
     pub fn package_plugins(&self) -> impl Iterator<Item = &PluginManifest> {
-        self.packages.iter().map(|entry| &entry.manifest)
+        self.packages
+            .iter()
+            .filter(|entry| entry.manifest.composition() == ExtensionComposition::Plugin)
+            .map(|entry| &entry.manifest)
+    }
+
+    /// Returns installed packages containing skills but no MCP server.
+    pub fn standalone_skills(&self) -> impl Iterator<Item = &PluginManifest> {
+        self.packages
+            .iter()
+            .filter(|entry| entry.manifest.composition() == ExtensionComposition::Skill)
+            .map(|entry| &entry.manifest)
+    }
+
+    /// Returns installed packages containing MCP servers but no skills.
+    pub fn standalone_mcp(&self) -> impl Iterator<Item = &PluginManifest> {
+        self.packages
+            .iter()
+            .filter(|entry| entry.manifest.composition() == ExtensionComposition::Mcp)
+            .map(|entry| &entry.manifest)
     }
 
     /// Finds one plugin by its exact stable identifier.
@@ -274,7 +293,11 @@ impl PluginRegistry {
             }
             lines.push(format!("  Status: {}", self.status(store, mcp, plugin)));
         }
-        for entry in &self.packages {
+        for entry in self
+            .packages
+            .iter()
+            .filter(|entry| entry.manifest.composition() == ExtensionComposition::Plugin)
+        {
             let plugin = &entry.manifest;
             lines.push(String::new());
             lines.push(format!("{} ({}):", plugin.plugin_id, plugin.display_name));
@@ -299,6 +322,78 @@ impl PluginRegistry {
                 self.package_status(store, mcp, entry)
             ));
         }
+        let standalone_skills = self
+            .packages
+            .iter()
+            .filter(|entry| entry.manifest.composition() == ExtensionComposition::Skill)
+            .collect::<Vec<_>>();
+        if !standalone_skills.is_empty() {
+            lines.push(String::new());
+            lines.push("Available standalone skills:".to_string());
+            for entry in standalone_skills {
+                lines.push(format!(
+                    "  {} ({}):",
+                    entry.manifest.plugin_id, entry.manifest.display_name
+                ));
+                lines.push(format!("    Purpose: {}", entry.manifest.description));
+                for skill_id in &entry.manifest.skills {
+                    let description = entry
+                        .package
+                        .skill_description(skill_id)
+                        .unwrap_or("Package-provided instructions.");
+                    lines.push(format!("    - {}: {}", skill_id, description));
+                }
+                lines.push("    Status: installed; read_skill available on demand".to_string());
+            }
+        }
+        let standalone_mcp = self
+            .packages
+            .iter()
+            .filter(|entry| entry.manifest.composition() == ExtensionComposition::Mcp)
+            .collect::<Vec<_>>();
+        if !standalone_mcp.is_empty() {
+            lines.push(String::new());
+            lines.push("Available standalone MCP servers:".to_string());
+            for entry in &standalone_mcp {
+                lines.push(format!(
+                    "  {} ({}):",
+                    entry.manifest.plugin_id, entry.manifest.display_name
+                ));
+                lines.push(format!("    Purpose: {}", entry.manifest.description));
+                for server_id in &entry.manifest.mcp_servers {
+                    lines.push(format!("    - {}", server_id));
+                }
+                lines.push(format!(
+                    "    Status: {}",
+                    self.package_status(store, mcp, entry)
+                ));
+            }
+        }
+        let declared_mcp_ids = self
+            .plugins
+            .iter()
+            .chain(self.packages.iter().map(|entry| &entry.manifest))
+            .flat_map(|plugin| plugin.mcp_servers.iter())
+            .collect::<std::collections::HashSet<_>>();
+        let standalone_approved_mcp = mcp
+            .provider_manifests()
+            .into_iter()
+            .filter(|manifest| !declared_mcp_ids.contains(&manifest.provider_id))
+            .collect::<Vec<_>>();
+        if !standalone_approved_mcp.is_empty() {
+            lines.push(String::new());
+            if standalone_mcp.is_empty() {
+                lines.push("Available standalone MCP servers:".to_string());
+            }
+            for manifest in standalone_approved_mcp {
+                lines.push(format!("  mcp:{}:", manifest.provider_id));
+                lines.push(format!("    Purpose: {}", manifest.description));
+                lines.push(format!(
+                    "    Status: {}",
+                    self.standalone_mcp_status(store, mcp, &manifest.provider_id)
+                ));
+            }
+        }
         for package_error in &self.package_errors {
             lines.push(format!("  Package unavailable: {package_error}"));
         }
@@ -306,22 +401,35 @@ impl PluginRegistry {
     }
 
     /// Activates every MCP server referenced by one plugin.
-    pub fn attach_plugin(
+    pub fn attach_extension(
         &self,
         store: &mut Store,
         conversation_id: &crate::conversation::ConversationId,
-        plugin_id: &PluginId,
+        target: &ExtensionTarget,
         mcp: &McpRegistry,
     ) -> Result<Vec<ToolSchemaName>> {
-        let plugin = self.plugin(plugin_id)?;
-        if let Some(entry) = self
-            .packages
-            .iter()
-            .find(|entry| entry.manifest.plugin_id == *plugin_id)
-        {
-            for server in entry.package.mcp_servers() {
+        let server_ids = match target {
+            ExtensionTarget::Plugin(plugin_id) => self.plugin(plugin_id)?.mcp_servers.clone(),
+            ExtensionTarget::Mcp(provider_id) => vec![provider_id.clone()],
+        };
+        if server_ids.is_empty() {
+            return Err(error::invalid_request(
+                "extension has no MCP servers; use read_skill for its instructions",
+            ));
+        }
+
+        for provider_id in &server_ids {
+            if let Some(entry) = self.packages.iter().find(|entry| {
+                entry
+                    .manifest
+                    .mcp_servers
+                    .iter()
+                    .any(|server_id| server_id == provider_id)
+            }) {
+                let server = entry.package.mcp_server(provider_id).ok_or_else(|| {
+                    error::not_found(format!("MCP server does not exist: {provider_id}"))
+                })?;
                 mcp.register_package_provider(&entry.package, server)?;
-                let provider_id = &server.provider_id;
                 if store.load_installed_provider(provider_id)?.is_none() {
                     store.install_provider(provider_id)?;
                     match mcp.discover_provider_tools(provider_id) {
@@ -345,11 +453,13 @@ impl PluginRegistry {
                 }
             }
         }
-        let mut names = Vec::new();
-        for server_id in &plugin.mcp_servers {
-            names.extend(mcp.attach_provider_tools(store, conversation_id, server_id)?);
-        }
-        Ok(names)
+
+        server_ids
+            .into_iter()
+            .try_fold(Vec::new(), |mut names, provider_id| {
+                names.extend(mcp.attach_provider_tools(store, conversation_id, &provider_id)?);
+                Ok(names)
+            })
     }
 
     fn status(&self, store: &Store, mcp: &McpRegistry, plugin: &PluginManifest) -> &'static str {
@@ -392,6 +502,30 @@ impl PluginRegistry {
             if installation.state != ProviderInstallState::Enabled || installation.error.is_some() {
                 return "setup required";
             }
+        }
+        "enabled; tools available on demand"
+    }
+
+    fn standalone_mcp_status(
+        &self,
+        store: &Store,
+        mcp: &McpRegistry,
+        provider_id: &crate::tool::ToolProviderId,
+    ) -> &'static str {
+        if mcp.provider_manifest(provider_id).is_none() {
+            return "unavailable";
+        }
+        let Ok(Some(installation)) = store.load_installed_provider(provider_id) else {
+            return "setup required";
+        };
+        if installation.state != ProviderInstallState::Enabled || installation.error.is_some() {
+            return "setup required";
+        }
+        let Ok(Some(catalog)) = store.load_provider_tool_catalog(provider_id) else {
+            return "setup required";
+        };
+        if catalog.status == crate::store::ProviderCatalogStatus::Unavailable {
+            return "unavailable";
         }
         "enabled; tools available on demand"
     }
@@ -503,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_plugin_reuses_persisted_mcp_catalog() {
+    fn attach_extension_reuses_persisted_mcp_catalog() {
         let mut store = Store::open_memory().unwrap();
         let conversation_id = store.create_conversation("openai/test").unwrap();
         let provider_id = ToolProviderId::new("desktop-commander");
@@ -527,10 +661,10 @@ mod tests {
         );
         let registry = test_plugin("desktop-commander");
         let attached = registry
-            .attach_plugin(
+            .attach_extension(
                 &mut store,
                 &conversation_id,
-                &PluginId::new("test-plugin"),
+                &ExtensionTarget::Plugin(PluginId::new("test-plugin")),
                 &mcp,
             )
             .unwrap();

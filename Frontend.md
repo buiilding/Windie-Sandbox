@@ -89,9 +89,9 @@ Paths below are relative to `vendor/windie-inspector/frontend/`.
 - `src/components/windie/ToolApprovalPrompt.jsx`: inline session-owned tool
   approval surface rendered immediately above the composer when approval is
   required.
-- `src/components/windie/ExtensionsPanel.jsx`: executable tool-provider
-  installation lifecycle controls: setup, enable, disable, repair, and
-  uninstall.
+- `src/components/windie/ExtensionsPanel.jsx`: extension catalogs for MCP
+  providers, standalone skills, and plugin packages, plus executable
+  provider lifecycle controls: setup, enable, disable, repair, and uninstall.
 - `src/components/windie/ExtensionDetailPage.jsx`: renders the provider's
   Windie-managed README in Overview and the persisted discovered tool schemas
   in Tools; it does not invent provider documentation or discover tools itself.
@@ -241,7 +241,8 @@ multiple UI surfaces need to read or mutate:
 - transient assistant text, reasoning, and tool-call streaming previews;
 - model catalog, model parameters, reasoning options, and token-meter data;
 - conversation tool schemas and the available provider tool catalog;
-- provider installation status and LLM provider setup state;
+- provider installation status, package extension catalog, and LLM provider
+  setup state;
 - gateway availability, pending approvals, search, theme, overlays, and API
   errors.
 

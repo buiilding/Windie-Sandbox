@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Unified file-based extensions around one optional-component package format:
+  packages may now contain skills, MCP servers, or both; the runtime catalogs
+  standalone skills and MCP servers separately, exposes `attach_extension` for
+  MCP activation, and the Inspector lists package-backed skills and plugins.
 - Simplified extension detail views by removing redundant section and metadata
   headings, leaving the selected skill file or discovered tool content as the
   primary Inspector surface.

@@ -9,7 +9,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::plugins::{PluginId, PluginRegistry};
+use crate::plugins::{ExtensionComposition, PluginId, PluginManifest, PluginRegistry};
 use crate::skills::SkillId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -34,6 +34,52 @@ pub struct PluginSkillsResponse {
     pub display_name: String,
     pub version: crate::plugins::PluginVersion,
     pub skills: Vec<PluginSkillFiles>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One package-backed extension for the Inspector catalog.
+pub struct ExtensionInstallation {
+    pub id: PluginId,
+    pub display_name: String,
+    pub description: String,
+    pub version: crate::plugins::PluginVersion,
+    pub composition: ExtensionComposition,
+    pub skills: Vec<SkillId>,
+    pub mcp_servers: Vec<crate::tool::ToolProviderId>,
+    pub installed: bool,
+}
+
+/// Lists curated definitions and installed package extensions.
+pub fn list_extensions() -> Vec<ExtensionInstallation> {
+    let registry = PluginRegistry::discover();
+    let mut extensions = registry
+        .plugins()
+        .iter()
+        .cloned()
+        .map(|manifest| extension_from_manifest(manifest, false))
+        .collect::<Vec<_>>();
+    extensions.extend(
+        registry
+            .package_plugins()
+            .chain(registry.standalone_skills())
+            .chain(registry.standalone_mcp())
+            .cloned()
+            .map(|manifest| extension_from_manifest(manifest, true)),
+    );
+    extensions
+}
+
+fn extension_from_manifest(manifest: PluginManifest, installed: bool) -> ExtensionInstallation {
+    ExtensionInstallation {
+        id: manifest.plugin_id.clone(),
+        display_name: manifest.display_name.clone(),
+        description: manifest.description.clone(),
+        version: manifest.version.clone(),
+        composition: manifest.composition(),
+        skills: manifest.skills,
+        mcp_servers: manifest.mcp_servers,
+        installed,
+    }
 }
 
 /// Reads all Markdown files found in every installed skill for a plugin.
