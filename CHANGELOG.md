@@ -7,9 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- Added the first curated plugin composition layer with a driver skill,
-  model-facing skill loading and plugin attachment tools, and reuse of the
-  existing MCP provider catalogs and conversation tool attachment flow.
+- Reshaped the code-owned CUA Driver plugin into a directory-shaped embedded
+  skill bundle with safe, on-demand supporting-reference loading. The model's
+  initial extension surface now exposes only plugin-level skill reading and
+  plugin attachment, while provider-level MCP operations remain internal.
 - Separated builtin tools, skills, plugins, and MCP into explicit module
   boundaries. The shared `tool/` contracts are now used by both builtin and
   discovered MCP tools.

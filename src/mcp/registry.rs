@@ -6,12 +6,14 @@
 //! or MCP result normalization.
 
 use anyhow::Result;
+use std::sync::{Arc, RwLock};
 
 use super::{ChromeDevToolsConnectionMode, ProviderRuntime};
 use crate::conversation::ToolCall;
 use crate::error;
 use crate::mcp::servers::{McpProviderDefinition, McpToolProvider, approved_mcp_providers};
 use crate::mcp::{McpCommand, McpSessionPool, McpTransport, ProviderInstallState};
+use crate::plugins::{PackageMcpServer, PluginPackage};
 use crate::store::{ProviderCatalogStatus, Store};
 use crate::tool::{
     AttachedTool, ToolDefinition, ToolExecutionResult, ToolProviderId, ToolProviderKind,
@@ -26,6 +28,7 @@ use crate::tool::{
 /// attached tool to a provider reference and calls this registry.
 pub struct McpRegistry {
     pub(super) mcp_providers: Vec<McpToolProvider>,
+    pub(super) package_providers: Arc<RwLock<Vec<McpToolProvider>>>,
     pub(super) mcp_session_pool: Option<McpSessionPool>,
 }
 
@@ -50,10 +53,19 @@ impl McpRegistry {
 
     /// Returns manifests for every provider known to this registry.
     pub fn provider_manifests(&self) -> Vec<super::manifest::ProviderManifest> {
-        self.mcp_providers
+        let mut manifests = self
+            .mcp_providers
             .iter()
             .map(|provider| provider.manifest().clone())
-            .collect()
+            .collect::<Vec<_>>();
+        if let Ok(package_providers) = self.package_providers.read() {
+            manifests.extend(
+                package_providers
+                    .iter()
+                    .map(|provider| provider.manifest().clone()),
+            );
+        }
+        manifests
     }
 
     /// Applies the persisted Chrome DevTools connection mode to the live
@@ -71,10 +83,37 @@ impl McpRegistry {
         &self,
         provider_id: &ToolProviderId,
     ) -> Option<super::manifest::ProviderManifest> {
-        self.mcp_providers
-            .iter()
-            .find(|provider| provider.id() == provider_id)
+        self.mcp_provider(provider_id)
             .map(|provider| provider.manifest().clone())
+    }
+
+    /// Registers one validated package MCP declaration for this runtime.
+    /// Registration is idempotent by provider ID and does not start the
+    /// process; discovery still occurs only during setup or attachment.
+    pub fn register_package_provider(
+        &self,
+        package: &PluginPackage,
+        server: &PackageMcpServer,
+    ) -> Result<()> {
+        if self
+            .mcp_providers
+            .iter()
+            .any(|provider| provider.id().as_str() == server.provider_id.as_str())
+        {
+            return Ok(());
+        }
+        let mut package_providers = self
+            .package_providers
+            .write()
+            .map_err(|_| error::invalid_request("package MCP registry lock is poisoned"))?;
+        if package_providers
+            .iter()
+            .any(|provider| provider.id().as_str() == server.provider_id.as_str())
+        {
+            return Ok(());
+        }
+        package_providers.push(McpToolProvider::from_package(package.root(), server)?);
+        Ok(())
     }
 
     /// Attaches one enabled MCP server's persisted tool catalog to a
@@ -275,10 +314,19 @@ impl McpRegistry {
     }
 
     /// Finds one approved MCP provider by its stable provider ID.
-    fn mcp_provider(&self, provider_id: &ToolProviderId) -> Option<&McpToolProvider> {
+    fn mcp_provider(&self, provider_id: &ToolProviderId) -> Option<McpToolProvider> {
         self.mcp_providers
             .iter()
             .find(|provider| provider.id() == provider_id)
+            .cloned()
+            .or_else(|| {
+                self.package_providers
+                    .read()
+                    .ok()?
+                    .iter()
+                    .find(|provider| provider.id() == provider_id)
+                    .cloned()
+            })
     }
 
     /// Builds a deterministic fake MCP registry for provider-path benchmarks.
@@ -314,6 +362,7 @@ impl McpRegistry {
                 setup: None,
                 cleanup: crate::mcp::ProviderCleanup::None,
             })],
+            package_providers: Arc::new(RwLock::new(Vec::new())),
             mcp_session_pool: None,
         }
     }
@@ -336,6 +385,7 @@ impl Default for McpRegistry {
                 .into_iter()
                 .map(McpToolProvider::new)
                 .collect(),
+            package_providers: Arc::new(RwLock::new(Vec::new())),
             mcp_session_pool: None,
         }
     }

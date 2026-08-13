@@ -15,17 +15,18 @@ use crate::tool::{
 /// Stable provider ID used by Windie-owned tools.
 pub const BUILTIN_PROVIDER_ID: &str = "windie";
 
-/// Provider-native name for provider discovery.
+/// Internal provider-native name for provider discovery.
 pub const LIST_PROVIDERS_TOOL_NAME: &str = "list_providers";
 
-/// Provider-native name for provider attachment.
+/// Internal provider-native name for provider attachment.
 pub const ATTACH_PROVIDER_TOOL_NAME: &str = "attach_provider";
 /// Provider-native name for curated plugin skill loading.
 pub const READ_SKILL_TOOL_NAME: &str = "read_skill";
 /// Provider-native name for curated plugin attachment.
 pub const ATTACH_PLUGIN_TOOL_NAME: &str = "attach_plugin";
 
-/// Returns Windie-owned model-control tools that are always sent to the model.
+/// Returns all Windie-owned control tools, including internal compatibility
+/// tools used by runtime and test workflows.
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -71,7 +72,11 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "plugin_id": {"type": "string"},
-                    "skill_id": {"type": "string"}
+                    "skill_id": {"type": "string"},
+                    "path": {
+                        "type": "string",
+                        "description": "Optional bundle-relative file path. Defaults to SKILL.md."
+                    }
                 },
                 "required": ["plugin_id", "skill_id"],
                 "additionalProperties": false
@@ -100,6 +105,21 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
             annotations: ToolAnnotations::default(),
         },
     ]
+}
+
+/// Returns only the extension-control tools exposed on the initial model
+/// request. Provider-level discovery and attachment remain host/runtime APIs;
+/// the model operates on plugins as the higher-level boundary.
+pub(crate) fn model_definitions() -> Vec<ToolDefinition> {
+    definitions()
+        .into_iter()
+        .filter(|definition| {
+            matches!(
+                definition.provider.tool_name.as_str(),
+                READ_SKILL_TOOL_NAME | ATTACH_PLUGIN_TOOL_NAME
+            )
+        })
+        .collect()
 }
 
 fn builtin_ref(tool_name: &str) -> ToolProviderRef {

@@ -8,7 +8,7 @@ mod definitions;
 
 pub(crate) use definitions::{
     ATTACH_PLUGIN_TOOL_NAME, ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID,
-    LIST_PROVIDERS_TOOL_NAME, READ_SKILL_TOOL_NAME, definitions,
+    LIST_PROVIDERS_TOOL_NAME, READ_SKILL_TOOL_NAME, definitions, model_definitions,
 };
 
 use anyhow::Result;
@@ -18,7 +18,7 @@ use crate::conversation::ConversationId;
 use crate::error;
 use crate::mcp::{McpRegistry, ProviderManifest};
 use crate::plugins::{PluginId, PluginRegistry};
-use crate::skills::SkillId;
+use crate::skills::{SkillId, SkillPath};
 use crate::store::{ProviderCatalogStatus, Store};
 use crate::tool::{
     AttachedTool, ToolDefinition, ToolExecutionResult, ToolProviderId, ToolProviderKind,
@@ -103,13 +103,28 @@ pub(crate) fn execute(
                     "skill_id is required",
                 ));
             };
-            match PluginRegistry::default()
-                .read_skill(&PluginId::new(plugin_id), &SkillId::new(skill_id))
-            {
-                Ok(content) => Ok(ToolExecutionResult::success(
+            let path = match arguments.get("path").and_then(Value::as_str) {
+                Some(path) => match SkillPath::new(path) {
+                    Ok(path) => Some(path),
+                    Err(error) => {
+                        return Ok(ToolExecutionResult::failure(
+                            tool_call.id.clone(),
+                            tool_call.name(),
+                            error,
+                        ));
+                    }
+                },
+                None => None,
+            };
+            match PluginRegistry::default().read_skill(
+                &PluginId::new(plugin_id),
+                &SkillId::new(skill_id),
+                path.as_ref(),
+            ) {
+                Ok(document) => Ok(ToolExecutionResult::success(
                     tool_call.id.clone(),
                     tool_call.name(),
-                    content,
+                    document.as_model_text(),
                 )),
                 Err(error) => Ok(ToolExecutionResult::failure(
                     tool_call.id.clone(),

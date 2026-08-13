@@ -288,7 +288,7 @@ pub(crate) fn build_model_context(
         .map(|tool| tool.name.as_str().to_string())
         .collect::<HashSet<_>>();
 
-    for definition in builtin_tools::definitions() {
+    for definition in builtin_tools::model_definitions() {
         if names.insert(definition.schema_name.as_str().to_string()) {
             context
                 .tool_schemas

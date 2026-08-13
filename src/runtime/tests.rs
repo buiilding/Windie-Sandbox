@@ -369,6 +369,11 @@ impl RuntimeLlm for AttachThenReplyLlm {
             assert!(
                 tools
                     .iter()
+                    .any(|tool| tool.name.as_str() == "windie__attach_plugin")
+            );
+            assert!(
+                !tools
+                    .iter()
                     .any(|tool| tool.name.as_str() == "windie__attach_provider")
             );
             return Ok(AssistantResponse {
@@ -935,7 +940,7 @@ async fn run_head_passes_tool_schemas_to_llm() {
 
     let mut expected_tools = vec![tool_schema];
     expected_tools.extend(
-        builtin_tools::definitions()
+        builtin_tools::model_definitions()
             .into_iter()
             .map(|tool| tool.attached_tool().schema()),
     );
@@ -1002,7 +1007,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
         assert_eq!(captured_messages[0].content, "global prompt");
         let mut expected_tools = vec![global_tool.clone()];
         expected_tools.extend(
-            builtin_tools::definitions()
+            builtin_tools::model_definitions()
                 .into_iter()
                 .map(|tool| tool.attached_tool().schema()),
         );
@@ -1031,7 +1036,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
     assert_eq!(captured_messages[0].content, "global prompt");
     let mut expected_tools = vec![global_tool];
     expected_tools.extend(
-        builtin_tools::definitions()
+        builtin_tools::model_definitions()
             .into_iter()
             .map(|tool| tool.attached_tool().schema()),
     );
@@ -1732,15 +1737,7 @@ fn builtin_tools_are_always_model_visible_but_not_persisted() {
         .map(|tool| tool.name.as_str().to_string())
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        names,
-        vec![
-            "windie__list_providers",
-            "windie__attach_provider",
-            "windie__read_skill",
-            "windie__attach_plugin",
-        ]
-    );
+    assert_eq!(names, vec!["windie__read_skill", "windie__attach_plugin"]);
     assert!(
         store
             .load_tool_schemas(&conversation_id)

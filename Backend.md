@@ -122,14 +122,18 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tool/result.rs: Tool execution result shape, including the `role: tool` message preview, tool-call link, and optional text/image parts. Both builtin and MCP tools use this contract.
 - tool/schema.rs: Model-facing tool schema.
 - builtin_tools/: Windie-owned control-plane tools. Their schemas are always available to the model and are not persisted as conversation tools.
-- builtin_tools/definitions.rs: definitions for `read_skill`, `attach_plugin`, `list_providers`, and `attach_provider`.
-- builtin_tools/mod.rs: builtin tool lookup, execution, and delegation to the skill, plugin, and MCP registries.
-- skills/: reusable, non-executable instructions for supported workflows.
-- skills/manifest.rs: typed skill identity and metadata.
-- skills/registry.rs: curated skill catalog and full instruction loading.
-- skills/curated/: bundled first-party Markdown skill assets.
+- builtin_tools/definitions.rs: internal Windie control definitions plus the model-facing `read_skill` and `attach_plugin` definitions.
+- builtin_tools/mod.rs: builtin tool lookup, execution, and delegation to the skill, plugin, and MCP registries. Provider-level compatibility operations remain host/runtime operations and are not exposed on the initial model request.
+- skills/: reusable, directory-shaped, non-executable instructions for supported workflows.
+- skills/manifest.rs: typed skill identity, entrypoint, bounded file list, and model-facing skill document types.
+- skills/path.rs: validates bundle-relative skill reference paths and rejects traversal/absolute paths.
+- skills/embedded.rs: compile-time embedded asset definitions generated from curated skill directories.
+- skills/registry.rs: curated skill catalog and on-demand entrypoint/reference-file loading.
+- skills/curated/: bundled first-party Markdown skill directories, including `cua-driver/SKILL.md` and supporting references.
 - plugins/: model-facing composition of reusable skills and approved MCP servers. Plugins do not implement transport or execution.
+- plugins/curated.rs: trusted code-owned plugin compositions, currently the CUA Driver plugin.
 - plugins/manifest.rs: typed plugin metadata and references to skill IDs and MCP server IDs.
+- plugins/package.rs: validated file-based plugin package loader and local package cache boundary. Package discovery is separate from MCP process activation.
 - plugins/registry.rs: curated plugin catalog, compact runtime catalog prompt, skill loading, and MCP server activation.
 - mcp/: MCP protocol and transport boundary.
 - mcp/mod.rs: MCP stdio/HTTP client, JSON-RPC handshake, session pooling, tool listing, and tool calls.

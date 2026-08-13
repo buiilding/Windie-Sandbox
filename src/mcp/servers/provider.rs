@@ -11,7 +11,8 @@ use std::sync::{Arc, RwLock};
 use super::{basic_memory, chrome_devtools, desktop_commander};
 use crate::mcp::ProviderCleanup;
 use crate::mcp::ProviderManifest;
-use crate::mcp::{self, McpCommand, McpTool, McpTransport};
+use crate::mcp::{self, McpArgument, McpCommand, McpTool, McpTransport};
+use crate::plugins::PackageMcpServer;
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
@@ -77,6 +78,64 @@ impl McpToolProvider {
             setup: definition.setup,
             cleanup: definition.cleanup,
         }
+    }
+
+    /// Builds an MCP provider from a validated file-based plugin declaration.
+    ///
+    /// The existing MCP transport contracts are intentionally static because
+    /// code-owned providers are compiled into Windie. Package providers enter
+    /// the same adapter through this constructor. Their immutable command
+    /// strings are promoted to process-lifetime values at registration time;
+    /// package registration is one-time per runtime and package files are
+    /// copied into an immutable cache before activation.
+    pub(crate) fn from_package(
+        package_root: &std::path::Path,
+        server: &PackageMcpServer,
+    ) -> Result<Self> {
+        let program = package_program(package_root, &server.command)?;
+        let args = server
+            .args
+            .iter()
+            .map(|argument| {
+                McpArgument::Literal(leak_string(package_argument(package_root, argument)))
+            })
+            .collect::<Vec<_>>();
+        let args = leak_slice(args);
+        let env = server
+            .env_vars
+            .iter()
+            .map(|key| crate::mcp::McpEnv {
+                key: leak_string(key.clone()),
+                value: crate::mcp::McpEnvValue::UserEnv(leak_string(key.clone())),
+            })
+            .collect::<Vec<_>>();
+        let env = leak_slice(env);
+        let program = leak_string(program);
+        let provider_id = leak_string(server.provider_id.as_str().to_string());
+        let display_name = leak_string(server.provider_id.as_str().to_string());
+        let manifest = ProviderManifest::mcp_stdio(
+            server.provider_id.as_str(),
+            display_name,
+            "MCP server declared by a file-based plugin.",
+            program,
+            args,
+            crate::mcp::ProviderPlatform::desktop(),
+            Vec::new(),
+            Vec::new(),
+            vec![crate::mcp::ProviderPermission::ExternalProcess],
+        );
+
+        Ok(Self::new(McpProviderDefinition {
+            manifest,
+            provider_id,
+            schema_prefix: provider_id,
+            display_name,
+            transport: McpTransport::stdio(crate::mcp::McpCommand { program, args, env }),
+            package_command: None,
+            readiness_probe: None,
+            setup: None,
+            cleanup: ProviderCleanup::None,
+        }))
     }
 
     /// Returns the stable provider ID used by attachments and dispatch.
@@ -228,6 +287,38 @@ impl McpToolProvider {
             McpTransport::StreamableHttp { .. } => vec![ToolPermission::Network],
         }
     }
+}
+
+fn package_program(root: &std::path::Path, program: &str) -> Result<String> {
+    let path = std::path::Path::new(program);
+    if path.is_absolute() {
+        return Ok(program.to_string());
+    }
+    if program.starts_with("./") || program.starts_with("../") {
+        let resolved = root.join(path).canonicalize().map_err(|error| {
+            anyhow::anyhow!(
+                "package MCP executable does not exist: {} ({error})",
+                root.join(path).display()
+            )
+        })?;
+        return Ok(resolved.to_string_lossy().into_owned());
+    }
+    Ok(program.to_string())
+}
+
+fn package_argument(root: &std::path::Path, argument: &str) -> String {
+    if argument.starts_with("./") || argument.starts_with("../") {
+        return root.join(argument).to_string_lossy().into_owned();
+    }
+    argument.to_string()
+}
+
+fn leak_string(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
+}
+
+fn leak_slice<T>(values: Vec<T>) -> &'static [T] {
+    Box::leak(values.into_boxed_slice())
 }
 
 /// Builds the model-facing schema name for one MCP provider tool.
