@@ -2,6 +2,9 @@
 
 use super::*;
 
+use crate::mcp::McpRegistry;
+use crate::runtime::build_model_context;
+
 /// Maximum preview characters exposed per path leaf in the inspection JSON.
 const PATH_LEAF_PREVIEW_MAX_CHARS: usize = 80;
 
@@ -187,6 +190,7 @@ pub fn inspect_conversation(
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     model_override: Option<ModelName>,
+    mcp_registry: &McpRegistry,
 ) -> Result<InspectionReport> {
     let model = resolve_conversation_model(store, conversation_id, model_override)?;
     let reasoning = conversation_reasoning(store, conversation_id)?;
@@ -197,7 +201,12 @@ pub fn inspect_conversation(
         Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
         None => Vec::new(),
     };
-    let model_context = ContextBuilder::build_messages(store, conversation_id, head_message_id)?;
+    // Inspection must expose the same context that the model receives. This
+    // includes runtime-only system messages such as the compact extension
+    // catalog and runtime-only builtin tool schemas.
+    let runtime_context =
+        build_model_context(store, conversation_id, head_message_id, mcp_registry)?;
+    let model_context = runtime_context.messages;
     let system_prompt = store.system_prompt(conversation_id)?;
     let latest_compaction = store.latest_compaction(conversation_id)?;
     let paths = build_inspection_paths(store, conversation_id, &messages)?;

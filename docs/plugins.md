@@ -103,6 +103,11 @@ The system message is rebuilt for each model-context build, so it reflects the
 current discovered package set and MCP setup state. Full skill content and MCP
 tool schemas are intentionally absent until requested.
 
+The Inspector exposes these generated system messages in a read-only **model
+system context** preview. The editable conversation system prompt remains
+separate, so runtime-generated catalog text is visible without being persisted
+as user-authored conversation state.
+
 `read_skill` loads one file from the installed package directory. Before a
 curated plugin is installed, its skill is listed but cannot be read. Once
 installed, `attach_extension` registers the package MCP declaration with the
@@ -151,6 +156,15 @@ Local marketplace JSON can index local package directories and Git metadata.
 Only local entries are currently resolvable by Windie's filesystem installer;
 network fetching is intentionally not implicit. A future remote installer can
 fetch into the same versioned store and reuse the exact same package validator.
+
+## Current limitations
+
+The compact extension catalog currently exposes identity, purpose, skills, MCP
+server references, ownership where available, and lifecycle status. It does not
+yet print permissions, dependencies, or platform requirements in the model
+context, even though some of that metadata is already available in MCP
+manifests. Those fields should be added to the catalog before installation or
+attachment when the runtime's extension metadata contract is expanded.
 
 ## Ownership boundaries
 

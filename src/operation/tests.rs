@@ -334,7 +334,9 @@ fn inspection_snapshot_includes_runtime_state() {
         .save_compaction(&conversation_id, &user_id, "hello happened")
         .unwrap();
 
-    let report = inspect_conversation(&store, &conversation_id, Some(&user_id), None).unwrap();
+    let registry = McpRegistry::new();
+    let report =
+        inspect_conversation(&store, &conversation_id, Some(&user_id), None, &registry).unwrap();
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversation_id"], conversation_id.as_str());
@@ -346,11 +348,18 @@ fn inspection_snapshot_includes_runtime_state() {
     // Tree-wide: system prompt is stored in conversations table, not as a message in the tree.
     assert_eq!(value["messages"][0]["id"], user_id.as_str());
     assert_eq!(value["path"][0]["id"], user_id.as_str());
-    // model_context = [system_prompt, compaction] when compaction is through the head
+    // Runtime inspection includes the generated extension catalog in the same
+    // order used for the model request.
     assert_eq!(value["model_context"][0]["role"], "system");
     assert_eq!(value["model_context"][0]["content"], "You are concise.");
+    assert_eq!(value["model_context"][1]["role"], "system");
+    assert!(
+        value["model_context"][1]["content"]
+            .as_str()
+            .is_some_and(|content| content.starts_with("Available plugins:"))
+    );
     assert_eq!(
-        value["model_context"][1]["content"],
+        value["model_context"][2]["content"],
         "Previous conversation summary:\nhello happened"
     );
     assert_eq!(value["latest_compaction"]["content"], "hello happened");

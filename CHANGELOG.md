@@ -7,6 +7,12 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added a read-only Inspector preview of the exact runtime-generated system
+  context, including the compact extension catalog, while keeping the saved
+  conversation system prompt editable and separate.
+- Prevented expected extension setup failures, such as a missing provider
+  secret, from escaping Inspector click handlers as uncaught promise errors;
+  the existing provider error and toast surfaces now handle them normally.
 - Unified file-based extensions around one optional-component package format:
   packages may now contain skills, MCP servers, or both; the runtime catalogs
   standalone skills and MCP servers separately, exposes `attach_extension` for

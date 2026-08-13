@@ -342,8 +342,14 @@ fn inspect_conversation(
 ) -> Result<()> {
     let store = Store::open()?;
     let output = TerminalOutput;
-    let report =
-        operation::inspect_conversation(&store, &conversation_id, head_message_id.as_ref(), model)?;
+    let mcp_registry = McpRegistry::new();
+    let report = operation::inspect_conversation(
+        &store,
+        &conversation_id,
+        head_message_id.as_ref(),
+        model,
+        &mcp_registry,
+    )?;
 
     output.inspection_report_json(&report)
 }
