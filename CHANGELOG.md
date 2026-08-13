@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Fixed extension inspection to distinguish plugin identity from the
+  underlying MCP transport and added a Skills tab that renders every installed
+  Markdown file in a plugin skill bundle on demand.
 - Materialized curated plugins through the same versioned package store as
   file-based plugins. CUA Driver installation now installs its upstream MCP
   executable and upstream multi-file skill pack, generates validated package

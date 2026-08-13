@@ -132,6 +132,36 @@ impl PluginRegistry {
             .ok_or_else(|| error::not_found(format!("plugin does not exist: {plugin_id}")))
     }
 
+    /// Finds the plugin that owns one of its declared MCP servers.
+    ///
+    /// The MCP server remains the transport-level implementation, but the
+    /// owning plugin is the extension-level identity shown to users. Keeping
+    /// this lookup here prevents API clients from having to infer plugin
+    /// ownership from provider IDs.
+    pub fn plugin_for_mcp_server(
+        &self,
+        provider_id: &crate::tool::ToolProviderId,
+    ) -> Option<&PluginManifest> {
+        self.plugins
+            .iter()
+            .find(|plugin| {
+                plugin
+                    .mcp_servers
+                    .iter()
+                    .any(|server| server == provider_id)
+            })
+            .or_else(|| {
+                self.packages.iter().find_map(|entry| {
+                    entry
+                        .manifest
+                        .mcp_servers
+                        .iter()
+                        .any(|server| server == provider_id)
+                        .then_some(&entry.manifest)
+                })
+            })
+    }
+
     /// Returns one plugin-owned skill's full instructions.
     pub fn read_skill(
         &self,
@@ -153,6 +183,58 @@ impl PluginRegistry {
             return package.package.read_skill(skill_id, path);
         }
         self.skills.read(skill_id, path)
+    }
+
+    /// Reads every file in one plugin-owned skill in deterministic order.
+    ///
+    /// This is used by inspection surfaces that need to render the complete
+    /// installed bundle. Model-facing reads remain bounded through
+    /// [`Self::read_skill`], which loads only the requested file.
+    pub fn read_skill_files(
+        &self,
+        plugin_id: &PluginId,
+        skill_id: &SkillId,
+    ) -> Result<Vec<SkillDocument>> {
+        let plugin = self.plugin(plugin_id)?;
+        if !plugin.skills.contains(skill_id) {
+            return Err(error::not_found(format!(
+                "skill is not part of plugin: {plugin_id}/{skill_id}"
+            )));
+        }
+        if let Some(package) = self
+            .packages
+            .iter()
+            .find(|entry| entry.manifest.plugin_id == *plugin_id)
+        {
+            return package.package.read_skill_files(skill_id);
+        }
+
+        let manifest = self
+            .skills
+            .skills()
+            .find(|skill| skill.skill_id == *skill_id)
+            .ok_or_else(|| {
+                error::not_found(format!("skill does not exist: {plugin_id}/{skill_id}"))
+            })?;
+        manifest
+            .files
+            .iter()
+            .map(|path| self.skills.read(skill_id, Some(path)))
+            .collect()
+    }
+
+    /// Returns the catalog description for one plugin-owned skill.
+    pub fn skill_description(&self, plugin_id: &PluginId, skill_id: &SkillId) -> Option<&str> {
+        self.packages
+            .iter()
+            .find(|entry| entry.manifest.plugin_id == *plugin_id)
+            .and_then(|entry| entry.package.skill_description(skill_id))
+            .or_else(|| {
+                self.skills
+                    .skills()
+                    .find(|skill| skill.skill_id == *skill_id)
+                    .map(|skill| skill.description.as_str())
+            })
     }
 
     /// Builds compact runtime context without loading full skill instructions.
@@ -377,7 +459,7 @@ mod tests {
 
     #[test]
     fn curated_driver_plugin_references_separate_skill_and_mcp_server() {
-        let registry = PluginRegistry::default();
+        let registry = PluginRegistry::curated();
         let plugin = registry.plugin(&PluginId::new("cua-driver")).unwrap();
 
         assert_eq!(plugin.mcp_servers[0].as_str(), "cua-driver");
@@ -397,7 +479,7 @@ mod tests {
     fn plugin_catalog_is_compact_and_reports_mcp_setup() {
         let store = Store::open_memory().unwrap();
         let mcp = McpRegistry::new();
-        let prompt = PluginRegistry::default().catalog_prompt(&store, &mcp);
+        let prompt = PluginRegistry::curated().catalog_prompt(&store, &mcp);
 
         assert!(prompt.contains("Available plugins:"));
         assert!(prompt.contains("cua-driver"));
@@ -407,7 +489,7 @@ mod tests {
 
     #[test]
     fn uninstalled_curated_plugin_does_not_read_upstream_skill_files() {
-        let registry = PluginRegistry::default();
+        let registry = PluginRegistry::curated();
         let path = SkillPath::new("MACOS.md").unwrap();
         assert!(
             registry

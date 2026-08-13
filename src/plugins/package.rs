@@ -157,6 +157,21 @@ impl PluginPackage {
         })
     }
 
+    /// Reads every file in one package skill in the package's deterministic
+    /// file order. Package loading has already validated that these paths are
+    /// bounded files below the skill root.
+    pub fn read_skill_files(&self, skill_id: &SkillId) -> Result<Vec<SkillDocument>> {
+        let skill = self
+            .skills
+            .get(skill_id)
+            .ok_or_else(|| error::not_found(format!("skill does not exist: {skill_id}")))?;
+        skill
+            .files
+            .iter()
+            .map(|path| self.read_skill(skill_id, Some(path)))
+            .collect()
+    }
+
     /// Returns MCP declarations that came from the package's `.mcp.json`.
     pub fn mcp_servers(&self) -> impl Iterator<Item = &PackageMcpServer> {
         self.mcp_servers.values()

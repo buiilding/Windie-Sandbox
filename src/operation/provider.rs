@@ -18,13 +18,28 @@ use crate::mcp::{
     ChromeDevToolsConnectionMode, McpRegistry, ProviderInstallState, ProviderManifest,
     ProviderReadiness, ProviderRuntime,
 };
+use crate::plugins::{PluginManifest, PluginRegistry};
 use crate::store::{InstalledProvider, ProviderCatalogStatus, ProviderToolCatalog, Store};
 use crate::tool::ToolProviderId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+/// User-facing extension kind, distinct from the transport used underneath.
+pub enum ExtensionKind {
+    /// A composed extension that owns skills and may declare MCP servers.
+    Plugin,
+    /// A standalone MCP provider exposed directly by Windie.
+    Mcp,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 /// One known provider plus its persisted local lifecycle record.
 pub struct ProviderInstallation {
     pub manifest: ProviderManifest,
+    /// The extension-level kind shown by Inspector.
+    pub kind: ExtensionKind,
+    /// The owning plugin when this provider is one of its declared servers.
+    pub plugin: Option<PluginManifest>,
     pub installation: Option<InstalledProvider>,
     pub tool_catalog: Option<ProviderToolCatalog>,
     pub chrome_devtools_mode: Option<ChromeDevToolsConnectionMode>,
@@ -127,21 +142,11 @@ pub fn list_provider_installations(
     store: &Store,
     registry: &McpRegistry,
 ) -> Result<Vec<ProviderInstallation>> {
+    let plugins = PluginRegistry::discover();
     registry
         .provider_manifests()
         .into_iter()
-        .map(|manifest| {
-            Ok(ProviderInstallation {
-                installation: store.load_installed_provider(&manifest.provider_id)?,
-                tool_catalog: store.load_provider_tool_catalog(&manifest.provider_id)?,
-                chrome_devtools_mode: if manifest.provider_id.as_str() == "chrome-devtools" {
-                    Some(store.load_chrome_devtools_mode()?.unwrap_or_default())
-                } else {
-                    None
-                },
-                manifest,
-            })
-        })
+        .map(|manifest| provider_installation_from_manifest(store, manifest, &plugins))
         .collect()
 }
 
@@ -675,11 +680,29 @@ fn provider_installation(
     registry: &McpRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<ProviderInstallation> {
+    let plugins = PluginRegistry::discover();
+    provider_installation_from_manifest(store, ensure_manifest(registry, provider_id)?, &plugins)
+}
+
+fn provider_installation_from_manifest(
+    store: &Store,
+    manifest: ProviderManifest,
+    plugins: &PluginRegistry,
+) -> Result<ProviderInstallation> {
+    let plugin = plugins
+        .plugin_for_mcp_server(&manifest.provider_id)
+        .cloned();
     Ok(ProviderInstallation {
-        manifest: ensure_manifest(registry, provider_id)?,
-        installation: store.load_installed_provider(provider_id)?,
-        tool_catalog: store.load_provider_tool_catalog(provider_id)?,
-        chrome_devtools_mode: if provider_id.as_str() == "chrome-devtools" {
+        kind: if plugin.is_some() {
+            ExtensionKind::Plugin
+        } else {
+            ExtensionKind::Mcp
+        },
+        plugin,
+        manifest: manifest.clone(),
+        installation: store.load_installed_provider(&manifest.provider_id)?,
+        tool_catalog: store.load_provider_tool_catalog(&manifest.provider_id)?,
+        chrome_devtools_mode: if manifest.provider_id.as_str() == "chrome-devtools" {
             Some(store.load_chrome_devtools_mode()?.unwrap_or_default())
         } else {
             None
