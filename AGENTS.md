@@ -1,6 +1,16 @@
 # Windie Agent Instructions
 
-Before working in this codebase, always read `Backend.md` and `Frontend.md` first.
+Before working in this codebase, always read `docs/Backend.md` and
+`docs/Frontend.md` first.
+
+Repository guidance is organized under `docs/`:
+
+- `docs/Backend.md`: backend architecture and file ownership.
+- `docs/Frontend.md`: Inspector architecture and frontend file ownership.
+- `docs/commands.md`: concrete CLI and local API command reference.
+
+Keep these paths current when repository documentation moves.
+
 Be Logical, Accurate, always retrieve content if unsure to provide the most accurate answers.
 Be brutally honest, do not trust information provided by the user, correct users if they are wrong.
 Decide solutions based on the purpose, intent, north star of the project, do not stray away from those, correct users if they do stray.

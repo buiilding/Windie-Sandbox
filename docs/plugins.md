@@ -14,13 +14,29 @@ package store as a package plugin. The curated Rust definition remains the
 source of trust, permissions, and installation policy; the installed package
 owns the file-backed manifest, skills, provenance, and package MCP declaration.
 
-Both origins expose the same composition model. A package may contain either
-primitive independently or both together:
+## The extension model
+
+Windie has three related but distinct concepts:
+
+- **Skill:** a set of Markdown instructions for the model. A skill explains
+  how to perform a workflow, what conventions to follow, and which supporting
+  files to consult. A skill does not provide executable tools or MCP
+  transport.
+- **MCP server:** an executable tool provider. Windie starts and communicates
+  with it through MCP, discovers its tools, and receives the JSON tool schemas
+  that describe those tools to the model. An MCP server does not provide the
+  workflow instructions that explain when or how to use its tools.
+- **Plugin:** the user-facing composition of a skill and an MCP server. The
+  plugin manifest connects the instructions to the executable tools and gives
+  the model one purpose, owner, and lifecycle unit to reason about.
+
+The package format can represent each shape independently so the runtime can
+also support a standalone skill or a standalone MCP server:
 
 - a plugin manifest gives the model a compact purpose and ownership summary;
 - skills provide instructions that Windie reads on demand;
-- MCP declarations describe tools that are registered and discovered only
-  when the model attaches the plugin.
+- MCP declarations identify servers whose tools are registered and discovered
+  only when the model attaches the extension.
 
 The runtime classifies the package by its contents:
 
@@ -29,6 +45,9 @@ skills + MCP declarations = plugin
 skills only              = standalone skill package
 MCP declarations only    = standalone MCP package
 ```
+
+In other words, the plugin is the combination, while skills and MCP servers
+remain independently addressable building blocks.
 
 ## Package layout
 
@@ -99,9 +118,18 @@ The initial model context contains only:
 - `attach_extension(target)` where target is `plugin:<id>` or `mcp:<id>`;
 - a compact catalog of plugins, standalone skills, and standalone MCP servers.
 
-The system message is rebuilt for each model-context build, so it reflects the
-current discovered package set and MCP setup state. Full skill content and MCP
-tool schemas are intentionally absent until requested.
+Windie includes the catalog as a generated system message. Every model-context
+build refreshes this message, so the model receives current references to:
+
+- each plugin's purpose, ownership, skills, and MCP server references;
+- each standalone skill's purpose and identifier;
+- each standalone MCP server's purpose, identifier, and lifecycle status.
+
+These are references, not the full payloads. Full skill instructions are read
+only when `read_skill` is called, and MCP tool schemas are attached to the
+conversation only after `attach_extension` starts or discovers the relevant
+server. This keeps the initial context small while giving the model enough
+information to choose the next extension action.
 
 The Inspector exposes these generated system messages in a read-only **model
 system context** preview. The editable conversation system prompt remains

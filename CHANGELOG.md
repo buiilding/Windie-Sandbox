@@ -7,6 +7,11 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Clarified the plugin documentation's extension model: skills are model
+  instructions, MCP servers provide executable tools and schemas, and plugins
+  compose both while the generated system catalog exposes their references.
+- Moved the backend, frontend, and command reference documents into `docs/`
+  and updated `AGENTS.md` to use the canonical documentation paths.
 - Added a read-only Inspector preview of the exact runtime-generated system
   context, including the compact extension catalog, while keeping the saved
   conversation system prompt editable and separate.
