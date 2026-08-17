@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod operation;
 pub mod output;
 pub mod perf;
+pub mod plugin;
 pub mod process;
 pub mod runtime;
 pub mod session;

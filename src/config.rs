@@ -37,6 +37,12 @@ pub fn api_url() -> String {
     format!("http://{}", api_address())
 }
 
+/// Returns the marketplace index used by the production API.
+pub fn marketplace_index_url() -> String {
+    non_empty_env("WINDIE_MARKETPLACE_INDEX_URL")
+        .unwrap_or_else(|| "https://marketplace.windieos.com/index.json".to_string())
+}
+
 fn non_empty_env(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
 }

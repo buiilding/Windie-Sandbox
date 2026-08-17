@@ -608,7 +608,7 @@ fn session_events(session_id: SessionId) -> Result<()> {
 fn session_approvals(session_id: SessionId) -> Result<()> {
     let store = Store::open()?;
     let output = TerminalOutput;
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     let session = store.load_session(&session_id)?;
     let approvals = operation::list_session_approvals_with_registry(&store, &session, &registry)?;
 

@@ -9,6 +9,8 @@ pub(super) struct ApiState {
     pub(super) base_url: String,
     pub(super) model: Option<String>,
     pub(super) store_path: Option<PathBuf>,
+    pub(super) marketplace_index_url: Option<String>,
+    pub(super) plugin_store: Arc<crate::plugin::PluginStore>,
     pub(super) tool_registry: Arc<ToolProviderRegistry>,
     pub(super) session_manager: Arc<SessionManager>,
     /// Broadcasts a requested API shutdown to the server task.

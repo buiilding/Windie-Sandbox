@@ -2,15 +2,10 @@
 //!
 //! MCP is currently Windie's only implemented executable tool backend. This
 //! module keeps the generic MCP adapter separate from the individual
-//! code-approved MCP server definitions.
+//! code-approved MCP server definitions and package-owned MCP components.
 
 mod approved;
-mod basic_memory;
-mod blender;
-mod brightdata;
 mod chrome_devtools;
-mod cua;
-mod desktop_commander;
 mod executor;
 mod parallel;
 mod provider;

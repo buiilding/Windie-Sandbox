@@ -20,4 +20,3 @@ pub use setup::{
 pub(crate) use runtime::{
     ensure_runtime, path_with_command_parent, remove_managed_runtime, resolve_command,
 };
-pub(crate) use setup::{remove_windie_directories, uninstall_cua_driver};

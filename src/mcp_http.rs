@@ -14,7 +14,7 @@ use reqwest::{Client, RequestBuilder, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{McpHttpAuthorization, McpHttpEndpoint, request_timeout_for_method};
+use super::{McpHttpAuthorization, McpHttpEndpoint};
 use crate::local;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -122,10 +122,14 @@ impl StreamableHttpSession {
         method: &str,
         request_id: Option<u64>,
     ) -> Result<Option<Value>> {
-        let timeout = request_timeout_for_method(method);
+        let timeout = if method == "tools/call" {
+            self.endpoint.call_timeout
+        } else {
+            self.endpoint.startup_timeout
+        };
         let mut builder = self
             .client
-            .post(self.endpoint.url)
+            .post(self.endpoint.url.clone())
             .timeout(timeout)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
@@ -137,7 +141,7 @@ impl StreamableHttpSession {
                 builder = builder.header("Mcp-Session-Id", session_id);
             }
         }
-        builder = apply_authorization(builder, self.endpoint.authorization)?;
+        builder = apply_authorization(builder, self.endpoint.authorization.clone())?;
 
         let response = builder
             .send()
@@ -199,10 +203,10 @@ impl StreamableHttpSession {
 
         let Ok(mut builder) = apply_authorization(
             self.client
-                .delete(self.endpoint.url)
+                .delete(self.endpoint.url.clone())
                 .timeout(HTTP_SHUTDOWN_TIMEOUT)
                 .header("Mcp-Session-Id", session_id),
-            self.endpoint.authorization,
+            self.endpoint.authorization.clone(),
         ) else {
             return;
         };
@@ -255,7 +259,7 @@ fn apply_authorization(
         McpHttpAuthorization::OptionalBearerEnv(name) => (name, false),
     };
 
-    let token = local::env_value(name)?.or_else(|| env::var(name).ok());
+    let token = local::env_value(&name)?.or_else(|| env::var(&name).ok());
     match token.filter(|value| !value.trim().is_empty()) {
         Some(token) => Ok(builder.bearer_auth(token)),
         None if required => Err(anyhow!("missing MCP HTTP credential {name}")),
@@ -367,7 +371,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::mcp::McpRequestTimeout;
+    use crate::mcp::{McpRequestTimeout, request_timeout_for_method};
 
     #[test]
     fn parses_sse_response() {
@@ -395,7 +399,7 @@ mod tests {
     fn required_authentication_reports_only_the_credential_name() {
         let error = apply_authorization(
             Client::new().get("https://example.test"),
-            McpHttpAuthorization::BearerEnv("WINDIE_TEST_MISSING_MCP_HTTP_TOKEN"),
+            McpHttpAuthorization::BearerEnv("WINDIE_TEST_MISSING_MCP_HTTP_TOKEN".to_string()),
         )
         .unwrap_err()
         .to_string();
@@ -454,10 +458,10 @@ mod tests {
         });
 
         {
-            let mut session = StreamableHttpSession::start(McpHttpEndpoint {
-                url: endpoint_url,
-                authorization: McpHttpAuthorization::Anonymous,
-            })
+            let mut session = StreamableHttpSession::start(McpHttpEndpoint::new(
+                endpoint_url,
+                McpHttpAuthorization::Anonymous,
+            ))
             .await
             .unwrap();
             let result = session.call("tools/list", None).await.unwrap();
@@ -535,10 +539,10 @@ mod tests {
         });
 
         {
-            let mut session = StreamableHttpSession::start(McpHttpEndpoint {
-                url: endpoint_url,
-                authorization: McpHttpAuthorization::Anonymous,
-            })
+            let mut session = StreamableHttpSession::start(McpHttpEndpoint::new(
+                endpoint_url,
+                McpHttpAuthorization::Anonymous,
+            ))
             .await
             .unwrap();
             let result = session.call("tools/list", None).await.unwrap();

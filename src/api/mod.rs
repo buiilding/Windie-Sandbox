@@ -51,6 +51,7 @@ mod gateway;
 mod health;
 mod inspection;
 mod message;
+mod plugin;
 mod provider;
 mod router;
 mod session;
@@ -67,6 +68,7 @@ use gateway::*;
 use health::*;
 use inspection::*;
 use message::*;
+use plugin::*;
 use provider::*;
 use router::router;
 use session::*;
@@ -87,12 +89,21 @@ const API_JSON_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Result<()> {
     let output = TerminalOutput;
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let plugin_store = crate::plugin::PluginStore::default_store()?;
+    for plugin in plugin_store.installed_plugins()? {
+        tool_registry.register_plugin(&plugin)?;
+    }
     let startup_store = Store::open()?;
-    tool_registry.set_chrome_devtools_mode(
-        startup_store
-            .load_chrome_devtools_mode()?
-            .unwrap_or_default(),
-    )?;
+    if tool_registry
+        .provider_manifest(&ToolProviderId::new("chrome-devtools"))
+        .is_some()
+    {
+        tool_registry.set_chrome_devtools_mode(
+            startup_store
+                .load_chrome_devtools_mode()?
+                .unwrap_or_default(),
+        )?;
+    }
     let session_manager = Arc::new(SessionManager::new(
         None,
         gateway_url.to_string(),
@@ -106,6 +117,8 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
         base_url: base_url.to_string(),
         model: None,
         store_path: None,
+        marketplace_index_url: Some(crate::config::marketplace_index_url()),
+        plugin_store: Arc::new(plugin_store),
         tool_registry,
         session_manager,
         shutdown_tx: shutdown_tx.clone(),
@@ -138,15 +151,21 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
 /// benchmark and integration callers.
 pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
+    let plugin_store = crate::plugin::PluginStore::new(store_path.with_extension("plugins"));
     let startup_store = Store::open_at(&store_path).expect("benchmark store should open");
-    tool_registry
-        .set_chrome_devtools_mode(
-            startup_store
-                .load_chrome_devtools_mode()
-                .expect("benchmark Chrome DevTools settings should load")
-                .unwrap_or_default(),
-        )
-        .expect("Chrome DevTools provider should be registered");
+    if tool_registry
+        .provider_manifest(&ToolProviderId::new("chrome-devtools"))
+        .is_some()
+    {
+        tool_registry
+            .set_chrome_devtools_mode(
+                startup_store
+                    .load_chrome_devtools_mode()
+                    .expect("benchmark Chrome DevTools settings should load")
+                    .unwrap_or_default(),
+            )
+            .expect("installed Chrome DevTools provider should accept its mode");
+    }
     let session_manager = Arc::new(SessionManager::new(
         Some(store_path.clone()),
         "http://127.0.0.1:8080".to_string(),
@@ -159,6 +178,8 @@ pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
         base_url: "http://127.0.0.1:8080/v1".to_string(),
         model: Some("openai/test".to_string()),
         store_path: Some(store_path),
+        marketplace_index_url: None,
+        plugin_store: Arc::new(plugin_store),
         tool_registry,
         session_manager,
         shutdown_tx,

@@ -589,7 +589,7 @@ fn prepare_provider_setup(
 
 /// Maps a setup/health error to the stable UI-facing readiness category.
 fn readiness_for_provider_error(
-    provider_id: &ToolProviderId,
+    _provider_id: &ToolProviderId,
     manifest: &ProviderManifest,
     error: &anyhow::Error,
 ) -> ProviderReadiness {
@@ -636,8 +636,7 @@ fn readiness_for_provider_error(
     {
         return ProviderReadiness::ProviderStartupFailed;
     }
-    if provider_id.as_str() == "blender-mcp"
-        || message.contains("blender") && message.contains("bridge")
+    if (message.contains("blender") && message.contains("bridge"))
         || message.contains("external application")
     {
         return ProviderReadiness::ExternalAppRequired;

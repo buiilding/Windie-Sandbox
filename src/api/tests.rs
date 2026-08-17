@@ -202,6 +202,38 @@ async fn typed_windie_errors_map_to_http_status_codes() {
 }
 
 #[tokio::test]
+async fn plugin_marketplace_route_lists_bundled_plugins_and_rejects_unknown_install() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+
+    let marketplace = response_json(
+        app.clone()
+            .oneshot(authed_request(Method::GET, "/api/plugins", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(marketplace["index"]["index_version"], 1);
+    assert_eq!(marketplace["index"]["plugins"][0]["id"], "parallel-search");
+    assert_eq!(
+        marketplace["index"]["plugins"][0]["versions"][0]["presentation"]["name"],
+        "Parallel Search"
+    );
+
+    let missing = app
+        .oneshot(authed_request(
+            Method::POST,
+            "/api/plugins/missing/install",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn conversation_model_route_persists_model() {
     let db_path = temp_database_path();
     let app = test_app(db_path.clone());
@@ -1430,6 +1462,10 @@ fn test_app_with_urls_and_shutdown(
         base_url: base_url.to_string(),
         model: Some("openai/test".to_string()),
         store_path: Some(store_path),
+        marketplace_index_url: None,
+        plugin_store: Arc::new(crate::plugin::PluginStore::new(
+            std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
+        )),
         tool_registry,
         session_manager,
         shutdown_tx,
@@ -1451,6 +1487,10 @@ fn test_app_with_tool_registry(
         base_url: "http://localhost:8080/v1".to_string(),
         model: Some("openai/test".to_string()),
         store_path: Some(store_path),
+        marketplace_index_url: None,
+        plugin_store: Arc::new(crate::plugin::PluginStore::new(
+            std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
+        )),
         tool_registry,
         session_manager,
         shutdown_tx: watch::channel(false).0,

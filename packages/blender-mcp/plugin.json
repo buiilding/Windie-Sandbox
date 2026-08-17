@@ -1,0 +1,59 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "blender-mcp",
+    "version": "1.8.3",
+    "publisher": "ahujasid"
+  },
+  "presentation": {
+    "name": "Blender MCP",
+    "description": "Inspect and control a local Blender instance through MCP.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg"
+  },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "blender-mcp",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "permissions": ["external_process", "computer_control"],
+        "capabilities": ["blender", "3d", "local"],
+        "local_artifact": "mcp/blender-mcp.mcpb",
+        "setup": {
+          "isolated_home": true,
+          "environment": [
+            {
+              "name": "DISABLE_TELEMETRY",
+              "value": {
+                "type": "literal",
+                "value": "true"
+              }
+            },
+            {
+              "name": "BLENDER_HOST",
+              "value": {
+                "type": "literal",
+                "value": "localhost"
+              }
+            },
+            {
+              "name": "BLENDER_PORT",
+              "value": {
+                "type": "literal",
+                "value": "9876"
+              }
+            },
+            {
+              "name": "UV_CACHE_DIR",
+              "value": {
+                "type": "windie_data_dir",
+                "path": "mcp/blender-mcp/uv-cache"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

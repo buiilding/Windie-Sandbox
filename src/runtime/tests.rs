@@ -26,6 +26,15 @@ const TEST_PROVIDER_TOOL_NAME: &str = "read_file";
 const TEST_TOOL_SCHEMA_NAME: &str = "desktop_commander__read_file";
 const TEST_TOOL_RESULT: &str = "test-mcp-output";
 
+fn runtime_test_registry() -> ToolProviderRegistry {
+    ToolProviderRegistry::with_test_mcp_provider(
+        TEST_PROVIDER_ID,
+        TEST_PROVIDER_PREFIX,
+        TEST_PROVIDER_DISPLAY_NAME,
+        test_mcp_command(),
+    )
+}
+
 static TEMP_MCP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct NoopOutput;
@@ -470,7 +479,7 @@ fn path(store: &Store, conversation_id: &ConversationId) -> Vec<Message> {
 }
 
 fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
     let events = NoopRuntimeEventSink;
     let mut head_message_id = latest_head(store, conversation_id);
 
@@ -489,7 +498,7 @@ fn pending_latest_head_approvals(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Vec<crate::tool::ToolApprovalRequest>> {
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
     let head_message_id = latest_head(store, conversation_id);
 
     pending_approvals_at_head(
@@ -508,7 +517,7 @@ fn validate_latest_head_availability(
     conversation_id: &ConversationId,
 ) -> Result<()> {
     let head_message_id = latest_head(store, conversation_id);
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
     pending_approvals_at_head(
         store,
@@ -546,7 +555,7 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
     let events = NoopRuntimeEventSink;
 
     run_latest_head_once_with_registry_and_events(
@@ -671,7 +680,7 @@ async fn approve_latest_head_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
     approve_latest_head_tool_call_with_registry(store, conversation_id, tool_call_id, &registry)
         .await
@@ -794,7 +803,7 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "branch here", None)
         .unwrap();
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
     let events = NoopRuntimeEventSink;
 
     let first_outcome = advance_until_blocked(
@@ -885,7 +894,7 @@ async fn run_head_uses_requested_head_path() {
         .unwrap();
     let llm = CapturingLlm::new();
     let events = NoopRuntimeEventSink;
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
     advance_turn(
         &NoopOutput,
@@ -932,7 +941,7 @@ async fn run_head_passes_tool_schemas_to_llm() {
 
     let mut expected_tools = vec![tool_schema];
     expected_tools.extend(
-        ToolProviderRegistry::new()
+        runtime_test_registry()
             .builtin_tools()
             .into_iter()
             .map(|tool| tool.attached_tool().schema()),
@@ -976,7 +985,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
 
     let llm = CapturingLlm::new();
     let events = NoopRuntimeEventSink;
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
     // Run from branch head
     advance_turn(
@@ -1717,7 +1726,7 @@ async fn run_head_reports_llm_failure() {
 fn builtin_tools_are_always_model_visible_but_not_persisted() {
     let store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
     let context = build_model_context(&store, &conversation_id, None, &registry).unwrap();
     let names = context

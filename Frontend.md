@@ -89,12 +89,13 @@ Paths below are relative to `vendor/windie-inspector/frontend/`.
 - `src/components/windie/ToolApprovalPrompt.jsx`: inline session-owned tool
   approval surface rendered immediately above the composer when approval is
   required.
-- `src/components/windie/ExtensionsPanel.jsx`: executable tool-provider
-  installation lifecycle controls: setup, enable, disable, repair, and
-  uninstall.
-- `src/components/windie/ExtensionDetailPage.jsx`: renders the provider's
-  Windie-managed README in Overview and the persisted discovered tool schemas
-  in Tools; it does not invent provider documentation or discover tools itself.
+- `src/components/windie/ExtensionsPanel.jsx`: plugin marketplace catalog and
+  installed-plugin navigation. It does not present MCPs as independent
+  marketplace products.
+- `src/components/windie/ExtensionDetailPage.jsx`: renders one plugin's
+  presentation metadata and its component runtime controls. MCP-specific
+  enable, disable, repair, credentials, and uninstall actions are nested under
+  the owning plugin.
 - `src/components/windie/LlmProvidersPanel.jsx`: LLM provider discovery,
   provider enablement, and provider-key creation through the API.
 - `src/components/windie/FloatingDeleteMenu.jsx`: positioned reusable delete
@@ -161,6 +162,8 @@ wrappers. They contain no Windie runtime or persistence rules:
   to resolve/create conversation-head branches, selects returned sessions,
   sends/continues/stops queries, subscribes to SSE, reduces live events,
   handles cursors, commits saved messages, and handles approvals.
+- `src/hooks/usePluginCatalog.js`: loads marketplace plugin listings and owns
+  outer plugin install/uninstall requests.
 - `src/hooks/useSessionRuntime.test.js`: tests session-head projection helpers
   used alongside backend-owned session resolution.
 - `src/hooks/use-toast.js`: standalone reducer/store for the older reusable
@@ -170,8 +173,8 @@ wrappers. They contain no Windie runtime or persistence rules:
 
 - `src/lib/windieApi.js`: localhost HTTP boundary for Windie API requests;
   covers health/status, conversations, images, models, model parameters,
-  sessions, approvals, providers, and conversation settings. Gateway process
-  lifecycle remains a CLI concern.
+  sessions, approvals, marketplace plugins, providers, and conversation
+  settings. Gateway process lifecycle remains a CLI concern.
 - `src/lib/sessionStream.js`: localhost SSE transport; reads streamed
   session events, parses `id`, `event`, and multiline `data` fields, and turns
   failed events into client errors.
@@ -475,11 +478,11 @@ decide whether a tool call is allowed; that is the backend tool policy.
 
 ### Provider and model setup
 
-The tools overlay manages two separate catalogs:
+The inspector exposes two separate extension concerns:
 
 - LLM providers and model keys, which configure model access through the
   backend gateway;
-- executable tool providers, whose schemas can be attached to a conversation.
+- marketplace plugins, whose components can expose executable tool providers.
 
 Provider setup actions refresh provider installation status and the persisted
 provider tool catalog. Model changes refresh model parameters and conversation
@@ -512,8 +515,11 @@ renders the provider schemas returned by the backend.
   installation controls, and LLM provider setup.
 - `components/windie/LlmProvidersPanel.jsx`: configures available LLM
   providers and stores provider keys through the API.
-- `components/windie/ExtensionsPanel.jsx`: installs, enables, repairs,
-  disables, and uninstalls executable tool providers.
+- `components/windie/ExtensionsPanel.jsx`: discovers and installs marketplace
+  plugins and opens their plugin detail pages.
+- `components/windie/ExtensionDetailPage.jsx`: shows a plugin's package
+  metadata and nests component lifecycle controls, including MCP provider
+  setup and tool state.
 - `components/ui/*`: reusable visual primitives. These components do not own
   Windie domain state.
 

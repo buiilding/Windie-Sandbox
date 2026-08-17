@@ -134,7 +134,7 @@ async fn run_onboarding_steps<P: OnboardingPrompter>(
     prompter.models_available(model_count);
 
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     let installations = list_provider_installations(&store, &registry)?;
     let selected_mcp_ids = prompter.choose_mcp_providers(&installations)?;
 

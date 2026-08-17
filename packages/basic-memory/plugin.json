@@ -1,0 +1,95 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "basic-memory",
+    "version": "0.22.1",
+    "publisher": "basic-machines"
+  },
+  "presentation": {
+    "name": "Basic Memory",
+    "description": "Store and search Windie’s local user memory through Basic Memory.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg"
+  },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "basic-memory",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "permissions": ["external_process", "filesystem"],
+        "capabilities": ["memory", "notes", "local"],
+        "local_artifact": "mcp/basic-memory.mcpb",
+        "setup": {
+          "isolated_home": true,
+          "environment": [
+            {
+              "name": "BASIC_MEMORY_CONFIG_DIR",
+              "value": {
+                "type": "component_path",
+                "path": "home/config"
+              }
+            },
+            {
+              "name": "BASIC_MEMORY_HOME",
+              "value": {
+                "type": "windie_data_dir",
+                "path": "memory"
+              }
+            },
+            {
+              "name": "BASIC_MEMORY_MCP_PROJECT",
+              "value": {
+                "type": "literal",
+                "value": "windie-memory"
+              }
+            },
+            {
+              "name": "BASIC_MEMORY_NO_PROMOS",
+              "value": {
+                "type": "literal",
+                "value": "1"
+              }
+            },
+            {
+              "name": "BASIC_MEMORY_ENV",
+              "value": {
+                "type": "literal",
+                "value": "user"
+              }
+            },
+            {
+              "name": "UV_CACHE_DIR",
+              "value": {
+                "type": "windie_data_dir",
+                "path": "mcp/basic-memory/uv-cache"
+              }
+            },
+            {
+              "name": "FASTEMBED_CACHE_PATH",
+              "value": {
+                "type": "windie_data_dir",
+                "path": "mcp/basic-memory/fastembed-cache"
+              }
+            }
+          ],
+          "files": [
+            {
+              "path": "config/config.json",
+              "content": {
+                "projects": {
+                  "windie-memory": {
+                    "path": "${windie_data_dir}/memory",
+                    "mode": "local"
+                  }
+                },
+                "default_project": "windie-memory",
+                "auto_update": false
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

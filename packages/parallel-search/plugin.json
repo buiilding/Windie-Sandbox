@@ -1,0 +1,36 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "parallel-search",
+    "version": "1.0.0",
+    "publisher": "parallel"
+  },
+  "presentation": {
+    "name": "Parallel Search",
+    "description": "Search the web and extract content from URLs.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg"
+  },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "parallel-search",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "authentication": {
+          "type": "api_key",
+          "required": false,
+          "secret_id": "PARALLEL_API_KEY",
+          "setup_url": "https://docs.parallel.ai/integrations/mcp/search-mcp",
+          "delivery": {
+            "type": "bearer_header"
+          }
+        },
+        "permissions": ["network"],
+        "capabilities": ["web_search", "url_extraction"],
+        "startup_timeout_ms": 120000,
+        "call_timeout_ms": 60000
+      }
+    }
+  ]
+}

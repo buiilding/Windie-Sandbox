@@ -81,6 +81,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/session.rs: session lifecycle, conversation-head resolution/query/continue, and event HTTP routes.
 - api/session_approval.rs: session approval HTTP routes.
 - api/provider.rs: HTTP handlers for listing and managing Windie tool providers.
+- api/plugin.rs: marketplace discovery plus plugin install and uninstall routes;
+  returns generated presentation summaries alongside versioned releases.
 - api/env.rs: securely writes manifest-declared provider secrets to ~/.windie/.env and refuses arbitrary environment keys.
 - api/shutdown.rs: unauthenticated localhost graceful-stop route used by `windie api stop`; signals api/mod.rs without changing Bifrost.
 - api/tests.rs: test HTTP routes, unauthenticated access, error mapping, SSE/session behavior, conversation operating, tools, and mock Bifrost responses.
@@ -126,12 +128,11 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tool_provider/lifecycle.rs: defines the persisted lifecycle states for tool providers.
 - tool_provider/manifest.rs: defines the metadata contract for a provider: identity, launch command, platform, dependencies, secrets, permissions, scope, setup information, and Windie-managed user-facing README content.
 - tool_provider/mod.rs: Public boundary and re-exports for tool_provider folder.
-- tool_provider/registry.rs: Provider-neutral live discovery and execution dispatch. Persisted provider catalogs live in store; the current registry contains approved MCP providers and Windie built-ins; skill and plugin execution are not implemented.
+- tool_provider/registry.rs: Provider-neutral live discovery and execution dispatch. Persisted provider catalogs live in store; the current registry contains temporary compatibility MCP providers, installed plugin MCPs, and Windie built-ins; skill and plugin execution are not implemented.
 - tool_provider/mcp/mod.rs: Public boundary and re-exports for tool_provider/mcp folder.
 - tool_provider/mcp/approved.rs: Approved MCP providers for Windie.
-- tool_provider/mcp/blender.rs: Blender MCP definition.
-- tool_provider/mcp/brightdata.rs: Brightdata MCP definition.
-- tool_provider/mcp/cua.rs: Cua Driver MCP definition.
+- packages/brightdata/: package-owned Bright Data MCPB plugin fixture.
+- packages/cua-driver/: package-owned CUA Driver MCPB plugin fixture.
 - tool_provider/mcp/desktop_commander.rs: Desktop Commander MCP definition.
 - tool_provider/mcp/basic_memory.rs: basic memory mcp provider definition and creates windie's isolated local memory project.
 - tool_provider/mcp/provider.rs: Generic MCP backend adapter; lists MCP tools, converts them into Windie ToolDefinitions, and dispatches approved calls.
@@ -166,7 +167,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - local/: user-local Windie environment setup.
 - local/mod.rs: Public boundary and re-exports for local folder.
-- local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, and approved dependency installs.
+- local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, and temporary compatibility dependency installs.
 - local/runtime.rs: downloads, verifies, extracts, and resolves managed Node.js/uv runtimes for MCP providers.
 - output/:
 - output/mod.rs: public boundary and re-exports for output folder

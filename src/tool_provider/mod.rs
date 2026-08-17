@@ -7,7 +7,6 @@
 //! backends can later join through the same registry shape.
 
 mod builtin;
-mod cleanup;
 mod lifecycle;
 mod manifest;
 mod mcp;
@@ -19,11 +18,11 @@ mod tests;
 pub(crate) use builtin::{
     ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
 };
-pub(crate) use cleanup::ProviderCleanup;
 pub use lifecycle::{ProviderInstallState, ProviderReadiness};
 pub use manifest::{
-    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackageManager,
-    ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope, ProviderSecret,
+    ProviderAuthentication, ProviderDependency, ProviderManifest, ProviderPackage,
+    ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
+    ProviderSecret, ProviderTransport,
 };
 pub(crate) use mcp::ChromeDevToolsConnectionMode;
 pub use registry::ToolProviderRegistry;

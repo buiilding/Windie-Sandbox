@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.trycua/cua-driver",
+  "title": "CUA Driver",
+  "description": "Operate the local computer through the CUA Driver MCP server.",
+  "version": "0.12.6",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/cua-driver.mcpb",
+      "version": "0.12.6",
+      "fileSha256": "0af998a65d19c9ee4eb05147f535c92b5dbe1f4b0ef6adade09a2d32530820f8",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

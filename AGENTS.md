@@ -79,7 +79,18 @@ Engineers should be able to understand, test, and replace each component without
 - Do not add agent/tool behavior until explicitly requested.
 - Keep dependencies small and justified.
 
-Schema compatibility is not a current goal. `store/` should create the current schema for fresh databases and reject unsupported older or newer schema versions clearly instead of carrying partial legacy migrations.
+## Collaboration and technical disagreement
+
+The agent should not agree with the user automatically. The user is learning
+software engineering while building Windie and expects an honest technical
+partner. When the user's assumption is weak, incomplete, or likely to harm the
+project's long-term architecture, explain the problem directly, present the
+tradeoffs, and recommend the stronger design. Continue the discussion until
+the decision is justified by Windie's purpose, constraints, and evidence.
+
+Agreement is not the goal; reaching the best understandable and maintainable
+decision is. When the user is correct, say why. When the agent changes its own
+recommendation, state what new reasoning or evidence caused the change.
 
 ## Base branch rules
 

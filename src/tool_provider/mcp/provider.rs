@@ -8,63 +8,46 @@ use anyhow::Result;
 use serde_json::json;
 use std::sync::{Arc, RwLock};
 
-use super::{basic_memory, chrome_devtools, desktop_commander};
-use crate::mcp::{self, McpCommand, McpTool, McpTransport};
+use super::chrome_devtools;
+use crate::mcp::{self, McpCommand, McpOwnedCommand, McpTool, McpTransport};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
-use crate::tool_provider::ProviderCleanup;
 use crate::tool_provider::manifest::ProviderManifest;
 
 #[derive(Debug, Clone)]
-/// Static definition for one code-approved MCP provider.
+/// Static compatibility definition for one not-yet-migrated MCP provider.
 ///
 /// This is intentionally data, not runtime state. Adding a future approved MCP
 /// provider should add one server definition while keeping `McpToolProvider`
 /// generic.
 pub(in crate::tool_provider) struct McpProviderDefinition {
     pub(in crate::tool_provider) manifest: ProviderManifest,
-    pub(in crate::tool_provider) provider_id: &'static str,
-    pub(in crate::tool_provider) schema_prefix: &'static str,
-    pub(in crate::tool_provider) display_name: &'static str,
+    pub(in crate::tool_provider) provider_id: String,
+    pub(in crate::tool_provider) schema_prefix: String,
+    pub(in crate::tool_provider) display_name: String,
     pub(in crate::tool_provider) transport: McpTransport,
     pub(in crate::tool_provider) package_command: Option<McpCommand>,
-    pub(in crate::tool_provider) readiness_probe: Option<McpProviderReadinessProbe>,
-    pub(in crate::tool_provider) setup: Option<McpProviderSetup>,
-    pub(in crate::tool_provider) cleanup: ProviderCleanup,
-}
-
-#[derive(Debug, Clone, Copy)]
-/// A safe provider-native operation used only by an explicit health check.
-pub(in crate::tool_provider) enum McpProviderReadinessProbe {
-    /// Calls a read-only MCP tool with an empty argument object.
-    Tool(&'static str),
-}
-
-#[derive(Debug, Clone, Copy)]
-/// Provider-specific setup Windie runs before starting an MCP process.
-pub(in crate::tool_provider) enum McpProviderSetup {
-    BasicMemoryProject,
-    DesktopCommanderConfig,
+    pub(in crate::tool_provider) owned_package_command: Option<McpOwnedCommand>,
+    pub(in crate::tool_provider) readiness_probe: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-/// Provider for an approved local or hosted MCP server.
+/// Provider for one local or hosted MCP server.
 pub(in crate::tool_provider) struct McpToolProvider {
     manifest: ProviderManifest,
     pub(in crate::tool_provider) provider_id: ToolProviderId,
-    pub(in crate::tool_provider) schema_prefix: &'static str,
-    pub(in crate::tool_provider) display_name: &'static str,
+    pub(in crate::tool_provider) schema_prefix: String,
+    pub(in crate::tool_provider) display_name: String,
     transport: Arc<RwLock<McpTransport>>,
     pub(in crate::tool_provider) package_command: Option<McpCommand>,
-    readiness_probe: Option<McpProviderReadinessProbe>,
-    setup: Option<McpProviderSetup>,
-    cleanup: ProviderCleanup,
+    owned_package_command: Option<McpOwnedCommand>,
+    readiness_probe: Option<String>,
 }
 
 impl McpToolProvider {
-    /// Builds a runtime provider from a code-approved provider definition.
+    /// Builds a runtime provider from a static or package-owned definition.
     pub(in crate::tool_provider) fn new(definition: McpProviderDefinition) -> Self {
         Self {
             manifest: definition.manifest,
@@ -73,9 +56,8 @@ impl McpToolProvider {
             display_name: definition.display_name,
             transport: Arc::new(RwLock::new(definition.transport)),
             package_command: definition.package_command,
+            owned_package_command: definition.owned_package_command,
             readiness_probe: definition.readiness_probe,
-            setup: definition.setup,
-            cleanup: definition.cleanup,
         }
     }
 
@@ -98,7 +80,7 @@ impl McpToolProvider {
             .expect("provider transport lock poisoned") = transport;
     }
 
-    /// Applies the approved Chrome DevTools connection mode to this provider.
+    /// Applies the persisted Chrome DevTools mode to its package-owned launcher.
     pub(in crate::tool_provider) fn set_chrome_devtools_mode(
         &self,
         mode: chrome_devtools::ChromeDevToolsConnectionMode,
@@ -106,16 +88,41 @@ impl McpToolProvider {
         if self.provider_id.as_str() != "chrome-devtools" {
             return false;
         }
-        self.set_transport(McpTransport::stdio(chrome_devtools::command(mode)));
+        let transport = self.transport();
+        match transport {
+            McpTransport::PackagedStdio {
+                mut command,
+                shutdown_command,
+            } => {
+                let mut updated = false;
+                for (name, value) in &mut command.env {
+                    if name == chrome_devtools::CHROME_DEVTOOLS_CONNECTION_MODE_ENV {
+                        *value = mode.as_storage().to_string();
+                        updated = true;
+                    }
+                }
+                if !updated {
+                    command.env.push((
+                        chrome_devtools::CHROME_DEVTOOLS_CONNECTION_MODE_ENV.to_string(),
+                        mode.as_storage().to_string(),
+                    ));
+                }
+                self.set_transport(McpTransport::PackagedStdio {
+                    command,
+                    shutdown_command,
+                });
+            }
+            _ => return false,
+        }
         true
     }
 
     /// Reads the current runtime transport for one MCP operation.
     pub(in crate::tool_provider) fn transport(&self) -> McpTransport {
-        *self
-            .transport
+        self.transport
             .read()
             .expect("provider transport lock poisoned")
+            .clone()
     }
 
     /// Lists tools from the MCP server and maps them into Windie definitions.
@@ -139,18 +146,20 @@ impl McpToolProvider {
 
     /// Prepares the provider package without starting its MCP protocol.
     pub(in crate::tool_provider) fn prepare_package(&self) -> Result<()> {
-        let Some(command) = self.package_command else {
-            return Ok(());
-        };
-
-        mcp::run_preparation_command(command)
+        if let Some(command) = self.package_command {
+            return mcp::run_preparation_command(command);
+        }
+        if let Some(command) = self.owned_package_command.clone() {
+            return mcp::run_owned_preparation_command(command);
+        }
+        Ok(())
     }
 
     /// Runs the provider's optional non-mutating browser/service readiness
     /// probe. Catalog discovery intentionally remains separate because some
     /// MCP servers expose tools before starting their external application.
     pub(in crate::tool_provider) fn check_readiness(&self) -> Result<()> {
-        let Some(McpProviderReadinessProbe::Tool(tool_name)) = self.readiness_probe else {
+        let Some(tool_name) = &self.readiness_probe else {
             return Ok(());
         };
 
@@ -180,7 +189,7 @@ impl McpToolProvider {
             .unwrap_or(false);
 
         ToolDefinition {
-            schema_name: ToolSchemaName::new(mcp_schema_name(self.schema_prefix, &tool.name)),
+            schema_name: ToolSchemaName::new(mcp_schema_name(&self.schema_prefix, &tool.name)),
             display_name: format!("{} {}", self.display_name, tool.name),
             description: tool.description,
             parameters: tool.input_schema,
@@ -199,24 +208,11 @@ impl McpToolProvider {
 
     /// Runs provider-specific setup before Windie starts the MCP process.
     pub(in crate::tool_provider) fn prepare(&self) -> Result<()> {
-        match self.setup {
-            Some(McpProviderSetup::BasicMemoryProject) => basic_memory::prepare(),
-            Some(McpProviderSetup::DesktopCommanderConfig) => desktop_commander::prepare(),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
-    /// Removes this provider's Windie-owned local runtime and configuration.
+    /// Removes this provider's Windie-owned managed runtime.
     pub(in crate::tool_provider) fn uninstall(&self, remove_runtime: bool) -> Result<()> {
-        match self.cleanup {
-            ProviderCleanup::None => {}
-            ProviderCleanup::CuaDriver => crate::local::uninstall_cua_driver()?,
-            ProviderCleanup::WindieDirectories(paths) => {
-                crate::local::remove_windie_directories(paths)?;
-            }
-            ProviderCleanup::BasicMemory => basic_memory::uninstall()?,
-        }
-
         if remove_runtime {
             crate::local::remove_managed_runtime(self.manifest.runtime)?;
         }
@@ -227,7 +223,9 @@ impl McpToolProvider {
     /// Returns the permission lane required by the provider transport.
     fn tool_permissions(&self) -> Vec<ToolPermission> {
         match self.transport() {
-            McpTransport::Stdio { .. } => vec![ToolPermission::ExternalProcess],
+            McpTransport::Stdio { .. } | McpTransport::PackagedStdio { .. } => {
+                vec![ToolPermission::ExternalProcess]
+            }
             McpTransport::StreamableHttp { .. } => vec![ToolPermission::Network],
         }
     }

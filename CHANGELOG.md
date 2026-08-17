@@ -7,7 +7,19 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+- Migrated Windie's MCP extension foundation from code-owned provider
+  definitions to versioned packaged plugins. Added plugin manifests,
+  marketplace index and artifact installation, standard MCP `server.json`
+  metadata, MCPB local packages, declarative runtime setup, package-owned
+  lifecycle cleanup, and marketplace API routes.
+- Migrated the checked-in MCP providers, including Parallel Search, Desktop
+  Commander, Blender, Bright Data, Chrome DevTools, CUA Driver, and Basic
+  Memory, into package fixtures and removed their code-owned definitions.
+- Updated the Inspector to treat plugins as the marketplace and installation
+  unit, while nesting MCP enablement, repair, credentials, and tool runtime
+  controls under each plugin's components.
+- Added local marketplace serving and end-to-end package lifecycle coverage for
+  remote MCPs and local MCPB runtimes.
 
 ## [0.3.2] - 2026-08-10
 

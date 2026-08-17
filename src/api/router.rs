@@ -60,6 +60,12 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/model-parameters", get(model_parameters))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))
+        .route("/api/plugins", get(list_plugins))
+        .route(
+            "/api/plugins/{plugin_id}",
+            get(get_plugin).delete(uninstall_plugin),
+        )
+        .route("/api/plugins/{plugin_id}/install", post(install_plugin))
         .route("/api/providers", get(list_providers))
         .route(
             "/api/providers/chrome-devtools/remote-debugging",

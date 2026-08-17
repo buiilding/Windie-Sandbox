@@ -1,0 +1,19 @@
+{
+  "manifest_version": "0.3",
+  "name": "desktop-commander",
+  "display_name": "Desktop Commander",
+  "version": "0.2.47",
+  "description": "MCP server for terminal operations and file editing.",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "MCP_DXT": "true",
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}

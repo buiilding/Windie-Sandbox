@@ -102,13 +102,27 @@ pub struct McpCommand {
     pub env: &'static [McpEnv],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// A process command whose paths and arguments come from an installed package.
+pub struct McpOwnedCommand {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub secret_env: Vec<(String, String, bool)>,
+}
+
 /// Transport used to connect Windie to one approved MCP provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpTransport {
     /// Launch a local MCP process and communicate over stdin/stdout.
     Stdio {
         command: McpCommand,
         shutdown_command: Option<McpCommand>,
+    },
+    /// Launch a local MCP using a command resolved from an installed package.
+    PackagedStdio {
+        command: McpOwnedCommand,
+        shutdown_command: Option<McpOwnedCommand>,
     },
     /// Connect to a hosted MCP endpoint over Streamable HTTP.
     StreamableHttp { endpoint: McpHttpEndpoint },
@@ -132,30 +146,61 @@ impl McpTransport {
     }
 
     /// Creates a hosted Streamable HTTP transport.
-    pub const fn streamable_http(endpoint: McpHttpEndpoint) -> Self {
+    pub fn streamable_http(endpoint: McpHttpEndpoint) -> Self {
         Self::StreamableHttp { endpoint }
     }
 }
 
 /// Hosted MCP endpoint metadata used by the Streamable HTTP transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpHttpEndpoint {
     /// HTTPS endpoint that accepts MCP POST requests.
-    pub url: &'static str,
+    pub url: String,
     /// Authentication policy for requests to this endpoint.
     pub authorization: McpHttpAuthorization,
+    /// Maximum time for initialization and catalog requests.
+    pub startup_timeout: Duration,
+    /// Maximum time for a tool call request.
+    pub call_timeout: Duration,
+}
+
+impl McpHttpEndpoint {
+    /// Builds an endpoint using Windie's conservative default timeouts.
+    pub fn new(url: impl Into<String>, authorization: McpHttpAuthorization) -> Self {
+        Self {
+            url: url.into(),
+            authorization,
+            startup_timeout: MCP_PROTOCOL_REQUEST_TIMEOUT,
+            call_timeout: MCP_TOOL_CALL_TIMEOUT,
+        }
+    }
+
+    /// Builds an endpoint with package-declared request limits.
+    pub fn with_timeouts(
+        url: impl Into<String>,
+        authorization: McpHttpAuthorization,
+        startup_timeout: Duration,
+        call_timeout: Duration,
+    ) -> Self {
+        Self {
+            url: url.into(),
+            authorization,
+            startup_timeout,
+            call_timeout,
+        }
+    }
 }
 
 /// Authentication policy for one hosted MCP endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpHttpAuthorization {
     /// Do not send an Authorization header.
     Anonymous,
     /// Require and send a Bearer header from the named Windie environment
     /// value.
-    BearerEnv(&'static str),
+    BearerEnv(String),
     /// Send a Bearer header when the named Windie environment value exists.
-    OptionalBearerEnv(&'static str),
+    OptionalBearerEnv(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +324,10 @@ pub fn list_tools_with_transport(transport: McpTransport) -> Result<Vec<McpTool>
             command,
             shutdown_command,
         } => list_tools_with_shutdown(command, shutdown_command),
+        McpTransport::PackagedStdio {
+            command,
+            shutdown_command,
+        } => list_tools_with_owned_shutdown(command, shutdown_command),
         McpTransport::StreamableHttp { .. } => {
             run_async_on_dedicated_thread(list_tools_with_transport_async(transport))
         }
@@ -368,6 +417,67 @@ pub fn run_preparation_command(command: McpCommand) -> Result<()> {
     Ok(())
 }
 
+/// Runs a package-owned preparation command before MCP startup.
+pub fn run_owned_preparation_command(command: McpOwnedCommand) -> Result<()> {
+    let command_name = command.program.clone();
+    let mut process = configure_owned_process(command)?;
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!("failed to start provider package preparation command: {command_name}")
+        })?;
+    let stderr = child.stderr.take().map(|mut stream| {
+        std::thread::spawn(move || {
+            let mut output = String::new();
+            let _ = stream.read_to_string(&mut output);
+            output
+        })
+    });
+    let started = Instant::now();
+
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to wait for provider package preparation")?
+        {
+            break status;
+        }
+        if started.elapsed() >= MCP_PACKAGE_PREPARATION_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(stderr) = stderr {
+                let _ = stderr.join();
+            }
+            return Err(anyhow!(
+                "provider package preparation timed out after {}s: {}",
+                MCP_PACKAGE_PREPARATION_TIMEOUT.as_secs(),
+                command_name
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stderr = stderr
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+
+    if !status.success() {
+        let diagnostics = stderr.trim();
+        if diagnostics.is_empty() {
+            return Err(anyhow!(
+                "provider package preparation failed with {status}: {command_name}"
+            ));
+        }
+        return Err(anyhow!(
+            "provider package preparation failed with {status}: {command_name}\nstderr:\n{diagnostics}"
+        ));
+    }
+
+    Ok(())
+}
+
 /// Lists tools with a provider-specific cleanup hook after the MCP process
 /// exits.
 ///
@@ -389,6 +499,23 @@ pub fn list_tools_with_shutdown(
 
     run_shutdown_best_effort(shutdown_command);
 
+    result
+}
+
+/// Lists tools from a packaged local MCP and runs its optional cleanup command.
+fn list_tools_with_owned_shutdown(
+    command: McpOwnedCommand,
+    shutdown_command: Option<McpOwnedCommand>,
+) -> Result<Vec<McpTool>> {
+    let result = {
+        let mut session = McpSession::start_owned(command)?;
+        let result = session.call("tools/list", None)?;
+        serde_json::from_value::<McpToolsList>(result)
+            .context("failed to decode MCP tools/list response")
+            .map(|list| list.tools)
+    };
+
+    run_owned_shutdown_best_effort(shutdown_command);
     result
 }
 
@@ -417,6 +544,10 @@ pub fn call_tool_with_transport(
             command,
             shutdown_command,
         } => call_tool_with_shutdown(command, shutdown_command, name, arguments),
+        McpTransport::PackagedStdio {
+            command,
+            shutdown_command,
+        } => call_tool_with_owned_shutdown(command, shutdown_command, name, arguments),
         McpTransport::StreamableHttp { .. } => run_async_on_dedicated_thread(
             call_tool_with_transport_async(transport, name.to_string(), arguments),
         ),
@@ -464,6 +595,28 @@ pub fn call_tool_with_shutdown(
 
     run_shutdown_best_effort(shutdown_command);
 
+    result
+}
+
+/// Calls one packaged local MCP tool and runs its optional cleanup command.
+fn call_tool_with_owned_shutdown(
+    command: McpOwnedCommand,
+    shutdown_command: Option<McpOwnedCommand>,
+    name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    let result = {
+        let mut session = McpSession::start_owned(command)?;
+        session.call(
+            "tools/call",
+            Some(json!({
+                "name": name,
+                "arguments": arguments
+            })),
+        )
+    };
+
+    run_owned_shutdown_best_effort(shutdown_command);
     result
 }
 
@@ -576,7 +729,7 @@ impl McpSessionPool {
         }
 
         let session = Arc::new(tokio::sync::Mutex::new(PersistentMcpSession {
-            transport,
+            transport: transport.clone(),
             session: McpTransportSession::start(transport).await?,
             last_used_at: Instant::now(),
         }));
@@ -684,6 +837,9 @@ impl McpTransportSession {
     async fn start(transport: McpTransport) -> Result<Self> {
         match transport {
             McpTransport::Stdio { command, .. } => Ok(Self::Stdio(McpSession::start(command)?)),
+            McpTransport::PackagedStdio { command, .. } => {
+                Ok(Self::Stdio(McpSession::start_owned(command)?))
+            }
             McpTransport::StreamableHttp { endpoint } => Ok(Self::StreamableHttp(
                 mcp_http::StreamableHttpSession::start(endpoint).await?,
             )),
@@ -730,7 +886,7 @@ where
 
 /// One short-lived stdio MCP session.
 struct McpSession {
-    command: McpCommand,
+    command_name: String,
     child: Child,
     stdin: ChildStdin,
     stdout_lines: Receiver<Result<String, String>>,
@@ -741,15 +897,26 @@ struct McpSession {
 impl McpSession {
     /// Starts the provider process and completes the MCP initialize handshake.
     fn start(command: McpCommand) -> Result<Self> {
-        let mut process = configure_process(command)?;
+        let command_name = command.program.to_string();
+        let process = configure_process(command)?;
+        Self::start_with_process(process, command_name)
+    }
+
+    /// Starts a packaged provider process and completes the MCP handshake.
+    fn start_owned(command: McpOwnedCommand) -> Result<Self> {
+        let command_name = command.program.clone();
+        let process = configure_owned_process(command)?;
+        Self::start_with_process(process, command_name)
+    }
+
+    /// Starts the protocol session from an already configured child process.
+    fn start_with_process(mut process: Command, command_name: String) -> Result<Self> {
         let mut child = process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| {
-                anyhow!("failed to start MCP provider {}: {error}", command.program)
-            })?;
+            .map_err(|error| anyhow!("failed to start MCP provider {}: {error}", command_name))?;
         let stdin = child
             .stdin
             .take()
@@ -763,7 +930,7 @@ impl McpSession {
             .take()
             .ok_or_else(|| anyhow!("failed to open MCP stderr"))?;
         let mut session = Self {
-            command,
+            command_name,
             child,
             stdin,
             stdout_lines: spawn_stdout_reader(stdout),
@@ -840,7 +1007,7 @@ impl McpSession {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     return Err(self.error_with_stderr(
-                        McpRequestTimeout::new(self.command.program, method, timeout).into(),
+                        McpRequestTimeout::new(&self.command_name, method, timeout).into(),
                     ));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
@@ -908,6 +1075,21 @@ fn run_shutdown_best_effort(command: Option<McpCommand>) {
     }
 }
 
+/// Runs an owned package shutdown command without failing the completed call.
+fn run_owned_shutdown_best_effort(command: Option<McpOwnedCommand>) {
+    let Some(command) = command else {
+        return;
+    };
+    for attempt in 0..MCP_SHUTDOWN_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(MCP_SHUTDOWN_RETRY_DELAY);
+        }
+        if run_owned_shutdown_command(command.clone()).is_ok() {
+            return;
+        }
+    }
+}
+
 /// Returns the request timeout for one MCP method.
 fn request_timeout_for_method(method: &str) -> Duration {
     if method == "tools/call" {
@@ -920,6 +1102,37 @@ fn request_timeout_for_method(method: &str) -> Duration {
 /// Runs one shutdown command with a small timeout.
 fn run_shutdown_command(command: McpCommand) -> Result<()> {
     let mut process = configure_process(command)?;
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to start MCP shutdown command: {}", command.program))?;
+    let started = Instant::now();
+
+    loop {
+        if child
+            .try_wait()
+            .context("failed to wait for MCP shutdown command")?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if started.elapsed() >= MCP_SHUTDOWN_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!(
+                "MCP shutdown command timed out: {}",
+                command.program
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Runs one owned package shutdown command with a bounded wait.
+fn run_owned_shutdown_command(command: McpOwnedCommand) -> Result<()> {
+    let mut process = configure_owned_process(command.clone())?;
     let mut child = process
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -966,6 +1179,42 @@ fn configure_process(command: McpCommand) -> Result<Command> {
         process.env(variable.key, resolve_env_value(variable.value)?);
     }
 
+    Ok(process)
+}
+
+/// Applies an installed package command without invoking a shell.
+fn configure_owned_process(command: McpOwnedCommand) -> Result<Command> {
+    let program = if PathBuf::from(&command.program).is_absolute()
+        || command.program.contains(std::path::MAIN_SEPARATOR)
+    {
+        PathBuf::from(&command.program)
+    } else {
+        local::resolve_command(&command.program)?
+    };
+    let command_path = local::path_with_command_parent(&program);
+    let mut process = windows_command(program, &command.args);
+    if let Some(path) = command_path {
+        process.env("PATH", path);
+    }
+    for (key, value) in command.env {
+        process.env(key, value);
+    }
+    for (key, name, required) in command.secret_env {
+        let value = local::env_value(&name)?.or_else(|| env::var(&name).ok());
+        match value {
+            Some(value) if !value.is_empty() => {
+                process.env(key, value);
+            }
+            Some(_) | None if required => {
+                return Err(anyhow::anyhow!(
+                    "missing required environment variable: {name}"
+                ));
+            }
+            Some(_) | None => {
+                process.env_remove(key);
+            }
+        }
+    }
     Ok(process)
 }
 

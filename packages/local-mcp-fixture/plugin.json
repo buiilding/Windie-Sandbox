@@ -1,0 +1,26 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "local-mcp-fixture",
+    "version": "1.0.0",
+    "publisher": "windie"
+  },
+  "presentation": {
+    "name": "Windie Local MCP Fixture",
+    "description": "A harmless local MCP used to verify MCPB installation and lifecycle management.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg"
+  },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "local-mcp-fixture",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "local_artifact": "mcp/local-mcp-fixture.mcpb",
+        "permissions": [],
+        "capabilities": ["fixture_echo"]
+      }
+    }
+  ]
+}

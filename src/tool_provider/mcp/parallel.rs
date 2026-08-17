@@ -7,8 +7,8 @@
 use super::McpProviderDefinition;
 use crate::mcp::{McpHttpAuthorization, McpHttpEndpoint, McpTransport};
 use crate::tool_provider::{
-    ProviderAuthentication, ProviderCleanup, ProviderManifest, ProviderPermission,
-    ProviderPlatform, ProviderScope, ProviderSecret,
+    ProviderAuthentication, ProviderManifest, ProviderPermission, ProviderPlatform, ProviderScope,
+    ProviderSecret,
 };
 
 const PARALLEL_MCP_URL: &str = "https://search.parallel.ai/mcp";
@@ -16,10 +16,10 @@ const PARALLEL_API_KEY_ENV: &str = "PARALLEL_API_KEY";
 
 /// Returns the code-approved Parallel Search MCP provider definition.
 pub(super) fn definition() -> McpProviderDefinition {
-    let transport = McpTransport::streamable_http(McpHttpEndpoint {
-        url: PARALLEL_MCP_URL,
-        authorization: McpHttpAuthorization::OptionalBearerEnv(PARALLEL_API_KEY_ENV),
-    });
+    let transport = McpTransport::streamable_http(McpHttpEndpoint::new(
+        PARALLEL_MCP_URL,
+        McpHttpAuthorization::OptionalBearerEnv(PARALLEL_API_KEY_ENV.to_string()),
+    ));
 
     McpProviderDefinition {
         manifest: ProviderManifest::mcp_streamable_http(
@@ -47,13 +47,12 @@ pub(super) fn definition() -> McpProviderDefinition {
             ],
         )
         .with_readme(include_str!("readmes/parallel-search.md")),
-        provider_id: "parallel-search",
-        schema_prefix: "parallel_search",
-        display_name: "Parallel Search",
+        provider_id: "parallel-search".to_string(),
+        schema_prefix: "parallel_search".to_string(),
+        display_name: "Parallel Search".to_string(),
         transport,
         package_command: None,
+        owned_package_command: None,
         readiness_probe: None,
-        setup: None,
-        cleanup: ProviderCleanup::None,
     }
 }

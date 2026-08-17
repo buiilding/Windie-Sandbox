@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.wonderwhy-er/desktop-commander",
+  "title": "Desktop Commander",
+  "description": "Read, write, and manage files and local processes through Desktop Commander.",
+  "version": "0.2.47",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/desktop-commander.mcpb",
+      "version": "0.2.47",
+      "fileSha256": "818ed1e76dda786db23f1ed04d4cb4c4270a233ab3840d54db78dfdc889956c5",
+      "runtimeHint": "node",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

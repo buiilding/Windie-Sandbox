@@ -30,16 +30,6 @@ enum ArchiveFormat {
     TarXz,
 }
 
-/// Ensures the runtime needed by one approved provider is available.
-pub(super) fn ensure_provider_runtime(target: &str) -> Result<bool> {
-    match target {
-        "desktop-commander" | "brightdata" => ensure_runtime(ProviderRuntime::Node),
-        "blender-mcp" | "basic-memory" => ensure_runtime(ProviderRuntime::Uv),
-        "cua-driver" | "bifrost" => Ok(false),
-        _ => Err(anyhow!("unknown runtime target: {target}")),
-    }
-}
-
 /// Ensures one declared runtime family is available.
 pub(crate) fn ensure_runtime(runtime: ProviderRuntime) -> Result<bool> {
     match runtime {
@@ -89,13 +79,6 @@ pub(crate) fn resolve_command(program: &str) -> Result<PathBuf> {
                 "Windie-managed runtime command is not installed: {program}; set up the provider first"
             )
         });
-    }
-
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    if program == "cua-driver"
-        && let Some(path) = cua_driver_command()?
-    {
-        return Ok(path);
     }
 
     path_command(program).ok_or_else(|| anyhow!("required command is not available: {program}"))
@@ -521,62 +504,6 @@ fn find_runtime_directory(root: &Path, executables: &[&str]) -> Result<Option<Pa
     }
 
     Ok(None)
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn cua_driver_command() -> Result<Option<PathBuf>> {
-    let mut candidates = Vec::new();
-
-    #[cfg(target_os = "windows")]
-    {
-        candidates.extend([
-            env::var_os("LOCALAPPDATA").map(|path| {
-                PathBuf::from(path)
-                    .join("Programs")
-                    .join("Cua")
-                    .join("cua-driver")
-                    .join("bin")
-                    .join("cua-driver.exe")
-            }),
-            env::var_os("USERPROFILE").map(|path| {
-                PathBuf::from(path)
-                    .join(".cua-driver")
-                    .join("packages")
-                    .join("current")
-                    .join("cua-driver.exe")
-            }),
-        ]);
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // The upstream macOS installer places a stable launcher in this
-        // directory and only adds the directory to the user's shell profile.
-        // Windie must check it directly because an already-running API process
-        // does not receive PATH changes made by a child installer shell.
-        if let Some(home) = env::var_os("HOME") {
-            candidates.push(Some(
-                PathBuf::from(home)
-                    .join(".local")
-                    .join("bin")
-                    .join("cua-driver"),
-            ));
-        }
-        candidates.push(Some(PathBuf::from(
-            "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
-        )));
-    }
-
-    Ok(candidates.into_iter().flatten().find(|path| path.is_file()))
-}
-
-/// Returns whether the macOS CUA application bundle required for TCC
-/// attribution is installed.
-#[cfg(target_os = "macos")]
-pub(crate) fn cua_driver_app_available() -> bool {
-    Path::new("/Applications/CuaDriver.app")
-        .join("Contents/MacOS/cua-driver")
-        .is_file()
 }
 
 fn find_file(root: &Path, file_name: &str) -> Result<Option<PathBuf>> {

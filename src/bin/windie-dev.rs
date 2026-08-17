@@ -11,6 +11,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use flate2::{Compression, write::GzEncoder};
+use sha2::{Digest, Sha256};
+use tar::Builder;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 
@@ -21,8 +26,13 @@ use windie::llm::{BaseUrl, ModelName};
 use windie::operation;
 use windie::output::TerminalOutput;
 use windie::perf::{self, BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
+use windie::plugin::{
+    InstalledPlugin, MarketplaceIndex, MarketplacePlugin, MarketplacePresentation,
+    MarketplaceVersion, PluginComponentKind,
+};
 
 const DEV_GATEWAY_START_TIMEOUT: Duration = Duration::from_secs(180);
+const LOCAL_MARKETPLACE_PORT: u16 = 8788;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,6 +62,12 @@ async fn main() -> Result<()> {
             release_script("test-local-installer").await
         }
         [command, action] if command == "release" && action == "verify" => release_verify().await,
+        [command, action] if command == "marketplace" && action == "build" => {
+            build_local_marketplace().map(|_| ())
+        }
+        [command, action] if command == "marketplace" && action == "serve" => {
+            serve_local_marketplace().await
+        }
         [command, rest @ ..] if command == "bench" => benchmark(rest).await,
         [command, subject, rest @ ..] if command == "compare" && subject == "baseline" => {
             compare_baseline(rest).await
@@ -69,7 +85,7 @@ async fn main() -> Result<()> {
 /// Prints the development-only command surface.
 fn print_help() -> Result<()> {
     println!(
-        "windie-dev\n\nUsage:\n  windie-dev dev up\n  windie-dev dev run <gateway|api|inspector>\n  windie-dev dev status\n  windie-dev dev down\n  windie-dev release build\n  windie-dev release install\n  windie-dev release verify\n  windie-dev bench [conversation_id] [options]\n  windie-dev compare baseline [options]\n  windie-dev update baseline [options]\n\nDevelopment processes run in the foreground. Press Ctrl-C to stop them.\n\nBenchmark options:\n  --all --runs <n> --json\n  --persistence --conversation --serialization --runtime\n  --sessions --tools --mutations --mcp --api --lifecycle"
+        "windie-dev\n\nUsage:\n  windie-dev dev up\n  windie-dev dev run <gateway|api|inspector>\n  windie-dev dev status\n  windie-dev dev down\n  windie-dev release build\n  windie-dev release install\n  windie-dev release verify\n  windie-dev marketplace build\n  windie-dev marketplace serve\n  windie-dev bench [conversation_id] [options]\n  windie-dev compare baseline [options]\n  windie-dev update baseline [options]\n\nDevelopment processes run in the foreground. Press Ctrl-C to stop them.\n\nThe local marketplace is generated under target/local-marketplace and served at\nhttp://127.0.0.1:8788.\n\nBenchmark options:\n  --all --runs <n> --json\n  --persistence --conversation --serialization --runtime\n  --sessions --tools --mutations --mcp --api --lifecycle"
     );
     Ok(())
 }
@@ -158,6 +174,609 @@ async fn dev_down() -> Result<()> {
         ["gateway", "stop"].as_slice(),
     ] {
         run_windie(args).await?;
+    }
+    Ok(())
+}
+
+/// Builds the local marketplace artifact and index used for end-to-end tests.
+fn build_local_marketplace() -> Result<PathBuf> {
+    let root = repository_root()?;
+    let package_root = root.join("packages/parallel-search");
+    let package = InstalledPlugin::load(&package_root)?;
+    let output_root = root.join("target/local-marketplace");
+    if output_root.exists() {
+        fs::remove_dir_all(&output_root).with_context(|| {
+            format!(
+                "failed to replace local marketplace {}",
+                output_root.display()
+            )
+        })?;
+    }
+
+    let release_root = output_root.join("plugins/parallel-search/1.0.0");
+    fs::create_dir_all(&release_root)?;
+    fs::copy(
+        package_root.join("plugin.json"),
+        release_root.join("plugin.json"),
+    )?;
+
+    let archive_path = release_root.join("parallel-search-1.0.0.tar.gz");
+    let archive = package_archive(&package_root)?;
+    fs::write(&archive_path, &archive)?;
+    let digest = format!("sha256:{:x}", Sha256::digest(&archive));
+
+    let capabilities: Vec<String> = package
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let fixture_root = root.join("packages/local-mcp-fixture");
+    let fixture = InstalledPlugin::load(&fixture_root)?;
+    let fixture_release_root = output_root.join("plugins/local-mcp-fixture/1.0.0");
+    fs::create_dir_all(&fixture_release_root)?;
+    fs::copy(
+        fixture_root.join("plugin.json"),
+        fixture_release_root.join("plugin.json"),
+    )?;
+    let fixture_archive_path = fixture_release_root.join("local-mcp-fixture-1.0.0.tar.gz");
+    let fixture_archive = package_archive(&fixture_root)?;
+    fs::write(&fixture_archive_path, &fixture_archive)?;
+    let fixture_digest = format!("sha256:{:x}", Sha256::digest(&fixture_archive));
+    let fixture_capabilities: Vec<String> = fixture
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let desktop_root = root.join("packages/desktop-commander");
+    let desktop = InstalledPlugin::load(&desktop_root)?;
+    let desktop_release_root = output_root.join("plugins/desktop-commander/0.2.47");
+    fs::create_dir_all(&desktop_release_root)?;
+    fs::copy(
+        desktop_root.join("plugin.json"),
+        desktop_release_root.join("plugin.json"),
+    )?;
+    let desktop_archive_path = desktop_release_root.join("desktop-commander-0.2.47.tar.gz");
+    let desktop_archive = package_archive(&desktop_root)?;
+    fs::write(&desktop_archive_path, &desktop_archive)?;
+    let desktop_digest = format!("sha256:{:x}", Sha256::digest(&desktop_archive));
+    let desktop_capabilities: Vec<String> = desktop
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let basic_memory_root = root.join("packages/basic-memory");
+    let basic_memory = InstalledPlugin::load(&basic_memory_root)?;
+    let basic_memory_release_root = output_root.join("plugins/basic-memory/0.22.1");
+    fs::create_dir_all(&basic_memory_release_root)?;
+    fs::copy(
+        basic_memory_root.join("plugin.json"),
+        basic_memory_release_root.join("plugin.json"),
+    )?;
+    let basic_memory_archive_path = basic_memory_release_root.join("basic-memory-0.22.1.tar.gz");
+    let basic_memory_archive = package_archive(&basic_memory_root)?;
+    fs::write(&basic_memory_archive_path, &basic_memory_archive)?;
+    let basic_memory_digest = format!("sha256:{:x}", Sha256::digest(&basic_memory_archive));
+    let basic_memory_capabilities: Vec<String> = basic_memory
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let blender_root = root.join("packages/blender-mcp");
+    let blender = InstalledPlugin::load(&blender_root)?;
+    let blender_release_root = output_root.join("plugins/blender-mcp/1.8.3");
+    fs::create_dir_all(&blender_release_root)?;
+    fs::copy(
+        blender_root.join("plugin.json"),
+        blender_release_root.join("plugin.json"),
+    )?;
+    let blender_archive_path = blender_release_root.join("blender-mcp-1.8.3.tar.gz");
+    let blender_archive = package_archive(&blender_root)?;
+    fs::write(&blender_archive_path, &blender_archive)?;
+    let blender_digest = format!("sha256:{:x}", Sha256::digest(&blender_archive));
+    let blender_capabilities: Vec<String> = blender
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let chrome_root = root.join("packages/chrome-devtools");
+    let chrome = InstalledPlugin::load(&chrome_root)?;
+    let chrome_release_root = output_root.join("plugins/chrome-devtools/1.6.0");
+    fs::create_dir_all(&chrome_release_root)?;
+    fs::copy(
+        chrome_root.join("plugin.json"),
+        chrome_release_root.join("plugin.json"),
+    )?;
+    let chrome_archive_path = chrome_release_root.join("chrome-devtools-1.6.0.tar.gz");
+    let chrome_archive = package_archive(&chrome_root)?;
+    fs::write(&chrome_archive_path, &chrome_archive)?;
+    let chrome_digest = format!("sha256:{:x}", Sha256::digest(&chrome_archive));
+    let chrome_capabilities: Vec<String> = chrome
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let brightdata_root = root.join("packages/brightdata");
+    let brightdata = InstalledPlugin::load(&brightdata_root)?;
+    let brightdata_release_root = output_root.join("plugins/brightdata/2.11.1");
+    fs::create_dir_all(&brightdata_release_root)?;
+    fs::copy(
+        brightdata_root.join("plugin.json"),
+        brightdata_release_root.join("plugin.json"),
+    )?;
+    let brightdata_archive_path = brightdata_release_root.join("brightdata-2.11.1.tar.gz");
+    let brightdata_archive = package_archive(&brightdata_root)?;
+    fs::write(&brightdata_archive_path, &brightdata_archive)?;
+    let brightdata_digest = format!("sha256:{:x}", Sha256::digest(&brightdata_archive));
+    let brightdata_capabilities: Vec<String> = brightdata
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let cua_root = root.join("packages/cua-driver");
+    let cua = InstalledPlugin::load(&cua_root)?;
+    let cua_release_root = output_root.join("plugins/cua-driver/0.12.6");
+    fs::create_dir_all(&cua_release_root)?;
+    fs::copy(
+        cua_root.join("plugin.json"),
+        cua_release_root.join("plugin.json"),
+    )?;
+    let cua_archive_path = cua_release_root.join("cua-driver-0.12.6.tar.gz");
+    let cua_archive = package_archive(&cua_root)?;
+    fs::write(&cua_archive_path, &cua_archive)?;
+    let cua_digest = format!("sha256:{:x}", Sha256::digest(&cua_archive));
+    let cua_capabilities: Vec<String> = cua
+        .manifest
+        .components
+        .iter()
+        .filter(|component| component.kind == PluginComponentKind::Mcp)
+        .flat_map(|component| component.windie.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    for (package_root, release_root, package) in [
+        (&package_root, &release_root, &package),
+        (&fixture_root, &fixture_release_root, &fixture),
+        (&desktop_root, &desktop_release_root, &desktop),
+        (
+            &basic_memory_root,
+            &basic_memory_release_root,
+            &basic_memory,
+        ),
+        (&blender_root, &blender_release_root, &blender),
+        (&chrome_root, &chrome_release_root, &chrome),
+        (&brightdata_root, &brightdata_release_root, &brightdata),
+        (&cua_root, &cua_release_root, &cua),
+    ] {
+        copy_presentation_assets(package_root, release_root, package)?;
+    }
+
+    let index = MarketplaceIndex {
+        index_version: 1,
+        plugins: vec![
+            MarketplacePlugin {
+                id: package.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: package.manifest.plugin.version.clone(),
+                    components: package
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: capabilities.into_iter().collect(),
+                    presentation: Some(marketplace_presentation(
+                        &package,
+                        "plugins/parallel-search/1.0.0",
+                    )),
+                    manifest_url: "plugins/parallel-search/1.0.0/plugin.json".to_string(),
+                    artifact_url: "plugins/parallel-search/1.0.0/parallel-search-1.0.0.tar.gz"
+                        .to_string(),
+                    digest,
+                    publisher: package.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+            MarketplacePlugin {
+                id: fixture.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: fixture.manifest.plugin.version.clone(),
+                    components: fixture
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: fixture_capabilities,
+                    presentation: Some(marketplace_presentation(
+                        &fixture,
+                        "plugins/local-mcp-fixture/1.0.0",
+                    )),
+                    manifest_url: "plugins/local-mcp-fixture/1.0.0/plugin.json".to_string(),
+                    artifact_url: "plugins/local-mcp-fixture/1.0.0/local-mcp-fixture-1.0.0.tar.gz"
+                        .to_string(),
+                    digest: fixture_digest,
+                    publisher: fixture.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+            MarketplacePlugin {
+                id: desktop.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: desktop.manifest.plugin.version.clone(),
+                    components: desktop
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: desktop_capabilities,
+                    presentation: Some(marketplace_presentation(
+                        &desktop,
+                        "plugins/desktop-commander/0.2.47",
+                    )),
+                    manifest_url: "plugins/desktop-commander/0.2.47/plugin.json".to_string(),
+                    artifact_url:
+                        "plugins/desktop-commander/0.2.47/desktop-commander-0.2.47.tar.gz"
+                            .to_string(),
+                    digest: desktop_digest,
+                    publisher: desktop.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+            MarketplacePlugin {
+                id: basic_memory.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: basic_memory.manifest.plugin.version.clone(),
+                    components: basic_memory
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: basic_memory_capabilities,
+                    presentation: Some(marketplace_presentation(
+                        &basic_memory,
+                        "plugins/basic-memory/0.22.1",
+                    )),
+                    manifest_url: "plugins/basic-memory/0.22.1/plugin.json".to_string(),
+                    artifact_url: "plugins/basic-memory/0.22.1/basic-memory-0.22.1.tar.gz"
+                        .to_string(),
+                    digest: basic_memory_digest,
+                    publisher: basic_memory.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+            MarketplacePlugin {
+                id: blender.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: blender.manifest.plugin.version.clone(),
+                    components: blender
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: blender_capabilities,
+                    presentation: Some(marketplace_presentation(
+                        &blender,
+                        "plugins/blender-mcp/1.8.3",
+                    )),
+                    manifest_url: "plugins/blender-mcp/1.8.3/plugin.json".to_string(),
+                    artifact_url: "plugins/blender-mcp/1.8.3/blender-mcp-1.8.3.tar.gz".to_string(),
+                    digest: blender_digest,
+                    publisher: blender.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+            MarketplacePlugin {
+                id: chrome.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: chrome.manifest.plugin.version.clone(),
+                    components: chrome
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: chrome_capabilities,
+                    presentation: Some(marketplace_presentation(
+                        &chrome,
+                        "plugins/chrome-devtools/1.6.0",
+                    )),
+                    manifest_url: "plugins/chrome-devtools/1.6.0/plugin.json".to_string(),
+                    artifact_url: "plugins/chrome-devtools/1.6.0/chrome-devtools-1.6.0.tar.gz"
+                        .to_string(),
+                    digest: chrome_digest,
+                    publisher: chrome.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+            MarketplacePlugin {
+                id: brightdata.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: brightdata.manifest.plugin.version.clone(),
+                    components: brightdata
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: brightdata_capabilities,
+                    presentation: Some(marketplace_presentation(
+                        &brightdata,
+                        "plugins/brightdata/2.11.1",
+                    )),
+                    manifest_url: "plugins/brightdata/2.11.1/plugin.json".to_string(),
+                    artifact_url: "plugins/brightdata/2.11.1/brightdata-2.11.1.tar.gz".to_string(),
+                    digest: brightdata_digest,
+                    publisher: brightdata.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+            MarketplacePlugin {
+                id: cua.manifest.plugin.id.clone(),
+                versions: vec![MarketplaceVersion {
+                    version: cua.manifest.plugin.version.clone(),
+                    components: cua
+                        .manifest
+                        .components
+                        .iter()
+                        .map(|component| component.kind.to_string())
+                        .collect(),
+                    capabilities: cua_capabilities,
+                    presentation: Some(marketplace_presentation(&cua, "plugins/cua-driver/0.12.6")),
+                    manifest_url: "plugins/cua-driver/0.12.6/plugin.json".to_string(),
+                    artifact_url: "plugins/cua-driver/0.12.6/cua-driver-0.12.6.tar.gz".to_string(),
+                    digest: cua_digest,
+                    publisher: cua.manifest.plugin.publisher.clone(),
+                    status: "verified".to_string(),
+                }],
+            },
+        ],
+    };
+    index.validate()?;
+    fs::create_dir_all(&output_root)?;
+    fs::write(
+        output_root.join("index.json"),
+        serde_json::to_vec_pretty(&index)?,
+    )?;
+
+    println!("local marketplace built at {}", output_root.display());
+    println!("index: {}", output_root.join("index.json").display());
+    println!("artifact: {}", archive_path.display());
+    println!("fixture artifact: {}", fixture_archive_path.display());
+    println!(
+        "desktop commander artifact: {}",
+        desktop_archive_path.display()
+    );
+    println!(
+        "basic memory artifact: {}",
+        basic_memory_archive_path.display()
+    );
+    println!("blender MCP artifact: {}", blender_archive_path.display());
+    println!(
+        "Chrome DevTools artifact: {}",
+        chrome_archive_path.display()
+    );
+    println!("CUA Driver artifact: {}", cua_archive_path.display());
+    Ok(output_root)
+}
+
+/// Serves the generated local marketplace over localhost HTTP.
+async fn serve_local_marketplace() -> Result<()> {
+    let root = build_local_marketplace()?;
+    let listener = TcpListener::bind(("127.0.0.1", LOCAL_MARKETPLACE_PORT)).await?;
+    println!(
+        "local marketplace serving {} at http://127.0.0.1:{LOCAL_MARKETPLACE_PORT}",
+        root.display()
+    );
+    println!(
+        "set WINDIE_MARKETPLACE_INDEX_URL=http://127.0.0.1:{LOCAL_MARKETPLACE_PORT}/index.json"
+    );
+
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, _) = result?;
+                let root = root.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = serve_marketplace_connection(stream, root).await {
+                        eprintln!("local marketplace request failed: {error}");
+                    }
+                });
+            }
+            result = &mut shutdown => {
+                result.context("local marketplace shutdown signal failed")?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Serves one safe GET request from the generated marketplace directory.
+async fn serve_marketplace_connection(
+    mut stream: tokio::net::TcpStream,
+    root: PathBuf,
+) -> Result<()> {
+    let mut request = [0_u8; 8192];
+    let count = stream.read(&mut request).await?;
+    if count == 0 {
+        return Ok(());
+    }
+
+    let request = String::from_utf8_lossy(&request[..count]);
+    let mut parts = request
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let request_path = parts.next().unwrap_or_default();
+    if method != "GET" && method != "HEAD" {
+        write_marketplace_response(&mut stream, "405 Method Not Allowed", b"method not allowed")
+            .await?;
+        return Ok(());
+    }
+
+    let relative = request_path
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .strip_prefix('/')
+        .unwrap_or_default();
+    if relative.is_empty() || relative.contains("..") {
+        write_marketplace_response(&mut stream, "404 Not Found", b"not found").await?;
+        return Ok(());
+    }
+
+    let file = root.join(relative);
+    if !file.is_file() {
+        write_marketplace_response(&mut stream, "404 Not Found", b"not found").await?;
+        return Ok(());
+    }
+
+    let body = fs::read(&file)?;
+    let content_type = match file.extension().and_then(|extension| extension.to_str()) {
+        Some("json") => "application/json",
+        Some("gz") => "application/gzip",
+        _ => "application/octet-stream",
+    };
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes()).await?;
+    if method == "GET" {
+        stream.write_all(&body).await?;
+    }
+    Ok(())
+}
+
+async fn write_marketplace_response(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    body: &[u8],
+) -> Result<()> {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes()).await?;
+    stream.write_all(body).await?;
+    Ok(())
+}
+
+fn package_archive(package_root: &Path) -> Result<Vec<u8>> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = Builder::new(encoder);
+    append_package_files(&mut archive, package_root, package_root)?;
+    let encoder = archive.into_inner()?;
+    Ok(encoder.finish()?)
+}
+
+/// Copies the public presentation assets beside one generated release entry.
+fn copy_presentation_assets(
+    package_root: &Path,
+    release_root: &Path,
+    package: &InstalledPlugin,
+) -> Result<()> {
+    for relative in [
+        &package.manifest.presentation.readme,
+        &package.manifest.presentation.icon,
+    ] {
+        let source = package_root.join(relative);
+        let destination = release_root.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&source, &destination).with_context(|| {
+            format!(
+                "failed to copy marketplace presentation asset {}",
+                source.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Builds discovery presentation URLs from one plugin manifest.
+fn marketplace_presentation(
+    package: &InstalledPlugin,
+    release_root: &str,
+) -> MarketplacePresentation {
+    MarketplacePresentation {
+        name: package.manifest.presentation.name.clone(),
+        description: package.manifest.presentation.description.clone(),
+        readme_url: Some(format!(
+            "{release_root}/{}",
+            package.manifest.presentation.readme
+        )),
+        icon_url: Some(format!(
+            "{release_root}/{}",
+            package.manifest.presentation.icon
+        )),
+    }
+}
+
+fn append_package_files(
+    archive: &mut Builder<GzEncoder<Vec<u8>>>,
+    package_root: &Path,
+    current: &Path,
+) -> Result<()> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            append_package_files(archive, package_root, &path)?;
+        } else if entry.file_type()?.is_file() {
+            let relative = path
+                .strip_prefix(package_root)
+                .expect("package file should be below package root");
+            archive.append_path_with_name(&path, relative)?;
+        } else {
+            bail!(
+                "cannot package unsupported plugin entry: {}",
+                path.display()
+            );
+        }
     }
     Ok(())
 }

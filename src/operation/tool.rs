@@ -5,7 +5,7 @@ use super::*;
 
 pub fn available_tools() -> Result<Vec<ToolDefinition>> {
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     available_tools_with_registry(&store, &registry)
 }
 
@@ -27,7 +27,7 @@ pub fn available_tools_with_registry(
 
 pub fn available_provider_tools(provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     available_provider_tools_with_registry(&store, &registry, provider_id)
 }
 
@@ -46,7 +46,7 @@ pub fn attach_tool(
     provider_id: &ToolProviderId,
     tool_name: &ProviderToolName,
 ) -> Result<ToolSchemaName> {
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     attach_tool_with_registry(store, conversation_id, provider_id, tool_name, &registry)
 }
 

@@ -5,6 +5,8 @@
 //! know backend-specific setup details such as Desktop Commander configuration
 //! or MCP result normalization.
 
+use std::sync::{Arc, RwLock};
+
 use anyhow::Result;
 
 use super::builtin;
@@ -16,6 +18,7 @@ use crate::local;
 use crate::mcp::McpCommand;
 use crate::mcp::McpSessionPool;
 use crate::mcp::McpTransport;
+use crate::plugin::InstalledPlugin;
 use crate::tool::{
     AttachedTool, ToolDefinition, ToolExecutionResult, ToolProviderId, ToolProviderKind,
     ToolSchemaName,
@@ -30,7 +33,7 @@ use crate::tool_provider::ProviderRuntime;
 /// not branch on shell, MCP, or plugin details; it resolves the conversation's
 /// attached tool to a provider reference and calls this registry.
 pub struct ToolProviderRegistry {
-    pub(super) mcp_providers: Vec<McpToolProvider>,
+    pub(super) mcp_providers: Arc<RwLock<Vec<McpToolProvider>>>,
     pub(super) mcp_session_pool: Option<McpSessionPool>,
 }
 
@@ -38,6 +41,17 @@ impl ToolProviderRegistry {
     /// Builds the default registry for the local Windie process.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Builds a registry from the remaining built-in providers plus every
+    /// validated plugin currently installed in Windie's package store.
+    pub fn with_installed_plugins() -> Result<Self> {
+        let registry = Self::new();
+        let store = crate::plugin::PluginStore::default_store()?;
+        for plugin in store.installed_plugins()? {
+            registry.register_plugin(&plugin)?;
+        }
+        Ok(registry)
     }
 
     /// Returns Windie-owned control tools that are always model-visible.
@@ -65,9 +79,79 @@ impl ToolProviderRegistry {
         }
     }
 
+    /// Registers the MCP components from one validated installed plugin.
+    ///
+    /// Installation owns package files; this registry owns the live provider
+    /// projection used by discovery and execution.
+    pub fn register_plugin(&self, plugin: &InstalledPlugin) -> Result<()> {
+        let components = plugin.mcp_components()?;
+        let mut providers = self
+            .mcp_providers
+            .write()
+            .expect("MCP provider registry lock poisoned");
+
+        for component in components {
+            let mut manifest = component.manifest.provider_manifest(
+                &component.plugin,
+                &component.component_id,
+                &component.windie,
+            )?;
+            manifest.readme_markdown = component.readme;
+            let provider_id = manifest.provider_id.as_str().to_string();
+            let display_name = manifest.display_name.clone();
+            let schema_prefix = provider_id.replace('-', "_");
+            let transport = component.transport;
+            let definition = McpProviderDefinition {
+                manifest,
+                provider_id,
+                schema_prefix,
+                display_name,
+                transport,
+                package_command: None,
+                owned_package_command: component.package_command,
+                readiness_probe: component.windie.readiness_probe.clone(),
+            };
+
+            providers.retain(|provider| provider.id().as_str() != definition.provider_id);
+            providers.push(McpToolProvider::new(definition));
+        }
+        Ok(())
+    }
+
+    /// Removes a plugin's live MCP projection and restores any temporary
+    /// code-owned provider with the same ID.
+    ///
+    /// The restoration keeps the migration safe while Windie still carries
+    /// legacy providers. Once every provider is package-owned, this fallback
+    /// disappears and uninstall simply removes the dynamic definition.
+    pub fn unregister_plugin(&self, plugin: &InstalledPlugin) -> Result<()> {
+        let component_ids = plugin
+            .mcp_components()?
+            .into_iter()
+            .map(|component| component.component_id)
+            .collect::<Vec<_>>();
+        let mut providers = self
+            .mcp_providers
+            .write()
+            .expect("MCP provider registry lock poisoned");
+
+        for component_id in component_ids {
+            providers.retain(|provider| provider.id().as_str() != component_id);
+            if let Some(definition) = approved_mcp_providers()
+                .into_iter()
+                .find(|definition| definition.provider_id == component_id)
+            {
+                providers.push(McpToolProvider::new(definition));
+            }
+        }
+        Ok(())
+    }
+
     /// Returns manifests for every provider known to this registry.
     pub fn provider_manifests(&self) -> Vec<super::manifest::ProviderManifest> {
         self.mcp_providers
+            .read()
+            .expect("MCP provider registry lock poisoned")
             .iter()
             .map(|provider| provider.manifest().clone())
             .collect()
@@ -89,6 +173,8 @@ impl ToolProviderRegistry {
         provider_id: &ToolProviderId,
     ) -> Option<super::manifest::ProviderManifest> {
         self.mcp_providers
+            .read()
+            .expect("MCP provider registry lock poisoned")
             .iter()
             .find(|provider| provider.id() == provider_id)
             .map(|provider| provider.manifest().clone())
@@ -238,11 +324,17 @@ impl ToolProviderRegistry {
         provider.uninstall(remove_runtime)
     }
 
-    /// Finds one approved MCP provider by its stable provider ID.
-    fn mcp_provider(&self, provider_id: &ToolProviderId) -> Option<&McpToolProvider> {
+    /// Finds one known MCP provider by its stable provider ID.
+    pub(in crate::tool_provider) fn mcp_provider(
+        &self,
+        provider_id: &ToolProviderId,
+    ) -> Option<McpToolProvider> {
         self.mcp_providers
+            .read()
+            .expect("MCP provider registry lock poisoned")
             .iter()
             .find(|provider| provider.id() == provider_id)
+            .cloned()
     }
 
     /// Builds a deterministic fake MCP registry for provider-path benchmarks.
@@ -257,27 +349,28 @@ impl ToolProviderRegistry {
         command: McpCommand,
     ) -> Self {
         Self {
-            mcp_providers: vec![McpToolProvider::new(McpProviderDefinition {
-                manifest: crate::tool_provider::ProviderManifest::mcp_stdio(
-                    provider_id,
-                    display_name,
-                    "Test MCP provider.",
-                    command.program,
-                    command.args,
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                ),
-                provider_id,
-                schema_prefix,
-                display_name,
-                transport: McpTransport::stdio(command),
-                package_command: None,
-                readiness_probe: None,
-                setup: None,
-                cleanup: crate::tool_provider::ProviderCleanup::None,
-            })],
+            mcp_providers: Arc::new(RwLock::new(vec![McpToolProvider::new(
+                McpProviderDefinition {
+                    manifest: crate::tool_provider::ProviderManifest::mcp_stdio(
+                        provider_id,
+                        display_name,
+                        "Test MCP provider.",
+                        command.program,
+                        command.args,
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                    provider_id: provider_id.to_string(),
+                    schema_prefix: schema_prefix.to_string(),
+                    display_name: display_name.to_string(),
+                    transport: McpTransport::stdio(command),
+                    package_command: None,
+                    owned_package_command: None,
+                    readiness_probe: None,
+                },
+            )])),
             mcp_session_pool: None,
         }
     }
@@ -296,10 +389,12 @@ impl ToolProviderRegistry {
 impl Default for ToolProviderRegistry {
     fn default() -> Self {
         Self {
-            mcp_providers: approved_mcp_providers()
-                .into_iter()
-                .map(McpToolProvider::new)
-                .collect(),
+            mcp_providers: Arc::new(RwLock::new(
+                approved_mcp_providers()
+                    .into_iter()
+                    .map(McpToolProvider::new)
+                    .collect(),
+            )),
             mcp_session_pool: None,
         }
     }

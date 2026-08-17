@@ -9,37 +9,15 @@ use super::mcp::{
     mcp_tool_result_parts, tool_result_preview,
 };
 use crate::conversation::{ToolCall, UnsavedMessagePart};
-use crate::mcp::{self as mcp_protocol, McpArgument, McpTool, McpTransport};
+use crate::mcp::{self as mcp_protocol, McpTool, McpTransport};
+use crate::plugin::PluginStore;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
+use crate::tool_provider::ChromeDevToolsConnectionMode;
 use crate::tool_provider::ProviderSecret;
 use crate::tool_provider::manifest::ProviderTransport;
-
-fn approved_cua_provider() -> McpToolProvider {
-    McpToolProvider::new(approved_mcp_provider("cua-driver").unwrap())
-}
-
-fn approved_desktop_commander_provider() -> McpToolProvider {
-    McpToolProvider::new(approved_mcp_provider("desktop-commander").unwrap())
-}
-
-fn approved_blender_mcp_provider() -> McpToolProvider {
-    McpToolProvider::new(approved_mcp_provider("blender-mcp").unwrap())
-}
-
-fn approved_brightdata_provider() -> McpToolProvider {
-    McpToolProvider::new(approved_mcp_provider("brightdata").unwrap())
-}
-
-fn approved_basic_memory_provider() -> McpToolProvider {
-    McpToolProvider::new(approved_mcp_provider("basic-memory").unwrap())
-}
-
-fn approved_chrome_devtools_provider() -> McpToolProvider {
-    McpToolProvider::new(approved_mcp_provider("chrome-devtools").unwrap())
-}
 
 fn approved_parallel_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("parallel-search").unwrap())
@@ -47,41 +25,18 @@ fn approved_parallel_provider() -> McpToolProvider {
 
 #[test]
 fn approved_provider_manifests_describe_their_runtime_requirements() {
-    let providers = [
-        approved_cua_provider(),
-        approved_desktop_commander_provider(),
-        approved_blender_mcp_provider(),
-        approved_brightdata_provider(),
-        approved_basic_memory_provider(),
-        approved_chrome_devtools_provider(),
-        approved_parallel_provider(),
-    ];
+    let providers = [approved_parallel_provider()];
 
     let ids = providers
         .iter()
         .map(|provider| provider.manifest().provider_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(
-        ids,
-        vec![
-            "cua-driver",
-            "desktop-commander",
-            "blender-mcp",
-            "brightdata",
-            "basic-memory",
-            "chrome-devtools",
-            "parallel-search"
-        ]
-    );
+    assert_eq!(ids, vec!["parallel-search"]);
 
     for provider in providers {
         let manifest = provider.manifest();
         assert_eq!(manifest.kind, ToolProviderKind::Mcp);
-        if manifest.provider_id.as_str() == "parallel-search" {
-            assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
-        } else {
-            assert_eq!(manifest.transport, ProviderTransport::Stdio);
-        }
+        assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
         assert!(!manifest.description.is_empty());
         assert!(!manifest.readme_markdown.is_empty());
         match &manifest.launch {
@@ -98,172 +53,35 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
 }
 
 #[test]
-fn approved_provider_definitions_separate_runtime_and_package_setup() {
-    let desktop_commander = approved_desktop_commander_provider();
-    assert_eq!(
-        desktop_commander.manifest().runtime,
-        crate::tool_provider::ProviderRuntime::Node
-    );
-    assert_eq!(
-        desktop_commander
-            .package_command
-            .as_ref()
-            .map(|command| command.program),
-        Some("npx")
-    );
-    assert_eq!(
-        desktop_commander
-            .manifest()
-            .package
-            .as_ref()
-            .map(|package| package.name.as_str()),
-        Some("@wonderwhy-er/desktop-commander")
-    );
+fn packaged_chrome_devtools_mode_updates_package_owned_transport() {
+    let root = std::env::temp_dir().join(format!(
+        "windie-packaged-chrome-mode-test-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let store = PluginStore::new(&root);
+    let plugin = store.install_bundled("chrome-devtools").unwrap();
+    let registry = ToolProviderRegistry::new();
+    registry.register_plugin(&plugin).unwrap();
 
-    let blender = approved_blender_mcp_provider();
-    assert_eq!(
-        blender.manifest().runtime,
-        crate::tool_provider::ProviderRuntime::Uv
-    );
-    assert_eq!(
-        blender
-            .package_command
-            .as_ref()
-            .map(|command| command.program),
-        Some("uvx")
-    );
-    assert_eq!(
-        blender
-            .manifest()
-            .package
-            .as_ref()
-            .map(|package| package.name.as_str()),
-        Some("blender-mcp")
-    );
-
-    let cua = approved_cua_provider();
-    assert_eq!(
-        cua.manifest().runtime,
-        crate::tool_provider::ProviderRuntime::Native
-    );
-    assert!(cua.package_command.is_none());
-}
-
-#[test]
-fn basic_memory_manifest_declares_local_runtime_requirements() {
-    let provider = approved_basic_memory_provider();
-    let manifest = provider.manifest();
-
-    let crate::tool_provider::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch
-    else {
-        panic!("Basic Memory must use stdio");
+    registry
+        .set_chrome_devtools_mode(ChromeDevToolsConnectionMode::Existing)
+        .unwrap();
+    let provider = registry
+        .mcp_provider(&ToolProviderId::new("chrome-devtools"))
+        .unwrap();
+    let McpTransport::PackagedStdio { command, .. } = provider.transport() else {
+        panic!("installed Chrome DevTools should retain its packaged transport");
     };
-    assert_eq!(program, "uvx");
-    assert_eq!(
-        args,
-        &vec![
-            "--with".to_string(),
-            "litellm<1.92".to_string(),
-            "basic-memory".to_string(),
-            "mcp".to_string(),
-        ]
-    );
-    assert_eq!(
-        provider.package_command.unwrap().args,
-        &[
-            McpArgument::Literal("--with"),
-            McpArgument::Literal("litellm<1.92"),
-            McpArgument::Literal("--from"),
-            McpArgument::Literal("basic-memory"),
-            McpArgument::Literal("python"),
-            McpArgument::Literal("-c"),
-            McpArgument::Literal("pass"),
-        ]
-    );
     assert!(
-        matches!(provider.transport(), McpTransport::Stdio { command, .. } if command.env.iter().any(|variable| variable.key == "BASIC_MEMORY_MCP_PROJECT"))
+        command.env.iter().any(|(name, value)| {
+            name == "WINDIE_CHROME_CONNECTION_MODE" && value == "existing"
+        })
     );
-    assert!(
-        manifest
-            .dependencies
-            .iter()
-            .any(|dependency| dependency.executable == "uvx")
-    );
-    assert!(
-        manifest
-            .permissions
-            .contains(&crate::tool_provider::ProviderPermission::Filesystem)
-    );
-}
 
-#[test]
-fn brightdata_manifest_declares_required_secret() {
-    let provider = approved_brightdata_provider();
-    let manifest = provider.manifest();
-
-    assert_eq!(
-        manifest.secrets,
-        vec![ProviderSecret::required(
-            "BRIGHTDATA_API_TOKEN",
-            "Bright Data API token",
-        )]
-    );
-}
-
-#[test]
-fn chrome_devtools_manifest_declares_persistent_profile_and_privacy_defaults() {
-    let provider = approved_chrome_devtools_provider();
-    let manifest = provider.manifest();
-
-    assert_eq!(
-        manifest.runtime,
-        crate::tool_provider::ProviderRuntime::Node
-    );
-    assert_eq!(
-        manifest
-            .package
-            .as_ref()
-            .map(|package| package.name.as_str()),
-        Some("chrome-devtools-mcp@1.6.0")
-    );
-    let crate::tool_provider::manifest::ProviderLaunch::Stdio { program, args } = &manifest.launch
-    else {
-        panic!("Chrome DevTools must use stdio");
-    };
-    assert_eq!(program, "npx");
-    assert_eq!(
-        args,
-        &vec![
-            "-y".to_string(),
-            "chrome-devtools-mcp@1.6.0".to_string(),
-            "--user-data-dir".to_string(),
-            "<windie-data-dir>/mcp/chrome-devtools/profile".to_string(),
-            "--no-usage-statistics".to_string(),
-        ]
-    );
-    assert!(
-        manifest
-            .permissions
-            .contains(&crate::tool_provider::ProviderPermission::ComputerControl)
-    );
-    assert!(
-        manifest
-            .permissions
-            .contains(&crate::tool_provider::ProviderPermission::Network)
-    );
-    let McpTransport::Stdio { command, .. } = provider.transport() else {
-        panic!("Chrome DevTools must use stdio");
-    };
-    assert!(command.env.iter().any(|variable| {
-        variable.key == "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS"
-            && variable.value == mcp_protocol::McpEnvValue::Literal("true")
-    }));
-    assert!(
-        !command
-            .args
-            .iter()
-            .any(|argument| matches!(argument, mcp_protocol::McpArgument::Literal("--slim")))
-    );
+    registry.unregister_plugin(&plugin).unwrap();
+    store.remove_plugin("chrome-devtools").unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -311,118 +129,6 @@ fn mcp_schema_names_are_provider_prefixed() {
         mcp_schema_name("cua_driver", "type text"),
         "cua_driver__type_text"
     );
-}
-
-#[test]
-fn cua_mcp_tools_map_to_provider_backed_definitions() {
-    let provider = approved_cua_provider();
-    let definition = provider.definition_from_mcp_tool(McpTool {
-        name: "click".to_string(),
-        description: "Click somewhere".to_string(),
-        input_schema: json!({"type":"object"}),
-        annotations: Some(mcp_protocol::McpToolAnnotations {
-            read_only_hint: Some(false),
-        }),
-    });
-
-    assert_eq!(definition.schema_name.as_str(), "cua_driver__click");
-    assert_eq!(definition.provider.provider_id.as_str(), "cua-driver");
-    assert_eq!(definition.provider.tool_name.as_str(), "click");
-    assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
-    assert_eq!(
-        definition.permissions,
-        vec![ToolPermission::ExternalProcess]
-    );
-    assert_eq!(definition.annotations.read_only, Some(false));
-}
-
-#[test]
-fn desktop_commander_mcp_tools_map_to_provider_backed_definitions() {
-    let provider = approved_desktop_commander_provider();
-    let definition = provider.definition_from_mcp_tool(McpTool {
-        name: "read_file".to_string(),
-        description: "Read a file".to_string(),
-        input_schema: json!({"type":"object"}),
-        annotations: Some(mcp_protocol::McpToolAnnotations {
-            read_only_hint: Some(true),
-        }),
-    });
-
-    assert_eq!(
-        definition.schema_name.as_str(),
-        "desktop_commander__read_file"
-    );
-    assert_eq!(
-        definition.provider.provider_id.as_str(),
-        "desktop-commander"
-    );
-    assert_eq!(definition.provider.tool_name.as_str(), "read_file");
-    assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
-    assert_eq!(
-        definition.permissions,
-        vec![ToolPermission::ExternalProcess]
-    );
-    assert_eq!(definition.annotations.read_only, Some(true));
-}
-
-#[test]
-fn blender_mcp_tools_map_to_provider_backed_definitions() {
-    let provider = approved_blender_mcp_provider();
-    let definition = provider.definition_from_mcp_tool(McpTool {
-        name: "get_scene_info".to_string(),
-        description: "Get scene info".to_string(),
-        input_schema: json!({"type":"object"}),
-        annotations: Some(mcp_protocol::McpToolAnnotations {
-            read_only_hint: Some(true),
-        }),
-    });
-
-    assert_eq!(
-        definition.schema_name.as_str(),
-        "blender_mcp__get_scene_info"
-    );
-    assert_eq!(definition.provider.provider_id.as_str(), "blender-mcp");
-    assert_eq!(definition.provider.tool_name.as_str(), "get_scene_info");
-    assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
-    assert_eq!(
-        definition.permissions,
-        vec![ToolPermission::ExternalProcess]
-    );
-    assert_eq!(definition.annotations.read_only, Some(true));
-}
-
-#[test]
-fn brightdata_mcp_tools_map_to_provider_backed_definitions() {
-    let provider = approved_brightdata_provider();
-    let definition = provider.definition_from_mcp_tool(McpTool {
-        name: "search_engine".to_string(),
-        description: "Search live web results".to_string(),
-        input_schema: json!({"type":"object"}),
-        annotations: Some(mcp_protocol::McpToolAnnotations {
-            read_only_hint: Some(true),
-        }),
-    });
-
-    assert_eq!(definition.schema_name.as_str(), "brightdata__search_engine");
-    assert_eq!(definition.provider.provider_id.as_str(), "brightdata");
-    assert_eq!(definition.provider.tool_name.as_str(), "search_engine");
-    assert_eq!(definition.provider.kind, ToolProviderKind::Mcp);
-    assert_eq!(
-        definition.permissions,
-        vec![ToolPermission::ExternalProcess]
-    );
-    assert_eq!(definition.annotations.read_only, Some(true));
-}
-
-#[test]
-fn desktop_commander_config_allows_every_directory() {
-    let config = json!({
-        "allowedDirectories": [],
-        "telemetryEnabled": false,
-    });
-
-    assert_eq!(config["allowedDirectories"].as_array().unwrap().len(), 0);
-    assert_eq!(config["telemetryEnabled"], false);
 }
 
 #[test]
@@ -517,8 +223,16 @@ fn registry_executes_only_approved_mcp_provider_ids() {
 }
 
 #[test]
-fn registry_recognizes_cua_driver_as_approved_mcp_provider() {
+fn registry_recognizes_cua_driver_after_package_registration() {
+    let root = std::env::temp_dir().join(format!(
+        "windie-cua-driver-registry-test-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let store = PluginStore::new(&root);
+    let plugin = store.install_bundled("cua-driver").unwrap();
     let registry = ToolProviderRegistry::new();
+    registry.register_plugin(&plugin).unwrap();
     let attached_tool = AttachedTool {
         schema_name: ToolSchemaName::new("cua_driver__click"),
         description: "Click somewhere".to_string(),
@@ -533,30 +247,22 @@ fn registry_recognizes_cua_driver_as_approved_mcp_provider() {
     };
 
     assert!(registry.can_execute(&attached_tool));
+    registry.unregister_plugin(&plugin).unwrap();
+    store.remove_plugin("cua-driver").unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn registry_recognizes_blender_mcp_as_approved_provider() {
+fn registry_recognizes_brightdata_after_package_registration() {
+    let root = std::env::temp_dir().join(format!(
+        "windie-brightdata-registry-test-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let store = PluginStore::new(&root);
+    let plugin = store.install_bundled("brightdata").unwrap();
     let registry = ToolProviderRegistry::new();
-    let attached_tool = AttachedTool {
-        schema_name: ToolSchemaName::new("blender_mcp__get_scene_info"),
-        description: "Get scene info".to_string(),
-        parameters: json!({"type":"object"}),
-        provider: ToolProviderRef::new(
-            ToolProviderId::new("blender-mcp"),
-            ProviderToolName::new("get_scene_info"),
-            ToolProviderKind::Mcp,
-        ),
-        permissions: vec![ToolPermission::ExternalProcess],
-        annotations: ToolAnnotations::default(),
-    };
-
-    assert!(registry.can_execute(&attached_tool));
-}
-
-#[test]
-fn registry_recognizes_brightdata_as_approved_provider() {
-    let registry = ToolProviderRegistry::new();
+    registry.register_plugin(&plugin).unwrap();
     let attached_tool = AttachedTool {
         schema_name: ToolSchemaName::new("brightdata__search_engine"),
         description: "Search live web results".to_string(),
@@ -571,4 +277,7 @@ fn registry_recognizes_brightdata_as_approved_provider() {
     };
 
     assert!(registry.can_execute(&attached_tool));
+    registry.unregister_plugin(&plugin).unwrap();
+    store.remove_plugin("brightdata").unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }

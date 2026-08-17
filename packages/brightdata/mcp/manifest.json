@@ -1,0 +1,25 @@
+{
+  "manifest_version": "0.4",
+  "name": "brightdata-mcp",
+  "display_name": "Bright Data",
+  "version": "2.11.1",
+  "description": "Bright Data web data tools through the Model Context Protocol.",
+  "author": {
+    "name": "Bright Data",
+    "url": "https://github.com/brightdata/brightdata-mcp"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server.js"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20"
+    }
+  }
+}

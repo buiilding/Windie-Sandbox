@@ -1,23 +1,16 @@
-//! Code-approved MCP provider allowlist.
+//! Code-approved MCP provider compatibility definitions.
 //!
-//! This is a code-owned allowlist, not user configuration. Provider
-//! availability still does not grant model access; conversations must expose
-//! individual tools before their schemas are sent to the model.
+//! This module is temporary migration compatibility for providers that have
+//! not yet moved into Windie's installed plugin store. Provider availability
+//! still does not grant model access; conversations must expose individual
+//! tools before their schemas are sent to the model.
 
 use super::McpProviderDefinition;
-use super::{basic_memory, blender, brightdata, chrome_devtools, cua, desktop_commander, parallel};
+use super::parallel;
 
 /// Returns the MCP providers Windie is willing to start and execute.
 pub(in crate::tool_provider) fn approved_mcp_providers() -> Vec<McpProviderDefinition> {
-    vec![
-        cua::definition(),
-        desktop_commander::definition(),
-        blender::definition(),
-        brightdata::definition(),
-        basic_memory::definition(),
-        chrome_devtools::definition(),
-        parallel::definition(),
-    ]
+    vec![parallel::definition()]
 }
 
 /// Finds one approved MCP provider definition for tests.
