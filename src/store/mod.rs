@@ -18,6 +18,7 @@ mod tool_schema;
 pub use compaction::Compaction;
 pub use component::InstalledProvider;
 pub use conversation::ConversationInfo;
+pub(crate) use session::SessionRuntimeMessage;
 pub use tool_catalog::{ProviderCatalogStatus, ProviderToolCatalog};
 
 #[cfg(test)]

@@ -122,6 +122,21 @@ impl RuntimeEventSink for RecordingRuntimeEvents {
     }
 }
 
+struct FailingAssistantMessagePersistence;
+
+impl RuntimeEventSink for FailingAssistantMessagePersistence {
+    fn save_assistant_message(
+        &self,
+        _store: &mut Store,
+        _conversation_id: &ConversationId,
+        _parent_message_id: Option<&MessageId>,
+        _content: &str,
+        _metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        Err(anyhow!("assistant message persistence failed"))
+    }
+}
+
 struct FailingLlm;
 
 impl RuntimeLlm for FailingLlm {
@@ -712,6 +727,36 @@ async fn run_head_saves_assistant_message() {
         messages[1].parent_message_id.as_deref(),
         messages[0].id.as_deref()
     );
+}
+
+#[tokio::test]
+async fn run_head_returns_assistant_persistence_failure() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let registry = runtime_test_registry();
+    let events = FailingAssistantMessagePersistence;
+
+    let error = run_latest_head_once_with_registry_and_events(
+        &NoopOutput,
+        &ReplyLlm::new("must not persist"),
+        &mut store,
+        &conversation_id,
+        &registry,
+        &events,
+        RuntimeModelRequest::new(None, None),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("assistant message persistence failed")
+    );
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 1);
 }
 
 #[tokio::test]

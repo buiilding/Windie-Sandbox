@@ -1,7 +1,9 @@
 //! Runtime session and replayable session-event persistence.
 
 use super::compaction::delete_compactions_for_conversation;
-use super::message::{insert_message_in_transaction, insert_unsaved_message_parts_in_transaction};
+use super::message::{
+    MessageInsert, insert_message_in_transaction, insert_unsaved_message_parts_in_transaction,
+};
 use super::*;
 
 use crate::session::SessionInputId;
@@ -12,6 +14,36 @@ pub struct QueuedSessionInput {
     pub id: SessionInputId,
     pub content: String,
     pub parts: Vec<UnsavedMessagePart>,
+}
+
+/// Runtime-produced message variants that advance a durable session branch.
+///
+/// The store derives the persisted role, tool-call metadata, and replay event
+/// from this typed input so callers cannot combine mismatched values.
+pub(crate) enum SessionRuntimeMessage<'a> {
+    Assistant {
+        parent_message_id: Option<&'a MessageId>,
+        content: &'a str,
+        metadata: Option<&'a MessageMetadata>,
+    },
+    ToolResult {
+        parent_message_id: &'a MessageId,
+        tool_call_id: &'a ToolCallId,
+        content: &'a str,
+        parts: &'a [UnsavedMessagePart],
+    },
+}
+
+/// Fully resolved values used by the shared transactional write.
+struct SessionMessageInsert<'a> {
+    session_id: &'a SessionId,
+    owner: SessionExecutionOwner,
+    conversation_id: &'a ConversationId,
+    parent_message_id: Option<&'a MessageId>,
+    role: Role,
+    content: &'a str,
+    parts: &'a [UnsavedMessagePart],
+    metadata: Option<&'a MessageMetadata>,
 }
 
 impl Store {
@@ -654,61 +686,57 @@ impl Store {
         Ok(())
     }
 
-    /// Atomically persists an assistant message, advances its session head, and
-    /// appends the replay event that announces the durable message.
-    pub(crate) fn insert_session_assistant_message(
+    /// Atomically persists a runtime message, advances its session head, and
+    /// appends the matching replay event.
+    pub(crate) fn insert_session_runtime_message(
         &mut self,
         session_id: &SessionId,
         owner: SessionExecutionOwner,
         conversation_id: &ConversationId,
-        parent_message_id: Option<&MessageId>,
-        content: &str,
-        metadata: Option<&MessageMetadata>,
+        message: SessionRuntimeMessage<'_>,
     ) -> Result<(MessageId, SessionEventRecord)> {
-        self.insert_session_message(
-            session_id,
-            owner,
-            conversation_id,
-            parent_message_id,
-            Role::Assistant,
-            content,
-            &[],
-            metadata,
-        )
-    }
-
-    /// Atomically persists a tool result, advances its session head, and
-    /// appends the replay event that announces the durable result.
-    pub(crate) fn insert_session_tool_result_message(
-        &mut self,
-        session_id: &SessionId,
-        owner: SessionExecutionOwner,
-        conversation_id: &ConversationId,
-        parent_message_id: &MessageId,
-        tool_call_id: &ToolCallId,
-        content: &str,
-        parts: &[UnsavedMessagePart],
-    ) -> Result<(MessageId, SessionEventRecord)> {
-        self.ensure_tool_result_parent_matches_call(
-            conversation_id,
-            parent_message_id,
-            tool_call_id,
-        )?;
-        let metadata = MessageMetadata {
-            tool_call_id: Some(tool_call_id.clone()),
-            ..Default::default()
-        };
-
-        self.insert_session_message(
-            session_id,
-            owner,
-            conversation_id,
-            Some(parent_message_id),
-            Role::Tool,
-            content,
-            parts,
-            Some(&metadata),
-        )
+        match message {
+            SessionRuntimeMessage::Assistant {
+                parent_message_id,
+                content,
+                metadata,
+            } => self.insert_session_message(SessionMessageInsert {
+                session_id,
+                owner,
+                conversation_id,
+                parent_message_id,
+                role: Role::Assistant,
+                content,
+                parts: &[],
+                metadata,
+            }),
+            SessionRuntimeMessage::ToolResult {
+                parent_message_id,
+                tool_call_id,
+                content,
+                parts,
+            } => {
+                self.ensure_tool_result_parent_matches_call(
+                    conversation_id,
+                    parent_message_id,
+                    tool_call_id,
+                )?;
+                let metadata = MessageMetadata {
+                    tool_call_id: Some(tool_call_id.clone()),
+                    ..Default::default()
+                };
+                self.insert_session_message(SessionMessageInsert {
+                    session_id,
+                    owner,
+                    conversation_id,
+                    parent_message_id: Some(parent_message_id),
+                    role: Role::Tool,
+                    content,
+                    parts,
+                    metadata: Some(&metadata),
+                })
+            }
+        }
     }
 
     /// Commits one runtime-produced message and every durable session pointer
@@ -718,24 +746,20 @@ impl Store {
     /// prevents a stale runtime writer from moving an already-advanced branch.
     fn insert_session_message(
         &mut self,
-        session_id: &SessionId,
-        owner: SessionExecutionOwner,
-        conversation_id: &ConversationId,
-        parent_message_id: Option<&MessageId>,
-        role: Role,
-        content: &str,
-        parts: &[UnsavedMessagePart],
-        metadata: Option<&MessageMetadata>,
+        message: SessionMessageInsert<'_>,
     ) -> Result<(MessageId, SessionEventRecord)> {
-        self.ensure_conversation_exists(conversation_id)?;
-        if let Some(parent_message_id) = parent_message_id {
-            self.ensure_message_belongs_to_conversation(conversation_id, parent_message_id)?;
+        self.ensure_conversation_exists(message.conversation_id)?;
+        if let Some(parent_message_id) = message.parent_message_id {
+            self.ensure_message_belongs_to_conversation(
+                message.conversation_id,
+                parent_message_id,
+            )?;
         }
 
         let message_id = MessageId::new(Uuid::new_v4().to_string());
-        let metadata_json = encode_message_metadata(metadata)?;
+        let metadata_json = encode_message_metadata(message.metadata)?;
         let now = now_millis()?;
-        let event = match role {
+        let event = match message.role {
             Role::Assistant => SessionEvent::AssistantMessageSaved {
                 message_id: message_id.as_str().to_string(),
             },
@@ -761,7 +785,7 @@ impl Store {
                 FROM sessions
                 WHERE id = ?1
                 ",
-                    params![session_id.as_str()],
+                    params![message.session_id.as_str()],
                     |row| {
                         Ok((
                             ConversationId::new(row.get::<_, String>(0)?),
@@ -774,21 +798,25 @@ impl Store {
                 .optional()
                 .context("failed to load session for atomic message save")?
                 .ok_or_else(|| {
-                    error::not_found(format!("runtime session does not exist: {session_id}"))
+                    error::not_found(format!(
+                        "runtime session does not exist: {}",
+                        message.session_id
+                    ))
                 })?;
 
-        if session_conversation_id != *conversation_id {
+        if session_conversation_id != *message.conversation_id {
             return Err(error::invalid_request(format!(
-                "session does not belong to conversation: {session_id}"
+                "session does not belong to conversation: {}",
+                message.session_id
             )));
         }
-        if current_head_message_id.as_ref() != parent_message_id {
+        if current_head_message_id.as_ref() != message.parent_message_id {
             return Err(error::conflict(
                 "session head changed before runtime message persistence; reload and retry",
             ));
         }
         if status != SessionStatus::Running.as_storage()
-            || execution_owner.as_deref() != Some(owner.as_storage())
+            || execution_owner.as_deref() != Some(message.owner.as_storage())
         {
             return Err(error::conflict(
                 "session execution claim was cancelled or transferred before runtime message persistence",
@@ -797,14 +825,16 @@ impl Store {
 
         insert_message_in_transaction(
             &transaction,
-            &message_id,
-            conversation_id,
-            parent_message_id,
-            role,
-            content,
-            parts,
-            metadata_json.as_deref(),
-            now,
+            MessageInsert {
+                id: &message_id,
+                conversation_id: message.conversation_id,
+                parent_message_id: message.parent_message_id,
+                role: message.role,
+                content: message.content,
+                parts: message.parts,
+                metadata_json: metadata_json.as_deref(),
+                created_at: now,
+            },
         )?;
         transaction
             .execute(
@@ -814,10 +844,11 @@ impl Store {
                     updated_at = ?2
                 WHERE id = ?3
                 ",
-                params![message_id.as_str(), now, session_id.as_str()],
+                params![message_id.as_str(), now, message.session_id.as_str()],
             )
             .context("failed to update session head for runtime message")?;
-        let record = append_session_event_in_transaction(&transaction, session_id, event, now)?;
+        let record =
+            append_session_event_in_transaction(&transaction, message.session_id, event, now)?;
         transaction
             .commit()
             .context("failed to commit atomic session message")?;

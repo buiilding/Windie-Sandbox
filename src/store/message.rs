@@ -1435,7 +1435,7 @@ pub(super) fn insert_unsaved_message_parts_in_transaction(
     Ok(())
 }
 
-/// Inserts one complete message into an existing transaction.
+/// Prepared values for inserting one complete message in an existing transaction.
 ///
 /// Session persistence uses this primitive so the message row, optional rich
 /// parts, conversation timestamp, session head, and replay event can share one
@@ -1452,6 +1452,7 @@ pub(super) struct MessageInsert<'a> {
     pub(super) created_at: i64,
 }
 
+/// Writes a prepared message row, its optional parts, and conversation timestamp.
 pub(super) fn insert_message_in_transaction(
     transaction: &Transaction<'_>,
     message: MessageInsert<'_>,
@@ -1489,12 +1490,8 @@ pub(super) fn insert_message_in_transaction(
         message.created_at,
     )
     .context("failed to save message parts")?;
-    touch_conversation_in_transaction(
-        transaction,
-        message.conversation_id,
-        message.created_at,
-    )
-    .context("failed to update conversation timestamp")?;
+    touch_conversation_in_transaction(transaction, message.conversation_id, message.created_at)
+        .context("failed to update conversation timestamp")?;
 
     Ok(())
 }

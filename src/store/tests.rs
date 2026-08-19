@@ -2869,13 +2869,15 @@ fn atomically_saves_assistant_message_session_head_and_event() {
         .unwrap();
 
     let (message_id, record) = store
-        .insert_session_assistant_message(
+        .insert_session_runtime_message(
             &session_id,
             SessionExecutionOwner::Api,
             &conversation_id,
-            Some(&user_id),
-            "hello back",
-            None,
+            SessionRuntimeMessage::Assistant {
+                parent_message_id: Some(&user_id),
+                content: "hello back",
+                metadata: None,
+            },
         )
         .unwrap();
 
@@ -2938,13 +2940,15 @@ fn atomic_session_message_rolls_back_when_event_insert_fails() {
         .unwrap();
 
     let error = store
-        .insert_session_assistant_message(
+        .insert_session_runtime_message(
             &session_id,
             SessionExecutionOwner::Api,
             &conversation_id,
-            Some(&user_id),
-            "must roll back",
-            None,
+            SessionRuntimeMessage::Assistant {
+                parent_message_id: Some(&user_id),
+                content: "must roll back",
+                metadata: None,
+            },
         )
         .unwrap_err();
 
@@ -3007,14 +3011,16 @@ fn atomically_saves_multipart_tool_result_session_head_and_event() {
     let parts = vec![unsaved_text("tool output")];
 
     let (message_id, record) = store
-        .insert_session_tool_result_message(
+        .insert_session_runtime_message(
             &session_id,
             SessionExecutionOwner::Api,
             &conversation_id,
-            &assistant_id,
-            &tool_call_id,
-            "tool output",
-            &parts,
+            SessionRuntimeMessage::ToolResult {
+                parent_message_id: &assistant_id,
+                tool_call_id: &tool_call_id,
+                content: "tool output",
+                parts: &parts,
+            },
         )
         .unwrap();
 

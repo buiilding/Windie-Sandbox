@@ -126,13 +126,15 @@ impl SessionEventRecorder {
         content: &str,
         metadata: Option<&MessageMetadata>,
     ) -> Result<(MessageId, crate::session::SessionEventRecord)> {
-        store.insert_session_assistant_message(
+        store.insert_session_runtime_message(
             &self.session_id,
             self.owner,
             conversation_id,
-            parent_message_id,
-            content,
-            metadata,
+            crate::store::SessionRuntimeMessage::Assistant {
+                parent_message_id,
+                content,
+                metadata,
+            },
         )
     }
 
@@ -146,14 +148,16 @@ impl SessionEventRecorder {
         content: &str,
         parts: &[UnsavedMessagePart],
     ) -> Result<(MessageId, crate::session::SessionEventRecord)> {
-        store.insert_session_tool_result_message(
+        store.insert_session_runtime_message(
             &self.session_id,
             self.owner,
             conversation_id,
-            parent_message_id,
-            tool_call_id,
-            content,
-            parts,
+            crate::store::SessionRuntimeMessage::ToolResult {
+                parent_message_id,
+                tool_call_id,
+                content,
+                parts,
+            },
         )
     }
 
