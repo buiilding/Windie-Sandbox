@@ -1,15 +1,17 @@
-//! Model-facing context construction.
+//! Exact model-facing context construction.
 //!
-//! This module decides what conversation history the LLM sees. Full history
-//! stays in storage; compaction can be built for model requests.
-//! System prompt and tool schemas are tree-wide (conversation-wide), same for any head.
+//! This module is the single read-only compiler for an LLM request. It combines
+//! the selected persisted path with conversation-wide state and ephemeral runtime
+//! capabilities. Full history stays in storage; this module decides the exact
+//! messages and schemas sent to a model for one selected head.
 
 use anyhow::Result;
 
 use crate::conversation::{ConversationId, Message, MessageId, Role};
+use crate::plugin::PluginCatalog;
 use crate::store::Compaction;
 use crate::store::Store;
-use crate::tool::ToolSchema;
+use crate::tool::{ToolProviderRegistry, ToolSchema};
 
 const COMPACTION_PREFIX: &str = "Previous conversation summary:\n";
 
@@ -35,11 +37,11 @@ pub struct ContextParts {
 }
 
 impl ContextBuilder {
-    /// Loads the model-facing messages for an explicit path head.
+    /// Loads the persisted model-facing messages for an explicit path head.
     ///
     /// Tree-wide: system prompt comes from conversations.system_prompt column,
     /// not from branch-local system messages.
-    pub fn build_messages(
+    pub fn build_persisted_messages(
         store: &Store,
         conversation_id: &ConversationId,
         head_message_id: Option<&MessageId>,
@@ -58,18 +60,32 @@ impl ContextBuilder {
         }))
     }
 
-    /// Loads the full model context for an explicit path head.
+    /// Builds the exact model context for an explicit path head.
     ///
-    /// Tree-wide: tools are conversation-wide, messages are head-dependent.
+    /// The result is used unchanged by execution, inspection, and input-token
+    /// counting. Persisted messages, the system prompt, compaction, and attached
+    /// schemas come from the conversation. The plugin index and built-in control
+    /// schemas are ephemeral runtime capabilities: they are model-visible but are
+    /// never persisted as conversation messages or attached schemas.
     pub fn build_model_context(
         store: &Store,
         conversation_id: &ConversationId,
         head_message_id: Option<&MessageId>,
+        tools: &ToolProviderRegistry,
+        plugin_catalog: Option<&PluginCatalog>,
     ) -> Result<ModelContext> {
-        Ok(ModelContext {
-            messages: Self::build_messages(store, conversation_id, head_message_id)?,
+        let mut context = ModelContext {
+            messages: Self::build_persisted_messages(store, conversation_id, head_message_id)?,
             tool_schemas: store.load_tool_schemas(conversation_id)?,
-        })
+        };
+
+        if let Some(plugin_catalog) = plugin_catalog {
+            let index = plugin_catalog.compact_index(store, tools)?;
+            context.messages.insert(0, plugin_index_message(index));
+        }
+
+        append_builtin_schemas(&mut context.tool_schemas, tools);
+        Ok(context)
     }
 
     /// Flattens loaded context parts into messages sent to model.
@@ -94,6 +110,32 @@ impl ContextBuilder {
         messages.extend(path.into_iter().skip(compaction_index + 1));
 
         with_system_prompt(system_prompt, messages)
+    }
+}
+
+/// Converts the runtime plugin catalog into an ephemeral model instruction.
+fn plugin_index_message(index: String) -> Message {
+    Message {
+        id: None,
+        parent_message_id: None,
+        role: Role::System,
+        content: format!("Windie plugin index:\n\n{index}"),
+        parts: Vec::new(),
+        metadata: None,
+    }
+}
+
+/// Appends Windie-owned control schemas without shadowing an attached schema.
+fn append_builtin_schemas(tool_schemas: &mut Vec<ToolSchema>, tools: &ToolProviderRegistry) {
+    let mut names = tool_schemas
+        .iter()
+        .map(|tool| tool.name.as_str().to_string())
+        .collect::<std::collections::HashSet<_>>();
+
+    for definition in tools.builtin_tools() {
+        if names.insert(definition.schema_name.as_str().to_string()) {
+            tool_schemas.push(definition.attached_tool().schema());
+        }
     }
 }
 
@@ -157,7 +199,8 @@ mod tests {
             .unwrap();
 
         let messages =
-            ContextBuilder::build_messages(&store, &conversation_id, Some(&second_id)).unwrap();
+            ContextBuilder::build_persisted_messages(&store, &conversation_id, Some(&second_id))
+                .unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::User);
@@ -178,7 +221,8 @@ mod tests {
             .unwrap();
 
         let messages =
-            ContextBuilder::build_messages(&store, &conversation_id, Some(&user_id)).unwrap();
+            ContextBuilder::build_persisted_messages(&store, &conversation_id, Some(&user_id))
+                .unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::System);
@@ -217,7 +261,8 @@ mod tests {
             .unwrap();
 
         let messages =
-            ContextBuilder::build_messages(&store, &conversation_id, Some(&third_id)).unwrap();
+            ContextBuilder::build_persisted_messages(&store, &conversation_id, Some(&third_id))
+                .unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::System);
@@ -259,7 +304,8 @@ mod tests {
             .save_compaction(&conversation_id, &inactive_id, "inactive summary")
             .unwrap();
         let messages =
-            ContextBuilder::build_messages(&store, &conversation_id, Some(&active_id)).unwrap();
+            ContextBuilder::build_persisted_messages(&store, &conversation_id, Some(&active_id))
+                .unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "root");
@@ -284,9 +330,11 @@ mod tests {
             .unwrap();
 
         let messages_a =
-            ContextBuilder::build_messages(&store, &conversation_id, Some(&branch_a)).unwrap();
+            ContextBuilder::build_persisted_messages(&store, &conversation_id, Some(&branch_a))
+                .unwrap();
         let messages_b =
-            ContextBuilder::build_messages(&store, &conversation_id, Some(&branch_b)).unwrap();
+            ContextBuilder::build_persisted_messages(&store, &conversation_id, Some(&branch_b))
+                .unwrap();
 
         assert_eq!(messages_a[0].role, Role::System);
         assert_eq!(messages_a[0].content, "global prompt");

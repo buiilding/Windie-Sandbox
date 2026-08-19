@@ -395,6 +395,7 @@ fn serializes_inspection_report_with_runtime_state() {
                 metadata: None,
             },
         ],
+        Vec::new(),
         Vec::<crate::operation::InspectionPath>::new(),
         Some(Compaction {
             id: CompactionId::new("compaction-id"),

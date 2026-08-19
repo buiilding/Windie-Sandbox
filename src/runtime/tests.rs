@@ -13,6 +13,7 @@ use crate::llm::{
     ReasoningRequest,
 };
 use crate::mcp::McpCommand;
+use crate::runtime::context::ContextBuilder;
 use crate::tool::{ProviderInstallState, ToolProviderRegistry};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolExecutionResult, ToolPermission,
@@ -1737,7 +1738,9 @@ fn builtin_tools_are_always_model_visible_but_not_persisted() {
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let registry = runtime_test_registry();
 
-    let context = build_model_context(&store, &conversation_id, None, &registry).unwrap();
+    let context =
+        ContextBuilder::build_model_context(&store, &conversation_id, None, &registry, None)
+            .unwrap();
     let names = context
         .tool_schemas
         .into_iter()
@@ -1772,9 +1775,14 @@ fn plugin_index_is_ephemeral_and_does_not_attach_mcp_schemas() {
     let catalog =
         crate::plugin::PluginCatalog::new(plugin_store, crate::plugin::bundled_index().unwrap());
 
-    let context =
-        build_model_context_with_catalog(&store, &conversation_id, None, &registry, Some(&catalog))
-            .unwrap();
+    let context = ContextBuilder::build_model_context(
+        &store,
+        &conversation_id,
+        None,
+        &registry,
+        Some(&catalog),
+    )
+    .unwrap();
 
     assert_eq!(context.messages[0].role, Role::System);
     assert!(context.messages[0].content.contains("Installed plugins:"));

@@ -21,7 +21,7 @@ pub(crate) use tool_execution::{
     PendingToolCall, active_tool_execution, execute_pending_tool_call,
 };
 #[cfg(test)]
-pub(crate) use turn::{advance_turn, build_model_context, build_model_context_with_catalog};
+pub(crate) use turn::advance_turn;
 
 use crate::conversation::{ConversationId, MessageId};
 use crate::llm::{PromptCacheRequest, ReasoningRequest};

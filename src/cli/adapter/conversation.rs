@@ -1,12 +1,15 @@
 //! Terminal adapters for conversation creation, inspection, and settings.
 
 use anyhow::Result;
+use std::sync::Arc;
 
 use crate::conversation::{ConversationId, MessageId};
 use crate::llm::ModelName;
 use crate::operation;
 use crate::output::TerminalOutput;
+use crate::plugin::{PluginCatalog, PluginStore, bundled_index};
 use crate::store::Store;
+use crate::tool::ToolProviderRegistry;
 
 use super::system;
 
@@ -62,8 +65,17 @@ pub(crate) fn inspect_conversation(
     model: Option<ModelName>,
 ) -> Result<()> {
     let store = Store::open()?;
-    let report =
-        operation::inspect_conversation(&store, &conversation_id, head_message_id.as_ref(), model)?;
+    let tools = ToolProviderRegistry::with_installed_plugins()?;
+    let plugin_catalog =
+        PluginCatalog::new(Arc::new(PluginStore::default_store()?), bundled_index()?);
+    let report = operation::inspect_conversation(
+        &store,
+        &conversation_id,
+        head_message_id.as_ref(),
+        model,
+        &tools,
+        Some(&plugin_catalog),
+    )?;
 
     TerminalOutput.inspection_report_json(&report)
 }

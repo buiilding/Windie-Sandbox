@@ -287,7 +287,8 @@ fn input_token_context_uses_synthetic_input_for_tool_only_setup() {
     )
     .unwrap();
 
-    let context = conversation_input_token_context(&store, &conversation_id, None)
+    let tools = ToolProviderRegistry::new();
+    let context = conversation_input_token_context(&store, &conversation_id, None, &tools, None)
         .unwrap()
         .unwrap();
 
@@ -301,7 +302,7 @@ fn input_token_context_uses_synthetic_input_for_tool_only_setup() {
         context.model_messages[0].content,
         SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE
     );
-    assert_eq!(context.tool_schemas.len(), 1);
+    assert_eq!(context.tool_schemas.len(), 3);
 }
 
 #[test]
@@ -334,7 +335,9 @@ fn inspection_snapshot_includes_runtime_state() {
         .save_compaction(&conversation_id, &user_id, "hello happened")
         .unwrap();
 
-    let report = inspect_conversation(&store, &conversation_id, Some(&user_id), None).unwrap();
+    let tools = ToolProviderRegistry::new();
+    let report =
+        inspect_conversation(&store, &conversation_id, Some(&user_id), None, &tools, None).unwrap();
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversation_id"], conversation_id.as_str());
@@ -343,10 +346,13 @@ fn inspection_snapshot_includes_runtime_state() {
     assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
+    assert_eq!(value["model_tool_schemas"].as_array().unwrap().len(), 3);
+    assert_eq!(value["model_tool_schemas"][1]["name"], "windie__read_skill");
+    assert_eq!(value["model_tool_schemas"][2]["name"], "windie__attach_mcp");
     // Tree-wide: system prompt is stored in conversations table, not as a message in the tree.
     assert_eq!(value["messages"][0]["id"], user_id.as_str());
     assert_eq!(value["path"][0]["id"], user_id.as_str());
-    // model_context = [system_prompt, compaction] when compaction is through the head
+    // model_context = [system_prompt, compaction] when compaction is through the head.
     assert_eq!(value["model_context"][0]["role"], "system");
     assert_eq!(value["model_context"][0]["content"], "You are concise.");
     assert_eq!(

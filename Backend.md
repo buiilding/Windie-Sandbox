@@ -51,9 +51,9 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - operation/: shared workflow layer between clients and core systems.
 - operation/mod.rs: Public boundary and re-exports for operation folder.
 - operation/conversation.rs: conversation workflows.
-- operation/gateway.rs: gateway/model metadata/input-token workflows.
+- operation/gateway.rs: gateway/model metadata/input-token workflows. Its token preview compiles the exact same model payload as execution without mutating a conversation.
 - operation/input.rs: message input part and image loading workflows.
-- operation/inspection.rs: Read-only inspection snapshots for a conversation/head, including tree, selected path, model context, prompt, tools, and compaction.
+- operation/inspection.rs: Read-only inspection snapshots for a conversation/head, including the durable tree, path, and attached schemas plus the separate final model-context projection and exact ephemeral model schemas, prompt, and compaction.
 - operation/message.rs: message and system prompts mutations workflows.
 - operation/tool.rs: tool catalog, attachments, mutations workflows.
 - operation/session.rs: session lifecycle, backend-owned branch resolution, and runtime advancement workflows.
@@ -101,7 +101,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - cli/adapter/system.rs: Adapts process lifecycle, gateway, onboarding,
   environment, installation, and help commands.
 - cli/adapter/conversation.rs: Adapts conversation creation, inspection,
-  listing, branching, deletion, and settings commands.
+  listing, branching, deletion, and settings commands; inspection loads the
+  same installed capability sources as the API before compiling its snapshot.
 - cli/adapter/message.rs: Adapts direct message and system-prompt mutations.
 - cli/adapter/tool.rs: Adapts provider-tool and conversation tool-schema
   commands.
@@ -134,7 +135,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tool/policy/mod.rs: Approval decision rules: allow, ask, or deny a pending tool call.
 - tool/policy/tests.rs:
 - tool/provider.rs: Provider identity types: typed references from Windie tools to executable backends.
-- tool/builtin.rs: defines Windie-owned control tools that are added to model context at runtime; they are not persisted as conversation tools.
+- tool/builtin.rs: defines Windie-owned control tools that `runtime/context.rs`
+  adds to every final model payload; they are not persisted as conversation tools.
 - tool/lifecycle.rs: defines persisted lifecycle states for installed tool components.
 - tool/manifest.rs: runtime-facing provider metadata projected from package manifests.
 - tool/registry.rs: provider-neutral live discovery and execution dispatch. It projects installed MCP components into Windie's model-facing tool registry.
@@ -195,8 +197,14 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - runtime/:
 - runtime/mod.rs: public boundary and re-exports for runtime folder.
-- runtime/context.rs: model-facing context finalizer, resolving system prompt, tool schemas, messages, and compaction summary for one selected head.
-- runtime/turn.rs: Runs model turns. Loads the selected conversation head, builds model context, stream assistant response, saves assistant message, and continues through automatic tool calls until completion or approval is needed. 
+- runtime/context.rs: the single read-only compiler for the exact model payload
+  at one selected head. It combines the selected path, system prompt,
+  compaction, attached schemas, plugin-index system message, and built-in tool
+  schemas without persisting ephemeral capabilities.
+- runtime/turn.rs: Runs model turns. It selects a runnable head, asks
+  `runtime/context.rs` for the final model payload unchanged, streams the
+  assistant response, saves it, and continues through automatic tool calls
+  until completion or approval is needed.
 - runtime/tool_execution.rs: handles tool calls. identifies pending calls, enforeces tool policy, executes approved provider or built-in tools, enforces tool-call order, and save tool results
 - runtime/wakeup.rs: typed events that resume runtime activity, currently session-targeted tool approval decisions.
 - runtime/tests.rs:
@@ -215,7 +223,16 @@ Conversations are durable message trees:
 - fork: copy a selected path into a new conversation.
 - update: replace node content.
 - session/query: run from a selected head and append assistant/tool nodes as results.
-- show/tree/inspect: inspect the tree, path, and model-facing context.
+- show/tree/inspect: inspect the tree, path, final model-context projection,
+  and runtime schema list.
+
+`runtime/context.rs` is the only module that decides model-visible messages
+and schemas. `runtime/turn.rs` owns execution workflow, and
+`runtime/tool_execution.rs` owns tool-policy decisions and result persistence;
+neither may add or remove model context after it is compiled. API inspection
+and input-token counting call the same context compiler, so their output shows
+the runtime capabilities that execution uses rather than a persisted-only
+approximation.
 
 Sessions are durable branch objects over a conversation tree. A session stores
 the branch's base/current message heads, runtime status, queued inputs,

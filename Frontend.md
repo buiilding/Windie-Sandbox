@@ -301,7 +301,7 @@ conversation
 │       ├── parts: text | image
 │       └── metadata: tool calls | reasoning | usage | refusal | annotations | audio
 ├── selectedPath: MessageID[]
-├── modelContext
+├── modelContext, modelToolSchemas
 ├── latestCompaction
 ├── paths
 └── toolSchemas
@@ -310,7 +310,11 @@ conversation
 The backend inspection response is authoritative. The mapper reconstructs
 `childrenIds` from each node's `parentId`, converts provider-shaped metadata
 into display-shaped metadata, and keeps image assets as references that can be
-loaded later.
+loaded later. `modelContext` is the final runtime-context projection and
+`modelToolSchemas` is the exact runtime schema list for the selected head,
+including ephemeral plugin-index instructions and built-in control schemas.
+`toolSchemas` remains the editable durable attachment list, so those
+runtime-only capabilities are not mistaken for conversation data.
 
 Conversation summaries are intentionally smaller than inspections. The
 conversation picker can list and sort summaries without loading every message;
@@ -538,7 +542,8 @@ renders the provider schemas returned by the backend.
 - Long user messages and tool outputs are collapsed in the browser and can be
   expanded without changing stored content.
 - The token meter is valid only when its context signature matches the current
-  model, system prompt, tools, compaction state, and selected path.
+  model, system prompt, tools and installed-plugin index, compaction state, and
+  selected path.
 
 ## Frontend boundary rules
 

@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::plugin::PluginCatalog;
+
 /// Maximum preview characters exposed per path leaf in the inspection JSON.
 const PATH_LEAF_PREVIEW_MAX_CHARS: usize = 80;
 
@@ -59,10 +61,14 @@ pub struct InspectionReport {
     reasoning: Option<ReasoningRequest>,
     system_prompt: Option<String>,
     tool_approval_mode: ToolApprovalMode,
+    /// Durable conversation attachments, used by clients that can edit them.
     tool_schemas: Vec<ToolSchema>,
     messages: Vec<InspectionMessage>,
     path: Vec<InspectionMessage>,
+    /// Full model-context message projection for this selected head.
     model_context: Vec<InspectionMessage>,
+    /// Complete ephemeral schemas passed to a query for this selected head.
+    model_tool_schemas: Vec<ToolSchema>,
     paths: Vec<InspectionPath>,
     latest_compaction: Option<InspectionCompaction>,
 }
@@ -80,6 +86,7 @@ impl InspectionReport {
         messages: Vec<Message>,
         path: Vec<Message>,
         model_context: Vec<Message>,
+        model_tool_schemas: Vec<ToolSchema>,
         paths: Vec<InspectionPath>,
         latest_compaction: Option<Compaction>,
     ) -> Self {
@@ -94,6 +101,7 @@ impl InspectionReport {
             messages: inspection_messages(messages),
             path: inspection_messages(path),
             model_context: inspection_messages(model_context),
+            model_tool_schemas,
             paths,
             latest_compaction: latest_compaction.map(InspectionCompaction::from_compaction),
         }
@@ -181,23 +189,37 @@ pub fn conversation_tree(
 }
 
 /// Loads the shared read-only inspection snapshot used by CLI JSON and API.
-/// Tree-wide: system prompt and tool schemas are conversation-wide, same for any head.
+///
+/// `model_context` is the complete model-context projection and
+/// `model_tool_schemas` is the exact ephemeral schema list that a query would
+/// receive for this head, including the plugin index and built-in control
+/// schemas. `tool_schemas` remains the durable attachment list for clients that
+/// manage conversation tools. Persisted history remains separately visible in
+/// `messages`.
 pub fn inspect_conversation(
     store: &Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     model_override: Option<ModelName>,
+    tools: &ToolProviderRegistry,
+    plugin_catalog: Option<&PluginCatalog>,
 ) -> Result<InspectionReport> {
     let model = resolve_conversation_model(store, conversation_id, model_override)?;
     let reasoning = conversation_reasoning(store, conversation_id)?;
     let tool_approval_mode = store.tool_approval_mode(conversation_id)?;
-    let messages = store.load_message_tree(conversation_id)?;
     let tool_schemas = store.load_tool_schemas(conversation_id)?;
+    let messages = store.load_message_tree(conversation_id)?;
     let path = match head_message_id {
         Some(message_id) => store.load_path_to_message(conversation_id, message_id)?,
         None => Vec::new(),
     };
-    let model_context = ContextBuilder::build_messages(store, conversation_id, head_message_id)?;
+    let model_context = ContextBuilder::build_model_context(
+        store,
+        conversation_id,
+        head_message_id,
+        tools,
+        plugin_catalog,
+    )?;
     let system_prompt = store.system_prompt(conversation_id)?;
     let latest_compaction = store.latest_compaction(conversation_id)?;
     let paths = build_inspection_paths(store, conversation_id, &messages)?;
@@ -212,7 +234,8 @@ pub fn inspect_conversation(
         tool_schemas,
         messages,
         path,
-        model_context,
+        model_context.messages,
+        model_context.tool_schemas,
         paths,
         latest_compaction,
     ))

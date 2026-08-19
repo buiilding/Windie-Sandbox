@@ -238,10 +238,13 @@ pub(super) async fn run(categories: &[BenchmarkCategory]) -> Result<Vec<Scenario
                     attach_test_mcp_tool(store, &conversation_id)?;
                     let assistant = create_completed_tool_chain(store, &conversation_id, 2)?;
                     let started = Instant::now();
+                    let tools = ToolProviderRegistry::new();
                     let context = ContextBuilder::build_model_context(
                         store,
                         &conversation_id,
                         Some(&assistant),
+                        &tools,
+                        None,
                     )?;
                     debug_assert!(!context.messages.is_empty());
                     Ok(started.elapsed())
@@ -652,7 +655,14 @@ fn benchmark_model_context(system_prompt: bool, compaction: bool, image: bool) -
             store.save_compaction(&conversation_id, &head, "previous history")?;
         }
         let started = Instant::now();
-        let context = ContextBuilder::build_model_context(store, &conversation_id, Some(&head))?;
+        let tools = ToolProviderRegistry::new();
+        let context = ContextBuilder::build_model_context(
+            store,
+            &conversation_id,
+            Some(&head),
+            &tools,
+            None,
+        )?;
         debug_assert!(!context.messages.is_empty());
         Ok(started.elapsed())
     })
@@ -682,7 +692,14 @@ fn benchmark_serialization(image: bool, tool_calls: bool) -> Result<Duration> {
             create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?
                 .ok_or_else(|| anyhow::anyhow!("serialization fixture has no head"))?
         };
-        let context = ContextBuilder::build_model_context(store, &conversation_id, Some(&head))?;
+        let tools = ToolProviderRegistry::new();
+        let context = ContextBuilder::build_model_context(
+            store,
+            &conversation_id,
+            Some(&head),
+            &tools,
+            None,
+        )?;
         let started = Instant::now();
         let bytes = crate::llm::benchmark_responses_request_size(
             "openai/test",
@@ -700,7 +717,14 @@ fn benchmark_serialization_with_schema() -> Result<Duration> {
         let head = create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?
             .ok_or_else(|| anyhow::anyhow!("serialization fixture has no head"))?;
         store.insert_tool_schema(&conversation_id, &manual_schema("read_file"))?;
-        let context = ContextBuilder::build_model_context(store, &conversation_id, Some(&head))?;
+        let tools = ToolProviderRegistry::new();
+        let context = ContextBuilder::build_model_context(
+            store,
+            &conversation_id,
+            Some(&head),
+            &tools,
+            None,
+        )?;
         let started = Instant::now();
         let bytes = crate::llm::benchmark_responses_request_size(
             "openai/test",

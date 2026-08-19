@@ -7,6 +7,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Centralized final model-context construction so execution, inspection, and
+  input-token counting use the same plugin index and built-in tool schemas.
 - Moved public CLI command handlers out of `src/main.rs` into domain-specific
   `cli::adapter` modules, leaving the binary entrypoint responsible only for
   parsing and dispatch wiring.
