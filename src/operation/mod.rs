@@ -63,7 +63,9 @@ use crate::runtime::{
     execute_pending_tool_call_with_catalog, load_pending_tool_call_at_head,
     pending_approvals_at_head, prepare_pending_tool_execution, store_pending_tool_result_at_head,
 };
-use crate::session::{Session, SessionControl, SessionEvent, SessionId, SessionStatus};
+use crate::session::{
+    Session, SessionCancellation, SessionControl, SessionEvent, SessionId, SessionStatus,
+};
 use crate::store::{Compaction, ConversationInfo, Store};
 use crate::tool::ToolProviderRegistry;
 use crate::tool::{

@@ -16,15 +16,15 @@ use tokio::task::JoinHandle;
 
 use crate::conversation::{ConversationId, MessageId, ToolCallId};
 use crate::llm::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, ModelName, ReasoningRequest};
-use crate::operation::{self, MessageInputPart, RuntimeDependencies};
+use crate::llm::{BaseUrl, ReasoningRequest};
+use crate::operation::{self, MessageInputPart, RuntimeDependencies, SessionEventRecorder};
 use crate::output::RuntimeOutput;
 use crate::plugin::PluginCatalog;
 use crate::runtime::RuntimeEventSink;
 use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
 use crate::session::{
-    Session, SessionCancellation, SessionControl, SessionEvent, SessionEventRecord, SessionId,
-    SessionQueryResult, SessionResolution, SessionStatus,
+    Session, SessionEvent, SessionEventRecord, SessionId, SessionQueryResult, SessionResolution,
+    SessionStatus,
 };
 use crate::store::Store;
 use crate::tool::ToolProviderRegistry;
@@ -75,8 +75,6 @@ struct SessionTaskInput {
     session_id: SessionId,
     conversation_id: ConversationId,
     head_message_id: Option<MessageId>,
-    model_override: Option<ModelName>,
-    reasoning: Option<ReasoningRequest>,
     command: SessionCommand,
     sender: broadcast::Sender<SessionEventRecord>,
 }
@@ -303,16 +301,12 @@ impl SessionManager {
         let session_id_for_spawn = updated.id.clone();
         let conversation_id = updated.conversation_id.clone();
         let head_message_id = updated.current_head_message_id.clone();
-        let model = updated.model.clone();
-        let reasoning = updated.reasoning.clone();
         drop(store);
 
         self.spawn(
             session_id_for_spawn,
             conversation_id,
             head_message_id,
-            Some(ModelName::new(model)),
-            reasoning,
             SessionCommand::Continue,
         );
 
@@ -403,8 +397,6 @@ impl SessionManager {
                     updated.id.clone(),
                     updated.conversation_id.clone(),
                     updated.current_head_message_id.clone(),
-                    Some(ModelName::new(updated.model.clone())),
-                    updated.reasoning.clone(),
                     SessionCommand::Continue,
                 );
                 return Ok(updated);
@@ -418,8 +410,6 @@ impl SessionManager {
             updated.id.clone(),
             updated.conversation_id.clone(),
             updated.current_head_message_id.clone(),
-            Some(ModelName::new(updated.model.clone())),
-            updated.reasoning.clone(),
             SessionCommand::Continue,
         );
 
@@ -431,12 +421,7 @@ impl SessionManager {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
-        let session = operation::resolve_session_control(
-            &store,
-            SessionControl::Cancel(SessionCancellation {
-                session_id: session_id.clone(),
-            }),
-        )?;
+        let session = store.load_session(session_id)?;
         drop(store);
 
         let session_key = session.id.as_str().to_string();
@@ -451,8 +436,7 @@ impl SessionManager {
         }
 
         let mut store = self.open_store()?;
-        store.update_session_status(&session.id, SessionStatus::Cancelled, None)?;
-        let record = store.append_session_event(&session.id, SessionEvent::Cancelled)?;
+        let (_, record) = operation::cancel_session(&mut store, &session.id)?;
 
         // Send the terminal event on the durable channel, then remove it so the
         // stream closes after delivering the cancellation.
@@ -507,8 +491,6 @@ impl SessionManager {
             session.id,
             session.conversation_id,
             session.current_head_message_id,
-            Some(ModelName::new(session.model)),
-            session.reasoning,
             SessionCommand::Continue,
         );
 
@@ -553,8 +535,6 @@ impl SessionManager {
         session_id: SessionId,
         conversation_id: ConversationId,
         head_message_id: Option<MessageId>,
-        model_override: Option<ModelName>,
-        reasoning: Option<ReasoningRequest>,
         command: SessionCommand,
     ) {
         let session_key = session_id.as_str().to_string();
@@ -577,8 +557,6 @@ impl SessionManager {
                     session_id: run_id_for_task.clone(),
                     conversation_id,
                     head_message_id,
-                    model_override,
-                    reasoning,
                     command,
                     sender: sender.clone(),
                 })
@@ -609,34 +587,25 @@ impl SessionManager {
             session_id,
             conversation_id,
             head_message_id,
-            model_override,
-            reasoning,
             command,
             sender,
         } = input;
         let mut store = self.open_store()?;
+        let session = store.load_session(&session_id)?;
         store.update_session_status(&session_id, SessionStatus::Running, None)?;
+        let recorder = SessionEventRecorder::new(self.store_path.clone(), session_id.clone());
         let output = SessionOutput {
-            store_path: self.store_path.clone(),
-            session_id: session_id.clone(),
+            recorder: recorder.clone(),
             sender: sender.clone(),
         };
-        let events = SessionEvents {
-            store_path: self.store_path.clone(),
-            session_id: session_id.clone(),
-            sender,
-        };
-        let runtime = RuntimeDependencies::new(
+        let events = SessionEvents { recorder, sender };
+        let runtime = RuntimeDependencies::for_session(
+            &session,
             GatewayUrl::new(self.gateway_url.clone()),
             BaseUrl::new(self.base_url.clone()),
-            model_override,
-            reasoning,
             self.tools.as_ref(),
+            self.plugin_catalog.as_deref(),
         );
-        let runtime = match self.plugin_catalog.as_deref() {
-            Some(catalog) => runtime.with_plugin_catalog(catalog),
-            None => runtime,
-        };
 
         let outcome = match command {
             SessionCommand::Continue => {
@@ -737,8 +706,6 @@ impl SessionManager {
                         updated.id,
                         updated.conversation_id,
                         updated.current_head_message_id,
-                        Some(ModelName::new(updated.model)),
-                        updated.reasoning,
                         SessionCommand::Continue,
                     );
                     return;
@@ -853,8 +820,6 @@ impl SessionManager {
             resume.session.id,
             resume.session.conversation_id,
             resume.session.current_head_message_id,
-            Some(ModelName::new(resume.session.model)),
-            resume.session.reasoning,
             command,
         );
 
@@ -869,34 +834,20 @@ enum SessionCommand {
 }
 
 struct SessionEvents {
-    store_path: Option<PathBuf>,
-    session_id: SessionId,
+    recorder: SessionEventRecorder,
     sender: broadcast::Sender<SessionEventRecord>,
 }
 
 impl SessionEvents {
-    fn open_store(&self) -> Result<Store> {
-        match self.store_path.as_ref() {
-            Some(path) => Store::open_at(path),
-            None => Store::open(),
-        }
-    }
-
     fn record(&self, event: SessionEvent) -> Result<SessionEventRecord> {
-        let mut store = self.open_store()?;
-        let record = store.append_session_event(&self.session_id, event)?;
+        let record = self.recorder.record(event)?;
         let _ = self.sender.send(record.clone());
 
         Ok(record)
     }
 
     fn update_head(&self, message_id: &MessageId) {
-        let result: Result<()> = (|| {
-            let mut store = self.open_store()?;
-            store.update_session_head(&self.session_id, Some(message_id))?;
-            Ok(())
-        })();
-        if let Err(error) = result {
+        if let Err(error) = self.recorder.update_head(message_id) {
             eprintln!("failed to update session head: {error}");
         }
     }
@@ -923,18 +874,13 @@ impl RuntimeEventSink for SessionEvents {
 }
 
 struct SessionOutput {
-    store_path: Option<PathBuf>,
-    session_id: SessionId,
+    recorder: SessionEventRecorder,
     sender: broadcast::Sender<SessionEventRecord>,
 }
 
 impl SessionOutput {
     fn record(&self, event: SessionEvent) -> Result<()> {
-        let mut store = match self.store_path.as_ref() {
-            Some(path) => Store::open_at(path),
-            None => Store::open(),
-        }?;
-        let record = store.append_session_event(&self.session_id, event)?;
+        let record = self.recorder.record(event)?;
         let _ = self.sender.send(record);
 
         Ok(())

@@ -629,8 +629,9 @@ async fn session_deny(session_id: SessionId, tool_call_id: ToolCallId) -> Result
 
 /// Cancels one persisted session.
 fn session_stop(session_id: SessionId) -> Result<()> {
+    let mut store = Store::open()?;
     let output = TerminalOutput;
-    let session = operation::cancel_session(&session_id)?;
+    let (session, _) = operation::cancel_session(&mut store, &session_id)?;
     output.session_status(&session);
 
     Ok(())

@@ -575,6 +575,28 @@ fn create_session_branch_captures_requested_head() {
 }
 
 #[test]
+fn cancel_session_records_a_durable_cancelled_event() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let session_id = SessionId::fresh();
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    let (session, record) = cancel_session(&mut store, &session_id).unwrap();
+
+    assert_eq!(session.status, SessionStatus::Cancelled);
+    assert!(matches!(record.event, SessionEvent::Cancelled));
+    assert!(
+        store
+            .load_session_events_after(&session_id, None)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.event, SessionEvent::Cancelled))
+    );
+}
+
+#[test]
 fn resume_session_from_wakeup_resolves_waiting_approval() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();

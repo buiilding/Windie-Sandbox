@@ -52,11 +52,76 @@ impl<'a> RuntimeDependencies<'a> {
         }
     }
 
+    /// Builds runtime dependencies from one durable session record.
+    ///
+    /// Session execution must use the persisted model and reasoning settings
+    /// rather than reconstructing them independently in each client adapter.
+    pub fn for_session(
+        session: &Session,
+        gateway_url: GatewayUrl,
+        base_url: BaseUrl,
+        tools: &'a ToolProviderRegistry,
+        plugin_catalog: Option<&'a PluginCatalog>,
+    ) -> Self {
+        let runtime = Self::new(
+            gateway_url,
+            base_url,
+            Some(ModelName::new(session.model.clone())),
+            session.reasoning.clone(),
+            tools,
+        );
+
+        match plugin_catalog {
+            Some(catalog) => runtime.with_plugin_catalog(catalog),
+            None => runtime,
+        }
+    }
+
     /// Adds the read-only plugin catalog used to build model context and
     /// resolve plugin-owned built-in actions.
     pub fn with_plugin_catalog(mut self, catalog: &'a PluginCatalog) -> Self {
         self.plugin_catalog = Some(catalog);
         self
+    }
+}
+
+/// Persists session events and head changes for one client adapter.
+///
+/// API and CLI adapters may publish or display the resulting event
+/// differently, but the durable SQLite write and session-head update must stay
+/// identical. This helper deliberately has no live-event transport policy.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionEventRecorder {
+    store_path: Option<PathBuf>,
+    session_id: SessionId,
+}
+
+impl SessionEventRecorder {
+    /// Creates a recorder for the default store or an explicit test store.
+    pub(crate) fn new(store_path: Option<PathBuf>, session_id: SessionId) -> Self {
+        Self {
+            store_path,
+            session_id,
+        }
+    }
+
+    /// Appends one replayable event and returns its persisted record.
+    pub(crate) fn record(&self, event: SessionEvent) -> Result<crate::session::SessionEventRecord> {
+        let mut store = self.open_store()?;
+        store.append_session_event(&self.session_id, event)
+    }
+
+    /// Moves the durable session head after a message was persisted.
+    pub(crate) fn update_head(&self, message_id: &MessageId) -> Result<()> {
+        let mut store = self.open_store()?;
+        store.update_session_head(&self.session_id, Some(message_id))
+    }
+
+    fn open_store(&self) -> Result<Store> {
+        match self.store_path.as_ref() {
+            Some(path) => Store::open_at(path),
+            None => Store::open(),
+        }
     }
 }
 
@@ -115,6 +180,23 @@ pub fn finish_session(
             store.append_session_event(session_id, SessionEvent::WaitingForApproval)
         }
     }
+}
+
+/// Cancels one session and records the same durable event used by the API
+/// session manager.
+pub fn cancel_session(
+    store: &mut Store,
+    session_id: &SessionId,
+) -> Result<(Session, crate::session::SessionEventRecord)> {
+    let _session = resolve_session_control(
+        store,
+        SessionControl::Cancel(SessionCancellation {
+            session_id: session_id.clone(),
+        }),
+    )?;
+    store.update_session_status(session_id, SessionStatus::Cancelled, None)?;
+    let record = store.append_session_event(session_id, SessionEvent::Cancelled)?;
+    Ok((store.load_session(session_id)?, record))
 }
 
 /// Removes one terminal session and its exclusive conversation-tree suffix.

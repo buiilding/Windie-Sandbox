@@ -7,6 +7,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Unified CLI and API session runtime setup and event persistence, including
+  cancellation events and CLI failure recording.
 - Split the MCP runtime into protocol, stdio, session, and transport modules
   behind a small compatibility facade, preserving existing MCP callers while
   making process I/O and session lifecycle independently inspectable.
