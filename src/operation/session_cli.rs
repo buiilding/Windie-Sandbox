@@ -7,6 +7,8 @@ use super::*;
 
 use std::sync::Arc;
 
+use crate::session::SessionExecutionOwner;
+
 /// Creates a session branch at a conversation head and advances it to blocked.
 pub async fn start_cli_session(
     conversation_id: ConversationId,
@@ -42,6 +44,7 @@ pub async fn approve_cli_session_tool(
 ) -> Result<()> {
     let mut store = Store::open()?;
     let session = store.load_session(&session_id)?;
+    store.claim_waiting_session_execution(&session_id, SessionExecutionOwner::Cli)?;
     let runtime_context = CliRuntimeContext::load()?;
     let runtime = runtime_context.dependencies(&session, gateway_url, base_url);
     let cli_output = CliSessionOutput::new(session_id.clone());
@@ -69,6 +72,7 @@ pub async fn deny_cli_session_tool(
 ) -> Result<()> {
     let mut store = Store::open()?;
     let session = store.load_session(&session_id)?;
+    store.claim_waiting_session_execution(&session_id, SessionExecutionOwner::Cli)?;
     let runtime_context = CliRuntimeContext::load()?;
     let runtime = runtime_context.dependencies(&session, gateway_url, base_url);
     let cli_output = CliSessionOutput::new(session_id.clone());
@@ -94,8 +98,7 @@ async fn continue_cli_session(
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
 ) -> Result<()> {
-    let session = store.load_session(session_id)?;
-    store.update_session_status(session_id, SessionStatus::Running, None)?;
+    let session = store.claim_session_execution(session_id, SessionExecutionOwner::Cli)?;
     let runtime_context = CliRuntimeContext::load()?;
     let runtime = runtime_context.dependencies(&session, gateway_url, base_url);
     let cli_output = CliSessionOutput::new(session_id.clone());
@@ -120,10 +123,25 @@ fn finish_cli_session(
     session_id: &SessionId,
     outcome: Result<RuntimeOutcome>,
 ) -> Result<()> {
-    let result = outcome.and_then(|outcome| finish_session(store, session_id, outcome).map(|_| ()));
+    let result = outcome.and_then(|outcome| {
+        finish_session(store, session_id, SessionExecutionOwner::Cli, outcome).and_then(|record| {
+            if record.is_none() {
+                store
+                    .release_cancelled_session_execution(session_id, SessionExecutionOwner::Cli)?;
+            }
+            Ok(())
+        })
+    });
     if let Err(error) = result {
-        if let Err(failure_error) = record_session_failure(store, session_id, &error) {
-            eprintln!("failed to persist cli session failure: {failure_error}");
+        match record_session_failure(store, session_id, SessionExecutionOwner::Cli, &error) {
+            Ok(None) => {
+                store
+                    .release_cancelled_session_execution(session_id, SessionExecutionOwner::Cli)?;
+            }
+            Ok(Some(_)) => {}
+            Err(failure_error) => {
+                eprintln!("failed to persist cli session failure: {failure_error}");
+            }
         }
         return Err(error);
     }
@@ -176,7 +194,7 @@ struct CliSessionOutput {
 impl CliSessionOutput {
     fn new(session_id: SessionId) -> Self {
         Self {
-            recorder: SessionEventRecorder::new(None, session_id),
+            recorder: SessionEventRecorder::new(None, session_id, SessionExecutionOwner::Cli),
             terminal: TerminalOutput,
         }
     }
@@ -243,38 +261,43 @@ struct CliSessionEvents {
 impl CliSessionEvents {
     fn new(session_id: SessionId) -> Self {
         Self {
-            recorder: SessionEventRecorder::new(None, session_id),
-        }
-    }
-
-    fn record(&self, event: SessionEvent) {
-        match self.recorder.record(event) {
-            Ok(_) => {}
-            Err(error) => eprintln!("failed to append runtime event: {error}"),
-        }
-    }
-}
-
-impl CliSessionEvents {
-    fn update_head(&self, message_id: &MessageId) {
-        if let Err(error) = self.recorder.update_head(message_id) {
-            eprintln!("failed to update cli session head: {error}");
+            recorder: SessionEventRecorder::new(None, session_id, SessionExecutionOwner::Cli),
         }
     }
 }
 
 impl RuntimeEventSink for CliSessionEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
-        self.record(SessionEvent::AssistantMessageSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-        self.update_head(message_id);
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        self.recorder
+            .save_assistant_message(store, conversation_id, parent_message_id, content, metadata)
+            .map(|(message_id, _)| message_id)
     }
 
-    fn tool_result_saved(&self, message_id: &MessageId) {
-        self.record(SessionEvent::ToolResultSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-        self.update_head(message_id);
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        self.recorder
+            .save_tool_result(
+                store,
+                conversation_id,
+                parent_message_id,
+                tool_call_id,
+                content,
+                parts,
+            )
+            .map(|(message_id, _)| message_id)
     }
 }

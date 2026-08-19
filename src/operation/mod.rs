@@ -61,7 +61,7 @@ use crate::runtime::{
     PendingToolExecution, RuntimeEventSink, RuntimeInput, RuntimeModelRequest, RuntimeOutcome,
     advance_until_blocked as runtime_advance_until_blocked, deny_pending_tool_call,
     execute_pending_tool_call_with_catalog, load_pending_tool_call_at_head,
-    pending_approvals_at_head, prepare_pending_tool_execution, store_pending_tool_result_at_head,
+    pending_approvals_at_head, prepare_pending_tool_execution,
 };
 use crate::session::{
     Session, SessionCancellation, SessionControl, SessionEvent, SessionId, SessionStatus,

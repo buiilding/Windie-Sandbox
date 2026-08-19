@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::plugin::PluginCatalog;
-use crate::session::SessionResolution;
+use crate::session::{SessionExecutionOwner, SessionResolution};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Action a session manager should take for a session-targeted wakeup.
@@ -94,27 +94,67 @@ impl<'a> RuntimeDependencies<'a> {
 pub(crate) struct SessionEventRecorder {
     store_path: Option<PathBuf>,
     session_id: SessionId,
+    owner: SessionExecutionOwner,
 }
 
 impl SessionEventRecorder {
     /// Creates a recorder for the default store or an explicit test store.
-    pub(crate) fn new(store_path: Option<PathBuf>, session_id: SessionId) -> Self {
+    pub(crate) fn new(
+        store_path: Option<PathBuf>,
+        session_id: SessionId,
+        owner: SessionExecutionOwner,
+    ) -> Self {
         Self {
             store_path,
             session_id,
+            owner,
         }
     }
 
     /// Appends one replayable event and returns its persisted record.
     pub(crate) fn record(&self, event: SessionEvent) -> Result<crate::session::SessionEventRecord> {
         let mut store = self.open_store()?;
-        store.append_session_event(&self.session_id, event)
+        store.append_session_execution_event(&self.session_id, self.owner, event)
     }
 
-    /// Moves the durable session head after a message was persisted.
-    pub(crate) fn update_head(&self, message_id: &MessageId) -> Result<()> {
-        let mut store = self.open_store()?;
-        store.update_session_head(&self.session_id, Some(message_id))
+    /// Atomically saves one assistant message and its session state changes.
+    pub(crate) fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<(MessageId, crate::session::SessionEventRecord)> {
+        store.insert_session_assistant_message(
+            &self.session_id,
+            self.owner,
+            conversation_id,
+            parent_message_id,
+            content,
+            metadata,
+        )
+    }
+
+    /// Atomically saves one tool result and its session state changes.
+    pub(crate) fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<(MessageId, crate::session::SessionEventRecord)> {
+        store.insert_session_tool_result_message(
+            &self.session_id,
+            self.owner,
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+            content,
+            parts,
+        )
     }
 
     fn open_store(&self) -> Result<Store> {
@@ -161,24 +201,30 @@ pub fn resolve_session_control(store: &Store, control: SessionControl) -> Result
 pub fn finish_session(
     store: &mut Store,
     session_id: &SessionId,
+    owner: SessionExecutionOwner,
     outcome: RuntimeOutcome,
-) -> Result<crate::session::SessionEventRecord> {
+) -> Result<Option<crate::session::SessionEventRecord>> {
     match outcome {
         RuntimeOutcome::Completed { head_message_id } => {
-            store.update_session_head(session_id, head_message_id.as_ref())?;
-            store.update_session_status(session_id, SessionStatus::Completed, None)?;
-            store.append_session_event(
+            let event_message_id = head_message_id.as_ref().map(|id| id.as_str().to_string());
+            store.finish_claimed_session_execution_at_head(
                 session_id,
+                owner,
+                SessionStatus::Completed,
+                head_message_id.as_ref(),
                 SessionEvent::Completed {
-                    message_id: head_message_id.map(|id| id.as_str().to_string()),
+                    message_id: event_message_id,
                 },
             )
         }
-        RuntimeOutcome::WaitingForApproval { head_message_id } => {
-            store.update_session_head(session_id, Some(&head_message_id))?;
-            store.update_session_status(session_id, SessionStatus::WaitingForApproval, None)?;
-            store.append_session_event(session_id, SessionEvent::WaitingForApproval)
-        }
+        RuntimeOutcome::WaitingForApproval { head_message_id } => store
+            .finish_claimed_session_execution_at_head(
+                session_id,
+                owner,
+                SessionStatus::WaitingForApproval,
+                Some(&head_message_id),
+                SessionEvent::WaitingForApproval,
+            ),
     }
 }
 
@@ -228,8 +274,9 @@ pub fn resolve_or_create_session(
 pub fn record_session_failure(
     store: &mut Store,
     session_id: &SessionId,
+    owner: SessionExecutionOwner,
     error: &anyhow::Error,
-) -> Result<crate::session::SessionEventRecord> {
+) -> Result<Option<crate::session::SessionEventRecord>> {
     let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
     let message = error
         .chain()
@@ -237,14 +284,23 @@ pub fn record_session_failure(
         .map(ToString::to_string)
         .unwrap_or_else(|| error.to_string());
 
-    store.update_session_status(session_id, SessionStatus::Failed, Some(&message))?;
-    store.append_session_event(
+    if !store.finish_claimed_session_execution(
         session_id,
-        SessionEvent::Failed {
-            error: message,
-            causes,
-        },
-    )
+        owner,
+        SessionStatus::Failed,
+        Some(&message),
+    )? {
+        return Ok(None);
+    }
+    store
+        .append_session_event(
+            session_id,
+            SessionEvent::Failed {
+                error: message,
+                causes,
+            },
+        )
+        .map(Some)
 }
 
 /// Advances one backend-owned execution until it completes or waits for approval.

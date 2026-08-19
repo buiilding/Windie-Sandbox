@@ -1,7 +1,7 @@
 //! Runtime session and replayable session-event persistence.
 
 use super::compaction::delete_compactions_for_conversation;
-use super::message::insert_unsaved_message_parts_in_transaction;
+use super::message::{insert_message_in_transaction, insert_unsaved_message_parts_in_transaction};
 use super::*;
 
 use crate::session::SessionInputId;
@@ -207,12 +207,13 @@ impl Store {
             .execute(
                 "
                 UPDATE sessions
-                SET current_head_message_id = ?1, status = ?2, error = NULL, updated_at = ?3
+                SET current_head_message_id = ?1, status = ?2, error = NULL,
+                    execution_owner = NULL, updated_at = ?3
                 WHERE id = ?4
                 ",
                 params![
                     message_id.as_str(),
-                    SessionStatus::Running.as_storage(),
+                    SessionStatus::Ready.as_storage(),
                     now,
                     session_id.as_str()
                 ],
@@ -653,6 +654,536 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically persists an assistant message, advances its session head, and
+    /// appends the replay event that announces the durable message.
+    pub(crate) fn insert_session_assistant_message(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<(MessageId, SessionEventRecord)> {
+        self.insert_session_message(
+            session_id,
+            owner,
+            conversation_id,
+            parent_message_id,
+            Role::Assistant,
+            content,
+            &[],
+            metadata,
+        )
+    }
+
+    /// Atomically persists a tool result, advances its session head, and
+    /// appends the replay event that announces the durable result.
+    pub(crate) fn insert_session_tool_result_message(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<(MessageId, SessionEventRecord)> {
+        self.ensure_tool_result_parent_matches_call(
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+        )?;
+        let metadata = MessageMetadata {
+            tool_call_id: Some(tool_call_id.clone()),
+            ..Default::default()
+        };
+
+        self.insert_session_message(
+            session_id,
+            owner,
+            conversation_id,
+            Some(parent_message_id),
+            Role::Tool,
+            content,
+            parts,
+            Some(&metadata),
+        )
+    }
+
+    /// Commits one runtime-produced message and every durable session pointer
+    /// to that message as one SQLite unit.
+    ///
+    /// The session's current head must still equal the requested parent. This
+    /// prevents a stale runtime writer from moving an already-advanced branch.
+    fn insert_session_message(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        role: Role,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<(MessageId, SessionEventRecord)> {
+        self.ensure_conversation_exists(conversation_id)?;
+        if let Some(parent_message_id) = parent_message_id {
+            self.ensure_message_belongs_to_conversation(conversation_id, parent_message_id)?;
+        }
+
+        let message_id = MessageId::new(Uuid::new_v4().to_string());
+        let metadata_json = encode_message_metadata(metadata)?;
+        let now = now_millis()?;
+        let event = match role {
+            Role::Assistant => SessionEvent::AssistantMessageSaved {
+                message_id: message_id.as_str().to_string(),
+            },
+            Role::Tool => SessionEvent::ToolResultSaved {
+                message_id: message_id.as_str().to_string(),
+            },
+            _ => {
+                return Err(error::invalid_request(
+                    "session runtime persistence only accepts assistant or tool messages",
+                ));
+            }
+        };
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to start atomic session message transaction")?;
+        let (session_conversation_id, current_head_message_id, status, execution_owner) =
+            transaction
+                .query_row(
+                    "
+                SELECT conversation_id, current_head_message_id, status, execution_owner
+                FROM sessions
+                WHERE id = ?1
+                ",
+                    params![session_id.as_str()],
+                    |row| {
+                        Ok((
+                            ConversationId::new(row.get::<_, String>(0)?),
+                            row.get::<_, Option<String>>(1)?.map(MessageId::new),
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .context("failed to load session for atomic message save")?
+                .ok_or_else(|| {
+                    error::not_found(format!("runtime session does not exist: {session_id}"))
+                })?;
+
+        if session_conversation_id != *conversation_id {
+            return Err(error::invalid_request(format!(
+                "session does not belong to conversation: {session_id}"
+            )));
+        }
+        if current_head_message_id.as_ref() != parent_message_id {
+            return Err(error::conflict(
+                "session head changed before runtime message persistence; reload and retry",
+            ));
+        }
+        if status != SessionStatus::Running.as_storage()
+            || execution_owner.as_deref() != Some(owner.as_storage())
+        {
+            return Err(error::conflict(
+                "session execution claim was cancelled or transferred before runtime message persistence",
+            ));
+        }
+
+        insert_message_in_transaction(
+            &transaction,
+            &message_id,
+            conversation_id,
+            parent_message_id,
+            role,
+            content,
+            parts,
+            metadata_json.as_deref(),
+            now,
+        )?;
+        transaction
+            .execute(
+                "
+                UPDATE sessions
+                SET current_head_message_id = ?1,
+                    updated_at = ?2
+                WHERE id = ?3
+                ",
+                params![message_id.as_str(), now, session_id.as_str()],
+            )
+            .context("failed to update session head for runtime message")?;
+        let record = append_session_event_in_transaction(&transaction, session_id, event, now)?;
+        transaction
+            .commit()
+            .context("failed to commit atomic session message")?;
+
+        Ok((message_id, record))
+    }
+
+    /// Atomically claims a session for execution from a non-running state.
+    ///
+    /// This is the cross-process execution gate shared by the API supervisor
+    /// and CLI. A session's durable `running` status is its execution claim:
+    /// only one caller can make this transition, even when separate Windie
+    /// processes race against the same SQLite database.
+    pub fn claim_session_execution(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+    ) -> Result<Session> {
+        self.ensure_session_exists(session_id)?;
+
+        let now = now_millis()?;
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE sessions
+                SET status = ?1,
+                    error = NULL,
+                    execution_owner = ?2,
+                    updated_at = ?3
+                WHERE id = ?4
+                  AND status NOT IN (?1, ?5)
+                  AND execution_owner IS NULL
+                ",
+                params![
+                    SessionStatus::Running.as_storage(),
+                    owner.as_storage(),
+                    now,
+                    session_id.as_str(),
+                    SessionStatus::WaitingForApproval.as_storage(),
+                ],
+            )
+            .context("failed to claim runtime session execution")?;
+
+        if changed == 0 {
+            return Err(error::conflict(
+                "session is already running or waiting for approval",
+            ));
+        }
+
+        self.load_session(session_id)
+    }
+
+    /// Claims execution only if the durable session still points at the
+    /// caller's selected conversation head.
+    ///
+    /// This is the claim used by explicit-head API operations. It closes the
+    /// race where a different process completes the session between the API's
+    /// initial head read and its attempt to start a new turn.
+    pub fn claim_session_execution_at_head(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+        expected_head_message_id: Option<&MessageId>,
+    ) -> Result<Session> {
+        self.ensure_session_exists(session_id)?;
+
+        let now = now_millis()?;
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE sessions
+                SET status = ?1,
+                    error = NULL,
+                    execution_owner = ?2,
+                    updated_at = ?3
+                WHERE id = ?4
+                  AND status NOT IN (?1, ?5)
+                  AND execution_owner IS NULL
+                  AND current_head_message_id IS ?6
+                ",
+                params![
+                    SessionStatus::Running.as_storage(),
+                    owner.as_storage(),
+                    now,
+                    session_id.as_str(),
+                    SessionStatus::WaitingForApproval.as_storage(),
+                    expected_head_message_id.map(MessageId::as_str),
+                ],
+            )
+            .context("failed to claim runtime session execution at conversation head")?;
+
+        if changed == 0 {
+            return Err(error::conflict(
+                "session changed while claiming execution; reload and retry",
+            ));
+        }
+
+        self.load_session(session_id)
+    }
+
+    /// Appends one runtime event only while the caller still owns the durable
+    /// execution claim. Stream deltas use this guard to stop a cancelled runner
+    /// from publishing additional work.
+    pub fn append_session_execution_event(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+        event: SessionEvent,
+    ) -> Result<SessionEventRecord> {
+        self.ensure_session_exists(session_id)?;
+        let now = now_millis()?;
+        let event_type = event.event_name();
+        let payload = serde_json::to_string(&event).context("failed to encode runtime event")?;
+        let changed = self
+            .connection
+            .execute(
+                "
+                INSERT INTO session_events (session_id, event_type, payload, created_at)
+                SELECT ?1, ?2, ?3, ?4
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM sessions
+                    WHERE id = ?1
+                      AND status = ?5
+                      AND execution_owner = ?6
+                )
+                ",
+                params![
+                    session_id.as_str(),
+                    event_type,
+                    payload,
+                    now,
+                    SessionStatus::Running.as_storage(),
+                    owner.as_storage(),
+                ],
+            )
+            .context("failed to append claimed runtime event")?;
+        if changed == 0 {
+            return Err(error::conflict(
+                "session execution claim was cancelled or transferred before runtime event persistence",
+            ));
+        }
+
+        Ok(SessionEventRecord {
+            id: self.connection.last_insert_rowid(),
+            session_id: session_id.clone(),
+            event,
+            created_at: now,
+        })
+    }
+
+    /// Atomically claims a paused session while resuming its approved work.
+    ///
+    /// Approval wakeups are the only path allowed to move a session from
+    /// `waiting_for_approval` back into execution. Keeping that compare-and-
+    /// set here prevents two API or CLI clients from approving the same tool
+    /// call concurrently.
+    pub fn claim_waiting_session_execution(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+    ) -> Result<Session> {
+        self.ensure_session_exists(session_id)?;
+
+        let now = now_millis()?;
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE sessions
+                SET status = ?1,
+                    error = NULL,
+                    execution_owner = ?2,
+                    updated_at = ?3
+                WHERE id = ?4
+                  AND status = ?5
+                  AND execution_owner IS NULL
+                ",
+                params![
+                    SessionStatus::Running.as_storage(),
+                    owner.as_storage(),
+                    now,
+                    session_id.as_str(),
+                    SessionStatus::WaitingForApproval.as_storage(),
+                ],
+            )
+            .context("failed to claim paused runtime session execution")?;
+
+        if changed == 0 {
+            return Err(error::conflict("session is no longer waiting for approval"));
+        }
+
+        self.load_session(session_id)
+    }
+
+    /// Moves a claimed running session to a terminal or paused status.
+    ///
+    /// The conditional update deliberately refuses to overwrite a durable
+    /// cancellation. A runner that finishes after another client cancelled it
+    /// must not resurrect the session as completed or failed.
+    pub fn finish_claimed_session_execution(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+        status: SessionStatus,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        debug_assert!(matches!(
+            status,
+            SessionStatus::Completed | SessionStatus::WaitingForApproval | SessionStatus::Failed
+        ));
+        self.ensure_session_exists(session_id)?;
+
+        let now = now_millis()?;
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE sessions
+                SET status = ?1,
+                    error = ?2,
+                    execution_owner = NULL,
+                    updated_at = ?3
+                WHERE id = ?4
+                  AND status = ?5
+                  AND execution_owner = ?6
+                ",
+                params![
+                    status.as_storage(),
+                    error,
+                    now,
+                    session_id.as_str(),
+                    SessionStatus::Running.as_storage(),
+                    owner.as_storage(),
+                ],
+            )
+            .context("failed to finish claimed runtime session execution")?;
+
+        Ok(changed == 1)
+    }
+
+    /// Atomically finishes a claimed execution, moves its head, and records
+    /// the terminal event.
+    ///
+    /// Releasing the claim, publishing the new head, and appending the event
+    /// must be one SQLite transaction. Otherwise another process could claim
+    /// the terminal session between those writes and start from a stale head.
+    pub fn finish_claimed_session_execution_at_head(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+        status: SessionStatus,
+        head_message_id: Option<&MessageId>,
+        event: SessionEvent,
+    ) -> Result<Option<SessionEventRecord>> {
+        debug_assert!(matches!(
+            status,
+            SessionStatus::Completed | SessionStatus::WaitingForApproval
+        ));
+        let session = self.load_session(session_id)?;
+        if let Some(message_id) = head_message_id {
+            self.ensure_message_belongs_to_conversation(&session.conversation_id, message_id)?;
+        }
+
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to start claimed session finish transaction")?;
+        let changed = transaction
+            .execute(
+                "
+                UPDATE sessions
+                SET current_head_message_id = ?1,
+                    status = ?2,
+                    error = NULL,
+                    execution_owner = NULL,
+                    updated_at = ?3
+                WHERE id = ?4
+                  AND status = ?5
+                  AND execution_owner = ?6
+                ",
+                params![
+                    head_message_id.map(MessageId::as_str),
+                    status.as_storage(),
+                    now,
+                    session_id.as_str(),
+                    SessionStatus::Running.as_storage(),
+                    owner.as_storage(),
+                ],
+            )
+            .context("failed to finish claimed runtime session at head")?;
+
+        if changed == 0 {
+            transaction
+                .commit()
+                .context("failed to commit unchanged claimed session finish")?;
+            return Ok(None);
+        }
+
+        let record = append_session_event_in_transaction(&transaction, session_id, event, now)?;
+        transaction
+            .commit()
+            .context("failed to commit claimed session finish")?;
+        Ok(Some(record))
+    }
+
+    /// Releases a cancelled session's claim after its owner has stopped.
+    ///
+    /// Cancellation deliberately keeps the owner claim in place until the
+    /// runner acknowledges it. That prevents another client from starting the
+    /// same session while the original process may still be unwinding.
+    pub fn release_cancelled_session_execution(
+        &mut self,
+        session_id: &SessionId,
+        owner: SessionExecutionOwner,
+    ) -> Result<()> {
+        self.ensure_session_exists(session_id)?;
+        let now = now_millis()?;
+        self.connection
+            .execute(
+                "
+                UPDATE sessions
+                SET execution_owner = NULL,
+                    updated_at = ?1
+                WHERE id = ?2
+                  AND status = ?3
+                  AND execution_owner = ?4
+                ",
+                params![
+                    now,
+                    session_id.as_str(),
+                    SessionStatus::Cancelled.as_storage(),
+                    owner.as_storage(),
+                ],
+            )
+            .context("failed to release cancelled runtime session execution")?;
+        Ok(())
+    }
+
+    /// Returns the durable owner of a currently claimed session, if any.
+    pub fn session_execution_owner(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<SessionExecutionOwner>> {
+        self.ensure_session_exists(session_id)?;
+        let owner = self
+            .connection
+            .query_row(
+                "SELECT execution_owner FROM sessions WHERE id = ?1",
+                params![session_id.as_str()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .context("failed to load runtime session execution owner")?;
+
+        owner
+            .as_deref()
+            .map(|value| {
+                SessionExecutionOwner::from_storage(value)
+                    .ok_or_else(|| anyhow!("unknown runtime session execution owner: {value}"))
+            })
+            .transpose()
+    }
+
     /// Updates one session's lifecycle status.
     pub fn update_session_status(
         &mut self,
@@ -688,30 +1219,7 @@ impl Store {
         self.ensure_session_exists(session_id)?;
 
         let now = now_millis()?;
-        let event_type = event.event_name();
-        let payload = serde_json::to_string(&event).context("failed to encode runtime event")?;
-        self.connection
-            .execute(
-                "
-                INSERT INTO session_events (
-                    session_id,
-                    event_type,
-                    payload,
-                    created_at
-                )
-                VALUES (?1, ?2, ?3, ?4)
-                ",
-                params![session_id.as_str(), event_type, payload, now],
-            )
-            .context("failed to append runtime event")?;
-        let id = self.connection.last_insert_rowid();
-
-        Ok(SessionEventRecord {
-            id,
-            session_id: session_id.clone(),
-            event,
-            created_at: now,
-        })
+        append_session_event_in_transaction(&self.connection, session_id, event, now)
     }
 
     /// Loads persisted session events after a cursor.
@@ -815,6 +1323,39 @@ impl Store {
 
         Ok(())
     }
+}
+
+/// Appends one session event through an existing connection or transaction.
+fn append_session_event_in_transaction(
+    connection: &Connection,
+    session_id: &SessionId,
+    event: SessionEvent,
+    now: i64,
+) -> Result<SessionEventRecord> {
+    let event_type = event.event_name();
+    let payload = serde_json::to_string(&event).context("failed to encode runtime event")?;
+    connection
+        .execute(
+            "
+            INSERT INTO session_events (
+                session_id,
+                event_type,
+                payload,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4)
+            ",
+            params![session_id.as_str(), event_type, payload, now],
+        )
+        .context("failed to append runtime event")?;
+    let id = connection.last_insert_rowid();
+
+    Ok(SessionEventRecord {
+        id,
+        session_id: session_id.clone(),
+        event,
+        created_at: now,
+    })
 }
 
 fn sessions_at_head(

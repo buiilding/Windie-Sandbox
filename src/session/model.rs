@@ -19,6 +19,37 @@ pub enum SessionStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Durable identity of the client process currently executing a session.
+///
+/// This is intentionally separate from a session's lifecycle status. The
+/// status says what the session is doing; the owner lets restart recovery
+/// distinguish an interrupted API task from a CLI process that is still
+/// running independently.
+pub enum SessionExecutionOwner {
+    Api,
+    Cli,
+}
+
+impl SessionExecutionOwner {
+    /// Returns the stable SQLite representation of this execution owner.
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::Api => "api",
+            Self::Cli => "cli",
+        }
+    }
+
+    /// Decodes one SQLite execution-owner value.
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "api" => Some(Self::Api),
+            "cli" => Some(Self::Cli),
+            _ => None,
+        }
+    }
+}
+
 impl SessionStatus {
     /// Converts storage text into the typed status.
     pub fn from_storage(value: &str) -> Option<Self> {

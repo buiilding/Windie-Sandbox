@@ -7,6 +7,12 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added SQLite-backed session execution claims so the API and CLI cannot run
+  the same durable session concurrently, and late runners cannot overwrite a
+  durable cancellation.
+- Made runtime message insertion, session-head advancement, and durable replay
+  event creation one SQLite transaction, with persistence failures returned to
+  the running session.
 - Centralized final model-context construction so execution, inspection, and
   input-token counting use the same plugin index and built-in tool schemas.
 - Moved public CLI command handlers out of `src/main.rs` into domain-specific

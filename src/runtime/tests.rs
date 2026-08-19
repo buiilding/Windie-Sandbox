@@ -103,20 +103,22 @@ impl RecordingRuntimeEvents {
 }
 
 impl RuntimeEventSink for RecordingRuntimeEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
+    fn assistant_message_saved(&self, message_id: &MessageId) -> Result<()> {
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::AssistantMessageSaved(
                 message_id.clone(),
             ));
+        Ok(())
     }
 
-    fn tool_result_saved(&self, message_id: &MessageId) {
+    fn tool_result_saved(&self, message_id: &MessageId) -> Result<()> {
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::ToolResultSaved(message_id.clone()));
+        Ok(())
     }
 }
 
@@ -343,65 +345,6 @@ impl RuntimeLlm for UnknownThenProviderToolCallLlm {
 struct ToolThenReplyLlm {
     calls: Mutex<usize>,
     second_turn_messages: Mutex<Vec<Message>>,
-}
-
-struct AttachThenReplyLlm {
-    calls: Mutex<usize>,
-    second_turn_tools: Mutex<Vec<ToolSchema>>,
-}
-
-impl AttachThenReplyLlm {
-    fn new() -> Self {
-        Self {
-            calls: Mutex::new(0),
-            second_turn_tools: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl RuntimeLlm for AttachThenReplyLlm {
-    async fn stream<F>(
-        &self,
-        _messages: &[Message],
-        tools: &[ToolSchema],
-        _reasoning: Option<&ReasoningRequest>,
-        _prompt_cache: Option<&PromptCacheRequest>,
-        mut handle_delta: F,
-    ) -> Result<AssistantResponse>
-    where
-        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
-    {
-        let mut calls = self.calls.lock().unwrap();
-        *calls += 1;
-
-        if *calls == 1 {
-            assert!(
-                tools
-                    .iter()
-                    .any(|tool| tool.name.as_str() == "windie__attach_provider")
-            );
-            return Ok(AssistantResponse {
-                content: String::new(),
-                metadata: MessageMetadata {
-                    tool_calls: vec![ToolCall::function(
-                        "call_attach",
-                        "windie__attach_provider",
-                        r#"{"provider_id":"desktop-commander"}"#,
-                    )],
-                    ..Default::default()
-                },
-                finish_reason: Some(FinishReason::ToolCalls),
-            });
-        }
-
-        *self.second_turn_tools.lock().unwrap() = tools.to_vec();
-        handle_delta(LlmStreamEvent::AssistantDelta("done"))?;
-        Ok(AssistantResponse {
-            content: "done".to_string(),
-            metadata: MessageMetadata::default(),
-            finish_reason: Some(FinishReason::Stop),
-        })
-    }
 }
 
 impl ToolThenReplyLlm {
@@ -712,7 +655,7 @@ async fn approve_latest_head_tool_call_with_registry(
                 .await?
         }
     };
-    store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+    tool_execution::store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
 
     Ok(result)
 }
@@ -730,7 +673,7 @@ fn deny_latest_head_tool_call(
         tool_call_id,
     )?;
     let result = deny_pending_tool_call(&pending);
-    store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+    tool_execution::store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
 
     Ok(result)
 }
@@ -1747,15 +1690,7 @@ fn builtin_tools_are_always_model_visible_but_not_persisted() {
         .map(|tool| tool.name.as_str().to_string())
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        names,
-        vec![
-            "windie__list_providers",
-            "windie__attach_provider",
-            "windie__read_skill",
-            "windie__attach_mcp"
-        ]
-    );
+    assert_eq!(names, vec!["windie__read_skill", "windie__attach_mcp"]);
     assert!(
         store
             .load_tool_schemas(&conversation_id)
@@ -1799,81 +1734,6 @@ fn plugin_index_is_ephemeral_and_does_not_attach_mcp_schemas() {
             .load_tool_schemas(&conversation_id)
             .unwrap()
             .is_empty()
-    );
-}
-
-#[tokio::test]
-async fn builtin_provider_tools_list_and_attach_through_existing_conversation_storage() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/test").unwrap();
-    let registry = test_mcp_registry();
-    let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
-    store.install_provider(&provider_id).unwrap();
-    store
-        .save_provider_tool_catalog(&provider_id, &[test_tool_definition()])
-        .unwrap();
-    store
-        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
-        .unwrap();
-
-    let list_definition = registry
-        .builtin_tool(&ToolSchemaName::new("windie__list_providers"))
-        .unwrap();
-    let user_id = store
-        .insert_message(
-            &conversation_id,
-            None,
-            Role::User,
-            "attach a provider",
-            None,
-        )
-        .unwrap();
-    let list_pending = PendingToolCall {
-        result_parent_message_id: user_id.clone(),
-        tool_call: ToolCall::function("call_list", "windie__list_providers", "{}"),
-    };
-    let list_result = execute_pending_tool_call(
-        &mut store,
-        &conversation_id,
-        &list_pending,
-        &list_definition.attached_tool(),
-        &registry,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        list_result.content,
-        "provider_id, description\ndesktop-commander, Test MCP provider."
-    );
-
-    let attach_definition = registry
-        .builtin_tool(&ToolSchemaName::new("windie__attach_provider"))
-        .unwrap();
-    let attach_pending = PendingToolCall {
-        result_parent_message_id: user_id,
-        tool_call: ToolCall::function(
-            "call_attach",
-            "windie__attach_provider",
-            r#"{"provider_id":"desktop-commander"}"#,
-        ),
-    };
-    let attach_result = execute_pending_tool_call(
-        &mut store,
-        &conversation_id,
-        &attach_pending,
-        &attach_definition.attached_tool(),
-        &registry,
-    )
-    .await
-    .unwrap();
-
-    assert!(attach_result.success);
-    assert_eq!(attach_result.content, "provider attached");
-    assert_eq!(
-        store.load_tool_schemas(&conversation_id).unwrap()[0]
-            .name
-            .as_str(),
-        TEST_TOOL_SCHEMA_NAME
     );
 }
 
@@ -1948,66 +1808,6 @@ async fn plugin_attach_mcp_resolves_component_before_reusing_provider_attachment
             .any(|tool| tool.name.as_str() == "parallel_search__search")
     );
     fs::remove_dir_all(plugin_root).unwrap();
-}
-
-#[tokio::test]
-async fn runtime_attaches_provider_then_queries_with_provider_tools() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/test").unwrap();
-    store
-        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
-        .unwrap();
-    let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
-    store.install_provider(&provider_id).unwrap();
-    store
-        .save_provider_tool_catalog(&provider_id, &[test_tool_definition()])
-        .unwrap();
-    store
-        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
-        .unwrap();
-    store
-        .insert_message(
-            &conversation_id,
-            None,
-            Role::User,
-            "attach desktop commander",
-            None,
-        )
-        .unwrap();
-
-    let registry = test_mcp_registry();
-    let llm = AttachThenReplyLlm::new();
-    let events = NoopRuntimeEventSink;
-    let head_message_id = latest_head(&store, &conversation_id);
-    let outcome = advance_until_blocked(
-        &NoopOutput,
-        &llm,
-        &mut store,
-        RuntimeInput {
-            conversation_id: &conversation_id,
-            head_message_id: head_message_id.as_ref(),
-            tools: &registry,
-            plugin_catalog: None,
-            model_request: RuntimeModelRequest::new(None, None),
-        },
-        &events,
-    )
-    .await
-    .unwrap();
-
-    assert!(matches!(outcome, RuntimeOutcome::Completed { .. }));
-    assert!(
-        path(&store, &conversation_id)
-            .iter()
-            .any(|message| message.role == Role::Tool && message.content == "provider attached")
-    );
-    assert!(
-        llm.second_turn_tools
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|tool| tool.name.as_str() == TEST_TOOL_SCHEMA_NAME)
-    );
 }
 
 fn insert_multi_tool_call_assistant(

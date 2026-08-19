@@ -4,7 +4,9 @@ use super::*;
 use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
-use crate::session::{SessionEvent, SessionId, SessionResolution, SessionStatus};
+use crate::session::{
+    SessionEvent, SessionExecutionOwner, SessionId, SessionResolution, SessionStatus,
+};
 use crate::tool::ProviderInstallState;
 use crate::tool::ToolProviderId;
 use crate::tool::{
@@ -2843,6 +2845,251 @@ fn loads_latest_session_event_cursor() {
         store.latest_session_event_id(&session_id).unwrap(),
         Some(second.id)
     );
+}
+
+#[test]
+fn atomically_saves_assistant_message_session_head_and_event() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let session_id = SessionId::new("atomic-assistant-message");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .claim_session_execution(&session_id, SessionExecutionOwner::Api)
+        .unwrap();
+
+    let (message_id, record) = store
+        .insert_session_assistant_message(
+            &session_id,
+            SessionExecutionOwner::Api,
+            &conversation_id,
+            Some(&user_id),
+            "hello back",
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .current_head_message_id
+            .as_ref(),
+        Some(&message_id)
+    );
+    assert_eq!(
+        store
+            .load_message(&conversation_id, &message_id)
+            .unwrap()
+            .content,
+        "hello back"
+    );
+    assert!(matches!(
+        record.event,
+        SessionEvent::AssistantMessageSaved { message_id: ref saved_id }
+            if saved_id == message_id.as_str()
+    ));
+    let events = store.load_session_events_after(&session_id, None).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, record.id);
+}
+
+#[test]
+fn atomic_session_message_rolls_back_when_event_insert_fails() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let session_id = SessionId::new("atomic-assistant-message-rollback");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .claim_session_execution(&session_id, SessionExecutionOwner::Api)
+        .unwrap();
+    store
+        .connection
+        .execute_batch(
+            "
+            CREATE TRIGGER fail_session_event_insert
+            BEFORE INSERT ON session_events
+            BEGIN
+                SELECT RAISE(FAIL, 'forced session event failure');
+            END;
+            ",
+        )
+        .unwrap();
+
+    let error = store
+        .insert_session_assistant_message(
+            &session_id,
+            SessionExecutionOwner::Api,
+            &conversation_id,
+            Some(&user_id),
+            "must roll back",
+            None,
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("failed to append runtime event"));
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .current_head_message_id
+            .as_ref(),
+        Some(&user_id)
+    );
+    assert!(
+        store
+            .load_session_events_after(&session_id, None)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn atomically_saves_multipart_tool_result_session_head_and_event() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use a tool", None)
+        .unwrap();
+    let tool_call_id = ToolCallId::new("atomic-tool-call");
+    let metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            tool_call_id.as_str(),
+            "desktop_commander__read_file",
+            r#"{"path":"/tmp/example"}"#,
+        )],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&metadata),
+        )
+        .unwrap();
+    let session_id = SessionId::new("atomic-tool-result");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&assistant_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .claim_session_execution(&session_id, SessionExecutionOwner::Api)
+        .unwrap();
+    let parts = vec![unsaved_text("tool output")];
+
+    let (message_id, record) = store
+        .insert_session_tool_result_message(
+            &session_id,
+            SessionExecutionOwner::Api,
+            &conversation_id,
+            &assistant_id,
+            &tool_call_id,
+            "tool output",
+            &parts,
+        )
+        .unwrap();
+
+    let message = store.load_message(&conversation_id, &message_id).unwrap();
+    assert_eq!(message.role, Role::Tool);
+    assert_eq!(
+        message.parts,
+        vec![MessagePart::Text("tool output".to_string())]
+    );
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .current_head_message_id
+            .as_ref(),
+        Some(&message_id)
+    );
+    assert!(matches!(
+        record.event,
+        SessionEvent::ToolResultSaved { message_id: ref saved_id }
+            if saved_id == message_id.as_str()
+    ));
+}
+
+#[test]
+fn durable_execution_claim_serializes_api_and_cli_and_preserves_cancellation() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("durable-execution-claim");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    let claimed = store
+        .claim_session_execution(&session_id, SessionExecutionOwner::Api)
+        .unwrap();
+    assert_eq!(claimed.status, SessionStatus::Running);
+    assert_eq!(
+        store.session_execution_owner(&session_id).unwrap(),
+        Some(SessionExecutionOwner::Api)
+    );
+    assert!(
+        store
+            .claim_session_execution(&session_id, SessionExecutionOwner::Cli)
+            .unwrap_err()
+            .to_string()
+            .contains("already running")
+    );
+
+    store
+        .update_session_status(&session_id, SessionStatus::Cancelled, None)
+        .unwrap();
+    assert!(
+        !store
+            .finish_claimed_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionStatus::Completed,
+                None,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        store.load_session(&session_id).unwrap().status,
+        SessionStatus::Cancelled
+    );
+    assert_eq!(
+        store.session_execution_owner(&session_id).unwrap(),
+        Some(SessionExecutionOwner::Api)
+    );
+
+    store
+        .release_cancelled_session_execution(&session_id, SessionExecutionOwner::Api)
+        .unwrap();
+    assert_eq!(store.session_execution_owner(&session_id).unwrap(), None);
 }
 
 #[test]

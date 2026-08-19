@@ -13,8 +13,7 @@ use crate::error;
 use crate::plugin::PluginCatalog;
 use crate::store::Store;
 use crate::tool::{
-    ATTACH_MCP_TOOL_NAME, ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
-    READ_SKILL_TOOL_NAME, ToolProviderRegistry,
+    ATTACH_MCP_TOOL_NAME, BUILTIN_PROVIDER_ID, READ_SKILL_TOOL_NAME, ToolProviderRegistry,
 };
 use crate::tool::{
     AttachedTool, PolicyDecision, ToolExecutionResult, ToolPolicy, ToolProviderKind, ToolSchemaName,
@@ -78,9 +77,15 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
         PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
     };
 
-    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+    let message_id = events.save_tool_result(
+        store,
+        conversation_id,
+        &pending.result_parent_message_id,
+        &result.tool_call_id,
+        &result.content,
+        &result.parts,
+    )?;
     *head_message_id = Some(message_id.clone());
-    events.tool_result_saved(&message_id);
 
     Ok(AutomaticToolResolution::Resolved)
 }
@@ -369,59 +374,6 @@ async fn execute_builtin_tool_call(
     }
 
     match attached_tool.provider.tool_name.as_str() {
-        LIST_PROVIDERS_TOOL_NAME => Ok(ToolExecutionResult {
-            tool_call_id: pending.tool_call.id.clone(),
-            tool_name: pending.tool_call.name().to_string(),
-            content: list_attachable_providers(
-                store,
-                registry,
-                enabled_provider_manifests(store, registry)?,
-            )?,
-            parts: Vec::new(),
-            success: true,
-        }),
-        ATTACH_PROVIDER_TOOL_NAME => {
-            let arguments = match serde_json::from_str::<Value>(pending.tool_call.arguments()) {
-                Ok(arguments) => arguments,
-                Err(error) => {
-                    return Ok(ToolExecutionResult::failure(
-                        pending.tool_call.id.clone(),
-                        pending.tool_call.name(),
-                        format!("invalid tool arguments: {error}"),
-                    ));
-                }
-            };
-            let Some(provider_id) = arguments.get("provider_id").and_then(Value::as_str) else {
-                return Ok(ToolExecutionResult::failure(
-                    pending.tool_call.id.clone(),
-                    pending.tool_call.name(),
-                    "provider_id is required",
-                ));
-            };
-
-            let attachment = attach_provider_to_conversation(
-                store,
-                conversation_id,
-                &crate::tool::ToolProviderId::new(provider_id),
-                registry,
-            );
-
-            let Err(error) = attachment else {
-                return Ok(ToolExecutionResult {
-                    tool_call_id: pending.tool_call.id.clone(),
-                    tool_name: pending.tool_call.name().to_string(),
-                    content: "provider attached".to_string(),
-                    parts: Vec::new(),
-                    success: true,
-                });
-            };
-
-            Ok(ToolExecutionResult::failure(
-                pending.tool_call.id.clone(),
-                pending.tool_call.name(),
-                error.to_string(),
-            ))
-        }
         READ_SKILL_TOOL_NAME => {
             let arguments = match parse_builtin_arguments(pending) {
                 Ok(arguments) => arguments,
@@ -511,44 +463,6 @@ fn builtin_failure(pending: &PendingToolCall, message: &str) -> ToolExecutionRes
         pending.tool_call.name(),
         message,
     )
-}
-
-/// Formats the attachable provider list exactly as model-facing plain text.
-fn list_attachable_providers(
-    store: &Store,
-    _registry: &ToolProviderRegistry,
-    manifests: Vec<crate::tool::ProviderManifest>,
-) -> Result<String> {
-    let mut lines = vec!["provider_id, description".to_string()];
-    for manifest in manifests {
-        let Some(catalog) = store.load_provider_tool_catalog(&manifest.provider_id)? else {
-            continue;
-        };
-        if catalog.status != crate::store::ProviderCatalogStatus::Unavailable {
-            lines.push(format!(
-                "{}, {}",
-                manifest.provider_id.as_str(),
-                manifest.description
-            ));
-        }
-    }
-
-    Ok(lines.join("\n"))
-}
-
-/// Loads the enabled provider manifests before entering the async catalog
-/// lookup path. SQLite connections are intentionally not held across awaits.
-fn enabled_provider_manifests(
-    store: &Store,
-    registry: &ToolProviderRegistry,
-) -> Result<Vec<crate::tool::ProviderManifest>> {
-    let mut manifests = Vec::new();
-    for manifest in registry.provider_manifests() {
-        if store.provider_is_enabled(&manifest.provider_id)? {
-            manifests.push(manifest);
-        }
-    }
-    Ok(manifests)
 }
 
 /// Validates and attaches every tool from one enabled, healthy provider.

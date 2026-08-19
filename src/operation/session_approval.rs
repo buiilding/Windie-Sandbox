@@ -105,8 +105,14 @@ where
             .await?
         }
     };
-    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
-    events.tool_result_saved(&message_id);
+    let message_id = events.save_tool_result(
+        store,
+        conversation_id,
+        &pending.result_parent_message_id,
+        &result.tool_call_id,
+        &result.content,
+        &result.parts,
+    )?;
 
     continue_session_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
         .await
@@ -128,8 +134,14 @@ where
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
     let result = deny_pending_tool_call(&pending);
-    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
-    events.tool_result_saved(&message_id);
+    let message_id = events.save_tool_result(
+        store,
+        conversation_id,
+        &pending.result_parent_message_id,
+        &result.tool_call_id,
+        &result.content,
+        &result.parts,
+    )?;
 
     continue_session_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
         .await

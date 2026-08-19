@@ -15,4 +15,6 @@ pub use control::{SessionCancellation, SessionControl};
 pub use event::{SessionEvent, SessionEventRecord};
 pub use id::{SessionId, SessionInputId};
 pub use manager::{SessionManager, SessionSubscription};
-pub use model::{Session, SessionQueryResult, SessionResolution, SessionStatus};
+pub use model::{
+    Session, SessionExecutionOwner, SessionQueryResult, SessionResolution, SessionStatus,
+};
