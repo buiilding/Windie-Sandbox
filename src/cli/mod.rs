@@ -11,6 +11,7 @@ use crate::llm::ModelName;
 use crate::session::SessionId;
 use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
 
+mod adapter;
 mod command;
 mod env;
 mod message;
@@ -22,6 +23,7 @@ mod tool_schema;
 #[cfg(test)]
 mod tests;
 
+pub use adapter::run;
 pub use command::{Command, EnvCommand, InsertPart};
 pub use onboard::TerminalOnboarding;
 pub use parser::read;

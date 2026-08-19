@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Moved public CLI command handlers out of `src/main.rs` into domain-specific
+  `cli::adapter` modules, leaving the binary entrypoint responsible only for
+  parsing and dispatch wiring.
 - Unified CLI and API session runtime setup and event persistence, including
   cancellation events and CLI failure recording.
 - Split the MCP runtime into protocol, stdio, session, and transport modules

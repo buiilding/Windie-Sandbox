@@ -93,9 +93,21 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - lib.rs: shared module library consumed by both the public `windie` binary
   and the repository-only `windie-dev` binary.
-- cli/: parses terminal arguments into typed CLI commands.
+- cli/: parses terminal arguments into typed CLI commands and adapts those
+  commands to shared runtime operations for the terminal process.
 - cli/mod.rs: Public boundary and re-exports for cli folder.
-- cli/command.rs: Contract between cli parse and main.rs. Defines parse CLI command types.
+- cli/adapter/mod.rs: Dispatches parsed commands to the domain-specific CLI
+  adapters.
+- cli/adapter/system.rs: Adapts process lifecycle, gateway, onboarding,
+  environment, installation, and help commands.
+- cli/adapter/conversation.rs: Adapts conversation creation, inspection,
+  listing, branching, deletion, and settings commands.
+- cli/adapter/message.rs: Adapts direct message and system-prompt mutations.
+- cli/adapter/tool.rs: Adapts provider-tool and conversation tool-schema
+  commands.
+- cli/adapter/session.rs: Adapts durable session listing, control, approval,
+  and event commands.
+- cli/command.rs: Typed contract between CLI parsing and CLI adapters.
 - cli/parser.rs: Reads argv and decides which CLI parse should handle it.
 - cli/session.rs: Parses session commands, `windie run ...`, etc.
 - cli/message.rs: Parses message-related commands, `insert .. message`, `update ... message`, etc.
