@@ -32,9 +32,9 @@ Mental model:
 ## Store and persistence
 
 - store/mod.rs: Public boundary and re-exports for store folder.
-- store/provider.rs: Persist Windie's tool provider lifecycle records in SQLite:
+- store/component.rs: Persist Windie's installed tool-component lifecycle records in SQLite:
 installed, enabled, disabled, broken, or updating, does not install these packages.
-- store/provider_tool_catalog.rs: Persists the last discovered MCP tool schemas
+- store/tool_catalog.rs: Persists the last discovered MCP tool schemas
   for each installed provider, including fresh, stale, and unavailable status.
 - store/compaction.rs: summary checkpoint store, saves and loads compaction checkpoints.
 - store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
@@ -59,8 +59,9 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - operation/session.rs: session lifecycle, backend-owned branch resolution, and runtime advancement workflows.
 - operation/session_approval.rs: session-owned tool approval workflows.
 - operation/session_cli.rs: CLI adapter over session workflows.
-- operation/provider.rs: coordinates provider lifecycle workflows: setup, installation, health checks, enabling, disabling, repairing and uninstalling.
-- operation/onboarding.rs: shared onboarding workflow. Configures Bifrost LLM providers, stores MCP secrets, sets up MCP providers, checks provider health, and enables healthy providers.
+- operation/component.rs: coordinates installed component lifecycle workflows: setup, installation, health checks, enabling, disabling, repairing and uninstalling.
+- operation/system.rs: shared lifecycle operations for API, Inspector, and gateway process management.
+- operation/onboarding.rs: shared onboarding workflow. Configures Bifrost LLM providers, stores MCP secrets, sets up MCP components, checks component health, and enables healthy components.
 - operation/tests.rs: tests cross-component workflows built on top of storage, providers, tools, input handling, inspection, and sessions.
 
 ## API
@@ -80,7 +81,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/tool.rs: tool catalog, attachment, and tool mutation HTTP routes.
 - api/session.rs: session lifecycle, conversation-head resolution/query/continue, and event HTTP routes.
 - api/session_approval.rs: session approval HTTP routes.
-- api/provider.rs: HTTP handlers for listing and managing Windie tool providers.
+- api/component.rs: HTTP handlers for listing and managing installed tool components. The current `/api/providers` routes remain backward-compatible.
 - api/plugin.rs: marketplace discovery plus plugin install and uninstall routes;
   returns generated presentation summaries alongside versioned releases.
 - api/env.rs: securely writes manifest-declared provider secrets to ~/.windie/.env and refuses arbitrary environment keys.
@@ -106,11 +107,11 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - bin/windie-dev.rs: foreground development supervisor, release workflow
   adapter, and benchmark entry point. It is deliberately excluded from public
   release archives.
-- process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, and Inspector components.
+- local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, Inspector, and tray components.
 - ../vendor/windie-inspector/host/src/main.rs: standalone Inspector static host; its address
   and API endpoint are configurable through the local endpoint environment
   settings. It is an independent Cargo package, not a Windie runtime target.
-- tray.rs: simple macOS/Windows tray controller that invokes the lifecycle CLI commands and polls localhost health.
+- local/tray.rs: simple macOS/Windows tray controller that invokes the lifecycle CLI commands and polls localhost health.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers
@@ -121,24 +122,24 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - tool/policy/mod.rs: Approval decision rules: allow, ask, or deny a pending tool call.
 - tool/policy/tests.rs:
 - tool/provider.rs: Provider identity types: typed references from Windie tools to executable backends.
+- tool/builtin.rs: defines Windie-owned control tools that are added to model context at runtime; they are not persisted as conversation tools.
+- tool/lifecycle.rs: defines persisted lifecycle states for installed tool components.
+- tool/manifest.rs: runtime-facing provider metadata projected from package manifests.
+- tool/registry.rs: provider-neutral live discovery and execution dispatch. It projects installed MCP components into Windie's model-facing tool registry.
 - tool/result.rs: Tool execution result shape, including the `role: tool` message preview, tool-call link, and optional text/image parts.
 - tool/schema.rs: Model-facing tool schema.
-- tool_provider/: Manages executable tools.
-- tool_provider/builtin.rs: defines Windie-owned control tools that are added to model context at runtime, currently provider discovery and provider attachment; they are not persisted as conversation tools.
-- tool_provider/lifecycle.rs: defines the persisted lifecycle states for tool providers.
-- tool_provider/manifest.rs: defines the metadata contract for a provider: identity, launch command, platform, dependencies, secrets, permissions, scope, setup information, and Windie-managed user-facing README content.
-- tool_provider/mod.rs: Public boundary and re-exports for tool_provider folder.
-- tool_provider/registry.rs: Provider-neutral live discovery and execution dispatch. Persisted provider catalogs live in store; the current registry contains temporary compatibility MCP providers, installed plugin MCPs, and Windie built-ins; skill and plugin execution are not implemented.
-- tool_provider/mcp/mod.rs: Public boundary and re-exports for tool_provider/mcp folder.
-- tool_provider/mcp/approved.rs: Approved MCP providers for Windie.
 - packages/brightdata/: package-owned Bright Data MCPB plugin fixture.
 - packages/cua-driver/: package-owned CUA Driver MCPB plugin fixture.
-- tool_provider/mcp/desktop_commander.rs: Desktop Commander MCP definition.
-- tool_provider/mcp/basic_memory.rs: basic memory mcp provider definition and creates windie's isolated local memory project.
-- tool_provider/mcp/provider.rs: Generic MCP backend adapter; lists MCP tools, converts them into Windie ToolDefinitions, and dispatches approved calls.
-- tool_provider/mcp/executor.rs: Executes already-approved MCP tool calls.
-- tool_provider/mcp/result.rs: MCP result normalization, errors into output, text, image to message parts, build the visible preview stored on the tool message row.
-- tool_provider/tests.rs:
+- mcp/: MCP protocol and component runtime boundary.
+- mcp/mod.rs: MCP JSON-RPC protocol, stdio and Streamable HTTP session coordination.
+- mcp/http.rs: Streamable HTTP transport for remote MCP servers.
+- mcp/mcpb.rs: MCPB validation, extraction, and package-owned process command preparation.
+- mcp/tool_provider.rs: generic MCP adapter that discovers MCP tools and dispatches approved calls.
+- mcp/executor.rs: executes already-approved MCP tool calls.
+- mcp/result.rs: normalizes MCP results into Windie tool messages and image parts.
+- mcp/compatibility.rs: temporary code-owned compatibility fallback; it must disappear after the final packaged migration.
+- mcp/legacy_parallel.rs: temporary code-owned Parallel Search definition used only by that fallback.
+- tool/tests.rs: tool registry, MCP mapping, and result normalization tests.
 
 ## Sessions
 
@@ -168,7 +169,10 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/: user-local Windie environment setup.
 - local/mod.rs: Public boundary and re-exports for local folder.
 - local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, and temporary compatibility dependency installs.
-- local/runtime.rs: downloads, verifies, extracts, and resolves managed Node.js/uv runtimes for MCP providers.
+- local/process.rs: local Windie process lifecycle, PID files, logs, and shutdown.
+- local/tray.rs: local desktop tray lifecycle and health polling.
+- managed_runtime/: downloads, verifies, extracts, and resolves managed Node.js/uv runtimes for packaged MCP components.
+- managed_runtime/mod.rs: owns shared managed runtime installation and executable resolution.
 - output/:
 - output/mod.rs: public boundary and re-exports for output folder
 - output/terminal.rs: owns terminal behavior, printing assistant streaming text, tool calls, help, errors, conversations, sessions, models, benchmark reports, and JSON output. It implements the RuntimeOutput interface used by the runtime.
@@ -179,14 +183,13 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - runtime/:
 - runtime/mod.rs: public boundary and re-exports for runtime folder.
+- runtime/context.rs: model-facing context finalizer, resolving system prompt, tool schemas, messages, and compaction summary for one selected head.
 - runtime/turn.rs: Runs model turns. Loads the selected conversation head, builds model context, stream assistant response, saves assistant message, and continues through automatic tool calls until completion or approval is needed. 
 - runtime/tool_execution.rs: handles tool calls. identifies pending calls, enforeces tool policy, executes approved provider or built-in tools, enforces tool-call order, and save tool results
+- runtime/wakeup.rs: typed events that resume runtime activity, currently session-targeted tool approval decisions.
 - runtime/tests.rs:
 - main.rs: front desk for the windie binary.
-- context.rs: model-facing context finalizer, resolve system prompt, tool schema, messages, compaction summary given one explicit message head.
-- mcp.rs: owns the approved MCP stdio protocol boundary: process startup, JSON-RPC initialization, tool listing/calls, timeouts, cleanup hooks, and persistent provider-session pooling.
-- gateway.rs: manages the Bifrost LLM gateway.
-- wakeup.rs: typed events that resume runtime work, currently session-targeted tool approval decisions. Cancellation is a separate session control.
+- llm/gateway.rs: manages the local Bifrost LLM gateway lifecycle and health checks.
 - error.rs: Typed Windie errors.
 - ../vendor/windie-inspector/frontend: local browser client for inspecting and testing Windie through
   the API.
@@ -238,14 +241,16 @@ Keep boundaries strict:
 - Only `tool/policy.rs` should decide whether tool execution is allowed, denied, or requires approval.
 - Only `conversation/` should own message roles, typed conversation/message identifiers, user parts, model-facing tool schema types, and assistant metadata types.
 - Only `session/` should own session domain types, session events, and live session task management.
-- Only `context.rs` should decide what history the model sees.
+- Only `runtime/context.rs` should decide what history the model sees.
 - Only `error.rs` should own typed Windie error categories used across client protocol boundaries.
 - Only `perf/` should own benchmark timing logic, reports, comparisons, and benchmark fixture setup.
 - Only `runtime.rs` should coordinate query-like runtime flows.
-- Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and approved dependency install/check commands.
+- Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and local Windie process/tray management.
+- Only `managed_runtime/` should install and resolve Windie-managed Node.js and uv runtimes for packaged components.
 - Only `dev/` should own repository-only development helper launchers, while
   `vendor/windie-inspector/` owns the first-party Inspector client and host.
-- Only `tool_provider/` should own provider catalog and execution dispatch across code-approved MCP providers and future plugins.
+- Only `tool/` should own the model-facing provider registry and provider lifecycle projection.
+- Only `mcp/` should own MCP protocol, transport, MCPB, MCP tool discovery, and MCP result adaptation.
 - Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.
 - Only `store/` and the session operation/manager boundary should resolve or create a session branch for a conversation head; the frontend session cache is presentation state only.
 - Only `tool/` should own tool provider, attachment, approval, and execution result data shared across runtime, output, policy, store, and executors.

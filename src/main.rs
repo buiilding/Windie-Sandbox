@@ -9,16 +9,16 @@ use std::net::SocketAddr;
 
 use windie::cli::{Command, EnvCommand, InsertPart};
 use windie::conversation::{ConversationId, MessageId, Role, ToolCallId};
-use windie::gateway::GatewayUrl;
+use windie::llm::gateway::GatewayUrl;
 use windie::llm::{BaseUrl, ModelName};
+use windie::local::process::ManagedComponent;
 use windie::operation::MessageInputPart;
 use windie::output::TerminalOutput;
-use windie::process::ManagedComponent;
 use windie::session::SessionId;
 use windie::store::Store;
+use windie::tool::ToolProviderRegistry;
 use windie::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
-use windie::tool_provider::ToolProviderRegistry;
-use windie::{cli, config, local, operation, tray};
+use windie::{cli, config, local, operation};
 
 const INVALID_USAGE_EXIT_CODE: i32 = 2;
 
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         Command::GatewayStart => start_gateway().await,
         Command::GatewayStop => stop_gateway().await,
         Command::GatewayOutput => output_component(ManagedComponent::Gateway),
-        Command::Tray => tray::run(),
+        Command::Tray => local::tray::run(),
         Command::InsertMessage {
             conversation_id,
             head_message_id,

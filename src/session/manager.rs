@@ -15,18 +15,18 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::conversation::{ConversationId, MessageId, ToolCallId};
-use crate::gateway::GatewayUrl;
+use crate::llm::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName, ReasoningRequest};
 use crate::operation::{self, MessageInputPart, RuntimeDependencies};
 use crate::output::RuntimeOutput;
 use crate::runtime::RuntimeEventSink;
+use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
 use crate::session::{
     Session, SessionCancellation, SessionControl, SessionEvent, SessionEventRecord, SessionId,
     SessionQueryResult, SessionResolution, SessionStatus,
 };
 use crate::store::Store;
-use crate::tool_provider::ToolProviderRegistry;
-use crate::wakeup::{ToolDecisionWakeup, Wakeup};
+use crate::tool::ToolProviderRegistry;
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
 

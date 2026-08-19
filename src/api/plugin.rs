@@ -125,7 +125,7 @@ pub(super) async fn install_plugin(
             }?;
 
             let mut providers = Vec::new();
-            for component in plugin.mcp_components()? {
+            for component in crate::mcp::load_components(&plugin)? {
                 let provider_id = ToolProviderId::new(component.component_id);
                 providers.push(operation::setup_provider(&store, &registry, &provider_id)?);
             }
@@ -169,7 +169,7 @@ pub(super) async fn uninstall_plugin(
         .ok_or_else(|| windie_error::not_found(format!("plugin does not exist: {plugin_id}")))?;
 
     for plugin in &installed {
-        for component in plugin.mcp_components()? {
+        for component in crate::mcp::load_components(plugin)? {
             let provider_id = ToolProviderId::new(component.component_id);
             state
                 .tool_registry
@@ -187,7 +187,7 @@ pub(super) async fn uninstall_plugin(
             None => Store::open(),
         }?;
         for plugin in &installed {
-            for component in plugin.mcp_components()? {
+            for component in crate::mcp::load_components(plugin)? {
                 let provider_id = ToolProviderId::new(component.component_id);
                 if store.load_installed_provider(&provider_id)?.is_some() {
                     operation::uninstall_provider(&mut store, &registry, &provider_id)?;

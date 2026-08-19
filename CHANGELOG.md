@@ -23,6 +23,12 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 - Retained the checked-in marketplace index and package fixtures as a
   deterministic development and test fallback while production continues to
   use the hosted marketplace.
+- Documented that future skill and app runtime modules should be added only
+  when implemented, while their `SKILL.md` and connector files remain inside
+  installed plugin packages.
+- Reorganized the Rust source tree so plugin storage, MCP runtime, tool
+  execution, managed runtimes, local process control, and model runtime code
+  have separate module boundaries; removed the old `tool_provider` module.
 
 ## [0.3.2] - 2026-08-10
 

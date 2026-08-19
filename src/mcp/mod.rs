@@ -1,10 +1,9 @@
-//! Minimal MCP stdio client.
+//! MCP protocol, transport, and runtime boundary.
 //!
-//! This module owns the protocol boundary for approved MCP providers. It runs a
-//! configured command, speaks line-delimited JSON-RPC 2.0 over stdin/stdout,
-//! performs the MCP initialize handshake, and exposes the tool operations
-//! Windie needs now: `tools/list`, short-lived `tools/call`, and persistent
-//! provider sessions for API-owned runtime tools.
+//! This module speaks MCP JSON-RPC over local stdio and remote Streamable HTTP,
+//! validates MCPB runtimes, discovers tools, and adapts MCP calls to Windie's
+//! tool execution boundary. The compatibility module is temporary; packaged
+//! MCP components are the normal source of runtime definitions.
 
 use std::collections::HashMap;
 use std::env;
@@ -26,8 +25,28 @@ use serde_json::{Value, json};
 
 use crate::local;
 
-#[path = "mcp_http.rs"]
+mod chrome_devtools;
+mod compatibility;
+mod executor;
+mod legacy_parallel;
+mod loader;
+#[path = "http.rs"]
 mod mcp_http;
+mod mcpb;
+mod result;
+mod tool_provider;
+
+pub(crate) use chrome_devtools::ChromeDevToolsConnectionMode;
+pub(crate) use compatibility::approved_mcp_providers;
+pub(crate) use loader::load_components;
+pub(crate) use tool_provider::{McpProviderDefinition, McpToolProvider};
+
+#[cfg(test)]
+pub(crate) use compatibility::approved_mcp_provider;
+#[cfg(test)]
+pub(crate) use result::{mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview};
+#[cfg(test)]
+pub(crate) use tool_provider::mcp_schema_name;
 
 const MCP_PROTOCOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_PACKAGE_PREPARATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -1163,8 +1182,8 @@ fn run_owned_shutdown_command(command: McpOwnedCommand) -> Result<()> {
 
 /// Applies the static command definition to a spawned provider process.
 fn configure_process(command: McpCommand) -> Result<Command> {
-    let program = local::resolve_command(command.program)?;
-    let command_path = local::path_with_command_parent(&program);
+    let program = crate::managed_runtime::resolve_command(command.program)?;
+    let command_path = crate::managed_runtime::path_with_command_parent(&program);
     let args = command
         .args
         .iter()
@@ -1189,9 +1208,9 @@ fn configure_owned_process(command: McpOwnedCommand) -> Result<Command> {
     {
         PathBuf::from(&command.program)
     } else {
-        local::resolve_command(&command.program)?
+        crate::managed_runtime::resolve_command(&command.program)?
     };
-    let command_path = local::path_with_command_parent(&program);
+    let command_path = crate::managed_runtime::path_with_command_parent(&program);
     let mut process = windows_command(program, &command.args);
     if let Some(path) = command_path {
         process.env("PATH", path);

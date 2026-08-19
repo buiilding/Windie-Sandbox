@@ -3,9 +3,11 @@
 //! This module exposes the runtime boundary while implementation details live
 //! in turn and tool-execution modules.
 
+pub(crate) mod context;
 mod retry;
 mod tool_execution;
 mod turn;
+pub(crate) mod wakeup;
 
 pub(crate) use tool_execution::{
     PendingToolExecution, deny_pending_tool_call, execute_pending_tool_call,
@@ -21,7 +23,7 @@ pub(crate) use turn::{advance_turn, build_model_context};
 
 use crate::conversation::{ConversationId, MessageId};
 use crate::llm::{PromptCacheRequest, ReasoningRequest};
-use crate::tool_provider::ToolProviderRegistry;
+use crate::tool::ToolProviderRegistry;
 
 #[cfg(test)]
 use crate::conversation::Role;

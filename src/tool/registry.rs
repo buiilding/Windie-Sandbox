@@ -10,21 +10,21 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 
 use super::builtin;
-use super::mcp::McpProviderDefinition;
-use super::mcp::{McpToolProvider, approved_mcp_providers};
 use crate::conversation::ToolCall;
 use crate::error;
 use crate::local;
+use crate::mcp::ChromeDevToolsConnectionMode;
 use crate::mcp::McpCommand;
+use crate::mcp::McpProviderDefinition;
 use crate::mcp::McpSessionPool;
 use crate::mcp::McpTransport;
+use crate::mcp::{McpToolProvider, approved_mcp_providers};
 use crate::plugin::InstalledPlugin;
+use crate::tool::ProviderRuntime;
 use crate::tool::{
     AttachedTool, ToolDefinition, ToolExecutionResult, ToolProviderId, ToolProviderKind,
     ToolSchemaName,
 };
-use crate::tool_provider::ChromeDevToolsConnectionMode;
-use crate::tool_provider::ProviderRuntime;
 
 #[derive(Debug, Clone)]
 /// Registry of tool providers available to this Windie process.
@@ -84,7 +84,7 @@ impl ToolProviderRegistry {
     /// Installation owns package files; this registry owns the live provider
     /// projection used by discovery and execution.
     pub fn register_plugin(&self, plugin: &InstalledPlugin) -> Result<()> {
-        let components = plugin.mcp_components()?;
+        let components = crate::mcp::load_components(plugin)?;
         let mut providers = self
             .mcp_providers
             .write()
@@ -125,8 +125,7 @@ impl ToolProviderRegistry {
     /// legacy providers. Once every provider is package-owned, this fallback
     /// disappears and uninstall simply removes the dynamic definition.
     pub fn unregister_plugin(&self, plugin: &InstalledPlugin) -> Result<()> {
-        let component_ids = plugin
-            .mcp_components()?
+        let component_ids = crate::mcp::load_components(plugin)?
             .into_iter()
             .map(|component| component.component_id)
             .collect::<Vec<_>>();
@@ -199,7 +198,7 @@ impl ToolProviderRegistry {
 
         match provider.manifest().runtime {
             ProviderRuntime::Native => local::install_target(provider_id.as_str()).map(|_| ()),
-            runtime => local::ensure_runtime(runtime).map(|_| ()),
+            runtime => crate::managed_runtime::ensure_runtime(runtime).map(|_| ()),
         }
     }
 
@@ -325,7 +324,7 @@ impl ToolProviderRegistry {
     }
 
     /// Finds one known MCP provider by its stable provider ID.
-    pub(in crate::tool_provider) fn mcp_provider(
+    pub(in crate::tool) fn mcp_provider(
         &self,
         provider_id: &ToolProviderId,
     ) -> Option<McpToolProvider> {
@@ -351,7 +350,7 @@ impl ToolProviderRegistry {
         Self {
             mcp_providers: Arc::new(RwLock::new(vec![McpToolProvider::new(
                 McpProviderDefinition {
-                    manifest: crate::tool_provider::ProviderManifest::mcp_stdio(
+                    manifest: crate::tool::ProviderManifest::mcp_stdio(
                         provider_id,
                         display_name,
                         "Test MCP provider.",

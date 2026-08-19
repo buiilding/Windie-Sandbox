@@ -15,7 +15,7 @@ use zip::ZipArchive;
 
 use crate::mcp::McpOwnedCommand;
 
-use super::manifest::{
+use crate::plugin::manifest::{
     McpAuthentication, McpDelivery, WindieMcpSetup, WindieSetupEnvironmentValue,
     resolve_package_path, validate_relative_path,
 };

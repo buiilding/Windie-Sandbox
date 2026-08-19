@@ -13,11 +13,11 @@ use crate::llm::{
     ReasoningRequest,
 };
 use crate::mcp::McpCommand;
+use crate::tool::{ProviderInstallState, ToolProviderRegistry};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolExecutionResult, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::{ProviderInstallState, ToolProviderRegistry};
 
 const TEST_PROVIDER_ID: &str = "desktop-commander";
 const TEST_PROVIDER_PREFIX: &str = "desktop_commander";

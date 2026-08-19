@@ -6,19 +6,19 @@
 
 mod chrome_devtools;
 mod compaction;
+mod component;
 mod conversation;
 mod message;
-mod provider;
-mod provider_tool_catalog;
 mod schema;
 mod session;
 mod system_prompt;
+mod tool_catalog;
 mod tool_schema;
 
 pub use compaction::Compaction;
+pub use component::InstalledProvider;
 pub use conversation::ConversationInfo;
-pub use provider::InstalledProvider;
-pub use provider_tool_catalog::{ProviderCatalogStatus, ProviderToolCatalog};
+pub use tool_catalog::{ProviderCatalogStatus, ProviderToolCatalog};
 
 #[cfg(test)]
 use schema::DATABASE_SCHEMA_VERSION;

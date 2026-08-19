@@ -138,24 +138,28 @@ pub fn env_file_path() -> Result<PathBuf> {
 }
 
 /// Returns the persistent log file for one managed component.
-pub fn component_log_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
+pub fn component_log_file_path(
+    component: crate::local::process::ManagedComponent,
+) -> Result<PathBuf> {
     let layout = ensure_windie_layout()?;
     Ok(match component {
-        crate::process::ManagedComponent::Gateway => layout.gateway_log_file,
-        crate::process::ManagedComponent::Api => layout.api_log_file,
-        crate::process::ManagedComponent::Inspector => layout.inspector_log_file,
-        crate::process::ManagedComponent::Tray => layout.tray_log_file,
+        crate::local::process::ManagedComponent::Gateway => layout.gateway_log_file,
+        crate::local::process::ManagedComponent::Api => layout.api_log_file,
+        crate::local::process::ManagedComponent::Inspector => layout.inspector_log_file,
+        crate::local::process::ManagedComponent::Tray => layout.tray_log_file,
     })
 }
 
 /// Returns the persistent PID file for one managed component.
-pub fn component_pid_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
+pub fn component_pid_file_path(
+    component: crate::local::process::ManagedComponent,
+) -> Result<PathBuf> {
     let layout = ensure_windie_layout()?;
     Ok(match component {
-        crate::process::ManagedComponent::Gateway => layout.gateway_pid_file,
-        crate::process::ManagedComponent::Api => layout.api_pid_file,
-        crate::process::ManagedComponent::Inspector => layout.inspector_pid_file,
-        crate::process::ManagedComponent::Tray => layout.tray_pid_file,
+        crate::local::process::ManagedComponent::Gateway => layout.gateway_pid_file,
+        crate::local::process::ManagedComponent::Api => layout.api_pid_file,
+        crate::local::process::ManagedComponent::Inspector => layout.inspector_pid_file,
+        crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
     })
 }
 

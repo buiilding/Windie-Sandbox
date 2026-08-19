@@ -8,6 +8,7 @@
 
 mod client;
 mod error;
+pub mod gateway;
 mod management;
 mod model;
 mod responses;

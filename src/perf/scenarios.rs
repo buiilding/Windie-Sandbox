@@ -822,12 +822,12 @@ fn benchmark_provider_state_lifecycle() -> Result<Duration> {
         store.install_provider(&provider_id)?;
         store.set_provider_state(
             &provider_id,
-            crate::tool_provider::ProviderInstallState::Enabled,
+            crate::tool::ProviderInstallState::Enabled,
             None,
         )?;
         store.set_provider_state(
             &provider_id,
-            crate::tool_provider::ProviderInstallState::Disabled,
+            crate::tool::ProviderInstallState::Disabled,
             None,
         )?;
         store.uninstall_provider(&provider_id)?;

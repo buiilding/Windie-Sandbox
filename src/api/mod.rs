@@ -30,7 +30,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::conversation::{ConversationId, ImageAssetId, MessageId, Role, ToolCallId};
 use crate::error::{self as windie_error, WindieErrorKind};
-use crate::gateway::GatewayUrl;
+use crate::llm::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, InputTokenCount, ModelInfo, ModelName, ReasoningRequest};
 use crate::local;
 use crate::operation::{self, InspectionReport, MessageInputPart, ToolProviderStatus};
@@ -39,11 +39,12 @@ use crate::session::{
     Session, SessionEventRecord, SessionId, SessionManager, SessionStatus, SessionSubscription,
 };
 use crate::store::{ConversationInfo, Store};
+use crate::tool::ToolProviderRegistry;
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolDefinition, ToolProviderId, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::ToolProviderRegistry;
 
+mod component;
 mod conversation;
 mod env;
 mod error;
@@ -52,7 +53,6 @@ mod health;
 mod inspection;
 mod message;
 mod plugin;
-mod provider;
 mod router;
 mod session;
 mod session_approval;
@@ -61,6 +61,7 @@ mod sse;
 mod state;
 mod tool;
 
+use component::*;
 use conversation::*;
 use env::*;
 use error::*;
@@ -69,7 +70,6 @@ use health::*;
 use inspection::*;
 use message::*;
 use plugin::*;
-use provider::*;
 use router::router;
 use session::*;
 use session_approval::*;

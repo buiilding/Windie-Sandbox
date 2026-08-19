@@ -7,14 +7,14 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
-use crate::context::{ContextBuilder, ModelContext};
 use crate::conversation::{ConversationId, Message, MessageId, Role};
 use crate::error;
 use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
+use crate::runtime::context::{ContextBuilder, ModelContext};
 use crate::store::Store;
+use crate::tool::ToolProviderRegistry;
 use crate::tool::{PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy};
-use crate::tool_provider::ToolProviderRegistry;
 
 use super::retry::stream_with_retry;
 use super::tool_execution::{

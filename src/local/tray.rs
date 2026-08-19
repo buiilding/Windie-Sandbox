@@ -366,7 +366,7 @@ mod app {
         hide_console_window();
 
         let controller = RuntimeController::new()?;
-        crate::process::register_tray()?;
+        crate::local::process::register_tray()?;
         let (status_sender, status_receiver) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         start_status_monitor(controller.clone(), status_sender, stopping.clone());
@@ -458,7 +458,7 @@ mod app {
 
         let event_loop_result = result.context("Windie tray event loop failed");
         let shutdown_result = controller.stop_all();
-        let unregister_result = crate::process::unregister_tray();
+        let unregister_result = crate::local::process::unregister_tray();
         match (event_loop_result, shutdown_result, unregister_result) {
             (Ok(()), Ok(()), Ok(())) => Ok(()),
             (Err(event_error), Ok(()), Ok(())) => Err(event_error),

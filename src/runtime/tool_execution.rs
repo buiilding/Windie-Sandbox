@@ -12,10 +12,10 @@ use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, To
 use crate::error;
 use crate::store::Store;
 use crate::tool::{
-    AttachedTool, PolicyDecision, ToolExecutionResult, ToolPolicy, ToolProviderKind, ToolSchemaName,
-};
-use crate::tool_provider::{
     ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME, ToolProviderRegistry,
+};
+use crate::tool::{
+    AttachedTool, PolicyDecision, ToolExecutionResult, ToolPolicy, ToolProviderKind, ToolSchemaName,
 };
 
 use super::RuntimeEventSink;
@@ -394,7 +394,7 @@ async fn execute_builtin_tool_call(
 fn list_attachable_providers(
     store: &Store,
     _registry: &ToolProviderRegistry,
-    manifests: Vec<crate::tool_provider::ProviderManifest>,
+    manifests: Vec<crate::tool::ProviderManifest>,
 ) -> Result<String> {
     let mut lines = vec!["provider_id, description".to_string()];
     for manifest in manifests {
@@ -418,7 +418,7 @@ fn list_attachable_providers(
 fn enabled_provider_manifests(
     store: &Store,
     registry: &ToolProviderRegistry,
-) -> Result<Vec<crate::tool_provider::ProviderManifest>> {
+) -> Result<Vec<crate::tool::ProviderManifest>> {
     let mut manifests = Vec::new();
     for manifest in registry.provider_manifests() {
         if store.provider_is_enabled(&manifest.provider_id)? {

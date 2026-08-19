@@ -4,8 +4,9 @@
 //! environment, such as `~/.windie`, provider-key env editing, and
 //! approved dependency checks.
 
-mod runtime;
+pub mod process;
 mod setup;
+pub mod tray;
 
 #[cfg(test)]
 pub(crate) static ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -15,8 +16,4 @@ pub use setup::{
     component_pid_file_path, ensure_windie_layout, env_file_path, env_value, install_target,
     list_env_keys, remove_uninstall_plan, set_env_values, uninstall_plan, unset_env_values,
     user_home_dir, windie_home_dir,
-};
-
-pub(crate) use runtime::{
-    ensure_runtime, path_with_command_parent, remove_managed_runtime, resolve_command,
 };

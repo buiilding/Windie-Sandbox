@@ -1,4 +1,4 @@
-//! User-local runtime provisioning and executable resolution.
+//! Windie-managed runtime provisioning and executable resolution.
 //!
 //! Approved providers must not depend on a user's shell, global Node.js/uv
 //! installation, or Windows command shims. This module provisions the shared
@@ -15,8 +15,8 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
 
-use super::windie_home_dir;
-use crate::tool_provider::ProviderRuntime;
+use crate::local::windie_home_dir;
+use crate::tool::ProviderRuntime;
 
 const NODE_VERSION: &str = "22.14.0";
 const UV_VERSION: &str = "latest";

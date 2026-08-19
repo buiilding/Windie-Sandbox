@@ -6,18 +6,16 @@
 //! tools before their schemas are sent to the model.
 
 use super::McpProviderDefinition;
-use super::parallel;
+use super::legacy_parallel;
 
 /// Returns the MCP providers Windie is willing to start and execute.
-pub(in crate::tool_provider) fn approved_mcp_providers() -> Vec<McpProviderDefinition> {
-    vec![parallel::definition()]
+pub(crate) fn approved_mcp_providers() -> Vec<McpProviderDefinition> {
+    vec![legacy_parallel::definition()]
 }
 
 /// Finds one approved MCP provider definition for tests.
 #[cfg(test)]
-pub(in crate::tool_provider) fn approved_mcp_provider(
-    provider_id: &str,
-) -> Option<McpProviderDefinition> {
+pub(crate) fn approved_mcp_provider(provider_id: &str) -> Option<McpProviderDefinition> {
     approved_mcp_providers()
         .into_iter()
         .find(|definition| definition.provider_id == provider_id)

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::mcp::{McpHttpAuthorization, McpHttpEndpoint, McpTransport};
-use crate::tool_provider::{
+use crate::tool::{
     ProviderAuthentication, ProviderManifest, ProviderPackage, ProviderPackageManager,
     ProviderPermission, ProviderPlatform, ProviderScope, ProviderSecret,
 };
@@ -441,20 +441,18 @@ impl McpServerManifest {
             }) {
                 match package.runtime_hint.as_deref() {
                     Some("node") => {
-                        manifest.runtime = crate::tool_provider::ProviderRuntime::Node;
-                        manifest.dependencies =
-                            vec![crate::tool_provider::ProviderDependency::executable(
-                                "node",
-                                "Node.js runtime for the packaged MCP server",
-                            )];
+                        manifest.runtime = crate::tool::ProviderRuntime::Node;
+                        manifest.dependencies = vec![crate::tool::ProviderDependency::executable(
+                            "node",
+                            "Node.js runtime for the packaged MCP server",
+                        )];
                     }
                     Some("uv") => {
-                        manifest.runtime = crate::tool_provider::ProviderRuntime::Uv;
-                        manifest.dependencies =
-                            vec![crate::tool_provider::ProviderDependency::executable(
-                                "uv",
-                                "uv runtime for the packaged MCP server",
-                            )];
+                        manifest.runtime = crate::tool::ProviderRuntime::Uv;
+                        manifest.dependencies = vec![crate::tool::ProviderDependency::executable(
+                            "uv",
+                            "uv runtime for the packaged MCP server",
+                        )];
                     }
                     Some(runtime) => {
                         bail!("unsupported packaged MCP runtime hint: {runtime}");

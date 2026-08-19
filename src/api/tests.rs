@@ -14,8 +14,8 @@ use tower::ServiceExt;
 use crate::conversation::{MessageMetadata, MessagePart, Role, ToolCall};
 use crate::mcp::McpCommand;
 use crate::session::{SessionEvent, SessionId, SessionStatus};
+use crate::tool::ProviderInstallState;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
-use crate::tool_provider::ProviderInstallState;
 
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 

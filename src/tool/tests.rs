@@ -4,20 +4,20 @@ use anyhow::anyhow;
 use serde_json::{Value, json};
 
 use super::ToolProviderRegistry;
-use super::mcp::{
+use crate::conversation::{ToolCall, UnsavedMessagePart};
+use crate::mcp::ChromeDevToolsConnectionMode;
+use crate::mcp::{self as mcp_protocol, McpTool, McpTransport};
+use crate::mcp::{
     McpToolProvider, approved_mcp_provider, mcp_schema_name, mcp_tool_call_failure_result,
     mcp_tool_result_parts, tool_result_preview,
 };
-use crate::conversation::{ToolCall, UnsavedMessagePart};
-use crate::mcp::{self as mcp_protocol, McpTool, McpTransport};
 use crate::plugin::PluginStore;
+use crate::tool::ProviderSecret;
+use crate::tool::ProviderTransport;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
-use crate::tool_provider::ChromeDevToolsConnectionMode;
-use crate::tool_provider::ProviderSecret;
-use crate::tool_provider::manifest::ProviderTransport;
 
 fn approved_parallel_provider() -> McpToolProvider {
     McpToolProvider::new(approved_mcp_provider("parallel-search").unwrap())
@@ -40,10 +40,10 @@ fn approved_provider_manifests_describe_their_runtime_requirements() {
         assert!(!manifest.description.is_empty());
         assert!(!manifest.readme_markdown.is_empty());
         match &manifest.launch {
-            crate::tool_provider::manifest::ProviderLaunch::Stdio { program, .. } => {
+            crate::tool::ProviderLaunch::Stdio { program, .. } => {
                 assert!(!program.is_empty())
             }
-            crate::tool_provider::manifest::ProviderLaunch::StreamableHttp { url } => {
+            crate::tool::ProviderLaunch::StreamableHttp { url } => {
                 assert!(url.starts_with("https://"))
             }
         }
@@ -92,7 +92,7 @@ fn parallel_manifest_uses_optional_network_authentication() {
     assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
     assert_eq!(
         manifest.authentication,
-        crate::tool_provider::ProviderAuthentication::OptionalApiKey
+        crate::tool::ProviderAuthentication::OptionalApiKey
     );
     assert_eq!(
         manifest.secrets,
@@ -104,7 +104,7 @@ fn parallel_manifest_uses_optional_network_authentication() {
     assert!(
         manifest
             .permissions
-            .contains(&crate::tool_provider::ProviderPermission::Network)
+            .contains(&crate::tool::ProviderPermission::Network)
     );
     assert!(
         matches!(provider.transport(), McpTransport::StreamableHttp { endpoint } if endpoint.url == "https://search.parallel.ai/mcp")

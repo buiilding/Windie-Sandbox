@@ -6,13 +6,12 @@
 //! plugin store, and the marketplace index; component runtimes remain owned
 //! by their respective runtime modules.
 
-mod index;
+mod catalog;
 mod installer;
-mod manifest;
-mod mcpb;
+pub(crate) mod manifest;
 mod store;
 
-pub use index::{
+pub use catalog::{
     MarketplaceIndex, MarketplacePlugin, MarketplacePresentation, MarketplaceVersion,
     bundled as bundled_index,
 };
@@ -23,7 +22,7 @@ pub use manifest::{
     WindieMcpMetadata, WindieMcpSetup, WindieSetupEnvironment, WindieSetupEnvironmentValue,
     WindieSetupFile,
 };
-pub use store::{InstalledPlugin, LoadedMcpComponent, PluginStore};
+pub use store::{InstalledPlugin, PluginStore};
 
 #[cfg(test)]
 mod tests {
@@ -45,7 +44,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("parallel-search").unwrap();
-        let components = plugin.mcp_components().unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
 
         assert_eq!(plugin.manifest.plugin.id, "parallel-search");
         assert_eq!(components.len(), 1);
@@ -65,7 +64,7 @@ mod tests {
         assert_eq!(endpoint.startup_timeout, Duration::from_secs(120));
         assert_eq!(endpoint.call_timeout, Duration::from_secs(60));
 
-        let registry = crate::tool_provider::ToolProviderRegistry::new();
+        let registry = crate::tool::ToolProviderRegistry::new();
         registry.register_plugin(&plugin).unwrap();
         let provider = registry
             .provider_manifests()
@@ -133,7 +132,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("blender-mcp").unwrap();
-        let components = plugin.mcp_components().unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
         assert_eq!(components.len(), 1);
         assert_eq!(
             components[0].manifest.name,
@@ -181,7 +180,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("chrome-devtools").unwrap();
-        let components = plugin.mcp_components().unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
         assert_eq!(components.len(), 1);
         assert_eq!(
             components[0].manifest.name,
@@ -218,7 +217,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("brightdata").unwrap();
-        let components = plugin.mcp_components().unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
         assert_eq!(components.len(), 1);
         assert_eq!(
             components[0].manifest.name,
@@ -270,7 +269,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("cua-driver").unwrap();
-        let components = plugin.mcp_components().unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
         assert_eq!(components.len(), 1);
         assert_eq!(components[0].manifest.name, "io.github.trycua/cua-driver");
         assert_eq!(components[0].manifest.version, "0.12.6");
@@ -297,7 +296,7 @@ mod tests {
         // Node is unavailable, the package contract can still be validated by
         // InstalledPlugin::load, but this process-level acceptance test cannot
         // run on that machine.
-        if crate::local::resolve_command("node").is_err() {
+        if crate::managed_runtime::resolve_command("node").is_err() {
             return;
         }
 
@@ -308,7 +307,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("local-mcp-fixture").unwrap();
-        let components = plugin.mcp_components().unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
         assert_eq!(components.len(), 1);
         assert!(matches!(
             components[0].transport,
@@ -327,18 +326,15 @@ mod tests {
         .unwrap();
         assert_eq!(result["content"][0]["text"], "phase3a");
 
-        let registry = crate::tool_provider::ToolProviderRegistry::new();
+        let registry = crate::tool::ToolProviderRegistry::new();
         registry.register_plugin(&plugin).unwrap();
         let provider = registry
             .provider_manifests()
             .into_iter()
             .find(|manifest| manifest.provider_id.as_str() == "local-mcp-fixture")
             .unwrap();
-        assert_eq!(
-            provider.transport,
-            crate::tool_provider::ProviderTransport::Stdio
-        );
-        assert_eq!(provider.scope, crate::tool_provider::ProviderScope::Local);
+        assert_eq!(provider.transport, crate::tool::ProviderTransport::Stdio);
+        assert_eq!(provider.scope, crate::tool::ProviderScope::Local);
 
         registry.unregister_plugin(&plugin).unwrap();
         store.remove_plugin("local-mcp-fixture").unwrap();
@@ -354,7 +350,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("desktop-commander").unwrap();
-        let components = plugin.mcp_components().unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
         assert_eq!(components.len(), 1);
         assert_eq!(
             components[0].manifest.name,
@@ -397,10 +393,7 @@ mod tests {
                 &components[0].windie,
             )
             .unwrap();
-        assert_eq!(
-            provider.runtime,
-            crate::tool_provider::ProviderRuntime::Node
-        );
+        assert_eq!(provider.runtime, crate::tool::ProviderRuntime::Node);
         assert!(
             provider
                 .dependencies
@@ -410,10 +403,10 @@ mod tests {
         assert!(
             provider
                 .permissions
-                .contains(&crate::tool_provider::ProviderPermission::Filesystem)
+                .contains(&crate::tool::ProviderPermission::Filesystem)
         );
 
-        let registry = crate::tool_provider::ToolProviderRegistry::new();
+        let registry = crate::tool::ToolProviderRegistry::new();
         registry.register_plugin(&plugin).unwrap();
         assert!(
             registry
@@ -435,7 +428,7 @@ mod tests {
         ));
         let store = PluginStore::new(&root);
         let plugin = store.install_bundled("desktop-commander").unwrap();
-        let component = plugin.mcp_components().unwrap().remove(0);
+        let component = crate::mcp::load_components(&plugin).unwrap().remove(0);
         let transport = component.transport;
         let tools = crate::mcp::list_tools_with_transport(transport.clone()).unwrap();
         assert!(tools.iter().any(|tool| tool.name == "read_file"));

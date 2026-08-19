@@ -1,4 +1,4 @@
-//! Parallel Search hosted MCP provider definition.
+//! Temporary code-owned Parallel Search compatibility definition.
 //!
 //! Parallel exposes web search and URL extraction through a remote Streamable
 //! HTTP MCP endpoint. Windie supports anonymous access by default and can add
@@ -6,7 +6,7 @@
 
 use super::McpProviderDefinition;
 use crate::mcp::{McpHttpAuthorization, McpHttpEndpoint, McpTransport};
-use crate::tool_provider::{
+use crate::tool::{
     ProviderAuthentication, ProviderManifest, ProviderPermission, ProviderPlatform, ProviderScope,
     ProviderSecret,
 };
@@ -14,7 +14,7 @@ use crate::tool_provider::{
 const PARALLEL_MCP_URL: &str = "https://search.parallel.ai/mcp";
 const PARALLEL_API_KEY_ENV: &str = "PARALLEL_API_KEY";
 
-/// Returns the code-approved Parallel Search MCP provider definition.
+/// Returns the temporary compatibility definition used during migration.
 pub(super) fn definition() -> McpProviderDefinition {
     let transport = McpTransport::streamable_http(McpHttpEndpoint::new(
         PARALLEL_MCP_URL,
@@ -46,7 +46,7 @@ pub(super) fn definition() -> McpProviderDefinition {
                 "Add PARALLEL_API_KEY for higher rate limits.",
             ],
         )
-        .with_readme(include_str!("readmes/parallel-search.md")),
+        .with_readme(include_str!("parallel-search-readme.md")),
         provider_id: "parallel-search".to_string(),
         schema_prefix: "parallel_search".to_string(),
         display_name: "Parallel Search".to_string(),

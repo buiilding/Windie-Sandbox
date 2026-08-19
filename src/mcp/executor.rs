@@ -7,8 +7,8 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use super::provider::McpToolProvider;
 use super::result::{mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview};
+use super::tool_provider::McpToolProvider;
 use crate::conversation::ToolCall;
 use crate::error;
 use crate::mcp::McpSessionPool;
@@ -16,7 +16,7 @@ use crate::tool::{AttachedTool, ToolExecutionResult};
 
 impl McpToolProvider {
     /// Executes one approved MCP tool call.
-    pub(in crate::tool_provider) async fn call_tool(
+    pub(crate) async fn call_tool(
         &self,
         attached_tool: &AttachedTool,
         tool_call: &ToolCall,

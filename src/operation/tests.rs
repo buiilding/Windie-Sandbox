@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::mcp::McpCommand;
+use crate::tool::ProviderInstallState;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
-use crate::tool_provider::ProviderInstallState;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -602,7 +602,7 @@ fn resume_session_from_wakeup_resolves_waiting_approval() {
 
     let resume = resume_session_from_wakeup(
         &store,
-        crate::wakeup::Wakeup::ApproveTool(crate::wakeup::ToolDecisionWakeup {
+        crate::runtime::wakeup::Wakeup::ApproveTool(crate::runtime::wakeup::ToolDecisionWakeup {
             session_id: session_id.clone(),
             tool_call_id: ToolCallId::new("call_1"),
         }),
@@ -645,7 +645,7 @@ fn resume_session_from_wakeup_ignores_non_waiting_approval() {
 
     let resume = resume_session_from_wakeup(
         &store,
-        crate::wakeup::Wakeup::DenyTool(crate::wakeup::ToolDecisionWakeup {
+        crate::runtime::wakeup::Wakeup::DenyTool(crate::runtime::wakeup::ToolDecisionWakeup {
             session_id,
             tool_call_id: ToolCallId::new("call_1"),
         }),

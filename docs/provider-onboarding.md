@@ -66,5 +66,5 @@ Relevant implementation files:
 - `src/cli/onboard.rs` — hidden terminal input
 - `src/operation/onboarding.rs` — onboarding workflow
 - `src/llm/management.rs` — Bifrost management client
-- `src/gateway.rs` — owned Bifrost process and environment boundary
+- `src/llm/gateway.rs` — owned Bifrost process and environment boundary
 - `bifrost/transports/bifrost-http/handlers/provider_keys.go` — Bifrost key persistence path

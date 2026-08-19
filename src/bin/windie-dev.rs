@@ -21,7 +21,7 @@ use tokio::time::{sleep, timeout};
 
 use windie::config;
 use windie::conversation::ConversationId;
-use windie::gateway::GatewayUrl;
+use windie::llm::gateway::GatewayUrl;
 use windie::llm::{BaseUrl, ModelName};
 use windie::operation;
 use windie::output::TerminalOutput;

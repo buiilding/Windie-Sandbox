@@ -1,13 +1,13 @@
-//! Persisted provider-manager state.
+//! Persisted installed component state.
 //!
-//! This module stores lifecycle records only. Provider manifests remain owned
-//! by `tool_provider`, and installation processes will be added by the next
-//! provider-manager phase.
+//! This module stores lifecycle records only. Runtime provider manifests remain
+//! owned by the tool domain, while package installation remains owned by the
+//! plugin store.
 
 use super::*;
 use serde::{Deserialize, Serialize};
 
-use crate::tool_provider::{ProviderInstallState, ProviderReadiness};
+use crate::tool::{ProviderInstallState, ProviderReadiness};
 
 impl Store {
     /// Returns whether a provider is installed, enabled, and has no recorded
@@ -54,7 +54,7 @@ impl Store {
     /// Creates or resets one provider lifecycle record to `installed`.
     ///
     /// This records manager state only. Provider-specific setup and dependency
-    /// installation are orchestrated by `operation::provider::setup_provider`.
+    /// installation are orchestrated by `operation::component::setup_provider`.
     pub fn install_provider(&self, provider_id: &ToolProviderId) -> Result<InstalledProvider> {
         let now = now_millis()?;
         self.connection

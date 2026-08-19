@@ -82,11 +82,27 @@ The package foundation currently lives in:
 
 ```text
 src/plugin/manifest.rs  # typed plugin and MCP component contracts
-src/plugin/index.rs     # marketplace index contract
+src/plugin/catalog.rs   # marketplace index contract
 src/plugin/store.rs     # validated, versioned local package store
 src/plugin/mod.rs       # public package boundary and tests
 src/api/plugin.rs       # marketplace and package lifecycle routes
 ```
+
+The runtime ownership boundaries are:
+
+```text
+src/plugin/          package installation, storage, and marketplace metadata
+src/mcp/             MCP protocol, transports, MCPB, loading, and tool adapter
+src/tool/            Windie-facing tool schemas, registry, policy, and state
+src/managed_runtime/ Node and uv runtimes used by packaged local MCPs
+src/local/           Windie-local files, processes, tray, and secrets
+src/runtime/         model turns, context construction, and wakeups
+```
+
+The old `src/tool_provider/` directory is intentionally gone. Provider
+identity and tool execution remain useful concepts, but their code now lives
+under the tool and MCP domains rather than forming a separate package-shaped
+architecture.
 
 The current local store is versioned by plugin ID and release:
 
@@ -178,9 +194,41 @@ that Windie’s complete `plugin.json` is a universal harness plugin. The
 interoperable units are MCP protocol/server metadata, MCPB packages, and
 `SKILL.md` skills.
 
+## Future skill and app components
+
+Do not create empty runtime folders in Windie's Rust source tree for skills or
+app connectors before those runtimes exist. Windie should add a source module
+only when a real component requires executable loading or lifecycle behavior.
+
+For now, an MCP-only plugin needs no `src/skill/` directory. When Windie
+implements its first skill runtime, the source boundary can be introduced as:
+
+```text
+src/skill/
+  mod.rs
+  loader.rs
+```
+
+The skill content itself belongs to the installed plugin package, not to
+Windie's source tree:
+
+```text
+research-tools/
+  plugin.json
+  skills/
+    research/
+      SKILL.md
+```
+
+The same rule applies to future app connectors: their package files belong
+inside the plugin that provides them, while Windie's source tree receives an
+`src/app/` runtime only when the first app connector needs one. This keeps
+Windie a package loader and runtime instead of embedding a catalog of empty or
+provider-specific extension implementations.
+
 ## What remains code-owned during migration
 
-Until every MCP has migrated, `src/tool_provider/mcp/approved.rs` remains a
+Until every MCP has migrated, `src/mcp/compatibility.rs` remains a
 temporary compatibility registry. It continues to provide the existing
 providers and their provider-specific setup behavior.
 
@@ -189,7 +237,7 @@ code-owned provider with the same ID in the live registry. Uninstall must
 restore the code-owned definition until that provider is fully migrated and
 the compatibility registry can be removed.
 
-Do not remove a provider from `approved.rs` merely because its package files
+Do not remove a provider from `compatibility.rs` merely because its package files
 exist. Remove it only after the packaged provider passes the complete
 installation, discovery, execution, disable, repair, and uninstall tests.
 
@@ -347,10 +395,12 @@ digest and verify it before installation.
 Do not add a new provider-specific branch to the registry for the migrated
 MCP. The desired path is:
 
-1. `PluginStore` loads and validates the installed plugin.
-2. The standard `server.json` plus Windie policy becomes a generic MCP transport.
-3. The registry creates a generic `McpToolProvider` from that transport.
-4. Existing MCP code performs initialization and `tools/list`.
+1. `PluginStore` loads and validates the installed plugin package.
+2. The MCP loader reads the component's standard `server.json`, Windie policy,
+   and optional MCPB artifact.
+3. The loader creates a generic MCP transport and the registry creates a
+   generic `McpToolProvider` from it.
+4. The MCP runtime performs initialization and `tools/list`.
 5. Windie persists the discovered tool catalog in SQLite.
 6. Normal provider and conversation operations use the catalog and registry.
 
@@ -404,7 +454,7 @@ After the package path is complete:
 1. compare the packaged provider manifest with the old provider manifest;
 2. verify tool schema names and provider IDs remain compatible;
 3. verify setup, health, disable, repair, and uninstall behavior;
-4. remove the provider from `approved.rs`;
+4. remove the provider from `compatibility.rs`;
 5. remove only provider-specific code that is no longer needed;
 6. keep generic MCP transport and lifecycle code;
 7. run the complete Rust test suite.

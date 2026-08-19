@@ -7,14 +7,31 @@
 //! permitted.
 
 pub mod approval;
+mod builtin;
+mod lifecycle;
+mod manifest;
 pub mod policy;
 pub mod provider;
+mod registry;
 pub mod result;
 pub mod schema;
 
+#[cfg(test)]
+mod tests;
+
 pub use approval::{ToolApprovalMode, ToolApprovalRequest};
+pub(crate) use builtin::{
+    ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
+};
+pub use lifecycle::{ProviderInstallState, ProviderReadiness};
+pub use manifest::{
+    ProviderAuthentication, ProviderDependency, ProviderLaunch, ProviderManifest, ProviderPackage,
+    ProviderPackageManager, ProviderPermission, ProviderPlatform, ProviderRuntime, ProviderScope,
+    ProviderSecret, ProviderTransport,
+};
 pub use policy::{PolicyDecision, ToolPolicy};
 pub use provider::{ProviderToolName, ToolProviderId, ToolProviderKind, ToolProviderRef};
+pub use registry::ToolProviderRegistry;
 pub use result::ToolExecutionResult;
 pub use schema::{
     AttachedTool, ToolAnnotations, ToolDefinition, ToolPermission, ToolSchema, ToolSchemaName,
