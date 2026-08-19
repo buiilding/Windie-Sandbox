@@ -45,8 +45,9 @@ use crate::error;
 use crate::llm::ReasoningRequest;
 use crate::local;
 use crate::session::{
-    Session, SessionEvent, SessionEventRecord, SessionExecutionOwner, SessionId, SessionResolution,
-    SessionStatus,
+    ClaimedSession, Session, SessionEvent, SessionEventKind, SessionEventRecord,
+    SessionExecutionClaim, SessionExecutionClaimId, SessionExecutionOwner, SessionId,
+    SessionResolution, SessionStatus,
 };
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,

@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
-use crate::conversation::{Message, MessageMetadata, ToolCall, ToolCallId};
+use crate::conversation::{Message, MessageMetadata, Role, ToolCall, ToolCallId};
+use crate::error;
 use crate::llm::{
     AssistantResponse, FinishReason, LlmError, LlmErrorKind, LlmStreamEvent, PromptCacheRequest,
     ReasoningRequest,
@@ -26,6 +27,58 @@ const TEST_PROVIDER_DISPLAY_NAME: &str = "Desktop Commander";
 const TEST_PROVIDER_TOOL_NAME: &str = "read_file";
 const TEST_TOOL_SCHEMA_NAME: &str = "desktop_commander__read_file";
 const TEST_TOOL_RESULT: &str = "test-mcp-output";
+
+/// Minimal non-session persistence used only to isolate runtime unit tests.
+///
+/// Production code has no direct-saving implementation: API, CLI, and
+/// performance fixtures all persist through a claimed durable session.
+struct TestRuntimeMessagePersistence;
+
+impl RuntimeMessagePersistence for TestRuntimeMessagePersistence {
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        store.insert_test_runtime_message(
+            conversation_id,
+            parent_message_id,
+            Role::Assistant,
+            content,
+            metadata,
+        )
+    }
+
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        if parts.is_empty() {
+            store.insert_test_runtime_tool_result(
+                conversation_id,
+                parent_message_id,
+                tool_call_id,
+                content,
+            )
+        } else {
+            store.insert_test_runtime_tool_result_with_parts(
+                conversation_id,
+                parent_message_id,
+                tool_call_id,
+                content,
+                parts,
+            )
+        }
+    }
+}
 
 fn runtime_test_registry() -> ToolProviderRegistry {
     ToolProviderRegistry::with_test_mcp_provider(
@@ -102,29 +155,59 @@ impl RecordingRuntimeEvents {
     }
 }
 
-impl RuntimeEventSink for RecordingRuntimeEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) -> Result<()> {
+impl RuntimeMessagePersistence for RecordingRuntimeEvents {
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        let message_id = TestRuntimeMessagePersistence.save_assistant_message(
+            store,
+            conversation_id,
+            parent_message_id,
+            content,
+            metadata,
+        )?;
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::AssistantMessageSaved(
                 message_id.clone(),
             ));
-        Ok(())
+        Ok(message_id)
     }
 
-    fn tool_result_saved(&self, message_id: &MessageId) -> Result<()> {
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        let message_id = TestRuntimeMessagePersistence.save_tool_result(
+            store,
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+            content,
+            parts,
+        )?;
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::ToolResultSaved(message_id.clone()));
-        Ok(())
+        Ok(message_id)
     }
 }
 
 struct FailingAssistantMessagePersistence;
 
-impl RuntimeEventSink for FailingAssistantMessagePersistence {
+impl RuntimeMessagePersistence for FailingAssistantMessagePersistence {
     fn save_assistant_message(
         &self,
         _store: &mut Store,
@@ -134,6 +217,25 @@ impl RuntimeEventSink for FailingAssistantMessagePersistence {
         _metadata: Option<&MessageMetadata>,
     ) -> Result<MessageId> {
         Err(anyhow!("assistant message persistence failed"))
+    }
+
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        TestRuntimeMessagePersistence.save_tool_result(
+            store,
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+            content,
+            parts,
+        )
     }
 }
 
@@ -439,7 +541,7 @@ fn path(store: &Store, conversation_id: &ConversationId) -> Vec<Message> {
 
 fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
     let registry = runtime_test_registry();
-    let events = NoopRuntimeEventSink;
+    let events = TestRuntimeMessagePersistence;
     let mut head_message_id = latest_head(store, conversation_id);
 
     prepare_head_turn(
@@ -517,7 +619,7 @@ where
     L: RuntimeLlm,
 {
     let registry = runtime_test_registry();
-    let events = NoopRuntimeEventSink;
+    let events = TestRuntimeMessagePersistence;
 
     run_latest_head_once_with_registry_and_events(
         output,
@@ -543,7 +645,7 @@ async fn run_latest_head_once_with_registry_and_events<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let head_message_id = latest_head(store, conversation_id);
 
@@ -577,7 +679,7 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    let events = NoopRuntimeEventSink;
+    let events = TestRuntimeMessagePersistence;
 
     run_latest_head_until_blocked_with_events(
         output,
@@ -603,7 +705,7 @@ async fn run_latest_head_until_blocked_with_events<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let head_message_id = latest_head(store, conversation_id);
     let outcome = advance_until_blocked(
@@ -797,7 +899,7 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
         .insert_message(&conversation_id, None, Role::User, "branch here", None)
         .unwrap();
     let registry = runtime_test_registry();
-    let events = NoopRuntimeEventSink;
+    let events = TestRuntimeMessagePersistence;
 
     let first_outcome = advance_until_blocked(
         &NoopOutput,
@@ -888,7 +990,7 @@ async fn run_head_uses_requested_head_path() {
         )
         .unwrap();
     let llm = CapturingLlm::new();
-    let events = NoopRuntimeEventSink;
+    let events = TestRuntimeMessagePersistence;
     let registry = runtime_test_registry();
 
     advance_turn(
@@ -980,7 +1082,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
         .unwrap();
 
     let llm = CapturingLlm::new();
-    let events = NoopRuntimeEventSink;
+    let events = TestRuntimeMessagePersistence;
     let registry = runtime_test_registry();
 
     // Run from branch head

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::conversation::{ConversationId, MessageId};
 use crate::llm::ReasoningRequest;
 
-use super::SessionId;
+use super::{SessionExecutionClaimId, SessionId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,15 +20,56 @@ pub enum SessionStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Durable identity of the client process currently executing a session.
+/// Durable kind of client currently executing a session.
 ///
 /// This is intentionally separate from a session's lifecycle status. The
-/// status says what the session is doing; the owner lets restart recovery
+/// status says what the session is doing; the owner kind lets restart recovery
 /// distinguish an interrupted API task from a CLI process that is still
 /// running independently.
 pub enum SessionExecutionOwner {
     Api,
     Cli,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Durable state condition required before a new execution may claim a session.
+///
+/// API and CLI callers use this one typed condition instead of choosing among
+/// several claim functions with subtly different state checks.
+pub enum SessionExecutionStart {
+    /// Starts any session that is neither running nor waiting for approval.
+    Runnable,
+    /// Starts a runnable session only while it still points at this head.
+    RunnableAtHead(Option<MessageId>),
+    /// Resumes a session that is paused for an approval decision.
+    WaitingForApproval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Exclusive durable claim held by exactly one session execution attempt.
+///
+/// `owner` describes the client surface for recovery and diagnostics. `id` is
+/// the actual fencing token checked by every run-owned database write.
+pub struct SessionExecutionClaim {
+    pub id: SessionExecutionClaimId,
+    pub owner: SessionExecutionOwner,
+}
+
+impl SessionExecutionClaim {
+    /// Creates a new claim for one API- or CLI-owned execution attempt.
+    pub fn fresh(owner: SessionExecutionOwner) -> Self {
+        Self {
+            id: SessionExecutionClaimId::fresh(),
+            owner,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Session state returned together with the unique claim that made it runnable.
+pub struct ClaimedSession {
+    pub session: Session,
+    pub claim: SessionExecutionClaim,
 }
 
 impl SessionExecutionOwner {

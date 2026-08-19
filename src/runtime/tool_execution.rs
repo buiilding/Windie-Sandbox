@@ -19,7 +19,7 @@ use crate::tool::{
     AttachedTool, PolicyDecision, ToolExecutionResult, ToolPolicy, ToolProviderKind, ToolSchemaName,
 };
 
-use super::RuntimeEventSink;
+use super::RuntimeMessagePersistence;
 use super::turn::load_path_at_head;
 
 pub(crate) enum AutomaticToolResolution {
@@ -34,7 +34,7 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
     head_message_id: &mut Option<MessageId>,
     tools: &ToolProviderRegistry,
     plugin_catalog: Option<&PluginCatalog>,
-    events: &impl RuntimeEventSink,
+    events: &impl RuntimeMessagePersistence,
 ) -> Result<AutomaticToolResolution> {
     let messages = load_path_at_head(store, conversation_id, head_message_id.as_ref())?;
     let Some(execution) = active_tool_execution(&messages) else {
@@ -506,6 +506,7 @@ fn attach_provider_to_conversation(
     store.insert_attached_tools(conversation_id, &new_tools)
 }
 
+#[cfg(test)]
 pub(crate) fn store_pending_tool_result_at_head(
     store: &mut Store,
     conversation_id: &ConversationId,
@@ -513,14 +514,14 @@ pub(crate) fn store_pending_tool_result_at_head(
     result: &ToolExecutionResult,
 ) -> Result<MessageId> {
     if result.parts.is_empty() {
-        store.insert_run_tool_result_message(
+        store.insert_test_runtime_tool_result(
             conversation_id,
             &pending.result_parent_message_id,
             &result.tool_call_id,
             &result.content,
         )
     } else {
-        store.insert_run_tool_result_message_with_parts(
+        store.insert_test_runtime_tool_result_with_parts(
             conversation_id,
             &pending.result_parent_message_id,
             &result.tool_call_id,

@@ -23,8 +23,10 @@ use crate::conversation::{
 use crate::llm::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::mcp::{self, McpCommand};
+use crate::operation::SessionEventRecorder;
 use crate::runtime::context::{ContextBuilder, ContextParts};
-use crate::runtime::{NoopRuntimeEventSink, prepare_head_turn};
+use crate::runtime::prepare_head_turn;
+use crate::session::{SessionExecutionOwner, SessionExecutionStart, SessionId};
 use crate::store::Store;
 use crate::tool::ToolProviderRegistry;
 use crate::tool::{

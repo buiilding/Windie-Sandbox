@@ -74,7 +74,7 @@ pub fn list_conversation_session_approvals_with_registry(
     Ok(approvals)
 }
 
-pub async fn approve_session_tool<O, E>(
+pub(in crate::operation) async fn approve_session_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
@@ -85,7 +85,7 @@ pub async fn approve_session_tool<O, E>(
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
@@ -118,7 +118,7 @@ where
         .await
 }
 
-pub async fn deny_session_tool<O, E>(
+pub(in crate::operation) async fn deny_session_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
@@ -129,7 +129,7 @@ pub async fn deny_session_tool<O, E>(
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
@@ -157,7 +157,7 @@ async fn continue_session_after_tool_result<O, E>(
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     if !pending_approvals_at_head(
         store,

@@ -41,6 +41,8 @@ fn api_router(state: ApiState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/status", get(status))
+        .route("/api/events", get(global_events))
+        .route("/api/events/cursor", get(global_event_cursor))
         .route("/api/shutdown", post(shutdown))
         .route("/api/models", get(list_models))
         .route("/api/llm/providers", get(list_provider_catalog))

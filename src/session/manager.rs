@@ -22,13 +22,13 @@ use crate::llm::{BaseUrl, ReasoningRequest};
 use crate::operation::{self, MessageInputPart, RuntimeDependencies, SessionEventRecorder};
 use crate::output::RuntimeOutput;
 use crate::plugin::PluginCatalog;
-use crate::runtime::RuntimeEventSink;
+use crate::runtime::RuntimeMessagePersistence;
 use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
 use crate::session::{
-    Session, SessionEvent, SessionEventRecord, SessionExecutionOwner, SessionId,
-    SessionQueryResult, SessionResolution, SessionStatus,
+    Session, SessionEvent, SessionEventRecord, SessionExecutionClaim, SessionExecutionOwner,
+    SessionExecutionStart, SessionId, SessionQueryResult, SessionResolution, SessionStatus,
 };
-use crate::store::Store;
+use crate::store::{SessionRuntimeMessage, Store};
 use crate::tool::ToolProviderRegistry;
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -75,9 +75,8 @@ pub struct SessionManager {
 /// Complete input needed by one spawned session task.
 struct SessionTaskInput {
     session_id: SessionId,
-    conversation_id: ConversationId,
-    head_message_id: Option<MessageId>,
-    command: SessionCommand,
+    claim: SessionExecutionClaim,
+    command: operation::SessionExecutionCommand,
     sender: broadcast::Sender<SessionEventRecord>,
 }
 
@@ -297,33 +296,41 @@ impl SessionManager {
         }
 
         let claimed = if enforce_expected_head {
-            store.claim_session_execution_at_head(
+            store.claim_session_execution(
                 session_id,
                 SessionExecutionOwner::Api,
-                expected_head_message_id,
+                SessionExecutionStart::RunnableAtHead(expected_head_message_id.cloned()),
             )?
         } else {
-            store.claim_session_execution(session_id, SessionExecutionOwner::Api)?
+            store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?
         };
-        let user_message_id = operation::insert_prepared_user_message(
-            &mut store,
-            &claimed.conversation_id,
-            claimed.current_head_message_id.as_ref(),
-            &prepared,
+        let commit = store.insert_session_runtime_message(
+            session_id,
+            &claimed.claim,
+            &claimed.session.conversation_id,
+            SessionRuntimeMessage::User {
+                parent_message_id: claimed.session.current_head_message_id.as_ref(),
+                content: &prepared.content,
+                parts: &prepared.parts,
+            },
         )?;
-        store.update_session_head(session_id, Some(&user_message_id))?;
 
         let updated = store.load_session(session_id)?;
+        debug_assert_eq!(
+            updated.current_head_message_id.as_ref(),
+            Some(&commit.message_id)
+        );
         let session_id_for_spawn = updated.id.clone();
-        let conversation_id = updated.conversation_id.clone();
-        let head_message_id = updated.current_head_message_id.clone();
         drop(store);
 
         self.spawn(
             session_id_for_spawn,
-            conversation_id,
-            head_message_id,
-            SessionCommand::Continue,
+            claimed.claim,
+            operation::SessionExecutionCommand::Continue,
         );
 
         Ok(SessionQueryResult {
@@ -393,51 +400,56 @@ impl SessionManager {
         }
 
         if store.session_input_count(session_id)? > 0 {
-            let input = store.materialize_next_session_input(session_id)?;
-            if let Some(input) = input {
-                let updated =
-                    store.claim_session_execution(session_id, SessionExecutionOwner::Api)?;
-                let record = store.append_session_event(
-                    session_id,
-                    SessionEvent::InputStarted {
-                        input_id: input.id.as_str().to_string(),
-                        message_id: updated
-                            .current_head_message_id
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_default(),
-                    },
-                )?;
+            let claimed = store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?;
+            if let Some((_input, record)) =
+                store.materialize_next_session_input(session_id, &claimed.claim)?
+            {
+                let updated = store.load_session(session_id)?;
                 self.channel_for_session(session_id).send(record).ok();
                 drop(store);
                 self.spawn(
                     updated.id.clone(),
-                    updated.conversation_id.clone(),
-                    updated.current_head_message_id.clone(),
-                    SessionCommand::Continue,
+                    claimed.claim,
+                    operation::SessionExecutionCommand::Continue,
                 );
                 return Ok(updated);
             }
+            store.finish_claimed_session_execution(
+                session_id,
+                &claimed.claim,
+                SessionStatus::Failed,
+                Some("queued session input disappeared after execution claim"),
+            )?;
+            return Err(anyhow::anyhow!(
+                "queued session input disappeared after execution claim"
+            ));
         }
-        let updated = if enforce_expected_head {
-            store.claim_session_execution_at_head(
+        let claimed = if enforce_expected_head {
+            store.claim_session_execution(
                 session_id,
                 SessionExecutionOwner::Api,
-                expected_head_message_id,
+                SessionExecutionStart::RunnableAtHead(expected_head_message_id.cloned()),
             )?
         } else {
-            store.claim_session_execution(session_id, SessionExecutionOwner::Api)?
+            store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?
         };
         drop(store);
 
         self.spawn(
-            updated.id.clone(),
-            updated.conversation_id.clone(),
-            updated.current_head_message_id.clone(),
-            SessionCommand::Continue,
+            claimed.session.id.clone(),
+            claimed.claim,
+            operation::SessionExecutionCommand::Continue,
         );
 
-        Ok(updated)
+        Ok(claimed.session)
     }
 
     /// Stops one live session explicitly.
@@ -446,6 +458,7 @@ impl SessionManager {
         let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
         let session = store.load_session(session_id)?;
+        let claim = store.session_execution_claim(session_id)?;
         drop(store);
 
         let session_key = session.id.as_str().to_string();
@@ -462,8 +475,8 @@ impl SessionManager {
 
         let mut store = self.open_store()?;
         let (_, record) = operation::cancel_session(&mut store, &session.id)?;
-        if owns_running_task {
-            store.release_cancelled_session_execution(&session.id, SessionExecutionOwner::Api)?;
+        if owns_running_task && let Some(claim) = claim.as_ref() {
+            store.release_cancelled_session_execution(&session.id, claim)?;
         }
 
         // Send the terminal event on the durable channel, then remove it so the
@@ -514,15 +527,17 @@ impl SessionManager {
             return Ok(());
         }
 
-        let session =
-            store.claim_waiting_session_execution(session_id, SessionExecutionOwner::Api)?;
+        let claimed = store.claim_session_execution(
+            session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::WaitingForApproval,
+        )?;
         drop(store);
 
         self.spawn(
-            session.id,
-            session.conversation_id,
-            session.current_head_message_id,
-            SessionCommand::Continue,
+            claimed.session.id,
+            claimed.claim,
+            operation::SessionExecutionCommand::Continue,
         );
 
         Ok(())
@@ -564,9 +579,8 @@ impl SessionManager {
     fn spawn(
         &self,
         session_id: SessionId,
-        conversation_id: ConversationId,
-        head_message_id: Option<MessageId>,
-        command: SessionCommand,
+        claim: SessionExecutionClaim,
+        command: operation::SessionExecutionCommand,
     ) {
         let session_key = session_id.as_str().to_string();
 
@@ -586,15 +600,14 @@ impl SessionManager {
             let result = manager
                 .run_task(SessionTaskInput {
                     session_id: run_id_for_task.clone(),
-                    conversation_id,
-                    head_message_id,
+                    claim: claim.clone(),
                     command,
                     sender: sender.clone(),
                 })
                 .await;
             if let Err(error) = result {
                 manager
-                    .record_failure(&run_id_for_task, &error)
+                    .record_failure(&run_id_for_task, &claim, &error)
                     .unwrap_or_else(|failure_error| {
                         eprintln!("failed to persist run failure: {failure_error}");
                     });
@@ -616,23 +629,19 @@ impl SessionManager {
     async fn run_task(&self, input: SessionTaskInput) -> Result<()> {
         let SessionTaskInput {
             session_id,
-            conversation_id,
-            head_message_id,
+            claim,
             command,
             sender,
         } = input;
         let mut store = self.open_store()?;
         let session = store.load_session(&session_id)?;
-        let recorder = SessionEventRecorder::new(
-            self.store_path.clone(),
-            session_id.clone(),
-            SessionExecutionOwner::Api,
-        );
+        let recorder =
+            SessionEventRecorder::new(self.store_path.clone(), session_id.clone(), claim.clone());
         let output = SessionOutput {
             recorder: recorder.clone(),
             sender: sender.clone(),
         };
-        let events = SessionEvents { recorder, sender };
+        let messages = SessionMessages { recorder, sender };
         let runtime = RuntimeDependencies::for_session(
             &session,
             GatewayUrl::new(self.gateway_url.clone()),
@@ -641,65 +650,29 @@ impl SessionManager {
             self.plugin_catalog.as_deref(),
         );
 
-        let outcome = match command {
-            SessionCommand::Continue => {
-                operation::advance_session_until_blocked(
-                    &output,
-                    &events,
-                    &mut store,
-                    &conversation_id,
-                    head_message_id.as_ref(),
-                    runtime,
-                )
-                .await?
-            }
-            SessionCommand::ApproveTool(tool_call_id) => {
-                operation::approve_session_tool(
-                    &output,
-                    &events,
-                    &mut store,
-                    &conversation_id,
-                    head_message_id.as_ref(),
-                    &tool_call_id,
-                    runtime,
-                )
-                .await?
-            }
-            SessionCommand::DenyTool(tool_call_id) => {
-                operation::deny_session_tool(
-                    &output,
-                    &events,
-                    &mut store,
-                    &conversation_id,
-                    head_message_id.as_ref(),
-                    &tool_call_id,
-                    runtime,
-                )
-                .await?
-            }
-        };
+        let outcome =
+            operation::execute_session(&output, &messages, &mut store, &session, command, runtime)
+                .await?;
 
-        if let Some(record) =
-            operation::finish_session(&mut store, &session_id, SessionExecutionOwner::Api, outcome)?
-        {
-            let _ = events.sender.send(record);
+        if let Some(record) = operation::finish_session(&mut store, &session_id, &claim, outcome)? {
+            let _ = messages.sender.send(record);
         } else {
-            store.release_cancelled_session_execution(&session_id, SessionExecutionOwner::Api)?;
+            store.release_cancelled_session_execution(&session_id, &claim)?;
         }
 
         Ok(())
     }
 
-    fn record_failure(&self, session_id: &SessionId, error: &anyhow::Error) -> Result<()> {
+    fn record_failure(
+        &self,
+        session_id: &SessionId,
+        claim: &SessionExecutionClaim,
+        error: &anyhow::Error,
+    ) -> Result<()> {
         let mut store = self.open_store()?;
-        let record = operation::record_session_failure(
-            &mut store,
-            session_id,
-            SessionExecutionOwner::Api,
-            error,
-        )?;
+        let record = operation::record_session_failure(&mut store, session_id, claim, error)?;
         if record.is_none() {
-            store.release_cancelled_session_execution(session_id, SessionExecutionOwner::Api)?;
+            store.release_cancelled_session_execution(session_id, claim)?;
         }
         if let (Some(record), Some(sender)) = (
             record,
@@ -730,37 +703,43 @@ impl SessionManager {
             return;
         };
 
-        if session.status == SessionStatus::Completed {
-            match store.materialize_next_session_input(session_id) {
-                Ok(Some(input)) => {
-                    let Ok(updated) =
-                        store.claim_session_execution(session_id, SessionExecutionOwner::Api)
-                    else {
+        let queued_input_count = match store.session_input_count(session_id) {
+            Ok(count) => count,
+            Err(error) => {
+                eprintln!("failed to count queued session inputs: {error}");
+                return;
+            }
+        };
+        if session.status == SessionStatus::Completed && queued_input_count > 0 {
+            let Ok(claimed) = store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            ) else {
+                return;
+            };
+            match store.materialize_next_session_input(session_id, &claimed.claim) {
+                Ok(Some((_input, record))) => {
+                    let Ok(updated) = store.load_session(session_id) else {
                         return;
                     };
-                    if let Ok(record) = store.append_session_event(
-                        session_id,
-                        SessionEvent::InputStarted {
-                            input_id: input.id.as_str().to_string(),
-                            message_id: updated
-                                .current_head_message_id
-                                .as_ref()
-                                .map(ToString::to_string)
-                                .unwrap_or_default(),
-                        },
-                    ) {
-                        self.channel_for_session(session_id).send(record).ok();
-                    }
+                    self.channel_for_session(session_id).send(record).ok();
                     drop(store);
                     self.spawn(
                         updated.id,
-                        updated.conversation_id,
-                        updated.current_head_message_id,
-                        SessionCommand::Continue,
+                        claimed.claim,
+                        operation::SessionExecutionCommand::Continue,
                     );
                     return;
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    let _ = store.finish_claimed_session_execution(
+                        session_id,
+                        &claimed.claim,
+                        SessionStatus::Completed,
+                        None,
+                    );
+                }
                 Err(error) => {
                     eprintln!("failed to start queued session input: {error}");
                     return;
@@ -815,18 +794,22 @@ impl SessionManager {
         let sessions = store.list_sessions()?;
         let interrupted = sessions
             .into_iter()
-            .filter(|session| {
-                session.status == SessionStatus::Running
-                    && matches!(
-                        store.session_execution_owner(&session.id),
-                        Ok(Some(SessionExecutionOwner::Api))
-                    )
+            .filter_map(|session| {
+                if session.status != SessionStatus::Running {
+                    return None;
+                }
+                match store.session_execution_claim(&session.id) {
+                    Ok(Some(claim)) if claim.owner == SessionExecutionOwner::Api => {
+                        Some((session, claim))
+                    }
+                    _ => None,
+                }
             })
             .collect::<Vec<_>>();
-        for session in interrupted {
+        for (session, claim) in interrupted {
             store.finish_claimed_session_execution(
                 &session.id,
-                SessionExecutionOwner::Api,
+                &claim,
                 SessionStatus::Failed,
                 Some("session task was interrupted by Windie restart"),
             )?;
@@ -864,42 +847,34 @@ impl SessionManager {
             return Ok(());
         }
 
-        let session = store
-            .claim_waiting_session_execution(&resume.session.id, SessionExecutionOwner::Api)?;
+        let claimed = store.claim_session_execution(
+            &resume.session.id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::WaitingForApproval,
+        )?;
         drop(store);
 
         let command = match resume.action {
             operation::SessionResumeAction::ApproveTool(tool_call_id) => {
-                SessionCommand::ApproveTool(tool_call_id)
+                operation::SessionExecutionCommand::ApproveTool(tool_call_id)
             }
             operation::SessionResumeAction::DenyTool(tool_call_id) => {
-                SessionCommand::DenyTool(tool_call_id)
+                operation::SessionExecutionCommand::DenyTool(tool_call_id)
             }
         };
 
-        self.spawn(
-            session.id,
-            session.conversation_id,
-            session.current_head_message_id,
-            command,
-        );
+        self.spawn(claimed.session.id, claimed.claim, command);
 
         Ok(())
     }
 }
 
-enum SessionCommand {
-    Continue,
-    ApproveTool(ToolCallId),
-    DenyTool(ToolCallId),
-}
-
-struct SessionEvents {
+struct SessionMessages {
     recorder: SessionEventRecorder,
     sender: broadcast::Sender<SessionEventRecord>,
 }
 
-impl RuntimeEventSink for SessionEvents {
+impl RuntimeMessagePersistence for SessionMessages {
     fn save_assistant_message(
         &self,
         store: &mut Store,

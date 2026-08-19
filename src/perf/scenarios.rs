@@ -5,7 +5,9 @@
 //! compared without conflating unrelated operations.
 
 use super::*;
-use crate::session::{SessionEvent, SessionId, SessionStatus};
+use crate::session::{
+    SessionEvent, SessionExecutionOwner, SessionExecutionStart, SessionId, SessionStatus,
+};
 use crate::tool::{ToolSchema, ToolSchemaName};
 
 /// Runs the deterministic provider-free benchmark scenarios selected by the
@@ -765,9 +767,16 @@ fn benchmark_session_queue_and_materialize() -> Result<Duration> {
         store.create_session(&session_id, &conversation_id, None, "openai/test", None)?;
         store.enqueue_session_input(&session_id, "first", &[])?;
         store.enqueue_session_input(&session_id, "second", &[])?;
+        let claim = store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?
+            .claim;
         let started = Instant::now();
-        let _ = store.materialize_next_session_input(&session_id)?;
-        let _ = store.materialize_next_session_input(&session_id)?;
+        let _ = store.materialize_next_session_input(&session_id, &claim)?;
+        let _ = store.materialize_next_session_input(&session_id, &claim)?;
         Ok(started.elapsed())
     })
 }

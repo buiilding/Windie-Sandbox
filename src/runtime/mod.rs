@@ -33,20 +33,15 @@ use crate::store::Store;
 use crate::tool::ToolProviderRegistry;
 
 #[cfg(test)]
-use crate::conversation::Role;
-#[cfg(test)]
-use crate::error;
-#[cfg(test)]
 use crate::llm::RuntimeLlm;
 #[cfg(test)]
 use crate::output::RuntimeOutput;
-/// Persists runtime-produced messages and reports their durable IDs.
+/// Required persistence boundary for every runtime-produced message.
 ///
-/// Session adapters override the save methods to include session-head and
-/// replay-event writes in the same SQLite transaction. Non-session callers use
-/// the direct message-store defaults and may observe the committed IDs through
-/// the completion hooks.
-pub(crate) trait RuntimeEventSink {
+/// Production session runners implement this contract through the atomic
+/// session transaction. Requiring both methods prevents a caller from silently
+/// falling back to a second persistence model.
+pub(crate) trait RuntimeMessagePersistence {
     fn save_assistant_message(
         &self,
         store: &mut Store,
@@ -54,17 +49,7 @@ pub(crate) trait RuntimeEventSink {
         parent_message_id: Option<&MessageId>,
         content: &str,
         metadata: Option<&MessageMetadata>,
-    ) -> Result<MessageId> {
-        let message_id = store.insert_run_message(
-            conversation_id,
-            parent_message_id,
-            crate::conversation::Role::Assistant,
-            content,
-            metadata,
-        )?;
-        self.assistant_message_saved(&message_id)?;
-        Ok(message_id)
-    }
+    ) -> Result<MessageId>;
 
     fn save_tool_result(
         &self,
@@ -74,39 +59,8 @@ pub(crate) trait RuntimeEventSink {
         tool_call_id: &ToolCallId,
         content: &str,
         parts: &[UnsavedMessagePart],
-    ) -> Result<MessageId> {
-        let message_id = if parts.is_empty() {
-            store.insert_run_tool_result_message(
-                conversation_id,
-                parent_message_id,
-                tool_call_id,
-                content,
-            )?
-        } else {
-            store.insert_run_tool_result_message_with_parts(
-                conversation_id,
-                parent_message_id,
-                tool_call_id,
-                content,
-                parts,
-            )?
-        };
-        self.tool_result_saved(&message_id)?;
-        Ok(message_id)
-    }
-
-    fn assistant_message_saved(&self, _message_id: &MessageId) -> Result<()> {
-        Ok(())
-    }
-
-    fn tool_result_saved(&self, _message_id: &MessageId) -> Result<()> {
-        Ok(())
-    }
+    ) -> Result<MessageId>;
 }
-
-pub(crate) struct NoopRuntimeEventSink;
-
-impl RuntimeEventSink for NoopRuntimeEventSink {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct RuntimeModelRequest<'a> {

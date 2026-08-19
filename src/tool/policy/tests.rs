@@ -30,16 +30,16 @@ fn attached_executable_tool_requires_approval() {
 }
 
 #[test]
-fn builtin_provider_listing_requires_approval_in_manual_mode() {
+fn builtin_skill_read_requires_approval_in_manual_mode() {
     let policy = ToolPolicy;
-    let tool_call = ToolCall::function("call_1", "windie__list_providers", "{}");
+    let tool_call = ToolCall::function("call_1", "windie__read_skill", "{}");
     let attached_tool = AttachedTool {
-        schema_name: ToolSchemaName::new("windie__list_providers"),
-        description: "List available providers".to_string(),
+        schema_name: ToolSchemaName::new("windie__read_skill"),
+        description: "Read an installed skill".to_string(),
         parameters: serde_json::json!({"type":"object"}),
         provider: ToolProviderRef::new(
             ToolProviderId::new("windie"),
-            ProviderToolName::new("list_providers"),
+            ProviderToolName::new("read_skill"),
             ToolProviderKind::Builtin,
         ),
         permissions: Vec::new(),

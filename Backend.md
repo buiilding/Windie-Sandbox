@@ -73,6 +73,10 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/error.rs: turns internal Windie errors into HTTP JSON errors.
 - api/router.rs: localhost API routes are intentionally unauthenticated and stay bound to the loopback interface.
 - api/sse.rs: serializes replayed and live session events for HTTP streaming, hydrating state-changing events with session and message snapshots.
+- api/event.rs: exposes the database-wide durable session-event cursor and
+  aggregate SSE feed for clients that need to observe durable activity across
+  sessions. Typed filters let narrow consumers observe selected event kinds
+  without receiving token deltas.
 - api/health.rs: API health and runtime status routes.
 - api/gateway.rs: model and input-token HTTP routes, plus Bifrost LLM provider catalogs, provider-key management, and provider configuration. It never starts or stops Bifrost.
 - api/conversation.rs: conversation-level HTTP routes.
@@ -160,10 +164,10 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - session/: session domain types and live session supervision.
 - session/mod.rs: Public boundary and re-exports for session folder.
 - session/event.rs: event types for observable session activity. Records events from a running session/agent loop such as streamed assistant text, tool calls, approvals, completion, failure, cancellation, and queued/started inputs.
-- session/id.rs: SessionId identifies a durable session; SessionInputId identifies one queued input inside that session.
+- session/id.rs: SessionId identifies a durable session; SessionInputId identifies one queued input inside that session; SessionExecutionClaimId is the unique fencing token for one execution attempt.
 - session/control.rs: explicit session controls such as cancellation, separate from wakeups that resume runtime work.
 - session/manager.rs: manages live background session tasks, approvals, cancellation, and publishes session events.
-- session/model.rs: durable session record and lifecycle status. Exists so a session can outlive any one client and can be inspected, resumed, approved, or replayed later.
+- session/model.rs: durable session record, lifecycle status, execution-owner kind, and unique execution claim. Exists so a session can outlive any one client and can be inspected, resumed, approved, or replayed later.
 
 ## Performance
 
@@ -238,6 +242,12 @@ Sessions are durable branch objects over a conversation tree. A session stores
 the branch's base/current message heads, runtime status, queued inputs,
 approvals, and event history; it does not copy messages. The conversation owns
 the shared tree and a session owns serialized execution from one selected head.
+Every execution attempt receives a fresh SQLite-backed claim ID. All streamed
+events, assistant/tool-result writes, and terminal transitions must present
+that exact fencing token, so an older runner cannot write through a newer API
+or CLI claim merely because both have the same owner kind. API and CLI both
+enter execution through `execute_session`, and both acquire claims through the
+same typed store function; only their output presentation differs.
 
 Session identity is always the durable session ID. The current head is only the
 session's position in the conversation tree. Store operations resolve a
@@ -254,6 +264,11 @@ into the conversation tree immediately. When the active run completes, Windie
 materializes the oldest queued input under the latest session head and starts
 the next run. This keeps queued inputs from becoming stale tree branches and
 lets the inspector display queue state without owning execution.
+
+Session event row IDs are monotonic across the whole SQLite database. The
+session-specific SSE route uses them as a per-session replay cursor, while the
+aggregate `/api/events` route uses the same IDs to merge durable events from
+every API or CLI session runner.
 
 ## Architecture
 

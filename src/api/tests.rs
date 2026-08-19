@@ -3,6 +3,7 @@
 use super::*;
 use axum::body::{Body, to_bytes};
 use axum::http::Request as HttpRequest;
+use futures_util::StreamExt;
 use serde_json::json;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -102,6 +103,154 @@ fn saved_sse_event_includes_authoritative_message_and_session_snapshots() {
         body["session"]["current_head_message_id"],
         message_id.as_str()
     );
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[test]
+fn aggregate_event_envelope_namespaces_session_events() {
+    let record = SessionEventRecord {
+        id: 42,
+        session_id: SessionId::new("aggregate-envelope"),
+        event: SessionEvent::Completed {
+            message_id: Some("assistant-message".to_string()),
+        },
+        created_at: 1234,
+    };
+
+    let body: serde_json::Value = serde_json::from_str(&global_event_data(&record)).unwrap();
+
+    assert_eq!(global_event_name(&record.event), "session.completed");
+    assert_eq!(body["event_id"], 42);
+    assert_eq!(body["type"], "session.completed");
+    assert_eq!(body["session_id"], "aggregate-envelope");
+    assert_eq!(body["payload"]["message_id"], "assistant-message");
+    assert!(body["payload"].get("type").is_none());
+}
+
+#[tokio::test]
+async fn aggregate_event_routes_replay_filtered_cross_session_events() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first_session_id = SessionId::new("aggregate-route-first");
+    let second_session_id = SessionId::new("aggregate-route-second");
+    for session_id in [&first_session_id, &second_session_id] {
+        store
+            .create_session(session_id, &conversation_id, None, "openai/test", None)
+            .unwrap();
+    }
+    store
+        .append_session_event(
+            &first_session_id,
+            SessionEvent::AssistantDelta {
+                text: "ignored by filter".to_string(),
+            },
+        )
+        .unwrap();
+    let completed = store
+        .append_session_event(
+            &second_session_id,
+            SessionEvent::Completed {
+                message_id: Some("assistant-finished".to_string()),
+            },
+        )
+        .unwrap();
+    drop(store);
+
+    let cursor = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::GET,
+                "/api/events/cursor?kind=completed",
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(cursor["latest_event_id"], completed.id);
+
+    let response = app
+        .oneshot(authed_request(
+            Method::GET,
+            "/api/events?after=0&kind=completed",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"))
+    );
+    let mut body = response.into_body().into_data_stream();
+    let chunk = tokio::time::timeout(Duration::from_secs(1), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("event: session.completed"));
+    assert!(text.contains(second_session_id.as_str()));
+    assert!(text.contains("assistant-finished"));
+    assert!(!text.contains("ignored by filter"));
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn aggregate_event_stream_without_cursor_starts_after_existing_history() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("aggregate-live-baseline");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+    store
+        .append_session_event(
+            &session_id,
+            SessionEvent::Completed {
+                message_id: Some("historical-message".to_string()),
+            },
+        )
+        .unwrap();
+    drop(store);
+
+    let response = app
+        .oneshot(authed_request(
+            Method::GET,
+            "/api/events?kind=completed",
+            None,
+        ))
+        .await
+        .unwrap();
+    let mut body = response.into_body().into_data_stream();
+
+    Store::open_at(&db_path)
+        .unwrap()
+        .append_session_event(
+            &session_id,
+            SessionEvent::Completed {
+                message_id: Some("live-message".to_string()),
+            },
+        )
+        .unwrap();
+
+    let chunk = tokio::time::timeout(Duration::from_secs(1), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("live-message"));
+    assert!(!text.contains("historical-message"));
 
     let _ = fs::remove_file(db_path);
 }

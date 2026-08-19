@@ -353,8 +353,9 @@ impl Store {
         self.insert_message_unchecked(conversation_id, parent_message_id, role, content, metadata)
     }
 
-    /// Inserts one session-produced message.
-    pub fn insert_run_message(
+    /// Inserts one runtime message for isolated unit tests without a session.
+    #[cfg(test)]
+    pub(crate) fn insert_test_runtime_message(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: Option<&MessageId>,
@@ -364,7 +365,7 @@ impl Store {
     ) -> Result<MessageId> {
         if role == Role::Tool {
             return Err(error::invalid_request(
-                "role: tool messages must be created through insert_run_tool_result_message",
+                "role: tool messages require the test tool-result helper",
             ));
         }
 
@@ -404,8 +405,9 @@ impl Store {
         )
     }
 
-    /// Inserts one session-produced tool result.
-    pub fn insert_run_tool_result_message(
+    /// Inserts one runtime tool result for isolated unit tests without a session.
+    #[cfg(test)]
+    pub(crate) fn insert_test_runtime_tool_result(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: &MessageId,
@@ -431,9 +433,9 @@ impl Store {
         )
     }
 
-    /// Inserts a runtime-produced multipart tool result without changing UI
-    /// selection.
-    pub fn insert_run_tool_result_message_with_parts(
+    /// Inserts one multipart runtime tool result for isolated unit tests.
+    #[cfg(test)]
+    pub(crate) fn insert_test_runtime_tool_result_with_parts(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: &MessageId,
@@ -525,7 +527,7 @@ impl Store {
     ) -> Result<MessageId> {
         if role == Role::Tool {
             return Err(error::invalid_request(
-                "role: tool messages must be created through insert_run_tool_result_message_with_parts",
+                "role: tool messages cannot use generic multipart insertion",
             ));
         }
 

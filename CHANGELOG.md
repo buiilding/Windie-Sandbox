@@ -7,15 +7,25 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- Added SQLite-backed session execution claims so the API and CLI cannot run
-  the same durable session concurrently, and late runners cannot overwrite a
-  durable cancellation.
-- Made runtime message insertion, session-head advancement, and durable replay
-  event creation one SQLite transaction through a typed assistant/tool-result
-  contract, with persistence failures returned to the running session and
-  rollback behavior covered by tests.
+- Added a durable database-wide session event stream with replayable numeric
+  cursors for API and CLI clients.
+- Tightened SQLite-backed session execution claims with a unique fencing token
+  for every run, so a cancelled runner cannot write through a later claim from
+  another API or CLI execution of the same session.
+- Routed API and CLI work through one `execute_session` workflow and replaced
+  the separate normal, selected-head, and approval claim functions with one
+  typed claim entry point.
+- Made claimed user/assistant/tool-result insertion, session-head advancement,
+  and applicable durable replay-event creation one SQLite transaction, with
+  persistence failures returned to the running session and rollback behavior
+  covered by tests.
+- Removed the runtime's production direct-message persistence path and the
+  duplicate CLI message saver, leaving session execution with one required
+  persistence contract.
 - Centralized final model-context construction so execution, inspection, and
   input-token counting use the same plugin index and built-in tool schemas.
+- Refreshed Inspector provider installations and available tool schemas after
+  plugin install or uninstall, removing the need for a page reload.
 - Moved public CLI command handlers out of `src/main.rs` into domain-specific
   `cli::adapter` modules, leaving the binary entrypoint responsible only for
   parsing and dispatch wiring.
@@ -37,10 +47,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
   plugin metadata from local packages, available plugin metadata from the
   marketplace snapshot, and nested MCP lifecycle state from SQLite without
   persisting the index or exposing MCP schemas in the prompt.
-- Added packaged `SKILL.md` loading plus the `windie__read_skill` and
-  `windie__attach_mcp` built-in controls. MCP attachment reuses the existing
-  provider catalog and execution lifecycle, making schemas available only on
-  the following model turn.
+- Restored the temporary `windie__read_skill` and `windie__attach_mcp`
+  compatibility controls, and removed the provider-listing and provider-
+  attachment built-ins. Installed plugin metadata and MCP schemas remain
+  available through the package and provider runtime paths.
 - Migrated Windie's MCP extension foundation from code-owned provider
   definitions to versioned packaged plugins. Added plugin manifests,
   marketplace index and artifact installation, standard MCP `server.json`

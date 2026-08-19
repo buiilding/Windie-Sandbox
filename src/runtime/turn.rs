@@ -20,7 +20,7 @@ use super::tool_execution::{
     AutomaticToolResolution, PendingToolCall, active_tool_execution, attached_tool_can_execute,
     load_attached_tool_for_call, resolve_next_automatic_tool_call_at_head,
 };
-use super::{RuntimeEventSink, RuntimeInput, RuntimeOutcome};
+use super::{RuntimeInput, RuntimeMessagePersistence, RuntimeOutcome};
 
 pub(crate) async fn advance_turn<O, L, E>(
     output: &O,
@@ -32,7 +32,7 @@ pub(crate) async fn advance_turn<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let mut head_message_id = input.head_message_id.cloned();
     prepare_head_turn(
@@ -96,7 +96,7 @@ pub(crate) async fn advance_until_blocked<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let mut head_message_id = input.head_message_id.cloned();
 
@@ -182,7 +182,7 @@ pub(crate) fn prepare_head_turn(
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
     tools: &ToolProviderRegistry,
-    events: &impl RuntimeEventSink,
+    events: &impl RuntimeMessagePersistence,
 ) -> Result<()> {
     store_policy_denied_tool_results_at_head(
         store,
@@ -229,7 +229,7 @@ fn store_policy_denied_tool_results_at_head(
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
     tools: &ToolProviderRegistry,
-    events: &impl RuntimeEventSink,
+    events: &impl RuntimeMessagePersistence,
 ) -> Result<()> {
     let policy = ToolPolicy;
 

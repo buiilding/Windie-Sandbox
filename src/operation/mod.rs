@@ -58,8 +58,8 @@ use crate::output::{RuntimeOutput, TerminalOutput};
 use crate::runtime::context::ContextBuilder;
 use crate::runtime::wakeup::Wakeup;
 use crate::runtime::{
-    PendingToolExecution, RuntimeEventSink, RuntimeInput, RuntimeModelRequest, RuntimeOutcome,
-    advance_until_blocked as runtime_advance_until_blocked, deny_pending_tool_call,
+    PendingToolExecution, RuntimeInput, RuntimeMessagePersistence, RuntimeModelRequest,
+    RuntimeOutcome, advance_until_blocked as runtime_advance_until_blocked, deny_pending_tool_call,
     execute_pending_tool_call_with_catalog, load_pending_tool_call_at_head,
     pending_approvals_at_head, prepare_pending_tool_execution,
 };
