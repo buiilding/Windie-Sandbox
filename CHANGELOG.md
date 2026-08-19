@@ -20,6 +20,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
   controls under each plugin's components.
 - Added local marketplace serving and end-to-end package lifecycle coverage for
   remote MCPs and local MCPB runtimes.
+- Retained the checked-in marketplace index and package fixtures as a
+  deterministic development and test fallback while production continues to
+  use the hosted marketplace.
 
 ## [0.3.2] - 2026-08-10
 
