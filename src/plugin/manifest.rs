@@ -232,10 +232,11 @@ pub struct McpPackageTransport {
     pub kind: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Authentication requirement for one MCP component.
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpAuthentication {
+    #[default]
     None,
     ApiKey {
         required: bool,
@@ -243,12 +244,6 @@ pub enum McpAuthentication {
         setup_url: Option<String>,
         delivery: McpDelivery,
     },
-}
-
-impl Default for McpAuthentication {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

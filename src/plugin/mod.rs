@@ -159,10 +159,11 @@ mod tests {
         assert!(!provider.secrets[0].required);
 
         registry.unregister_plugin(&plugin).unwrap();
-        let restored = registry
-            .provider_manifest(&crate::tool::ToolProviderId::new("parallel-search"))
-            .unwrap();
-        assert!(restored.readme_markdown.contains("Parallel Search"));
+        assert!(
+            registry
+                .provider_manifest(&crate::tool::ToolProviderId::new("parallel-search"))
+                .is_none()
+        );
 
         let removed = store.remove_plugin("parallel-search").unwrap();
         assert_eq!(removed.len(), 1);
@@ -440,7 +441,7 @@ mod tests {
             "io.github.wonderwhy-er/desktop-commander"
         );
         assert_eq!(components[0].manifest.version, "0.2.47");
-        assert_eq!(components[0].windie.setup.isolated_home, true);
+        assert!(components[0].windie.setup.isolated_home);
 
         let crate::mcp::McpTransport::PackagedStdio { ref command, .. } = components[0].transport
         else {

@@ -6,51 +6,15 @@ use serde_json::{Value, json};
 use super::ToolProviderRegistry;
 use crate::conversation::{ToolCall, UnsavedMessagePart};
 use crate::mcp::ChromeDevToolsConnectionMode;
-use crate::mcp::{self as mcp_protocol, McpTool, McpTransport};
+use crate::mcp::{self as mcp_protocol, McpTransport};
 use crate::mcp::{
-    McpToolProvider, approved_mcp_provider, mcp_schema_name, mcp_tool_call_failure_result,
-    mcp_tool_result_parts, tool_result_preview,
+    mcp_schema_name, mcp_tool_call_failure_result, mcp_tool_result_parts, tool_result_preview,
 };
 use crate::plugin::PluginStore;
-use crate::tool::ProviderSecret;
-use crate::tool::ProviderTransport;
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef, ToolSchemaName,
 };
-
-fn approved_parallel_provider() -> McpToolProvider {
-    McpToolProvider::new(approved_mcp_provider("parallel-search").unwrap())
-}
-
-#[test]
-fn approved_provider_manifests_describe_their_runtime_requirements() {
-    let providers = [approved_parallel_provider()];
-
-    let ids = providers
-        .iter()
-        .map(|provider| provider.manifest().provider_id.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(ids, vec!["parallel-search"]);
-
-    for provider in providers {
-        let manifest = provider.manifest();
-        assert_eq!(manifest.kind, ToolProviderKind::Mcp);
-        assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
-        assert!(!manifest.description.is_empty());
-        assert!(!manifest.readme_markdown.is_empty());
-        match &manifest.launch {
-            crate::tool::ProviderLaunch::Stdio { program, .. } => {
-                assert!(!program.is_empty())
-            }
-            crate::tool::ProviderLaunch::StreamableHttp { url } => {
-                assert!(url.starts_with("https://"))
-            }
-        }
-        assert!(!manifest.platforms.is_empty());
-        assert!(!manifest.permissions.is_empty());
-    }
-}
 
 #[test]
 fn packaged_chrome_devtools_mode_updates_package_owned_transport() {
@@ -82,44 +46,6 @@ fn packaged_chrome_devtools_mode_updates_package_owned_transport() {
     registry.unregister_plugin(&plugin).unwrap();
     store.remove_plugin("chrome-devtools").unwrap();
     std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn parallel_manifest_uses_optional_network_authentication() {
-    let provider = approved_parallel_provider();
-    let manifest = provider.manifest();
-
-    assert_eq!(manifest.transport, ProviderTransport::StreamableHttp);
-    assert_eq!(
-        manifest.authentication,
-        crate::tool::ProviderAuthentication::OptionalApiKey
-    );
-    assert_eq!(
-        manifest.secrets,
-        vec![ProviderSecret::optional(
-            "PARALLEL_API_KEY",
-            "Parallel API key for higher rate limits",
-        )]
-    );
-    assert!(
-        manifest
-            .permissions
-            .contains(&crate::tool::ProviderPermission::Network)
-    );
-    assert!(
-        matches!(provider.transport(), McpTransport::StreamableHttp { endpoint } if endpoint.url == "https://search.parallel.ai/mcp")
-    );
-    let tool = provider.definition_from_mcp_tool(McpTool {
-        name: "web_search".to_string(),
-        description: "Search the web".to_string(),
-        input_schema: serde_json::json!({"type": "object"}),
-        annotations: Some(mcp_protocol::McpToolAnnotations {
-            read_only_hint: Some(true),
-        }),
-    });
-    assert_eq!(tool.schema_name.as_str(), "parallel_search__web_search");
-    assert_eq!(tool.permissions, vec![ToolPermission::Network]);
-    assert_eq!(tool.annotations.read_only, Some(true));
 }
 
 #[test]

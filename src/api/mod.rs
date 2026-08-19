@@ -94,9 +94,14 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
         tool_registry.register_plugin(&plugin)?;
     }
     let marketplace_index_url = crate::config::marketplace_index_url();
-    let marketplace = crate::plugin::MarketplaceInstaller::default()
-        .fetch_index(&marketplace_index_url)
-        .or_else(|_| crate::plugin::bundled_index())?;
+    let marketplace_url_for_worker = marketplace_index_url.clone();
+    let marketplace = tokio::task::spawn_blocking(move || {
+        crate::plugin::MarketplaceInstaller::default()
+            .fetch_index(&marketplace_url_for_worker)
+            .or_else(|_| crate::plugin::bundled_index())
+    })
+    .await
+    .context("marketplace startup worker failed")??;
     let plugin_catalog = Arc::new(crate::plugin::PluginCatalog::new(
         plugin_store.clone(),
         marketplace,

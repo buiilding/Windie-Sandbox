@@ -17,11 +17,11 @@ use crate::tool::{
 };
 
 #[derive(Debug, Clone)]
-/// Static compatibility definition for one not-yet-migrated MCP provider.
+/// Static definition used to construct one MCP provider runtime.
 ///
-/// This is intentionally data, not runtime state. Adding a future approved MCP
-/// provider should add one server definition while keeping `McpToolProvider`
-/// generic.
+/// This is intentionally data, not runtime state. The package loader creates
+/// these definitions from installed plugin manifests, while tests and local
+/// benchmark helpers can create deterministic definitions directly.
 pub(crate) struct McpProviderDefinition {
     pub(crate) manifest: ProviderManifest,
     pub(crate) provider_id: String,

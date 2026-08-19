@@ -17,8 +17,8 @@ use crate::mcp::ChromeDevToolsConnectionMode;
 use crate::mcp::McpCommand;
 use crate::mcp::McpProviderDefinition;
 use crate::mcp::McpSessionPool;
+use crate::mcp::McpToolProvider;
 use crate::mcp::McpTransport;
-use crate::mcp::{McpToolProvider, approved_mcp_providers};
 use crate::plugin::InstalledPlugin;
 use crate::tool::ProviderRuntime;
 use crate::tool::{
@@ -118,12 +118,7 @@ impl ToolProviderRegistry {
         Ok(())
     }
 
-    /// Removes a plugin's live MCP projection and restores any temporary
-    /// code-owned provider with the same ID.
-    ///
-    /// The restoration keeps the migration safe while Windie still carries
-    /// legacy providers. Once every provider is package-owned, this fallback
-    /// disappears and uninstall simply removes the dynamic definition.
+    /// Removes a plugin's live MCP projection from the registry.
     pub fn unregister_plugin(&self, plugin: &InstalledPlugin) -> Result<()> {
         let component_ids = crate::mcp::load_components(plugin)?
             .into_iter()
@@ -136,12 +131,6 @@ impl ToolProviderRegistry {
 
         for component_id in component_ids {
             providers.retain(|provider| provider.id().as_str() != component_id);
-            if let Some(definition) = approved_mcp_providers()
-                .into_iter()
-                .find(|definition| definition.provider_id == component_id)
-            {
-                providers.push(McpToolProvider::new(definition));
-            }
         }
         Ok(())
     }
@@ -388,12 +377,7 @@ impl ToolProviderRegistry {
 impl Default for ToolProviderRegistry {
     fn default() -> Self {
         Self {
-            mcp_providers: Arc::new(RwLock::new(
-                approved_mcp_providers()
-                    .into_iter()
-                    .map(McpToolProvider::new)
-                    .collect(),
-            )),
+            mcp_providers: Arc::new(RwLock::new(Vec::new())),
             mcp_session_pool: None,
         }
     }

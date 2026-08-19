@@ -7,6 +7,13 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Split the MCP runtime into protocol, stdio, session, and transport modules
+  behind a small compatibility facade, preserving existing MCP callers while
+  making process I/O and session lifecycle independently inspectable.
+- Removed the legacy code-owned Parallel Search MCP fallback. MCP providers
+  now come from installed plugin packages.
+- Fixed API startup by keeping the blocking marketplace HTTP client inside a
+  blocking worker instead of creating or dropping it from the Tokio runtime.
 - Simplified the Inspector plugin detail page by hiding component lifecycle
   controls and redundant installation/version labels while preserving backend
   plugin installation behavior.
