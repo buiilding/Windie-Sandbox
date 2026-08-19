@@ -2,6 +2,7 @@
 
 use super::*;
 
+use crate::plugin::PluginCatalog;
 use crate::session::SessionResolution;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub struct RuntimeDependencies<'a> {
     pub(in crate::operation) model_override: Option<ModelName>,
     pub(in crate::operation) reasoning: Option<ReasoningRequest>,
     pub(in crate::operation) tools: &'a ToolProviderRegistry,
+    pub(in crate::operation) plugin_catalog: Option<&'a PluginCatalog>,
 }
 
 impl<'a> RuntimeDependencies<'a> {
@@ -46,7 +48,15 @@ impl<'a> RuntimeDependencies<'a> {
             model_override,
             reasoning,
             tools,
+            plugin_catalog: None,
         }
+    }
+
+    /// Adds the read-only plugin catalog used to build model context and
+    /// resolve plugin-owned built-in actions.
+    pub fn with_plugin_catalog(mut self, catalog: &'a PluginCatalog) -> Self {
+        self.plugin_catalog = Some(catalog);
+        self
     }
 }
 
@@ -184,6 +194,7 @@ where
             conversation_id,
             head_message_id,
             tools: runtime.tools,
+            plugin_catalog: runtime.plugin_catalog,
             model_request: RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
         },
         events,

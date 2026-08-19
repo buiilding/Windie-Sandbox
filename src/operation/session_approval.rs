@@ -25,6 +25,7 @@ pub fn list_session_tool_approvals_with_registry(
             conversation_id,
             head_message_id,
             tools: registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
     )
@@ -93,12 +94,13 @@ where
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            execute_pending_tool_call(
+            execute_pending_tool_call_with_catalog(
                 store,
                 conversation_id,
                 &pending,
                 &attached_tool,
                 runtime.tools,
+                runtime.plugin_catalog,
             )
             .await?
         }
@@ -151,6 +153,7 @@ where
             conversation_id,
             head_message_id: Some(head_message_id),
             tools: runtime.tools,
+            plugin_catalog: runtime.plugin_catalog,
             model_request: RuntimeModelRequest::new(None, None),
         },
     )?

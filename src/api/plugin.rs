@@ -145,13 +145,17 @@ async fn load_marketplace_index(
     state: &ApiState,
 ) -> anyhow::Result<crate::plugin::MarketplaceIndex> {
     let Some(index_url) = state.marketplace_index_url.clone() else {
-        return Ok(crate::plugin::bundled_index()?);
+        let index = crate::plugin::bundled_index()?;
+        state.plugin_catalog.replace_marketplace(index.clone());
+        return Ok(index);
     };
-    Ok(tokio::task::spawn_blocking(move || {
+    let index = tokio::task::spawn_blocking(move || {
         crate::plugin::MarketplaceInstaller::default().fetch_index(&index_url)
     })
     .await
-    .map_err(|error| anyhow::anyhow!("marketplace index worker failed: {error}"))??)
+    .map_err(|error| anyhow::anyhow!("marketplace index worker failed: {error}"))??;
+    state.plugin_catalog.replace_marketplace(index.clone());
+    Ok(index)
 }
 
 pub(super) async fn uninstall_plugin(

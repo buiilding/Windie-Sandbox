@@ -13,7 +13,8 @@ use tar::Archive;
 use zip::ZipArchive;
 
 use super::manifest::{
-    McpServerManifest, PluginComponentKind, PluginManifest, resolve_package_path,
+    AppManifest, McpServerManifest, PluginComponentKind, PluginManifest, SkillManifest,
+    resolve_package_path,
 };
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,32 @@ use super::manifest::{
 pub struct InstalledPlugin {
     pub root: PathBuf,
     pub manifest: PluginManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One skill loaded from an installed plugin package.
+pub struct InstalledSkill {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Metadata for one installed MCP component without starting its process.
+pub(crate) struct InstalledMcpMetadata {
+    pub id: String,
+    pub name: String,
+    pub purpose: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Metadata for one installed app connector without connecting it.
+pub(crate) struct InstalledAppMetadata {
+    pub id: String,
+    pub name: String,
+    pub purpose: String,
 }
 
 impl InstalledPlugin {
@@ -60,10 +87,86 @@ impl InstalledPlugin {
                         bail!("local MCPB artifact does not exist: {artifact}");
                     }
                 }
+            } else if component.kind == PluginComponentKind::Skill {
+                SkillManifest::parse(&fs::read_to_string(&component_path)?)?;
+            } else if component.kind == PluginComponentKind::App {
+                let document = fs::read_to_string(&component_path)?;
+                let _: AppManifest = serde_json::from_str(&document).with_context(|| {
+                    format!("failed to parse app manifest: {}", component.manifest)
+                })?;
             }
         }
 
         Ok(Self { root, manifest })
+    }
+
+    /// Returns every packaged skill and its complete instructions.
+    pub fn skills(&self) -> Result<Vec<InstalledSkill>> {
+        self.manifest
+            .components
+            .iter()
+            .filter(|component| component.kind == PluginComponentKind::Skill)
+            .map(|component| {
+                let path = resolve_package_path(&self.root, &component.manifest)?;
+                let skill = SkillManifest::parse(&fs::read_to_string(path)?)?;
+                Ok(InstalledSkill {
+                    id: component.id.clone(),
+                    name: skill.name,
+                    description: skill.description,
+                    instructions: skill.instructions,
+                })
+            })
+            .collect()
+    }
+
+    /// Reads exactly one installed skill after validating its component ID.
+    pub fn read_skill(&self, skill_id: &str) -> Result<String> {
+        self.skills()?
+            .into_iter()
+            .find(|skill| skill.id == skill_id)
+            .map(|skill| skill.instructions)
+            .ok_or_else(|| anyhow!("skill does not exist in plugin: {skill_id}"))
+    }
+
+    /// Loads MCP metadata without starting an MCP process or discovering tools.
+    pub(crate) fn mcp_metadata(&self) -> Result<Vec<InstalledMcpMetadata>> {
+        self.manifest
+            .components
+            .iter()
+            .filter(|component| component.kind == PluginComponentKind::Mcp)
+            .map(|component| {
+                let path = resolve_package_path(&self.root, &component.manifest)?;
+                let manifest = McpServerManifest::parse(&fs::read_to_string(path)?)?;
+                Ok(InstalledMcpMetadata {
+                    id: component.id.clone(),
+                    name: manifest.title,
+                    purpose: manifest.description,
+                    capabilities: component.windie.capabilities.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Loads app metadata without connecting to the external application.
+    pub(crate) fn app_metadata(&self) -> Result<Vec<InstalledAppMetadata>> {
+        self.manifest
+            .components
+            .iter()
+            .filter(|component| component.kind == PluginComponentKind::App)
+            .map(|component| {
+                let path = resolve_package_path(&self.root, &component.manifest)?;
+                let manifest: AppManifest = serde_json::from_str(&fs::read_to_string(path)?)?;
+                Ok(InstalledAppMetadata {
+                    id: component.id.clone(),
+                    name: if manifest.name.is_empty() {
+                        component.id.clone()
+                    } else {
+                        manifest.name
+                    },
+                    purpose: manifest.description,
+                })
+            })
+            .collect()
     }
 }
 
@@ -226,6 +329,20 @@ impl PluginStore {
                 })
         });
         Ok(plugins)
+    }
+
+    /// Loads the newest installed release for one plugin ID.
+    pub fn installed_plugin(&self, plugin_id: &str) -> Result<Option<InstalledPlugin>> {
+        Ok(self
+            .installed_plugins()?
+            .into_iter()
+            .filter(|plugin| plugin.manifest.plugin.id == plugin_id)
+            .max_by(|left, right| {
+                left.manifest
+                    .plugin
+                    .version
+                    .cmp(&right.manifest.plugin.version)
+            }))
     }
 
     /// Removes every installed release of one plugin and returns the packages

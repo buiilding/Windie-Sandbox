@@ -10,19 +10,22 @@ mod turn;
 pub(crate) mod wakeup;
 
 pub(crate) use tool_execution::{
-    PendingToolExecution, deny_pending_tool_call, execute_pending_tool_call,
+    PendingToolExecution, deny_pending_tool_call, execute_pending_tool_call_with_catalog,
     load_pending_tool_call_at_head, prepare_pending_tool_execution,
     store_pending_tool_result_at_head,
 };
 pub(crate) use turn::{advance_until_blocked, pending_approvals_at_head, prepare_head_turn};
 
 #[cfg(test)]
-pub(crate) use tool_execution::{PendingToolCall, active_tool_execution};
+pub(crate) use tool_execution::{
+    PendingToolCall, active_tool_execution, execute_pending_tool_call,
+};
 #[cfg(test)]
-pub(crate) use turn::{advance_turn, build_model_context};
+pub(crate) use turn::{advance_turn, build_model_context, build_model_context_with_catalog};
 
 use crate::conversation::{ConversationId, MessageId};
 use crate::llm::{PromptCacheRequest, ReasoningRequest};
+use crate::plugin::PluginCatalog;
 use crate::tool::ToolProviderRegistry;
 
 #[cfg(test)]
@@ -67,6 +70,7 @@ pub(crate) struct RuntimeInput<'a> {
     pub(crate) conversation_id: &'a ConversationId,
     pub(crate) head_message_id: Option<&'a MessageId>,
     pub(crate) tools: &'a ToolProviderRegistry,
+    pub(crate) plugin_catalog: Option<&'a PluginCatalog>,
     pub(crate) model_request: RuntimeModelRequest<'a>,
 }
 

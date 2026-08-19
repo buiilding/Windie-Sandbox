@@ -5,6 +5,8 @@
 
 use super::*;
 
+use std::sync::Arc;
+
 /// Creates a session branch at a conversation head and advances it to blocked.
 pub async fn start_cli_session(
     conversation_id: ConversationId,
@@ -41,13 +43,18 @@ pub async fn approve_cli_session_tool(
     let mut store = Store::open()?;
     let session = store.load_session(&session_id)?;
     let registry = ToolProviderRegistry::with_installed_plugins()?;
+    let plugin_catalog = crate::plugin::PluginCatalog::new(
+        Arc::new(crate::plugin::PluginStore::default_store()?),
+        crate::plugin::bundled_index()?,
+    );
     let runtime = RuntimeDependencies::new(
         gateway_url,
         base_url,
         Some(ModelName::new(session.model)),
         session.reasoning,
         &registry,
-    );
+    )
+    .with_plugin_catalog(&plugin_catalog);
     let cli_output = CliSessionOutput::new(session_id.clone());
     let events = CliSessionEvents::new(session_id.clone());
     let outcome = approve_session_tool(
@@ -75,13 +82,18 @@ pub async fn deny_cli_session_tool(
     let mut store = Store::open()?;
     let session = store.load_session(&session_id)?;
     let registry = ToolProviderRegistry::with_installed_plugins()?;
+    let plugin_catalog = crate::plugin::PluginCatalog::new(
+        Arc::new(crate::plugin::PluginStore::default_store()?),
+        crate::plugin::bundled_index()?,
+    );
     let runtime = RuntimeDependencies::new(
         gateway_url,
         base_url,
         Some(ModelName::new(session.model)),
         session.reasoning,
         &registry,
-    );
+    )
+    .with_plugin_catalog(&plugin_catalog);
     let cli_output = CliSessionOutput::new(session_id.clone());
     let events = CliSessionEvents::new(session_id.clone());
     let outcome = deny_session_tool(
@@ -117,13 +129,18 @@ async fn continue_cli_session(
     let session = store.load_session(session_id)?;
     store.update_session_status(session_id, SessionStatus::Running, None)?;
     let registry = ToolProviderRegistry::with_installed_plugins()?;
+    let plugin_catalog = crate::plugin::PluginCatalog::new(
+        Arc::new(crate::plugin::PluginStore::default_store()?),
+        crate::plugin::bundled_index()?,
+    );
     let runtime = RuntimeDependencies::new(
         gateway_url,
         base_url,
         Some(ModelName::new(session.model)),
         session.reasoning,
         &registry,
-    );
+    )
+    .with_plugin_catalog(&plugin_catalog);
     let cli_output = CliSessionOutput::new(session_id.clone());
     let events = CliSessionEvents::new(session_id.clone());
     let outcome = advance_session_until_blocked(

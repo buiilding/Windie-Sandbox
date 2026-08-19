@@ -1451,21 +1451,30 @@ fn test_app_with_urls_and_shutdown(
     shutdown_tx: watch::Sender<bool>,
 ) -> Router {
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
-    let session_manager = Arc::new(SessionManager::new(
-        Some(store_path.clone()),
-        gateway_url.to_string(),
-        base_url.to_string(),
-        tool_registry.clone(),
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(
+        std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
     ));
+    let plugin_catalog = Arc::new(crate::plugin::PluginCatalog::new(
+        plugin_store.clone(),
+        crate::plugin::bundled_index().unwrap(),
+    ));
+    let session_manager = Arc::new(
+        SessionManager::new(
+            Some(store_path.clone()),
+            gateway_url.to_string(),
+            base_url.to_string(),
+            tool_registry.clone(),
+        )
+        .with_plugin_catalog(plugin_catalog.clone()),
+    );
     router(ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
         model: Some("openai/test".to_string()),
         store_path: Some(store_path),
         marketplace_index_url: None,
-        plugin_store: Arc::new(crate::plugin::PluginStore::new(
-            std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
-        )),
+        plugin_store,
+        plugin_catalog,
         tool_registry,
         session_manager,
         shutdown_tx,
@@ -1476,21 +1485,30 @@ fn test_app_with_tool_registry(
     store_path: PathBuf,
     tool_registry: Arc<ToolProviderRegistry>,
 ) -> Router {
-    let session_manager = Arc::new(SessionManager::new(
-        Some(store_path.clone()),
-        "http://localhost:8080".to_string(),
-        "http://localhost:8080/v1".to_string(),
-        tool_registry.clone(),
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(
+        std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
     ));
+    let plugin_catalog = Arc::new(crate::plugin::PluginCatalog::new(
+        plugin_store.clone(),
+        crate::plugin::bundled_index().unwrap(),
+    ));
+    let session_manager = Arc::new(
+        SessionManager::new(
+            Some(store_path.clone()),
+            "http://localhost:8080".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            tool_registry.clone(),
+        )
+        .with_plugin_catalog(plugin_catalog.clone()),
+    );
     router(ApiState {
         gateway_url: "http://localhost:8080".to_string(),
         base_url: "http://localhost:8080/v1".to_string(),
         model: Some("openai/test".to_string()),
         store_path: Some(store_path),
         marketplace_index_url: None,
-        plugin_store: Arc::new(crate::plugin::PluginStore::new(
-            std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
-        )),
+        plugin_store,
+        plugin_catalog,
         tool_registry,
         session_manager,
         shutdown_tx: watch::channel(false).0,

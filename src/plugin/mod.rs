@@ -12,24 +12,107 @@ pub(crate) mod manifest;
 mod store;
 
 pub use catalog::{
-    MarketplaceIndex, MarketplacePlugin, MarketplacePresentation, MarketplaceVersion,
+    AppSummary, MarketplaceIndex, MarketplacePlugin, MarketplacePresentation, MarketplaceVersion,
+    McpSummary, PluginCatalog, PluginIndex, PluginState, PluginSummary, SkillSummary,
     bundled as bundled_index,
 };
 pub use installer::MarketplaceInstaller;
 pub use manifest::{
-    McpAuthentication, McpDelivery, McpPackage, McpPackageTransport, McpRemote, McpRemoteHeader,
-    McpRemoteTransport, McpServerManifest, PluginComponent, PluginComponentKind, PluginManifest,
-    WindieMcpMetadata, WindieMcpSetup, WindieSetupEnvironment, WindieSetupEnvironmentValue,
-    WindieSetupFile,
+    AppManifest, McpAuthentication, McpDelivery, McpPackage, McpPackageTransport, McpRemote,
+    McpRemoteHeader, McpRemoteTransport, McpServerManifest, PluginComponent, PluginComponentKind,
+    PluginManifest, SkillManifest, WindieMcpMetadata, WindieMcpSetup, WindieSetupEnvironment,
+    WindieSetupEnvironmentValue, WindieSetupFile,
 };
-pub use store::{InstalledPlugin, PluginStore};
+pub use store::{InstalledPlugin, InstalledSkill, PluginStore};
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn plugin_index_moves_installed_plugins_out_of_available_plugins() {
+        let root = std::env::temp_dir().join(format!(
+            "windie-plugin-index-package-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let plugin_store = Arc::new(PluginStore::new(&root));
+        plugin_store.install_bundled("parallel-search").unwrap();
+        let catalog = PluginCatalog::new(plugin_store.clone(), bundled_index().unwrap());
+        let store = crate::store::Store::open_memory().unwrap();
+        let index = catalog
+            .build_index(&store, &crate::tool::ToolProviderRegistry::new())
+            .unwrap();
+
+        assert_eq!(index.installed.len(), 1);
+        assert_eq!(index.installed[0].id, "parallel-search");
+        assert_eq!(index.installed[0].mcps[0].state, PluginState::Installed);
+        assert!(
+            index
+                .available
+                .iter()
+                .all(|plugin| plugin.id != "parallel-search")
+        );
+        assert!(
+            index
+                .available
+                .iter()
+                .any(|plugin| plugin.id == "basic-memory")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn installed_skill_is_parsed_and_read_from_package_content() {
+        let source = std::env::temp_dir().join(format!(
+            "windie-skill-source-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(source.join("skills/driver")).unwrap();
+        fs::write(source.join("README.md"), "# Driver plugin").unwrap();
+        fs::write(source.join("assets.svg"), "<svg />").unwrap();
+        fs::write(
+            source.join("skills/driver/SKILL.md"),
+            "---\nname: Driver instructions\ndescription: Control the local computer safely.\n---\n# Driver instructions\n\nUse approved computer-control actions.",
+        )
+        .unwrap();
+        fs::write(
+            source.join("plugin.json"),
+            r#"{
+              "manifest_version": 1,
+              "plugin": {"id": "driver", "version": "1.0.0", "publisher": "windie"},
+              "presentation": {"name": "Driver", "description": "Control the local computer.", "readme": "README.md", "icon": "assets.svg"},
+              "components": [{"type": "skill", "id": "driver", "manifest": "skills/driver/SKILL.md"}]
+            }"#,
+        )
+        .unwrap();
+
+        let package_root = std::env::temp_dir().join(format!(
+            "windie-skill-package-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = PluginStore::new(&package_root);
+        let installed = store.install_from_directory(&source).unwrap();
+        let skills = installed.skills().unwrap();
+        assert_eq!(skills[0].id, "driver");
+        assert_eq!(skills[0].description, "Control the local computer safely.");
+        assert!(
+            installed
+                .read_skill("driver")
+                .unwrap()
+                .contains("approved computer-control actions")
+        );
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(package_root).unwrap();
+    }
 
     #[test]
     fn bundled_index_and_parallel_plugin_validate() {

@@ -60,6 +60,23 @@ pub struct PluginComponent {
     pub windie: WindieMcpMetadata,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed metadata and instructions for a packaged `SKILL.md` component.
+pub struct SkillManifest {
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Optional metadata for an app connector component.
+pub struct AppManifest {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// Component families supported by the plugin package boundary.
@@ -281,6 +298,68 @@ impl PluginManifest {
         }
         Ok(())
     }
+}
+
+impl SkillManifest {
+    /// Parses a Markdown skill document without executing any package code.
+    ///
+    /// Windie accepts the common optional YAML-like front matter fields
+    /// `name` and `description`. When they are absent, the first heading and
+    /// first non-heading paragraph provide stable display fallbacks.
+    pub fn parse(document: &str) -> Result<Self> {
+        let mut name = None;
+        let mut description = None;
+        let mut body_start = 0;
+        let lines = document.lines().collect::<Vec<_>>();
+
+        if lines.first().is_some_and(|line| line.trim() == "---") {
+            let Some(end) = lines.iter().skip(1).position(|line| line.trim() == "---") else {
+                bail!("skill front matter is not terminated");
+            };
+            let end = end + 1;
+            for line in &lines[1..end] {
+                let Some((key, value)) = line.split_once(':') else {
+                    continue;
+                };
+                match key.trim() {
+                    "name" => name = non_empty(value),
+                    "description" => description = non_empty(value),
+                    _ => {}
+                }
+            }
+            body_start = end + 1;
+        }
+
+        for line in &lines[body_start..] {
+            let trimmed = line.trim();
+            if name.is_none() && trimmed.starts_with('#') {
+                name = non_empty(trimmed.trim_start_matches('#'));
+                continue;
+            }
+            if description.is_none() && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                description = non_empty(trimmed);
+            }
+            if name.is_some() && description.is_some() {
+                break;
+            }
+        }
+
+        let name = name.ok_or_else(|| anyhow!("skill is missing a name"))?;
+        let description = description.unwrap_or_else(|| name.clone());
+        if document.trim().is_empty() {
+            bail!("skill instructions cannot be empty");
+        }
+        Ok(Self {
+            name,
+            description,
+            instructions: document.to_string(),
+        })
+    }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let value = value.trim().trim_matches('"').trim_matches('\'');
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 impl Default for WindieMcpMetadata {

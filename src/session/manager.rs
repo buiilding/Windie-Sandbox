@@ -19,6 +19,7 @@ use crate::llm::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName, ReasoningRequest};
 use crate::operation::{self, MessageInputPart, RuntimeDependencies};
 use crate::output::RuntimeOutput;
+use crate::plugin::PluginCatalog;
 use crate::runtime::RuntimeEventSink;
 use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
 use crate::session::{
@@ -57,6 +58,7 @@ pub struct SessionManager {
     gateway_url: String,
     base_url: String,
     tools: Arc<ToolProviderRegistry>,
+    plugin_catalog: Option<Arc<PluginCatalog>>,
     /// Live running tasks, keyed by session. A task is removed when it finishes,
     /// including when the session pauses for approval.
     active: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
@@ -92,10 +94,17 @@ impl SessionManager {
             gateway_url,
             base_url,
             tools,
+            plugin_catalog: None,
             active: Arc::new(Mutex::new(HashMap::new())),
             gates: Arc::new(Mutex::new(HashMap::new())),
             channels: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Adds the shared read-only plugin catalog used by model sessions.
+    pub fn with_plugin_catalog(mut self, plugin_catalog: Arc<PluginCatalog>) -> Self {
+        self.plugin_catalog = Some(plugin_catalog);
+        self
     }
 
     /// Deletes one terminal session after confirming no live task still owns it.
@@ -624,6 +633,10 @@ impl SessionManager {
             reasoning,
             self.tools.as_ref(),
         );
+        let runtime = match self.plugin_catalog.as_deref() {
+            Some(catalog) => runtime.with_plugin_catalog(catalog),
+            None => runtime,
+        };
 
         let outcome = match command {
             SessionCommand::Continue => {

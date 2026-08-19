@@ -2,8 +2,8 @@
 
 use anyhow::{Result, anyhow};
 use std::fs;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
@@ -507,6 +507,7 @@ fn pending_latest_head_approvals(
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
     )
@@ -525,6 +526,7 @@ fn validate_latest_head_availability(
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
     )?;
@@ -594,6 +596,7 @@ where
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: registry,
+            plugin_catalog: None,
             model_request,
         },
         events,
@@ -652,6 +655,7 @@ where
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: registry,
+            plugin_catalog: None,
             model_request,
         },
         events,
@@ -814,6 +818,7 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
             conversation_id: &conversation_id,
             head_message_id: Some(&user_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
         &events,
@@ -828,6 +833,7 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
             conversation_id: &conversation_id,
             head_message_id: Some(&user_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
         &events,
@@ -904,6 +910,7 @@ async fn run_head_uses_requested_head_path() {
             conversation_id: &conversation_id,
             head_message_id: Some(&active_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
         &events,
@@ -996,6 +1003,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
             conversation_id: &conversation_id,
             head_message_id: Some(&branch_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
         &events,
@@ -1027,6 +1035,7 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
             conversation_id: &conversation_id,
             head_message_id: Some(&sibling_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
         &events,
@@ -1737,7 +1746,45 @@ fn builtin_tools_are_always_model_visible_but_not_persisted() {
 
     assert_eq!(
         names,
-        vec!["windie__list_providers", "windie__attach_provider"]
+        vec![
+            "windie__list_providers",
+            "windie__attach_provider",
+            "windie__read_skill",
+            "windie__attach_mcp"
+        ]
+    );
+    assert!(
+        store
+            .load_tool_schemas(&conversation_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn plugin_index_is_ephemeral_and_does_not_attach_mcp_schemas() {
+    let store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let registry = ToolProviderRegistry::new();
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(
+        std::env::temp_dir().join(format!("windie-plugin-index-test-{}", uuid::Uuid::new_v4())),
+    ));
+    let catalog =
+        crate::plugin::PluginCatalog::new(plugin_store, crate::plugin::bundled_index().unwrap());
+
+    let context =
+        build_model_context_with_catalog(&store, &conversation_id, None, &registry, Some(&catalog))
+            .unwrap();
+
+    assert_eq!(context.messages[0].role, Role::System);
+    assert!(context.messages[0].content.contains("Installed plugins:"));
+    assert!(context.messages[0].content.contains("Available plugins:"));
+    assert!(context.messages[0].content.contains("parallel-search"));
+    assert!(
+        context
+            .tool_schemas
+            .iter()
+            .all(|tool| !tool.name.as_str().starts_with("parallel_search__"))
     );
     assert!(
         store
@@ -1823,6 +1870,79 @@ async fn builtin_provider_tools_list_and_attach_through_existing_conversation_st
 }
 
 #[tokio::test]
+async fn plugin_attach_mcp_resolves_component_before_reusing_provider_attachment() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let plugin_root = std::env::temp_dir().join(format!(
+        "windie-plugin-attach-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(&plugin_root));
+    let plugin = plugin_store.install_bundled("parallel-search").unwrap();
+    let registry = ToolProviderRegistry::new();
+    registry.register_plugin(&plugin).unwrap();
+
+    let provider_id = ToolProviderId::new("parallel-search");
+    let tool = crate::tool::ToolDefinition {
+        schema_name: ToolSchemaName::new("parallel_search__search"),
+        display_name: "Parallel Search search".to_string(),
+        description: "Search the web".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            provider_id.clone(),
+            ProviderToolName::new("search"),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: Vec::new(),
+        annotations: ToolAnnotations::default(),
+    };
+    store.install_provider(&provider_id).unwrap();
+    store
+        .save_provider_tool_catalog(&provider_id, &[tool])
+        .unwrap();
+    store
+        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .unwrap();
+
+    let catalog =
+        crate::plugin::PluginCatalog::new(plugin_store, crate::plugin::bundled_index().unwrap());
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "search", None)
+        .unwrap();
+    let definition = registry
+        .builtin_tool(&ToolSchemaName::new("windie__attach_mcp"))
+        .unwrap();
+    let pending = PendingToolCall {
+        result_parent_message_id: user_id,
+        tool_call: ToolCall::function(
+            "call_attach_mcp",
+            "windie__attach_mcp",
+            r#"{"plugin_id":"parallel-search","mcp_id":"parallel-search"}"#,
+        ),
+    };
+    let result = execute_pending_tool_call_with_catalog(
+        &mut store,
+        &conversation_id,
+        &pending,
+        &definition.attached_tool(),
+        &registry,
+        Some(&catalog),
+    )
+    .await
+    .unwrap();
+
+    assert!(result.success);
+    assert!(
+        store
+            .load_tool_schemas(&conversation_id)
+            .unwrap()
+            .iter()
+            .any(|tool| tool.name.as_str() == "parallel_search__search")
+    );
+    fs::remove_dir_all(plugin_root).unwrap();
+}
+
+#[tokio::test]
 async fn runtime_attaches_provider_then_queries_with_provider_tools() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
@@ -1859,6 +1979,7 @@ async fn runtime_attaches_provider_then_queries_with_provider_tools() {
             conversation_id: &conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
         },
         &events,

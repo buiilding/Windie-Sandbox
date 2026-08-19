@@ -7,6 +7,14 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added the unified model-facing plugin index. Each turn now derives installed
+  plugin metadata from local packages, available plugin metadata from the
+  marketplace snapshot, and nested MCP lifecycle state from SQLite without
+  persisting the index or exposing MCP schemas in the prompt.
+- Added packaged `SKILL.md` loading plus the `windie__read_skill` and
+  `windie__attach_mcp` built-in controls. MCP attachment reuses the existing
+  provider catalog and execution lifecycle, making schemas available only on
+  the following model turn.
 - Migrated Windie's MCP extension foundation from code-owned provider
   definitions to versioned packaged plugins. Added plugin manifests,
   marketplace index and artifact installation, standard MCP `server.json`

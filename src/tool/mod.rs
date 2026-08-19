@@ -21,7 +21,8 @@ mod tests;
 
 pub use approval::{ToolApprovalMode, ToolApprovalRequest};
 pub(crate) use builtin::{
-    ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
+    ATTACH_MCP_TOOL_NAME, ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
+    READ_SKILL_TOOL_NAME,
 };
 pub use lifecycle::{ProviderInstallState, ProviderReadiness};
 pub use manifest::{

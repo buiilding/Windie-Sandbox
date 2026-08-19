@@ -10,9 +10,11 @@ use serde_json::Value;
 
 use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, ToolCallId};
 use crate::error;
+use crate::plugin::PluginCatalog;
 use crate::store::Store;
 use crate::tool::{
-    ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME, ToolProviderRegistry,
+    ATTACH_MCP_TOOL_NAME, ATTACH_PROVIDER_TOOL_NAME, BUILTIN_PROVIDER_ID, LIST_PROVIDERS_TOOL_NAME,
+    READ_SKILL_TOOL_NAME, ToolProviderRegistry,
 };
 use crate::tool::{
     AttachedTool, PolicyDecision, ToolExecutionResult, ToolPolicy, ToolProviderKind, ToolSchemaName,
@@ -32,6 +34,7 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
     tools: &ToolProviderRegistry,
+    plugin_catalog: Option<&PluginCatalog>,
     events: &impl RuntimeEventSink,
 ) -> Result<AutomaticToolResolution> {
     let messages = load_path_at_head(store, conversation_id, head_message_id.as_ref())?;
@@ -68,6 +71,7 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
                 &pending,
                 attached_tool.as_ref(),
                 tools,
+                plugin_catalog,
             )
             .await?
         }
@@ -205,9 +209,35 @@ pub(crate) async fn execute_pending_tool_call(
     attached_tool: &AttachedTool,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolExecutionResult> {
+    execute_pending_tool_call_with_catalog(
+        store,
+        conversation_id,
+        pending,
+        attached_tool,
+        registry,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn execute_pending_tool_call_with_catalog(
+    store: &mut Store,
+    conversation_id: &ConversationId,
+    pending: &PendingToolCall,
+    attached_tool: &AttachedTool,
+    registry: &ToolProviderRegistry,
+    plugin_catalog: Option<&PluginCatalog>,
+) -> Result<ToolExecutionResult> {
     if attached_tool.provider.kind == ToolProviderKind::Builtin {
-        return execute_builtin_tool_call(store, conversation_id, pending, attached_tool, registry)
-            .await;
+        return execute_builtin_tool_call(
+            store,
+            conversation_id,
+            pending,
+            attached_tool,
+            registry,
+            plugin_catalog,
+        )
+        .await;
     }
 
     registry.call_tool(attached_tool, &pending.tool_call).await
@@ -219,6 +249,7 @@ pub(crate) async fn execute_provider_tool_call(
     pending: &PendingToolCall,
     attached_tool: Option<&AttachedTool>,
     registry: &ToolProviderRegistry,
+    plugin_catalog: Option<&PluginCatalog>,
 ) -> Result<ToolExecutionResult> {
     let Some(attached_tool) = attached_tool else {
         return Err(error::invalid_request(format!(
@@ -227,7 +258,15 @@ pub(crate) async fn execute_provider_tool_call(
         )));
     };
 
-    execute_pending_tool_call(store, conversation_id, pending, attached_tool, registry).await
+    execute_pending_tool_call_with_catalog(
+        store,
+        conversation_id,
+        pending,
+        attached_tool,
+        registry,
+        plugin_catalog,
+    )
+    .await
 }
 
 pub(crate) fn deny_pending_tool_call(pending: &PendingToolCall) -> ToolExecutionResult {
@@ -319,6 +358,7 @@ async fn execute_builtin_tool_call(
     pending: &PendingToolCall,
     attached_tool: &AttachedTool,
     registry: &ToolProviderRegistry,
+    plugin_catalog: Option<&PluginCatalog>,
 ) -> Result<ToolExecutionResult> {
     if attached_tool.provider.provider_id.as_str() != BUILTIN_PROVIDER_ID {
         return Ok(ToolExecutionResult::failure(
@@ -382,12 +422,95 @@ async fn execute_builtin_tool_call(
                 error.to_string(),
             ))
         }
+        READ_SKILL_TOOL_NAME => {
+            let arguments = match parse_builtin_arguments(pending) {
+                Ok(arguments) => arguments,
+                Err(error) => return Ok(builtin_failure(pending, &error.to_string())),
+            };
+            let Some(plugin_id) = arguments.get("plugin_id").and_then(Value::as_str) else {
+                return Ok(builtin_failure(pending, "plugin_id is required"));
+            };
+            let Some(skill_id) = arguments.get("skill_id").and_then(Value::as_str) else {
+                return Ok(builtin_failure(pending, "skill_id is required"));
+            };
+            let Some(plugin_catalog) = plugin_catalog else {
+                return Ok(builtin_failure(pending, "plugin catalog is unavailable"));
+            };
+            match plugin_catalog.read_skill(plugin_id, skill_id) {
+                Ok(instructions) => Ok(ToolExecutionResult {
+                    tool_call_id: pending.tool_call.id.clone(),
+                    tool_name: pending.tool_call.name().to_string(),
+                    content: instructions,
+                    parts: Vec::new(),
+                    success: true,
+                }),
+                Err(error) => Ok(builtin_failure(pending, &error.to_string())),
+            }
+        }
+        ATTACH_MCP_TOOL_NAME => {
+            let arguments = match parse_builtin_arguments(pending) {
+                Ok(arguments) => arguments,
+                Err(error) => return Ok(builtin_failure(pending, &error.to_string())),
+            };
+            let Some(plugin_id) = arguments.get("plugin_id").and_then(Value::as_str) else {
+                return Ok(builtin_failure(pending, "plugin_id is required"));
+            };
+            let Some(mcp_id) = arguments.get("mcp_id").and_then(Value::as_str) else {
+                return Ok(builtin_failure(pending, "mcp_id is required"));
+            };
+            let Some(plugin_catalog) = plugin_catalog else {
+                return Ok(builtin_failure(pending, "plugin catalog is unavailable"));
+            };
+            let Some(plugin) = plugin_catalog.plugin_store().installed_plugin(plugin_id)? else {
+                return Ok(builtin_failure(
+                    pending,
+                    &format!("installed plugin does not exist: {plugin_id}"),
+                ));
+            };
+            let is_mcp = plugin.manifest.components.iter().any(|component| {
+                component.kind == crate::plugin::PluginComponentKind::Mcp && component.id == mcp_id
+            });
+            if !is_mcp {
+                return Ok(builtin_failure(
+                    pending,
+                    &format!("MCP does not exist in plugin: {plugin_id}/{mcp_id}"),
+                ));
+            }
+            match attach_provider_to_conversation(
+                store,
+                conversation_id,
+                &crate::tool::ToolProviderId::new(mcp_id),
+                registry,
+            ) {
+                Ok(()) => Ok(ToolExecutionResult {
+                    tool_call_id: pending.tool_call.id.clone(),
+                    tool_name: pending.tool_call.name().to_string(),
+                    content: "MCP attached; its tools are available on the next turn".to_string(),
+                    parts: Vec::new(),
+                    success: true,
+                }),
+                Err(error) => Ok(builtin_failure(pending, &error.to_string())),
+            }
+        }
         _ => Ok(ToolExecutionResult::failure(
             pending.tool_call.id.clone(),
             pending.tool_call.name(),
             "unknown built-in tool",
         )),
     }
+}
+
+fn parse_builtin_arguments(pending: &PendingToolCall) -> Result<Value> {
+    serde_json::from_str::<Value>(pending.tool_call.arguments())
+        .map_err(|error| error::invalid_request(format!("invalid tool arguments: {error}")))
+}
+
+fn builtin_failure(pending: &PendingToolCall, message: &str) -> ToolExecutionResult {
+    ToolExecutionResult::failure(
+        pending.tool_call.id.clone(),
+        pending.tool_call.name(),
+        message,
+    )
 }
 
 /// Formats the attachable provider list exactly as model-facing plain text.

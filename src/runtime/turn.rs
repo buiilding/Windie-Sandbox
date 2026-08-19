@@ -11,6 +11,7 @@ use crate::conversation::{ConversationId, Message, MessageId, Role};
 use crate::error;
 use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
+use crate::plugin::PluginCatalog;
 use crate::runtime::context::{ContextBuilder, ModelContext};
 use crate::store::Store;
 use crate::tool::ToolProviderRegistry;
@@ -45,11 +46,12 @@ where
         events,
     )?;
 
-    let model_context = build_model_context(
+    let model_context = build_model_context_with_catalog(
         store,
         input.conversation_id,
         head_message_id.as_ref(),
         input.tools,
+        input.plugin_catalog,
     )?;
 
     let assistant_response =
@@ -108,6 +110,7 @@ where
             input.conversation_id,
             &mut head_message_id,
             input.tools,
+            input.plugin_catalog,
             events,
         )
         .await?
@@ -126,6 +129,7 @@ where
                     conversation_id: input.conversation_id,
                     head_message_id: head_message_id.as_ref(),
                     tools: input.tools,
+                    plugin_catalog: input.plugin_catalog,
                     model_request: input.model_request,
                 };
                 let message = advance_turn(output, llm, store, turn_input, events).await?;
@@ -279,7 +283,31 @@ pub(crate) fn build_model_context(
     head_message_id: Option<&MessageId>,
     registry: &ToolProviderRegistry,
 ) -> Result<ModelContext> {
+    build_model_context_with_catalog(store, conversation_id, head_message_id, registry, None)
+}
+
+pub(crate) fn build_model_context_with_catalog(
+    store: &Store,
+    conversation_id: &ConversationId,
+    head_message_id: Option<&MessageId>,
+    registry: &ToolProviderRegistry,
+    plugin_catalog: Option<&PluginCatalog>,
+) -> Result<ModelContext> {
     let mut context = ContextBuilder::build_model_context(store, conversation_id, head_message_id)?;
+    if let Some(plugin_catalog) = plugin_catalog {
+        let index = plugin_catalog.compact_index(store, registry)?;
+        context.messages.insert(
+            0,
+            Message {
+                id: None,
+                parent_message_id: None,
+                role: Role::System,
+                content: format!("Windie plugin index:\n\n{index}"),
+                parts: Vec::new(),
+                metadata: None,
+            },
+        );
+    }
     let mut names = context
         .tool_schemas
         .iter()
