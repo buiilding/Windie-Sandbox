@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Simplified the Inspector plugin detail page by hiding component lifecycle
+  controls and redundant installation/version labels while preserving backend
+  plugin installation behavior.
 - Added the unified model-facing plugin index. Each turn now derives installed
   plugin metadata from local packages, available plugin metadata from the
   marketplace snapshot, and nested MCP lifecycle state from SQLite without
