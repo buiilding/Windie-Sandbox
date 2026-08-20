@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Allowed the hosted Inspector at `app.windieos.com` to call Windie's local
+  loopback API for the no-login browser-connection experiment, and added
+  Vercel deployment configuration for the Inspector frontend.
 - Added durable tray notifications for final assistant responses. The tray
   observes only replayable `session.completed` events, persists its cursor,
   shows a safe preview of the canonical final assistant text, and does not

@@ -13,13 +13,17 @@ pub(super) fn router(state: ApiState) -> Router {
 /// Builds the unauthenticated localhost `/api/*` route table.
 ///
 /// CORS stays scoped to the API so the standalone Inspector and browser clients
-/// served from webpack dev servers (ports 3000/5173) can call localhost.
+/// served from webpack dev servers (ports 3000/5173) or the hosted Inspector
+/// can call localhost. The hosted origin is deliberately exact: this
+/// unauthenticated experiment must not grant every website access to a user's
+/// local Windie runtime.
 fn api_router(state: ApiState) -> Router {
     let mut origins = vec![
         HeaderValue::from_static("http://localhost:3000"),
         HeaderValue::from_static("http://127.0.0.1:3000"),
         HeaderValue::from_static("http://localhost:5173"),
         HeaderValue::from_static("http://127.0.0.1:5173"),
+        HeaderValue::from_static("https://app.windieos.com"),
     ];
     if let Ok(origin) =
         HeaderValue::try_from(format!("http://{}", crate::config::inspector_address()))
