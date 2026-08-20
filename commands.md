@@ -49,6 +49,18 @@ Show version.
 
 Use this to print the package version compiled into the binary.
 
+## Installed runtime lifecycle
+
+The installer starts the simple Windie tray controller along with Bifrost, the
+Windie API, and the standalone Inspector as independent local processes. The
+tray invokes these CLI lifecycle commands:
+
+```text
+windie gateway start|stop|output
+windie api start|stop|output
+windie inspector start|stop|output
+```
+
 ## Developer API
 
 ```text

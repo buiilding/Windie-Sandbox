@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Moved installed-runtime lifecycle instructions from the README into the CLI
+  command reference and clarified how to invoke the development CLI from a
+  checkout.
 - Added a complete `Backend.md` inventory for every Rust source file and
   corrected stale module-boundary references.
 - Clarified that the generated plugin capability index is separate runtime

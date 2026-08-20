@@ -31,26 +31,36 @@ On Windows PowerShell:
 irm https://windieos.com/install.ps1 | iex
 ```
 
-The installer starts the simple Windie tray controller along with Bifrost, the
-Windie API, and the standalone Inspector as independent local processes. The
-tray invokes these CLI lifecycle commands:
-
-```bash
-windie gateway start|stop|output
-windie api start|stop|output
-windie inspector start|stop|output
-```
-
 ## Repository development workflow
 
-The public `windie` binary is the only CLI. Repository development, release
-packaging, marketplace work, and benchmarks use its command groups:
+The public `windie` binary is the only CLI.
+
+From the repository root, run:
 
 ```bash
-cargo run --bin windie -- dev up                 # build/start gateway and API, HMR Inspector
+cargo run --bin windie -- dev up
+```
+
+That starts the development gateway, API, and hot-reloading Inspector.
+
+Useful companions:
+
+```bash
 cargo run --bin windie -- dev status
 cargo run --bin windie -- dev down
+cargo run --bin windie -- dev run api
+```
 
+For any normal CLI command during development, use the same pattern:
+
+```bash
+cargo run --bin windie -- status
+cargo run --bin windie -- bench
+```
+
+For release packaging:
+
+```bash
 cargo run --bin windie -- release build
 cargo run --bin windie -- release install
 cargo run --bin windie -- release verify
