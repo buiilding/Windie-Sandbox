@@ -203,28 +203,6 @@ fn build_local_marketplace() -> Result<PathBuf> {
         .into_iter()
         .collect();
 
-    let fixture_root = root.join("packages/local-mcp-fixture");
-    let fixture = InstalledPlugin::load(&fixture_root)?;
-    let fixture_release_root = output_root.join("plugins/local-mcp-fixture/1.0.0");
-    fs::create_dir_all(&fixture_release_root)?;
-    fs::copy(
-        fixture_root.join("plugin.json"),
-        fixture_release_root.join("plugin.json"),
-    )?;
-    let fixture_archive_path = fixture_release_root.join("local-mcp-fixture-1.0.0.tar.gz");
-    let fixture_archive = package_archive(&fixture_root)?;
-    fs::write(&fixture_archive_path, &fixture_archive)?;
-    let fixture_digest = format!("sha256:{:x}", Sha256::digest(&fixture_archive));
-    let fixture_capabilities: Vec<String> = fixture
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
     let desktop_root = root.join("packages/desktop-commander");
     let desktop = InstalledPlugin::load(&desktop_root)?;
     let desktop_release_root = output_root.join("plugins/desktop-commander/0.2.47");
@@ -359,7 +337,6 @@ fn build_local_marketplace() -> Result<PathBuf> {
 
     for (package_root, release_root, package) in [
         (&package_root, &release_root, &package),
-        (&fixture_root, &fixture_release_root, &fixture),
         (&desktop_root, &desktop_release_root, &desktop),
         (
             &basic_memory_root,
@@ -397,29 +374,6 @@ fn build_local_marketplace() -> Result<PathBuf> {
                         .to_string(),
                     digest,
                     publisher: package.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-            MarketplacePlugin {
-                id: fixture.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: fixture.manifest.plugin.version.clone(),
-                    components: fixture
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: fixture_capabilities,
-                    presentation: Some(marketplace_presentation(
-                        &fixture,
-                        "plugins/local-mcp-fixture/1.0.0",
-                    )),
-                    manifest_url: "plugins/local-mcp-fixture/1.0.0/plugin.json".to_string(),
-                    artifact_url: "plugins/local-mcp-fixture/1.0.0/local-mcp-fixture-1.0.0.tar.gz"
-                        .to_string(),
-                    digest: fixture_digest,
-                    publisher: fixture.manifest.plugin.publisher.clone(),
                     status: "verified".to_string(),
                 }],
             },
@@ -568,7 +522,6 @@ fn build_local_marketplace() -> Result<PathBuf> {
     println!("local marketplace built at {}", output_root.display());
     println!("index: {}", output_root.join("index.json").display());
     println!("artifact: {}", archive_path.display());
-    println!("fixture artifact: {}", fixture_archive_path.display());
     println!(
         "desktop commander artifact: {}",
         desktop_archive_path.display()

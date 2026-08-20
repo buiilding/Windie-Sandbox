@@ -7,6 +7,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Excluded the `local-mcp-fixture` test package from generated marketplace
+  releases while retaining it for package-installation tests.
 - Moved installed-runtime lifecycle instructions from the README into the CLI
   command reference and clarified how to invoke the development CLI from a
   checkout.
