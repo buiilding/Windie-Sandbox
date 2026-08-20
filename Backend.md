@@ -132,7 +132,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
   gracefully. It is an independent Cargo package, not a Windie runtime target.
 - local/tray.rs: macOS/Windows tray presentation component that polls local component health, requests explicit single-component lifecycle operations, and starts the notification observer.
 - local/session_event_observer.rs: reconnecting aggregate session-completion SSE observer that persists the last displayed cursor and forwards a preview of only canonical final durable assistant responses to the tray.
-- local/tray_notification.rs: native notification presenter plus the development-only tray SSE probe; the probe never touches durable session state.
+- local/tray_notification.rs: native notification presenter plus the development-only tray SSE probe. Bundled macOS tray notifications open the durable session's hosted Inspector URL; the probe never touches durable session state.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers
@@ -188,7 +188,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - local/: user-local Windie environment setup.
 - local/mod.rs: Public boundary and re-exports for local folder.
-- local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, and temporary compatibility dependency installs.
+- local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, temporary compatibility dependency installs, and exact release-owned tray-bundle removal during uninstall.
 - local/process.rs: local Windie process lifecycle, PID files, logs, and shutdown.
 - local/tray.rs: local desktop tray lifecycle, health polling, and notification-observer startup.
 - local/session_event_observer.rs: durable final-session-completion observer with a persisted tray cursor and native-text preview boundary.

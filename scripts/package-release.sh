@@ -15,6 +15,7 @@
 #
 # Tarball layout consumed by install.sh:
 #   windie            CLI + API server
+#   Windie Tray.app   macOS-native notification host (macOS releases only)
 #   bifrost           owned Bifrost gateway binary (sibling of `windie`)
 #   windie-inspector  standalone Inspector server
 #   release-manifest.txt  target/version metadata for installer diagnostics
@@ -136,6 +137,33 @@ echo "==> assembling tarball"
 install -m 0755 "$WINDIE_BIN" "$STAGING_DIR/windie"
 install -m 0755 "$BIFROST_BIN" "$STAGING_DIR/bifrost"
 install -m 0755 "$INSPECTOR_BIN" "$STAGING_DIR/windie-inspector"
+TRAY_BUNDLE_NAME="Windie Tray.app"
+RELEASE_CONTENTS="windie,bifrost,windie-inspector"
+if [ "$RELEASE_OS" = "macos" ]; then
+  tray_bundle="$STAGING_DIR/$TRAY_BUNDLE_NAME"
+  mkdir -p "$tray_bundle/Contents/MacOS"
+  install -m 0755 "$WINDIE_BIN" "$tray_bundle/Contents/MacOS/windie"
+  cat > "$tray_bundle/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>windie</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.windieos.tray</string>
+  <key>CFBundleName</key>
+  <string>Windie Tray</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$VERSION</string>
+</dict>
+</plist>
+EOF
+  codesign --force --sign - "$tray_bundle"
+  RELEASE_CONTENTS="$RELEASE_CONTENTS,$TRAY_BUNDLE_NAME"
+fi
 cat > "$STAGING_DIR/release-manifest.txt" <<EOF
 windie_version=$VERSION
 bifrost_version=$BIFROST_VERSION
@@ -144,7 +172,7 @@ rust_target=$RUST_TARGET
 os=$RELEASE_OS
 cpu=$RELEASE_CPU
 inspector_commit=$(git -C "$INSPECTOR_REPO_DIR" rev-parse HEAD)
-contents=windie,bifrost,windie-inspector
+contents=$RELEASE_CONTENTS
 EOF
 
 "$WINDIE_BIN" --version >/dev/null
@@ -152,7 +180,11 @@ EOF
 
 mkdir -p "$DIST_DIR"
 TARBALL="$DIST_DIR/windie-$ASSET_LABEL.tar.gz"
-tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector release-manifest.txt
+if [ "$RELEASE_OS" = "macos" ]; then
+  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector "$TRAY_BUNDLE_NAME" release-manifest.txt
+else
+  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector release-manifest.txt
+fi
 sha256sum "$TARBALL" > "$TARBALL.sha256"
 
 echo "==> wrote $TARBALL"

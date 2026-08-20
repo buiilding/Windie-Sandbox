@@ -112,13 +112,39 @@ pub fn start_inspector() -> Result<ProcessReport> {
 /// component.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn start_tray() -> Result<ProcessReport> {
-    let executable = env::current_exe().context("failed to locate the Windie executable")?;
+    let executable = tray_executable()?;
     start_detached(
         ManagedComponent::Tray,
         &executable,
         &["tray", "run"],
         &executable,
     )
+}
+
+/// Resolves the tray executable for one supported desktop platform.
+///
+/// Installed macOS releases include the same binary inside `Windie Tray.app`.
+/// Launching that copy gives `UNUserNotificationCenter` the application bundle
+/// identity required for reliable notification click callbacks. Checkout and
+/// development runs intentionally fall back to the current unbundled binary.
+#[cfg(target_os = "macos")]
+fn tray_executable() -> Result<PathBuf> {
+    let current = env::current_exe().context("failed to locate the Windie executable")?;
+    let directory = current
+        .parent()
+        .ok_or_else(|| anyhow!("Windie executable has no parent directory"))?;
+    let bundled_tray = directory.join("Windie Tray.app/Contents/MacOS/windie");
+    if bundled_tray.is_file() {
+        Ok(bundled_tray)
+    } else {
+        Ok(current)
+    }
+}
+
+/// Windows does not use the macOS application-bundle notification boundary.
+#[cfg(target_os = "windows")]
+fn tray_executable() -> Result<PathBuf> {
+    env::current_exe().context("failed to locate the Windie executable")
 }
 
 /// Reports that the native tray is unavailable on platforms without a tray

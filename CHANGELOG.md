@@ -7,6 +7,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added canonical hosted Inspector session URLs and macOS tray notification
+  click-through for completed responses in installed app-bundle releases.
 - Added a durable per-session Keep awake toggle in Inspector. Enabled sessions
   run the normal runtime after 30 minutes without user activity, receive the
   configured open-ended wakeup prompt, and repeat 30 minutes after each idle

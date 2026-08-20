@@ -33,6 +33,7 @@ struct CompletionCursorResponse {
 #[derive(Debug, Deserialize)]
 /// Minimal aggregate event projection required to show a final response.
 struct CompletionEventData {
+    session_id: String,
     message: Option<CompletionMessage>,
 }
 
@@ -101,10 +102,13 @@ fn observe_completed_sessions(cursor: &mut i64, stopping: &AtomicBool) -> Result
                 && let Some(id) = event_id.filter(|id| *id > *cursor)
             {
                 let content = data.join("\n");
-                match completion_notification_body(&content) {
-                    Some(body) => {
+                match completion_notification(&content) {
+                    Some(notification) => {
                         eprintln!("windie tray: received final assistant response");
-                        crate::local::tray_notification::show_assistant_completed(&body)?;
+                        crate::local::tray_notification::show_assistant_completed(
+                            &notification.body,
+                            &notification.session_id,
+                        )?;
                         save_completion_cursor(id)?;
                         *cursor = id;
                     }
@@ -180,14 +184,24 @@ fn completion_stream_path(cursor: i64) -> String {
     format!("/api/events?after={cursor}&kind=completed")
 }
 
-/// Extracts an OS-notification-safe preview from a completed event.
+/// One presentable completion notification with its durable session identity.
+struct CompletionNotification {
+    session_id: crate::session::SessionId,
+    body: String,
+}
+
+/// Extracts an OS-notification-safe preview and durable session identity from
+/// a completed event.
 ///
 /// Native notification centres truncate long text inconsistently. Normalizing
 /// whitespace and applying one explicit Unicode-safe limit keeps the tray
 /// surface readable while preserving the beginning of the actual response.
-fn completion_notification_body(event_data: &str) -> Option<String> {
+fn completion_notification(event_data: &str) -> Option<CompletionNotification> {
     let event = serde_json::from_str::<CompletionEventData>(event_data).ok()?;
-    notification_preview(&event.message?.content)
+    Some(CompletionNotification {
+        session_id: crate::session::SessionId::new(event.session_id),
+        body: notification_preview(&event.message?.content)?,
+    })
 }
 
 /// Produces the native notification body for one final assistant response.
@@ -337,19 +351,24 @@ mod tests {
     }
 
     #[test]
-    fn completion_notification_body_uses_the_projected_final_text() {
-        let body =
-            completion_notification_body(r#"{"message":{"content":"Final answer\nwith details"}}"#);
+    fn completion_notification_uses_the_projected_final_text_and_session() {
+        let notification = completion_notification(
+            r#"{"session_id":"session-123","message":{"content":"Final answer\nwith details"}}"#,
+        )
+        .unwrap();
 
-        assert_eq!(body.as_deref(), Some("Final answer with details"));
+        assert_eq!(notification.session_id.as_str(), "session-123");
+        assert_eq!(notification.body, "Final answer with details");
     }
 
     #[test]
     fn completion_notification_body_rejects_missing_or_empty_text() {
-        assert_eq!(completion_notification_body(r#"{}"#), None);
-        assert_eq!(
-            completion_notification_body(r#"{"message":{"content":" \n\t "}}"#),
-            None
+        assert!(completion_notification(r#"{}"#).is_none());
+        assert!(
+            completion_notification(
+                r#"{"session_id":"session-123","message":{"content":" \n\t "}}"#
+            )
+            .is_none()
         );
     }
 

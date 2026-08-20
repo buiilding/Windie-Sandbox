@@ -20,9 +20,12 @@ renders them.
   tree sidebar, chat panel, and optional inspector overlay. It also owns the
   first-run provider onboarding check and the persisted tree-panel toggle.
 
-There is currently one main browser route. Routing is kept at the application
-boundary so additional inspector pages can be added without moving runtime
-logic into components.
+The Inspector has a workspace route at `/` and an addressable session route at
+`/sessions/:sessionId`. The session route asks the local API for the durable
+session record before selecting its owning conversation, so browser state never
+guesses session ownership. Routing remains at the application boundary so
+additional Inspector pages can be added without moving runtime logic into
+components.
 
 ## Complete frontend code map
 

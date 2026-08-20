@@ -67,6 +67,12 @@ actual final assistant text (up to 240 characters), never a tool call or tool
 result; the cursor is stored locally so a reconnect does not repeat
 notifications already shown.
 
+Installed macOS releases run the tray from `Windie Tray.app`, so clicking a
+completed-response notification opens the exact hosted Inspector session at
+`https://app.windieos.com/sessions/<session-id>`. A checkout's `cargo run ...
+dev run tray` remains intentionally unbundled: it can show the development
+notification but cannot receive an operating-system notification click callback.
+
 For any normal CLI command during development, use the same pattern:
 
 ```bash

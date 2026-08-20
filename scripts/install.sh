@@ -163,7 +163,7 @@ ui_url="http://$inspector_address"
 case "$os" in
   darwin)
     open "$ui_url" >/dev/null 2>&1 || true
-    nohup "$install_dir/windie" tray >/dev/null 2>&1 </dev/null &
+    "$install_dir/windie" tray start >/dev/null 2>&1
     echo "Click on the tray on your desktop to manage these processes."
     ;;
   linux)
@@ -175,7 +175,7 @@ case "$os" in
 esac
 
 echo "windie installed at $install_dir/windie"
-echo "Windie tray available as: $install_dir/windie tray"
+echo "Windie tray available as: $install_dir/windie tray start|stop|output"
 echo "bundled Bifrost installed at $install_dir/bifrost"
 echo "Inspector installed at $install_dir/windie-inspector"
 echo "Windie home ready at $windie_home"

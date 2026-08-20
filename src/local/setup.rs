@@ -105,6 +105,7 @@ pub struct UninstallPlan {
     pub windie_home: PathBuf,
     pub install_dir: PathBuf,
     pub binaries: Vec<PathBuf>,
+    pub owned_directories: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +113,7 @@ pub struct UninstallPlan {
 pub struct UninstallCleanup {
     pub removed_data: bool,
     pub removed_binaries: Vec<PathBuf>,
+    pub removed_directories: Vec<PathBuf>,
     pub deferred_binaries: Vec<PathBuf>,
     pub cleanup_scheduled: bool,
 }
@@ -181,9 +183,10 @@ pub(crate) fn existing_component_pid_file_path(
 
 /// Returns the exact Windie-owned paths that uninstall may remove.
 ///
-/// The data root is the only recursive target. Installed binaries are always
-/// individual files inside the configured install directory; the directory
-/// itself is never removed because it may contain unrelated user programs.
+/// The data root and a named, release-owned macOS tray bundle are the only
+/// recursive targets. Installed binaries remain individual files inside the
+/// configured install directory; the directory itself is never removed because
+/// it may contain unrelated user programs.
 pub fn uninstall_plan() -> Result<UninstallPlan> {
     let user_home = absolute_path(&user_home_dir()?)?;
     let windie_home = absolute_path(&windie_home_dir()?)?;
@@ -197,6 +200,7 @@ pub fn uninstall_plan() -> Result<UninstallPlan> {
             .into_iter()
             .map(|name| install_dir.join(executable_name(name)))
             .collect(),
+        owned_directories: owned_install_directories(&install_dir),
     })
 }
 
@@ -227,6 +231,13 @@ pub fn remove_uninstall_plan(plan: &UninstallPlan) -> Result<UninstallCleanup> {
         }
         if let Some(removed) = remove_owned_file(path)? {
             removed_binaries.push(removed);
+        }
+    }
+
+    let mut removed_directories = Vec::new();
+    for path in &plan.owned_directories {
+        if let Some(removed) = remove_owned_directory(path)? {
+            removed_directories.push(removed);
         }
     }
 
@@ -264,6 +275,7 @@ pub fn remove_uninstall_plan(plan: &UninstallPlan) -> Result<UninstallCleanup> {
     Ok(UninstallCleanup {
         removed_data,
         removed_binaries,
+        removed_directories,
         deferred_binaries,
         cleanup_scheduled,
     })
@@ -499,6 +511,11 @@ fn validate_uninstall_plan(plan: &UninstallPlan, user_home: &Path) -> Result<()>
             "refusing to uninstall: plan contains paths outside Windie's owned binaries"
         ));
     }
+    if plan.owned_directories != owned_install_directories(&plan.install_dir) {
+        return Err(anyhow!(
+            "refusing to uninstall: plan contains paths outside Windie's owned directories"
+        ));
+    }
     Ok(())
 }
 
@@ -527,6 +544,25 @@ fn remove_owned_file(path: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(path.to_path_buf()))
 }
 
+/// Removes one exact release-owned directory without following symlinks.
+fn remove_owned_directory(path: &Path) -> Result<Option<PathBuf>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(anyhow!(
+            "refusing to recursively remove non-directory Windie-owned path {}",
+            path.display()
+        ));
+    }
+    fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
 /// Refuses to recursively remove a symlink in place of Windie's data root.
 fn ensure_owned_directory(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
@@ -546,6 +582,20 @@ fn executable_name(name: &str) -> String {
         format!("{name}.exe")
     } else {
         name.to_string()
+    }
+}
+
+/// Returns the named release directories Windie is allowed to remove.
+fn owned_install_directories(install_dir: &Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return vec![install_dir.join("Windie Tray.app")];
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = install_dir;
+        Vec::new()
     }
 }
 
@@ -704,6 +754,12 @@ mod tests {
         fs::write(&windie_binary, "owned").unwrap();
         fs::write(&unrelated_file, "preserve").unwrap();
 
+        let owned_directories = owned_install_directories(&install_dir);
+        for directory in &owned_directories {
+            fs::create_dir_all(directory).unwrap();
+            fs::write(directory.join("owned"), "owned").unwrap();
+        }
+
         let binaries = ["windie", "bifrost", "windie-inspector"]
             .into_iter()
             .map(|name| install_dir.join(executable_name(name)))
@@ -712,12 +768,19 @@ mod tests {
             windie_home: windie_home.clone(),
             install_dir: install_dir.clone(),
             binaries,
+            owned_directories: owned_directories.clone(),
         };
         let cleanup = remove_uninstall_plan(&plan).unwrap();
 
         assert!(cleanup.removed_data);
         assert!(!windie_home.exists());
         assert!(!windie_binary.exists());
+        assert!(
+            owned_directories
+                .iter()
+                .all(|directory| !directory.exists())
+        );
+        assert_eq!(cleanup.removed_directories, owned_directories);
         assert!(unrelated_file.exists());
         assert!(install_dir.exists());
         fs::remove_dir_all(root).unwrap();
