@@ -61,6 +61,12 @@ The response includes `tray_receivers: 1` when the tray is connected, then the
 tray shows a native `Windie — Assistant finished` notification. This probe does
 not create a conversation, session, or durable runtime event.
 
+For normal runtime work, the tray listens only for durable final
+`session.completed` events. It shows a whitespace-normalized preview of the
+actual final assistant text (up to 240 characters), never a tool call or tool
+result; the cursor is stored locally so a reconnect does not repeat
+notifications already shown.
+
 For any normal CLI command during development, use the same pattern:
 
 ```bash

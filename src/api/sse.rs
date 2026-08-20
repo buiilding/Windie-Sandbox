@@ -67,6 +67,14 @@ impl GlobalSseState {
             }
         }
     }
+
+    /// Serializes an aggregate record with the canonical final assistant text
+    /// when a completion event names one. The durable event remains the
+    /// delivery fact; this is only a read-only message projection for clients
+    /// that need to present the completion without a second request.
+    pub(super) fn event_data(&self, record: &SessionEventRecord) -> String {
+        global_event_data(&self.store, record)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +87,18 @@ struct GlobalEventEnvelope {
     session_id: String,
     created_at: i64,
     payload: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<GlobalEventMessage>,
+}
+
+#[derive(Debug, Serialize)]
+/// Minimal canonical message projection attached only to completed events.
+///
+/// Aggregate consumers need the final text for presentation, but should not
+/// receive the full Inspector-oriented message snapshot or recreate a
+/// conversation lookup themselves.
+struct GlobalEventMessage {
+    content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,9 +184,39 @@ pub(super) fn global_event_name(event: &SessionEvent) -> String {
     format!("session.{}", event.event_name())
 }
 
-/// Serializes one compact aggregate event without Inspector-specific
-/// hydration. Consumers can resolve the session when they need richer state.
-pub(super) fn global_event_data(record: &SessionEventRecord) -> String {
+/// Serializes one aggregate event and, for final completions, projects the
+/// referenced canonical assistant text from SQLite.
+///
+/// The text is not copied into the durable event log. It is loaded through the
+/// session's authoritative conversation boundary at stream-delivery time.
+pub(super) fn global_event_data(store: &Store, record: &SessionEventRecord) -> String {
+    let message = match &record.event {
+        SessionEvent::Completed {
+            message_id: Some(message_id),
+        } => store
+            .load_session(&record.session_id)
+            .ok()
+            .and_then(|session| {
+                store
+                    .load_message(&session.conversation_id, &MessageId::new(message_id))
+                    .ok()
+            })
+            .filter(|message| message.role == crate::conversation::Role::Assistant)
+            .map(|message| GlobalEventMessage {
+                content: message.content,
+            }),
+        _ => None,
+    };
+
+    serialize_global_event_data(record, message)
+}
+
+/// Builds the stable aggregate envelope after any optional read-only message
+/// projection has been resolved.
+fn serialize_global_event_data(
+    record: &SessionEventRecord,
+    message: Option<GlobalEventMessage>,
+) -> String {
     let event_type = global_event_name(&record.event);
     let mut payload = serde_json::to_value(&record.event).unwrap_or_else(|error| {
         serde_json::json!({
@@ -183,6 +233,7 @@ pub(super) fn global_event_data(record: &SessionEventRecord) -> String {
         session_id: record.session_id.as_str().to_string(),
         created_at: record.created_at,
         payload,
+        message,
     })
     .unwrap_or_else(|error| {
         serde_json::json!({

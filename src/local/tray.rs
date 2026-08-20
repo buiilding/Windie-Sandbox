@@ -327,6 +327,10 @@ mod app {
         let (status_sender, status_receiver) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         start_status_monitor(controller.clone(), status_sender, stopping.clone());
+        let _completion_observer =
+            crate::local::session_event_observer::start_completed_session_observer(
+                stopping.clone(),
+            );
         let _notification_observer =
             crate::local::tray_notification::start_test_completion_observer(stopping.clone());
 

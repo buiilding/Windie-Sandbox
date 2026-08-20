@@ -72,7 +72,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/state.rs: shared API server state passed into route handlers.
 - api/error.rs: turns internal Windie errors into HTTP JSON errors.
 - api/router.rs: localhost API routes are intentionally unauthenticated and stay bound to the loopback interface.
-- api/sse.rs: serializes replayed and live session events for HTTP streaming, hydrating state-changing events with session and message snapshots.
+- api/sse.rs: serializes replayed and live session events for HTTP streaming, hydrating state-changing events with session and message snapshots plus the canonical final assistant text on aggregate completion events.
 - api/event.rs: exposes the database-wide durable session-event cursor and
   aggregate SSE feed for clients that need to observe durable activity across
   sessions. Typed filters let narrow consumers observe selected event kinds
@@ -131,7 +131,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
   settings. Its loopback `POST /shutdown` route lets the Inspector stop itself
   gracefully. It is an independent Cargo package, not a Windie runtime target.
 - local/tray.rs: macOS/Windows tray presentation component that polls local component health, requests explicit single-component lifecycle operations, and starts the notification observer.
-- local/tray_notification.rs: reconnecting development-only tray SSE observer that turns an explicit assistant-completed probe into a native notification without touching durable session state.
+- local/session_event_observer.rs: reconnecting aggregate session-completion SSE observer that persists the last displayed cursor and forwards a preview of only canonical final durable assistant responses to the tray.
+- local/tray_notification.rs: native notification presenter plus the development-only tray SSE probe; the probe never touches durable session state.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers
@@ -190,7 +191,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, and temporary compatibility dependency installs.
 - local/process.rs: local Windie process lifecycle, PID files, logs, and shutdown.
 - local/tray.rs: local desktop tray lifecycle, health polling, and notification-observer startup.
-- local/tray_notification.rs: local native notification probe observer for the tray.
+- local/session_event_observer.rs: durable final-session-completion observer with a persisted tray cursor and native-text preview boundary.
+- local/tray_notification.rs: native notification presenter and local development probe observer.
 - managed_runtime/: downloads, verifies, extracts, and resolves managed Node.js/uv runtimes for packaged MCP components.
 - managed_runtime/mod.rs: owns shared managed runtime installation and executable resolution.
 - output/:

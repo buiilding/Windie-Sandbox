@@ -109,23 +109,43 @@ fn saved_sse_event_includes_authoritative_message_and_session_snapshots() {
 
 #[test]
 fn aggregate_event_envelope_namespaces_session_events() {
+    let db_path = temp_database_path();
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let message_id = store
+        .insert_message(
+            &conversation_id,
+            None,
+            Role::Assistant,
+            "the actual final response",
+            None,
+        )
+        .unwrap();
+    let session_id = SessionId::new("aggregate-envelope");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
     let record = SessionEventRecord {
         id: 42,
-        session_id: SessionId::new("aggregate-envelope"),
+        session_id,
         event: SessionEvent::Completed {
-            message_id: Some("assistant-message".to_string()),
+            message_id: Some(message_id.as_str().to_string()),
         },
         created_at: 1234,
     };
 
-    let body: serde_json::Value = serde_json::from_str(&global_event_data(&record)).unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(&global_event_data(&store, &record)).unwrap();
 
     assert_eq!(global_event_name(&record.event), "session.completed");
     assert_eq!(body["event_id"], 42);
     assert_eq!(body["type"], "session.completed");
     assert_eq!(body["session_id"], "aggregate-envelope");
-    assert_eq!(body["payload"]["message_id"], "assistant-message");
+    assert_eq!(body["payload"]["message_id"], message_id.as_str());
+    assert_eq!(body["message"]["content"], "the actual final response");
     assert!(body["payload"].get("type").is_none());
+
+    let _ = fs::remove_file(db_path);
 }
 
 #[tokio::test]
@@ -169,11 +189,20 @@ async fn aggregate_event_routes_replay_filtered_cross_session_events() {
             },
         )
         .unwrap();
+    let final_message_id = store
+        .insert_message(
+            &conversation_id,
+            None,
+            Role::Assistant,
+            "the notification body",
+            None,
+        )
+        .unwrap();
     let completed = store
         .append_session_event(
             &second_session_id,
             SessionEvent::Completed {
-                message_id: Some("assistant-finished".to_string()),
+                message_id: Some(final_message_id.as_str().to_string()),
             },
         )
         .unwrap();
@@ -217,7 +246,7 @@ async fn aggregate_event_routes_replay_filtered_cross_session_events() {
     let text = String::from_utf8(chunk.to_vec()).unwrap();
     assert!(text.contains("event: session.completed"));
     assert!(text.contains(second_session_id.as_str()));
-    assert!(text.contains("assistant-finished"));
+    assert!(text.contains("the notification body"));
     assert!(!text.contains("ignored by filter"));
 
     let _ = fs::remove_file(db_path);

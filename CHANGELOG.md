@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added durable tray notifications for final assistant responses. The tray
+  observes only replayable `session.completed` events, persists its cursor,
+  shows a safe preview of the canonical final assistant text, and does not
+  notify for assistant tool calls or saved tool results.
 - Added a development-only API-to-tray notification probe that leaves sessions
   and conversations untouched, allowing macOS tray notification delivery to be
   verified independently before durable completion notifications are enabled.

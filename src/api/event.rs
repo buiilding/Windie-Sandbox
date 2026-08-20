@@ -53,7 +53,7 @@ pub(super) async fn global_events(
             let sse = Event::default()
                 .id(record.id.to_string())
                 .event(&event_name)
-                .data(global_event_data(&record));
+                .data(state.event_data(&record));
 
             Some((Ok::<Event, Infallible>(sse), state))
         },
