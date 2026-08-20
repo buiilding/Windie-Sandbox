@@ -375,57 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn local_mcpb_fixture_installs_discovers_and_calls_echo() {
-        // The fixture deliberately uses the user's installed Node runtime. If
-        // Node is unavailable, the package contract can still be validated by
-        // InstalledPlugin::load, but this process-level acceptance test cannot
-        // run on that machine.
-        if crate::managed_runtime::resolve_command("node").is_err() {
-            return;
-        }
-
-        let root = std::env::temp_dir().join(format!(
-            "windie-local-mcpb-test-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let store = PluginStore::new(&root);
-        let plugin = store.install_bundled("local-mcp-fixture").unwrap();
-        let components = crate::mcp::load_components(&plugin).unwrap();
-        assert_eq!(components.len(), 1);
-        assert!(matches!(
-            components[0].transport,
-            crate::mcp::McpTransport::PackagedStdio { .. }
-        ));
-
-        let tools = crate::mcp::list_tools_with_transport(components[0].transport.clone()).unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "echo");
-
-        let result = crate::mcp::call_tool_with_transport(
-            components[0].transport.clone(),
-            "echo",
-            serde_json::json!({"text": "phase3a"}),
-        )
-        .unwrap();
-        assert_eq!(result["content"][0]["text"], "phase3a");
-
-        let registry = crate::tool::ToolProviderRegistry::new();
-        registry.register_plugin(&plugin).unwrap();
-        let provider = registry
-            .provider_manifests()
-            .into_iter()
-            .find(|manifest| manifest.provider_id.as_str() == "local-mcp-fixture")
-            .unwrap();
-        assert_eq!(provider.transport, crate::tool::ProviderTransport::Stdio);
-        assert_eq!(provider.scope, crate::tool::ProviderScope::Local);
-
-        registry.unregister_plugin(&plugin).unwrap();
-        store.remove_plugin("local-mcp-fixture").unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn desktop_commander_plugin_loads_pinned_mcpb_and_isolated_setup() {
         let root = std::env::temp_dir().join(format!(
             "windie-desktop-commander-plugin-test-{}-{}",

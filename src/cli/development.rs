@@ -44,6 +44,7 @@ pub(super) fn parse_marketplace_command(args: &[String]) -> Command {
     match args {
         [action] if action == "build" => Command::Marketplace(MarketplaceCommand::Build),
         [action] if action == "serve" => Command::Marketplace(MarketplaceCommand::Serve),
+        [action] if action == "publish" => Command::Marketplace(MarketplaceCommand::Publish),
         _ => Command::Invalid,
     }
 }

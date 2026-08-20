@@ -68,6 +68,21 @@ source ./scripts/activate_windie
 windie status
 ```
 
+For marketplace publishing, mark a package with `"marketplace": { "publish": true }`
+in its `plugin.json`, then run:
+
+```bash
+cargo run --bin windie -- marketplace build
+cargo run --bin windie -- marketplace publish
+```
+
+The build discovers opted-in packages, creates the local test catalog at
+`target/local-marketplace`, and generates its `index.json`. Publishing creates
+immutable `.tar.gz` assets in an automatically named GitHub Release, then deploys only the
+catalog, manifests, README files, and icons to Vercel. It requires authenticated
+`gh` and `vercel` CLIs and does not modify the checked-in `marketplace/index.json`
+fixture.
+
 In development, React uses HMR. The Rust API and Bifrost gateway are built
 when `windie dev run` or `windie dev up` starts them; rerun the command after
 backend source changes. The release Inspector embeds the frontend and is

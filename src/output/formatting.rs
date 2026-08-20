@@ -128,7 +128,7 @@ pub(crate) fn help_lines() -> Vec<String> {
         "  windie dev status",
         "  windie dev down",
         "  windie release build|install|verify",
-        "  windie marketplace build|serve",
+        "  windie marketplace build|serve|publish",
         "  windie bench [conversation_id] [options]",
         "  windie compare baseline [options]",
         "  windie update baseline [options]",

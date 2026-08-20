@@ -7,8 +7,12 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- Excluded the `local-mcp-fixture` test package from generated marketplace
-  releases while retaining it for package-installation tests.
+- Made marketplace releases package-owned: the build now discovers packages
+  that opt in through `plugin.json`, generates the complete catalog, and can
+  publish immutable archives to GitHub Releases before deploying the catalog
+  site to Vercel with one command and an automatically generated release tag.
+- Removed the obsolete `local-mcp-fixture` package and its package-specific
+  acceptance test.
 - Moved installed-runtime lifecycle instructions from the README into the CLI
   command reference and clarified how to invoke the development CLI from a
   checkout.

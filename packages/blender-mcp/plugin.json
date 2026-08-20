@@ -11,6 +11,7 @@
     "readme": "README.md",
     "icon": "assets/icon.svg"
   },
+  "marketplace": { "publish": true },
   "components": [
     {
       "type": "mcp",

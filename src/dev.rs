@@ -8,7 +8,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use flate2::{Compression, write::GzEncoder};
@@ -59,6 +59,7 @@ pub async fn run_marketplace(command: MarketplaceCommand) -> Result<()> {
     match command {
         MarketplaceCommand::Build => build_local_marketplace().map(|_| ()),
         MarketplaceCommand::Serve => serve_local_marketplace().await,
+        MarketplaceCommand::Publish => publish_marketplace().await,
     }
 }
 
@@ -166,377 +167,275 @@ async fn dev_down() -> Result<()> {
     Ok(())
 }
 
-/// Builds the local marketplace artifact and index used for end-to-end tests.
+/// One generated marketplace output, separated into a catalog site and archive assets.
+struct MarketplaceBuild {
+    site_root: PathBuf,
+    archives: Vec<PathBuf>,
+}
+
+/// Selects whether generated archives remain local or are served by GitHub Releases.
+enum MarketplaceArchiveSource {
+    Local,
+    GitHubRelease {
+        repository: String,
+        release_tag: String,
+    },
+}
+
+/// Builds the local marketplace catalog and archives used for end-to-end tests.
 fn build_local_marketplace() -> Result<PathBuf> {
     let root = repository_root()?;
-    let package_root = root.join("packages/parallel-search");
-    let package = InstalledPlugin::load(&package_root)?;
     let output_root = root.join("target/local-marketplace");
+    build_marketplace(&root, &output_root, &MarketplaceArchiveSource::Local)?;
+    println!("local marketplace built at {}", output_root.display());
+    println!("index: {}", output_root.join("index.json").display());
+    Ok(output_root)
+}
+
+/// Builds one static marketplace from every package that explicitly opts in through
+/// `plugin.json`. The generated index is the only catalog source; it is never
+/// edited by hand because it must match the archive digests exactly.
+fn build_marketplace(
+    root: &Path,
+    output_root: &Path,
+    archive_source: &MarketplaceArchiveSource,
+) -> Result<MarketplaceBuild> {
     if output_root.exists() {
-        fs::remove_dir_all(&output_root).with_context(|| {
+        fs::remove_dir_all(output_root).with_context(|| {
             format!(
-                "failed to replace local marketplace {}",
+                "failed to replace marketplace output {}",
                 output_root.display()
             )
         })?;
     }
 
-    let release_root = output_root.join("plugins/parallel-search/1.0.0");
-    fs::create_dir_all(&release_root)?;
-    fs::copy(
-        package_root.join("plugin.json"),
-        release_root.join("plugin.json"),
-    )?;
+    let (site_root, archive_root) = match archive_source {
+        MarketplaceArchiveSource::Local => (output_root.to_path_buf(), output_root.to_path_buf()),
+        MarketplaceArchiveSource::GitHubRelease { .. } => {
+            (output_root.join("site"), output_root.join("archives"))
+        }
+    };
+    fs::create_dir_all(&site_root)?;
+    fs::create_dir_all(&archive_root)?;
 
-    let archive_path = release_root.join("parallel-search-1.0.0.tar.gz");
-    let archive = package_archive(&package_root)?;
-    fs::write(&archive_path, &archive)?;
-    let digest = format!("sha256:{:x}", Sha256::digest(&archive));
+    let packages = discover_marketplace_packages(root)?;
+    let mut archives = Vec::with_capacity(packages.len());
+    let mut plugins = Vec::with_capacity(packages.len());
+    for package in packages {
+        let id = &package.manifest.plugin.id;
+        let version = &package.manifest.plugin.version;
+        let release_path = format!("plugins/{id}/{version}");
+        let release_root = site_root.join(&release_path);
+        fs::create_dir_all(&release_root)?;
+        fs::copy(
+            package.root.join("plugin.json"),
+            release_root.join("plugin.json"),
+        )?;
+        copy_presentation_assets(&package.root, &release_root, &package)?;
 
-    let capabilities: Vec<String> = package
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+        let archive_name = format!("{id}-{version}.tar.gz");
+        let archive = package_archive(&package.root)?;
+        let archive_path = match archive_source {
+            MarketplaceArchiveSource::Local => release_root.join(&archive_name),
+            MarketplaceArchiveSource::GitHubRelease { .. } => archive_root.join(&archive_name),
+        };
+        fs::write(&archive_path, &archive)?;
+        let digest = format!("sha256:{:x}", Sha256::digest(&archive));
+        let artifact_url = match archive_source {
+            MarketplaceArchiveSource::Local => format!("{release_path}/{archive_name}"),
+            MarketplaceArchiveSource::GitHubRelease {
+                repository,
+                release_tag,
+            } => format!(
+                "https://github.com/{repository}/releases/download/{release_tag}/{archive_name}"
+            ),
+        };
+        let capabilities = package
+            .manifest
+            .components
+            .iter()
+            .filter(|component| component.kind == PluginComponentKind::Mcp)
+            .flat_map(|component| component.windie.capabilities.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
 
-    let desktop_root = root.join("packages/desktop-commander");
-    let desktop = InstalledPlugin::load(&desktop_root)?;
-    let desktop_release_root = output_root.join("plugins/desktop-commander/0.2.47");
-    fs::create_dir_all(&desktop_release_root)?;
-    fs::copy(
-        desktop_root.join("plugin.json"),
-        desktop_release_root.join("plugin.json"),
-    )?;
-    let desktop_archive_path = desktop_release_root.join("desktop-commander-0.2.47.tar.gz");
-    let desktop_archive = package_archive(&desktop_root)?;
-    fs::write(&desktop_archive_path, &desktop_archive)?;
-    let desktop_digest = format!("sha256:{:x}", Sha256::digest(&desktop_archive));
-    let desktop_capabilities: Vec<String> = desktop
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    let basic_memory_root = root.join("packages/basic-memory");
-    let basic_memory = InstalledPlugin::load(&basic_memory_root)?;
-    let basic_memory_release_root = output_root.join("plugins/basic-memory/0.22.1");
-    fs::create_dir_all(&basic_memory_release_root)?;
-    fs::copy(
-        basic_memory_root.join("plugin.json"),
-        basic_memory_release_root.join("plugin.json"),
-    )?;
-    let basic_memory_archive_path = basic_memory_release_root.join("basic-memory-0.22.1.tar.gz");
-    let basic_memory_archive = package_archive(&basic_memory_root)?;
-    fs::write(&basic_memory_archive_path, &basic_memory_archive)?;
-    let basic_memory_digest = format!("sha256:{:x}", Sha256::digest(&basic_memory_archive));
-    let basic_memory_capabilities: Vec<String> = basic_memory
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    let blender_root = root.join("packages/blender-mcp");
-    let blender = InstalledPlugin::load(&blender_root)?;
-    let blender_release_root = output_root.join("plugins/blender-mcp/1.8.3");
-    fs::create_dir_all(&blender_release_root)?;
-    fs::copy(
-        blender_root.join("plugin.json"),
-        blender_release_root.join("plugin.json"),
-    )?;
-    let blender_archive_path = blender_release_root.join("blender-mcp-1.8.3.tar.gz");
-    let blender_archive = package_archive(&blender_root)?;
-    fs::write(&blender_archive_path, &blender_archive)?;
-    let blender_digest = format!("sha256:{:x}", Sha256::digest(&blender_archive));
-    let blender_capabilities: Vec<String> = blender
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    let chrome_root = root.join("packages/chrome-devtools");
-    let chrome = InstalledPlugin::load(&chrome_root)?;
-    let chrome_release_root = output_root.join("plugins/chrome-devtools/1.6.0");
-    fs::create_dir_all(&chrome_release_root)?;
-    fs::copy(
-        chrome_root.join("plugin.json"),
-        chrome_release_root.join("plugin.json"),
-    )?;
-    let chrome_archive_path = chrome_release_root.join("chrome-devtools-1.6.0.tar.gz");
-    let chrome_archive = package_archive(&chrome_root)?;
-    fs::write(&chrome_archive_path, &chrome_archive)?;
-    let chrome_digest = format!("sha256:{:x}", Sha256::digest(&chrome_archive));
-    let chrome_capabilities: Vec<String> = chrome
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    let brightdata_root = root.join("packages/brightdata");
-    let brightdata = InstalledPlugin::load(&brightdata_root)?;
-    let brightdata_release_root = output_root.join("plugins/brightdata/2.11.1");
-    fs::create_dir_all(&brightdata_release_root)?;
-    fs::copy(
-        brightdata_root.join("plugin.json"),
-        brightdata_release_root.join("plugin.json"),
-    )?;
-    let brightdata_archive_path = brightdata_release_root.join("brightdata-2.11.1.tar.gz");
-    let brightdata_archive = package_archive(&brightdata_root)?;
-    fs::write(&brightdata_archive_path, &brightdata_archive)?;
-    let brightdata_digest = format!("sha256:{:x}", Sha256::digest(&brightdata_archive));
-    let brightdata_capabilities: Vec<String> = brightdata
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    let cua_root = root.join("packages/cua-driver");
-    let cua = InstalledPlugin::load(&cua_root)?;
-    let cua_release_root = output_root.join("plugins/cua-driver/0.12.6");
-    fs::create_dir_all(&cua_release_root)?;
-    fs::copy(
-        cua_root.join("plugin.json"),
-        cua_release_root.join("plugin.json"),
-    )?;
-    let cua_archive_path = cua_release_root.join("cua-driver-0.12.6.tar.gz");
-    let cua_archive = package_archive(&cua_root)?;
-    fs::write(&cua_archive_path, &cua_archive)?;
-    let cua_digest = format!("sha256:{:x}", Sha256::digest(&cua_archive));
-    let cua_capabilities: Vec<String> = cua
-        .manifest
-        .components
-        .iter()
-        .filter(|component| component.kind == PluginComponentKind::Mcp)
-        .flat_map(|component| component.windie.capabilities.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-
-    for (package_root, release_root, package) in [
-        (&package_root, &release_root, &package),
-        (&desktop_root, &desktop_release_root, &desktop),
-        (
-            &basic_memory_root,
-            &basic_memory_release_root,
-            &basic_memory,
-        ),
-        (&blender_root, &blender_release_root, &blender),
-        (&chrome_root, &chrome_release_root, &chrome),
-        (&brightdata_root, &brightdata_release_root, &brightdata),
-        (&cua_root, &cua_release_root, &cua),
-    ] {
-        copy_presentation_assets(package_root, release_root, package)?;
+        plugins.push(MarketplacePlugin {
+            id: id.clone(),
+            versions: vec![MarketplaceVersion {
+                version: version.clone(),
+                components: package
+                    .manifest
+                    .components
+                    .iter()
+                    .map(|component| component.kind.to_string())
+                    .collect(),
+                capabilities,
+                presentation: Some(marketplace_presentation(&package, &release_path)),
+                manifest_url: format!("{release_path}/plugin.json"),
+                artifact_url,
+                digest,
+                publisher: package.manifest.plugin.publisher.clone(),
+                status: "verified".to_string(),
+            }],
+        });
+        archives.push(archive_path);
     }
 
     let index = MarketplaceIndex {
         index_version: 1,
-        plugins: vec![
-            MarketplacePlugin {
-                id: package.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: package.manifest.plugin.version.clone(),
-                    components: package
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: capabilities.into_iter().collect(),
-                    presentation: Some(marketplace_presentation(
-                        &package,
-                        "plugins/parallel-search/1.0.0",
-                    )),
-                    manifest_url: "plugins/parallel-search/1.0.0/plugin.json".to_string(),
-                    artifact_url: "plugins/parallel-search/1.0.0/parallel-search-1.0.0.tar.gz"
-                        .to_string(),
-                    digest,
-                    publisher: package.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-            MarketplacePlugin {
-                id: desktop.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: desktop.manifest.plugin.version.clone(),
-                    components: desktop
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: desktop_capabilities,
-                    presentation: Some(marketplace_presentation(
-                        &desktop,
-                        "plugins/desktop-commander/0.2.47",
-                    )),
-                    manifest_url: "plugins/desktop-commander/0.2.47/plugin.json".to_string(),
-                    artifact_url:
-                        "plugins/desktop-commander/0.2.47/desktop-commander-0.2.47.tar.gz"
-                            .to_string(),
-                    digest: desktop_digest,
-                    publisher: desktop.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-            MarketplacePlugin {
-                id: basic_memory.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: basic_memory.manifest.plugin.version.clone(),
-                    components: basic_memory
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: basic_memory_capabilities,
-                    presentation: Some(marketplace_presentation(
-                        &basic_memory,
-                        "plugins/basic-memory/0.22.1",
-                    )),
-                    manifest_url: "plugins/basic-memory/0.22.1/plugin.json".to_string(),
-                    artifact_url: "plugins/basic-memory/0.22.1/basic-memory-0.22.1.tar.gz"
-                        .to_string(),
-                    digest: basic_memory_digest,
-                    publisher: basic_memory.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-            MarketplacePlugin {
-                id: blender.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: blender.manifest.plugin.version.clone(),
-                    components: blender
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: blender_capabilities,
-                    presentation: Some(marketplace_presentation(
-                        &blender,
-                        "plugins/blender-mcp/1.8.3",
-                    )),
-                    manifest_url: "plugins/blender-mcp/1.8.3/plugin.json".to_string(),
-                    artifact_url: "plugins/blender-mcp/1.8.3/blender-mcp-1.8.3.tar.gz".to_string(),
-                    digest: blender_digest,
-                    publisher: blender.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-            MarketplacePlugin {
-                id: chrome.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: chrome.manifest.plugin.version.clone(),
-                    components: chrome
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: chrome_capabilities,
-                    presentation: Some(marketplace_presentation(
-                        &chrome,
-                        "plugins/chrome-devtools/1.6.0",
-                    )),
-                    manifest_url: "plugins/chrome-devtools/1.6.0/plugin.json".to_string(),
-                    artifact_url: "plugins/chrome-devtools/1.6.0/chrome-devtools-1.6.0.tar.gz"
-                        .to_string(),
-                    digest: chrome_digest,
-                    publisher: chrome.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-            MarketplacePlugin {
-                id: brightdata.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: brightdata.manifest.plugin.version.clone(),
-                    components: brightdata
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: brightdata_capabilities,
-                    presentation: Some(marketplace_presentation(
-                        &brightdata,
-                        "plugins/brightdata/2.11.1",
-                    )),
-                    manifest_url: "plugins/brightdata/2.11.1/plugin.json".to_string(),
-                    artifact_url: "plugins/brightdata/2.11.1/brightdata-2.11.1.tar.gz".to_string(),
-                    digest: brightdata_digest,
-                    publisher: brightdata.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-            MarketplacePlugin {
-                id: cua.manifest.plugin.id.clone(),
-                versions: vec![MarketplaceVersion {
-                    version: cua.manifest.plugin.version.clone(),
-                    components: cua
-                        .manifest
-                        .components
-                        .iter()
-                        .map(|component| component.kind.to_string())
-                        .collect(),
-                    capabilities: cua_capabilities,
-                    presentation: Some(marketplace_presentation(&cua, "plugins/cua-driver/0.12.6")),
-                    manifest_url: "plugins/cua-driver/0.12.6/plugin.json".to_string(),
-                    artifact_url: "plugins/cua-driver/0.12.6/cua-driver-0.12.6.tar.gz".to_string(),
-                    digest: cua_digest,
-                    publisher: cua.manifest.plugin.publisher.clone(),
-                    status: "verified".to_string(),
-                }],
-            },
-        ],
+        plugins,
     };
     index.validate()?;
-    fs::create_dir_all(&output_root)?;
     fs::write(
-        output_root.join("index.json"),
+        site_root.join("index.json"),
         serde_json::to_vec_pretty(&index)?,
     )?;
 
-    println!("local marketplace built at {}", output_root.display());
-    println!("index: {}", output_root.join("index.json").display());
-    println!("artifact: {}", archive_path.display());
-    println!(
-        "desktop commander artifact: {}",
-        desktop_archive_path.display()
-    );
-    println!(
-        "basic memory artifact: {}",
-        basic_memory_archive_path.display()
-    );
-    println!("blender MCP artifact: {}", blender_archive_path.display());
-    println!(
-        "Chrome DevTools artifact: {}",
-        chrome_archive_path.display()
-    );
-    println!("CUA Driver artifact: {}", cua_archive_path.display());
-    Ok(output_root)
+    Ok(MarketplaceBuild {
+        site_root,
+        archives,
+    })
+}
+
+/// Loads only package directories that explicitly opt into marketplace publishing.
+/// Sorting by plugin ID keeps generated indexes deterministic across filesystems.
+fn discover_marketplace_packages(root: &Path) -> Result<Vec<InstalledPlugin>> {
+    let packages_root = root.join("packages");
+    let mut packages = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    for entry in fs::read_dir(&packages_root).with_context(|| {
+        format!(
+            "failed to read package directory {}",
+            packages_root.display()
+        )
+    })? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let package_root = entry.path();
+        if !package_root.join("plugin.json").is_file() {
+            continue;
+        }
+        let package = InstalledPlugin::load(&package_root)?;
+        if !package.manifest.marketplace.publish {
+            continue;
+        }
+        if !ids.insert(package.manifest.plugin.id.clone()) {
+            bail!(
+                "marketplace contains duplicate plugin id: {}",
+                package.manifest.plugin.id
+            );
+        }
+        packages.push(package);
+    }
+    packages.sort_by(|left, right| left.manifest.plugin.id.cmp(&right.manifest.plugin.id));
+    if packages.is_empty() {
+        bail!("no packages opted into marketplace publishing")
+    }
+    Ok(packages)
+}
+
+/// Publishes one immutable archive set to GitHub Releases, then deploys the
+/// small catalog site to the existing `windie-marketplace` Vercel project.
+async fn publish_marketplace() -> Result<()> {
+    let root = repository_root()?;
+    let repository = github_repository(&root).await?;
+    let release_tag = marketplace_release_tag()?;
+    let output_root = root.join("target/marketplace-publish");
+    let build = build_marketplace(
+        &root,
+        &output_root,
+        &MarketplaceArchiveSource::GitHubRelease {
+            repository: repository.clone(),
+            release_tag: release_tag.clone(),
+        },
+    )?;
+
+    let title = format!("Windie marketplace {release_tag}");
+    let status = Command::new("gh")
+        .args(["release", "create", &release_tag, "--repo", &repository])
+        .args([
+            "--title",
+            &title,
+            "--notes",
+            "Generated marketplace plugin archives.",
+        ])
+        .args(&build.archives)
+        .current_dir(&root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .context("failed to start GitHub Release publishing")?;
+    if !status.success() {
+        bail!("GitHub Release publishing exited with {status}");
+    }
+
+    let status = Command::new("vercel")
+        .args(["link", "--yes", "--project", "windie-marketplace"])
+        .current_dir(&build.site_root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .context("failed to link the Vercel marketplace project")?;
+    if !status.success() {
+        bail!("Vercel marketplace project link exited with {status}");
+    }
+
+    let status = Command::new("vercel")
+        .args(["deploy", "--prod", "--yes"])
+        .current_dir(&build.site_root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .context("failed to start Vercel marketplace deployment")?;
+    if !status.success() {
+        bail!("Vercel marketplace deployment exited with {status}");
+    }
+
+    println!("published marketplace release {release_tag}");
+    println!("catalog: https://marketplace.windieos.com/index.json");
+    Ok(())
+}
+
+/// Produces a unique, sortable release tag without requiring publishing users
+/// to choose one. GitHub Release asset URLs remain immutable once published.
+fn marketplace_release_tag() -> Result<String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs();
+    Ok(format!("marketplace-{timestamp}"))
+}
+
+/// Reads the GitHub owner/repository from this checkout's `origin` remote.
+async fn github_repository(root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(root)
+        .output()
+        .await
+        .context("failed to read the origin Git remote")?;
+    if !output.status.success() {
+        bail!("failed to read the origin Git remote: {}", output.status);
+    }
+    let remote = String::from_utf8(output.stdout).context("origin Git remote is not UTF-8")?;
+    let remote = remote.trim().trim_end_matches(".git");
+    let repository = remote
+        .strip_prefix("https://github.com/")
+        .or_else(|| remote.strip_prefix("git@github.com:"))
+        .ok_or_else(|| anyhow!("origin must be a GitHub remote, found: {remote}"))?;
+    if repository.split('/').count() != 2 || repository.split('/').any(str::is_empty) {
+        bail!("origin must identify one GitHub owner/repository, found: {remote}");
+    }
+    Ok(repository.to_string())
 }
 
 /// Serves the generated local marketplace over localhost HTTP.

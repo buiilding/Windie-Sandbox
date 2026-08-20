@@ -120,14 +120,23 @@ The production index URL defaults to
 staging or tests with `WINDIE_MARKETPLACE_INDEX_URL`. Marketplace requests
 require HTTPS; HTTP is accepted only for localhost fixtures.
 
-To build and host the current Parallel package locally:
+Every public package opts into the generated marketplace in its `plugin.json`:
+
+```json
+"marketplace": { "publish": true }
+```
+
+The builder discovers every opted-in package, so adding a public plugin no
+longer requires editing a Rust release list.
+
+To build and host the marketplace locally:
 
 ```text
 cargo run --bin windie -- marketplace build
 cargo run --bin windie -- marketplace serve
 ```
 
-The development server generates `target/local-marketplace`, calculates the
+The development server generates `target/local-marketplace`, calculates each
 artifact digest, writes a fresh `index.json`, and serves it at:
 
 ```text
@@ -140,6 +149,18 @@ against the local marketplace:
 ```text
 WINDIE_MARKETPLACE_INDEX_URL=http://127.0.0.1:8788/index.json
 ```
+
+To publish one immutable marketplace release, use authenticated GitHub CLI and
+Vercel CLI sessions:
+
+```bash
+cargo run --bin windie -- marketplace publish
+```
+
+This generates package archives, uploads them to an automatically named GitHub Release, and
+generates the Vercel catalog with GitHub Release asset URLs and matching
+digests. Vercel receives only the index, manifests, README files, and icons;
+the package archives remain on GitHub Releases.
 
 The package loader supports remote Streamable HTTP MCP components and local
 MCPB stdio components. Local MCPB runtimes are extracted into the installed

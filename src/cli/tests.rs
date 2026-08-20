@@ -156,6 +156,11 @@ fn reads_repository_workflow_commands() {
         "marketplace".to_string(),
         "build".to_string(),
     ]);
+    let publish = command_from_args([
+        "windie".to_string(),
+        "marketplace".to_string(),
+        "publish".to_string(),
+    ]);
     let benchmark = command_from_args([
         "windie".to_string(),
         "bench".to_string(),
@@ -170,6 +175,10 @@ fn reads_repository_workflow_commands() {
     assert!(matches!(
         marketplace,
         Command::Marketplace(MarketplaceCommand::Build)
+    ));
+    assert!(matches!(
+        publish,
+        Command::Marketplace(MarketplaceCommand::Publish)
     ));
     assert!(matches!(
         benchmark,

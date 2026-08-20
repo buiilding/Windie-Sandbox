@@ -204,6 +204,8 @@ pub enum ReleaseCommand {
 pub enum MarketplaceCommand {
     Build,
     Serve,
+    /// Publish archives to GitHub Releases and the catalog site to Vercel.
+    Publish,
 }
 
 /// Deterministic local benchmark workflow selected by the public CLI.

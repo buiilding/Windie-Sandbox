@@ -28,6 +28,10 @@ pub struct PluginManifest {
     pub manifest_version: u32,
     pub plugin: PluginIdentity,
     pub presentation: PluginPresentation,
+    /// Declares whether this source package is published by the repository
+    /// marketplace build. Test fixtures and local-only packages omit it.
+    #[serde(default)]
+    pub marketplace: MarketplacePublication,
     pub components: Vec<PluginComponent>,
 }
 
@@ -46,6 +50,15 @@ pub struct PluginPresentation {
     pub description: String,
     pub readme: String,
     pub icon: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Repository publishing metadata that is separate from the installed runtime
+/// contract. It lets the marketplace builder discover real releases without
+/// accidentally publishing package fixtures.
+pub struct MarketplacePublication {
+    #[serde(default)]
+    pub publish: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
