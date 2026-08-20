@@ -7,6 +7,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added a complete `Backend.md` inventory for every Rust source file and
+  corrected stale module-boundary references.
 - Clarified that the generated plugin capability index is separate runtime
   context and remains present when a user replaces or clears a conversation
   system prompt.

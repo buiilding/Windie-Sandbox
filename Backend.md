@@ -154,8 +154,6 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - mcp/tool_provider.rs: generic MCP adapter that discovers MCP tools and dispatches approved calls.
 - mcp/executor.rs: executes already-approved MCP tool calls.
 - mcp/result.rs: normalizes MCP results into Windie tool messages and image parts.
-- mcp/compatibility.rs: temporary code-owned compatibility fallback; it must disappear after the final packaged migration.
-- mcp/legacy_parallel.rs: temporary code-owned Parallel Search definition used only by that fallback.
 - tool/tests.rs: tool registry, MCP mapping, and result normalization tests.
 
 ## Sessions
@@ -276,20 +274,20 @@ every API or CLI session runner.
 Keep boundaries strict:
 
 - Only `llm/` should know about provider HTTP request details.
-- Only `mcp.rs` should know about MCP stdio JSON-RPC request/response details.
+- Only `mcp/` should know about MCP stdio JSON-RPC request/response details.
 - Only `api/` should know about localhost API routes, JSON request bodies, SSE, auth, and HTTP response mapping.
 - Only `cli/` should know about startup CLI argument parsing.
 - Only `operation/` should own shared CLI/API orchestration over store/runtime primitives. It should not parse argv, map HTTP, format terminal output, execute shell commands, or know provider HTTP details.
-- Only `gateway.rs` should know about gateway health/availability/startup checks.
+- Only `llm/gateway.rs` should know about gateway health/availability/startup checks.
 - Only `input/` should know about local user input loading before conversation storage.
-- Only `output.rs` should know about terminal and JSON output formatting.
-- Only `tool/policy.rs` should decide whether tool execution is allowed, denied, or requires approval.
+- Only `output/` should know about terminal and JSON output formatting.
+- Only `tool/policy/` should decide whether tool execution is allowed, denied, or requires approval.
 - Only `conversation/` should own message roles, typed conversation/message identifiers, user parts, model-facing tool schema types, and assistant metadata types.
 - Only `session/` should own session domain types, session events, and live session task management.
 - Only `runtime/context.rs` should decide what history the model sees.
 - Only `error.rs` should own typed Windie error categories used across client protocol boundaries.
 - Only `perf/` should own benchmark timing logic, reports, comparisons, and benchmark fixture setup.
-- Only `runtime.rs` should coordinate query-like runtime flows.
+- Only `runtime/` should coordinate query-like runtime flows.
 - Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and local Windie process/tray management.
 - Only `managed_runtime/` should install and resolve Windie-managed Node.js and uv runtimes for packaged components.
 - Only `dev.rs` should own repository development helper launchers, while
@@ -300,3 +298,183 @@ Keep boundaries strict:
 - Only `store/` and the session operation/manager boundary should resolve or create a session branch for a conversation head; the frontend session cache is presentation state only.
 - Only `tool/` should own tool provider, attachment, approval, and execution result data shared across runtime, output, policy, store, and executors.
 - `main.rs` should stay small and only wire components together.
+
+## Complete `src/` file inventory
+
+This is the canonical one-row-per-file index for the Rust runtime. The
+sections above explain the architecture; this index makes the complete source
+surface auditable when files are added or moved.
+
+### Root modules
+
+- `src/config.rs`: shared local endpoint configuration.
+- `src/dev.rs`: repository development, release, marketplace, and benchmark workflows.
+- `src/error.rs`: typed Windie errors shared across client boundaries.
+- `src/lib.rs`: shared Windie runtime library exported to the binary and tests.
+- `src/main.rs`: public Windie CLI entrypoint and dependency wiring.
+
+### Local API (`src/api/`)
+
+- `src/api/component.rs`: installed tool-component lifecycle API handlers.
+- `src/api/conversation.rs`: conversation-level API handlers.
+- `src/api/env.rs`: manifest-declared provider-secret environment API handlers.
+- `src/api/error.rs`: JSON error mapping for the localhost API boundary.
+- `src/api/event.rs`: aggregate runtime-event HTTP routes.
+- `src/api/gateway.rs`: Bifrost gateway, model, and input-token API handlers.
+- `src/api/health.rs`: health and runtime-status API handlers.
+- `src/api/inspection.rs`: conversation-inspection API handlers.
+- `src/api/message.rs`: message and system-prompt API handlers.
+- `src/api/mod.rs`: local API server boundary and startup.
+- `src/api/plugin.rs`: marketplace plugin API handlers.
+- `src/api/router.rs`: local API route table and HTTP middleware wiring.
+- `src/api/session.rs`: session lifecycle and event API route handlers.
+- `src/api/session_approval.rs`: session-approval API route handlers.
+- `src/api/shutdown.rs`: local API graceful-shutdown handling.
+- `src/api/sse.rs`: server-sent-event helpers for streaming session events.
+- `src/api/state.rs`: shared API server state and store-access helpers.
+- `src/api/tests.rs`: API route tests.
+- `src/api/tool.rs`: tool-catalog and tree-wide tool-mutation API handlers.
+
+### CLI (`src/cli/`)
+
+- `src/cli/adapter/conversation.rs`: terminal adapters for conversation creation, inspection, and settings.
+- `src/cli/adapter/message.rs`: terminal adapters for direct conversation-message mutations.
+- `src/cli/adapter/mod.rs`: dispatches parsed commands to domain-specific CLI adapters.
+- `src/cli/adapter/session.rs`: terminal adapters for durable session commands.
+- `src/cli/adapter/system.rs`: terminal adapters for process, gateway, onboarding, and environment commands.
+- `src/cli/adapter/tool.rs`: terminal adapters for provider-tool and conversation tool-schema commands.
+- `src/cli/command.rs`: typed CLI command data.
+- `src/cli/development.rs`: parser for repository development, release, marketplace, and benchmark commands.
+- `src/cli/env.rs`: provider-key environment command parsing.
+- `src/cli/message.rs`: message command parsing.
+- `src/cli/mod.rs`: Windie CLI parsing boundary.
+- `src/cli/onboard.rs`: terminal prompts for `windie onboard`.
+- `src/cli/parser.rs`: top-level argv dispatch for the CLI parser.
+- `src/cli/session.rs`: session command parsing.
+- `src/cli/tests.rs`: CLI parser tests.
+- `src/cli/tool_schema.rs`: tool-schema command parsing.
+
+### Conversation and input (`src/conversation/`, `src/input/`)
+
+- `src/conversation/assistant_metadata.rs`: assistant-oriented metadata lanes.
+- `src/conversation/id.rs`: typed conversation, message, image-asset, and compaction identifiers.
+- `src/conversation/message.rs`: conversation message data and roles.
+- `src/conversation/message_part.rs`: shared text and image parts for persisted conversation messages.
+- `src/conversation/mod.rs`: core conversation data boundary.
+- `src/input/image.rs`: local image-input loading and validation.
+- `src/input/mod.rs`: local user-input loading boundary.
+
+### LLM and local process support (`src/llm/`, `src/local/`, `src/managed_runtime/`)
+
+- `src/llm/client.rs`: Bifrost Responses HTTP client.
+- `src/llm/error.rs`: typed failures returned by the provider-facing LLM boundary.
+- `src/llm/gateway.rs`: Bifrost gateway availability and lifecycle.
+- `src/llm/management.rs`: Bifrost management API client.
+- `src/llm/mod.rs`: OpenAI-compatible Bifrost client boundary.
+- `src/llm/model.rs`: Bifrost model identity, model listing, and model-parameter metadata.
+- `src/llm/responses.rs`: OpenAI-compatible Responses wire structs.
+- `src/llm/serialization.rs`: conversion from Windie messages and tools into Responses wire values.
+- `src/llm/stream.rs`: Responses stream parsing and assistant-response assembly.
+- `src/llm/tests.rs`: Bifrost client-boundary tests.
+- `src/local/mod.rs`: user-local Windie environment boundary.
+- `src/local/process.rs`: detached local component process management.
+- `src/local/setup.rs`: user-local setup, environment editing, and approved dependency installation.
+- `src/local/tray.rs`: desktop tray controller for the Windie runtime.
+- `src/managed_runtime/mod.rs`: Windie-managed runtime provisioning and executable resolution.
+
+### MCP and plugin packages (`src/mcp/`, `src/plugin/`)
+
+- `src/mcp/chrome_devtools.rs`: persisted connection-mode types for the package-owned Chrome DevTools MCP.
+- `src/mcp/executor.rs`: approved MCP tool executor.
+- `src/mcp/http.rs`: Streamable HTTP MCP client.
+- `src/mcp/loader.rs`: MCP component loading from installed plugin packages.
+- `src/mcp/mcpb.rs`: MCPB package validation and extraction.
+- `src/mcp/mod.rs`: MCP protocol, transport, and runtime boundary.
+- `src/mcp/protocol.rs`: MCP protocol contracts and JSON-RPC data shapes.
+- `src/mcp/result.rs`: MCP tool-call result normalization.
+- `src/mcp/session.rs`: persistent MCP session lifecycle.
+- `src/mcp/stdio.rs`: local stdio MCP transport.
+- `src/mcp/tool_provider.rs`: generic MCP tool-provider adapter.
+- `src/mcp/transport.rs`: MCP transport routing.
+- `src/plugin/catalog.rs`: marketplace index contracts and model-facing plugin summaries.
+- `src/plugin/installer.rs`: marketplace artifact acquisition and verification.
+- `src/plugin/manifest.rs`: typed plugin and component-manifest contracts.
+- `src/plugin/mod.rs`: installable Windie plugin-package boundary.
+- `src/plugin/store.rs`: Windie-owned plugin-package storage.
+
+### Shared operations (`src/operation/`)
+
+- `src/operation/component.rs`: installed tool-component lifecycle operations.
+- `src/operation/conversation.rs`: conversation-level operation workflows.
+- `src/operation/gateway.rs`: gateway, model-metadata, and input-token workflows.
+- `src/operation/input.rs`: operation-level user-input loading helpers.
+- `src/operation/inspection.rs`: read-only snapshots for CLI JSON, API, and developer inspection.
+- `src/operation/message.rs`: message and system-prompt mutation workflows.
+- `src/operation/mod.rs`: shared CLI/API operation-layer boundary.
+- `src/operation/onboarding.rs`: shared terminal onboarding workflow.
+- `src/operation/session.rs`: runtime session lifecycle and advancement workflows.
+- `src/operation/session_approval.rs`: session tool-approval workflows.
+- `src/operation/session_cli.rs`: CLI session-operation adapter.
+- `src/operation/system.rs`: lifecycle operations for independently managed local components.
+- `src/operation/tests.rs`: operation-workflow tests.
+- `src/operation/tool.rs`: tool-catalog, attachment, and tool-schema workflows.
+
+### Output and performance (`src/output/`, `src/perf/`)
+
+- `src/output/formatting.rs`: terminal and JSON output-formatting helpers.
+- `src/output/mod.rs`: terminal-output boundary.
+- `src/output/terminal.rs`: terminal-output implementation.
+- `src/output/tests.rs`: terminal-output formatting tests.
+- `src/perf/comparison.rs`: benchmark-report comparison.
+- `src/perf/fixture.rs`: fixture-construction helpers for local benchmarks.
+- `src/perf/mod.rs`: performance measurement and comparison boundary.
+- `src/perf/mode.rs`: benchmark mode, category, and option types.
+- `src/perf/report.rs`: benchmark-report data and duration summarization.
+- `src/perf/runner.rs`: benchmark-runner entry points.
+- `src/perf/runtime.rs`: deterministic runtime benchmark fixtures.
+- `src/perf/scenarios.rs`: named benchmark scenarios for the current architecture.
+- `src/perf/storage.rs`: benchmark-report file storage.
+- `src/perf/tests.rs`: performance-report tests.
+
+### Runtime and sessions (`src/runtime/`, `src/session/`)
+
+- `src/runtime/context.rs`: exact model-facing context construction.
+- `src/runtime/mod.rs`: runtime-flow coordination boundary.
+- `src/runtime/retry.rs`: bounded retry policy for one model turn.
+- `src/runtime/tests.rs`: runtime-flow coordination tests.
+- `src/runtime/tool_execution.rs`: runtime tool execution and durable result persistence.
+- `src/runtime/turn.rs`: runtime turn orchestration.
+- `src/runtime/wakeup.rs`: typed wakeup inputs.
+- `src/session/control.rs`: explicit control inputs for durable sessions.
+- `src/session/event.rs`: replayable session-event types.
+- `src/session/id.rs`: session, queued-input, and execution-claim identifiers.
+- `src/session/manager.rs`: live session supervision.
+- `src/session/mod.rs`: session-domain boundary.
+- `src/session/model.rs`: durable session row and lifecycle-status types.
+
+### SQLite store and tool domain (`src/store/`, `src/tool/`)
+
+- `src/store/chrome_devtools.rs`: persisted Chrome DevTools MCP connection settings.
+- `src/store/compaction.rs`: conversation-compaction checkpoint persistence.
+- `src/store/component.rs`: persisted installed component state.
+- `src/store/conversation.rs`: conversation-row persistence and conversation-level settings.
+- `src/store/message.rs`: message-tree, message-part, image-asset, and fork persistence.
+- `src/store/mod.rs`: SQLite persistence boundary.
+- `src/store/schema.rs`: SQLite schema creation and version validation.
+- `src/store/session.rs`: runtime-session and replayable session-event persistence.
+- `src/store/system_prompt.rs`: tree-wide user-owned system-prompt persistence.
+- `src/store/tests.rs`: SQLite persistence-boundary tests.
+- `src/store/tool_catalog.rs`: persisted provider-owned MCP tool catalogs.
+- `src/store/tool_schema.rs`: tree-wide tool-capability persistence.
+- `src/tool/approval.rs`: tool-approval contracts.
+- `src/tool/builtin.rs`: Windie-owned model-control tools.
+- `src/tool/lifecycle.rs`: persisted lifecycle states for installed Windie providers.
+- `src/tool/manifest.rs`: typed metadata describing an installable Windie provider.
+- `src/tool/mod.rs`: tool-domain boundary.
+- `src/tool/policy/mod.rs`: tool-execution policy boundary.
+- `src/tool/policy/tests.rs`: tool-execution policy-decision tests.
+- `src/tool/provider.rs`: tool-provider identity types.
+- `src/tool/registry.rs`: provider-neutral tool registry.
+- `src/tool/result.rs`: tool-execution result type.
+- `src/tool/schema.rs`: model-facing tool-schema and conversation-exposure types.
+- `src/tool/tests.rs`: tool-provider catalog, MCP mapping, and result-normalization tests.
