@@ -63,10 +63,12 @@ impl ContextBuilder {
     /// Builds the exact model context for an explicit path head.
     ///
     /// The result is used unchanged by execution, inspection, and input-token
-    /// counting. Persisted messages, the system prompt, compaction, and attached
-    /// schemas come from the conversation. The plugin index and built-in control
-    /// schemas are ephemeral runtime capabilities: they are model-visible but are
-    /// never persisted as conversation messages or attached schemas.
+    /// counting. The user-owned conversation system prompt, persisted messages,
+    /// compaction, and attached schemas come from the conversation. The plugin
+    /// index and built-in control schemas are separate ephemeral runtime
+    /// capability metadata: they are model-visible but are never persisted as
+    /// conversation messages or attached schemas. Changing the conversation
+    /// system prompt therefore never replaces the generated plugin index.
     pub fn build_model_context(
         store: &Store,
         conversation_id: &ConversationId,
@@ -113,7 +115,10 @@ impl ContextBuilder {
     }
 }
 
-/// Converts the runtime plugin catalog into an ephemeral model instruction.
+/// Converts the runtime plugin catalog into ephemeral capability metadata.
+///
+/// This message is generated for each model request and is deliberately
+/// separate from the user-owned conversation system prompt stored in SQLite.
 fn plugin_index_message(index: String) -> Message {
     Message {
         id: None,

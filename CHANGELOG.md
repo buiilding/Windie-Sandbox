@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Clarified that the generated plugin capability index is separate runtime
+  context and remains present when a user replaces or clears a conversation
+  system prompt.
 - Added a durable database-wide session event stream with replayable numeric
   cursors for API and CLI clients.
 - Tightened SQLite-backed session execution claims with a unique fencing token

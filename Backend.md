@@ -7,7 +7,7 @@ Mental model:
 ### Conversation
 
 - conversation/id.rs: typed IDs; ConversationId, MessageId, ImageAssetId, and CompactionId.
-- conversation/message.rs: Core Message node, Message + Role. Roles are system, user, assistant, tool. System is system prompt message, User is user input message, Assistant is assistant response message, Tool is the tool output message corresponding to assistant response message tool call.
+- conversation/message.rs: Core Message node, Message + Role. Roles are system, user, assistant, tool. System messages include the user-owned conversation system prompt and generated Windie runtime metadata; User is user input; Assistant is assistant response; Tool is the tool output corresponding to an assistant tool call.
 - conversation/assistant_metadata.rs: Assistant message metadata; tool calls, reasoning, audio, annotations, citations, token usage, and refusals. Also includes the tool-call ID that links a tool result to its assistant request.
 - conversation/mod.rs: Module boundary and re-exports for conversation types.
 - conversation/message_part.rs: Shared ordered text/image parts for persisted messages. User and `role: tool` messages can both carry these parts; message role and assistant-tool-call linkage remain separate.
@@ -42,7 +42,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - docs/conversation-tree-and-paths.md: explains why the shared message tree is canonical and why model context resolves a selected root-to-head path instead of storing duplicated linear paths.
 - store/schema.rs: database shape, schema version checks, table creation, indexes, and unsupported database version rejection.
 - store/session.rs: stores sessions and queued inputs, updates current heads/status, resolves session branches at conversation heads, atomically resolves-or-creates branches, and stores/replays session events.
-- store/system_prompt.rs: stores one conversation-wide system prompt, shared by every branch/head.
+- store/system_prompt.rs: stores one user-owned conversation-wide system prompt, shared by every branch/head. It never stores generated runtime metadata such as the plugin index.
 - store/tool_schema.rs: stores conversation-wide attached tool-schema rows; tools are shared by every branch/head and are not path-filtered.
 - store/tests.rs: integration tests for SQLite storage, including conversations, messages, images, tools, sessions, queues, compaction, provider state, branching, deletion and schema safety.
 
@@ -202,9 +202,11 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - runtime/:
 - runtime/mod.rs: public boundary and re-exports for runtime folder.
 - runtime/context.rs: the single read-only compiler for the exact model payload
-  at one selected head. It combines the selected path, system prompt,
-  compaction, attached schemas, plugin-index system message, and built-in tool
-  schemas without persisting ephemeral capabilities.
+  at one selected head. It combines generated plugin-index capability metadata,
+  the user-owned conversation system prompt, selected path, compaction, attached
+  schemas, and built-in tool schemas without persisting ephemeral capabilities.
+  The plugin index is regenerated for every request and cannot be overwritten by
+  changing or clearing the conversation system prompt.
 - runtime/turn.rs: Runs model turns. It selects a runnable head, asks
   `runtime/context.rs` for the final model payload unchanged, streams the
   assistant response, saves it, and continues through automatic tool calls

@@ -1847,8 +1847,8 @@ fn builtin_tools_are_always_model_visible_but_not_persisted() {
 }
 
 #[test]
-fn plugin_index_is_ephemeral_and_does_not_attach_mcp_schemas() {
-    let store = Store::open_memory().unwrap();
+fn plugin_index_is_ephemeral_and_survives_conversation_system_prompt_changes() {
+    let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
     let registry = ToolProviderRegistry::new();
     let plugin_store = Arc::new(crate::plugin::PluginStore::new(
@@ -1856,6 +1856,13 @@ fn plugin_index_is_ephemeral_and_does_not_attach_mcp_schemas() {
     ));
     let catalog =
         crate::plugin::PluginCatalog::new(plugin_store, crate::plugin::bundled_index().unwrap());
+
+    store
+        .set_system_prompt(&conversation_id, "Use concise answers.")
+        .unwrap();
+    store
+        .set_system_prompt(&conversation_id, "Use exact answers.")
+        .unwrap();
 
     let context = ContextBuilder::build_model_context(
         &store,
@@ -1870,6 +1877,8 @@ fn plugin_index_is_ephemeral_and_does_not_attach_mcp_schemas() {
     assert!(context.messages[0].content.contains("Installed plugins:"));
     assert!(context.messages[0].content.contains("Available plugins:"));
     assert!(context.messages[0].content.contains("parallel-search"));
+    assert_eq!(context.messages[1].role, Role::System);
+    assert_eq!(context.messages[1].content, "Use exact answers.");
     assert!(
         context
             .tool_schemas
@@ -1881,6 +1890,24 @@ fn plugin_index_is_ephemeral_and_does_not_attach_mcp_schemas() {
             .load_tool_schemas(&conversation_id)
             .unwrap()
             .is_empty()
+    );
+
+    store.set_system_prompt(&conversation_id, "").unwrap();
+    let context = ContextBuilder::build_model_context(
+        &store,
+        &conversation_id,
+        None,
+        &registry,
+        Some(&catalog),
+    )
+    .unwrap();
+
+    assert_eq!(context.messages.len(), 1);
+    assert_eq!(context.messages[0].role, Role::System);
+    assert!(
+        context.messages[0]
+            .content
+            .starts_with("Windie plugin index:")
     );
 }
 
