@@ -82,7 +82,10 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
         [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
         [command, action] if command == "gateway" && action == "output" => Command::GatewayOutput,
-        [arg] if arg == "tray" => Command::Tray,
+        [command, action] if command == "tray" && action == "start" => Command::TrayStart,
+        [command, action] if command == "tray" && action == "stop" => Command::TrayStop,
+        [command, action] if command == "tray" && action == "output" => Command::TrayOutput,
+        [command, action] if command == "tray" && action == "run" => Command::TrayRun,
         [arg] if arg == "new" => Command::New,
         [arg] if arg == "ls" => Command::List { json: false },
         [command, json_flag] if command == "ls" && json_flag == "--json" => {

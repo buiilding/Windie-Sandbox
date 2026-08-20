@@ -13,8 +13,7 @@ use crate::conversation::{ConversationId, Message, MessageId, ToolCall};
 use crate::llm::{ModelInfo, ModelName};
 use crate::local::process::{ManagedComponent, ProcessReport, ProcessState};
 use crate::local::{InstallReport, InstallStatus};
-use crate::operation::InspectionReport;
-use crate::operation::UninstallReport;
+use crate::operation::{ComponentStatus, InspectionReport, UninstallReport};
 use crate::perf::{PerformanceBaseline, PerformanceComparison, PerformanceReport};
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
 use crate::store::ConversationInfo;
@@ -325,17 +324,20 @@ impl TerminalOutput {
         println!("{conversation_id}");
     }
 
-    /// Prints the local gateway readiness summary.
-    pub fn status(&self, gateway_running: bool) {
+    /// Prints the readiness of every independently managed local component.
+    pub fn status(&self, statuses: &[ComponentStatus]) {
         println!("status");
-        println!(
-            "gateway: {}",
-            if gateway_running {
-                "running"
-            } else {
-                "not running"
-            }
-        );
+        for status in statuses {
+            println!(
+                "{}: {}",
+                status.component.as_str(),
+                if status.running {
+                    "running"
+                } else {
+                    "not running"
+                }
+            );
+        }
     }
 
     /// Prints models currently reported by the running Bifrost gateway.

@@ -75,8 +75,14 @@ pub enum Command {
     GatewayStop,
     /// Print the detached Bifrost process output.
     GatewayOutput,
-    /// Run the desktop tray controller.
-    Tray,
+    /// Start the detached desktop tray process.
+    TrayStart,
+    /// Stop the detached desktop tray process.
+    TrayStop,
+    /// Print the detached tray process output.
+    TrayOutput,
+    /// Internal foreground tray entrypoint used by `tray start`.
+    TrayRun,
     /// Remove Windie's processes, local data, and installed binaries.
     Uninstall {
         yes: bool,
@@ -180,10 +186,7 @@ pub enum EnvCommand {
 
 /// Repository development workflow selected by `windie dev`.
 pub enum DevCommand {
-    Up,
     Run { component: DevComponent },
-    Status,
-    Down,
 }
 
 /// Foreground repository component selected by `windie dev run`.
@@ -191,6 +194,7 @@ pub enum DevComponent {
     Gateway,
     Api,
     Inspector,
+    Tray,
 }
 
 /// Repository release workflow selected by `windie release`.

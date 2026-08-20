@@ -4,9 +4,20 @@
 //! typed component lifecycle actions so the process boundary stays reusable
 //! without making the operation layer know CLI strings or output syntax.
 
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 
 pub use crate::local::process::{ManagedComponent, ProcessReport};
+
+/// One component's current availability as observed by the shared lifecycle
+/// boundary. `running` means its health endpoint responded, except for the
+/// tray, whose owned process identity is its only local liveness signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentStatus {
+    pub component: ManagedComponent,
+    pub running: bool,
+}
 
 /// Complete result of one Windie uninstall operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +47,64 @@ pub fn start_inspector() -> Result<ProcessReport> {
 /// Stops the Inspector process without affecting Windie API or Bifrost.
 pub fn stop_inspector() -> Result<ProcessReport> {
     crate::local::process::stop_inspector()
+}
+
+/// Starts the detached native tray without changing any other component.
+pub fn start_tray() -> Result<ProcessReport> {
+    crate::local::process::start_tray()
+}
+
+/// Stops only the native tray process.
+pub fn stop_tray() -> Result<ProcessReport> {
+    crate::local::process::stop_tray()
+}
+
+/// Reads all independently managed component states without starting,
+/// stopping, or otherwise changing any of them.
+pub async fn component_statuses(
+    gateway_url: crate::llm::gateway::GatewayUrl,
+) -> Result<Vec<ComponentStatus>> {
+    let gateway = crate::operation::gateway_status(gateway_url);
+    let api = endpoint_is_running(format!("{}/api/health", crate::config::api_url()));
+    let inspector = endpoint_is_running(format!("http://{}/", crate::config::inspector_address()));
+    let (gateway_running, api_running, inspector_running) =
+        tokio::join!(gateway, api, inspector);
+
+    Ok(vec![
+        ComponentStatus {
+            component: ManagedComponent::Gateway,
+            running: gateway_running,
+        },
+        ComponentStatus {
+            component: ManagedComponent::Api,
+            running: api_running,
+        },
+        ComponentStatus {
+            component: ManagedComponent::Inspector,
+            running: inspector_running,
+        },
+        ComponentStatus {
+            component: ManagedComponent::Tray,
+            running: crate::local::process::is_managed_component_running(ManagedComponent::Tray)?,
+        },
+    ])
+}
+
+/// Checks one component endpoint with the same short timeout used by local
+/// process controls, so `windie status` stays responsive when it is offline.
+async fn endpoint_is_running(url: String) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+
+    client
+        .get(url)
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
 }
 
 /// Reads one component's persisted stdout/stderr output.

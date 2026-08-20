@@ -7,6 +7,8 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -80,7 +82,7 @@ pub fn start_api() -> Result<ProcessReport> {
 pub fn stop_api() -> Result<ProcessReport> {
     let report = existing_report(ManagedComponent::Api)?;
     let Some(pid) = report.pid else {
-        if endpoint_is_running(&format!("{}/api/health", crate::config::api_url())) {
+        if endpoint_is_running(&crate::config::api_address(), "/api/health") {
             return Err(anyhow!(
                 "Windie API is running without an owned PID file; refusing to remove it"
             ));
@@ -106,17 +108,48 @@ pub fn start_inspector() -> Result<ProcessReport> {
     start_detached(ManagedComponent::Inspector, &executable, &[], &executable)
 }
 
+/// Starts the detached native tray process without starting any other Windie
+/// component.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn start_tray() -> Result<ProcessReport> {
+    let executable = env::current_exe().context("failed to locate the Windie executable")?;
+    start_detached(
+        ManagedComponent::Tray,
+        &executable,
+        &["tray", "run"],
+        &executable,
+    )
+}
+
+/// Reports that the native tray is unavailable on platforms without a tray
+/// implementation instead of spawning a child that exits immediately.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn start_tray() -> Result<ProcessReport> {
+    Err(anyhow!(
+        "Windie tray is currently supported on macOS and Windows only"
+    ))
+}
+
 /// Stops the standalone Inspector server.
 pub fn stop_inspector() -> Result<ProcessReport> {
     let report = existing_report(ManagedComponent::Inspector)?;
     let Some(pid) = report.pid else {
-        if endpoint_is_running(&format!("http://{}/", crate::config::inspector_address())) {
+        if endpoint_is_running(&crate::config::inspector_address(), "/") {
             return Err(anyhow!(
                 "Windie Inspector is running without an owned PID file; refusing to remove it"
             ));
         }
         return Ok(report);
     };
+
+    if request_inspector_shutdown() {
+        wait_for_exit(pid)?;
+        remove_pid_file(ManagedComponent::Inspector)?;
+        return Ok(ProcessReport {
+            state: ProcessState::Stopped,
+            ..report
+        });
+    }
 
     stop_recorded_process(ManagedComponent::Inspector, pid, &report.log_file)
 }
@@ -125,6 +158,12 @@ pub fn stop_inspector() -> Result<ProcessReport> {
 /// it safely during uninstall.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn register_tray() -> Result<()> {
+    let current_pid = std::process::id();
+    let pid_file = local::component_pid_file_path(ManagedComponent::Tray)?;
+    if read_pid_file(&pid_file)? == Some(current_pid) {
+        return Ok(());
+    }
+
     let report = existing_report(ManagedComponent::Tray)?;
     if report.state == ProcessState::AlreadyRunning {
         return Err(anyhow!(
@@ -133,8 +172,7 @@ pub fn register_tray() -> Result<()> {
         ));
     }
 
-    let pid_file = local::component_pid_file_path(ManagedComponent::Tray)?;
-    write_pid_file(&pid_file, std::process::id())
+    write_pid_file(&pid_file, current_pid)
 }
 
 /// Removes the current tray PID file after the tray event loop exits.
@@ -191,6 +229,19 @@ pub fn read_output(component: ManagedComponent) -> Result<String> {
 
     fs::read_to_string(&path)
         .with_context(|| format!("failed to read {} output", component.as_str()))
+}
+
+/// Returns whether Windie currently owns a live process for one component.
+///
+/// This is intentionally narrower than an HTTP health check: it answers
+/// whether the local lifecycle boundary can safely start or stop the component.
+pub fn is_managed_component_running(component: ManagedComponent) -> Result<bool> {
+    let pid_file = local::existing_component_pid_file_path(component)?;
+    let Some(pid) = read_pid_file(&pid_file)? else {
+        return Ok(false);
+    };
+
+    Ok(process_is_alive(pid) && process_matches_component(component, pid))
 }
 
 fn start_detached(
@@ -311,27 +362,62 @@ fn stop_recorded_process(
 }
 
 fn request_api_shutdown() -> bool {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .ok()
-        .and_then(|client| {
-            client
-                .post(format!("{}/api/shutdown", crate::config::api_url()))
-                .send()
-                .ok()
-        })
-        .is_some_and(|response| response.status().is_success())
+    request_loopback_shutdown(&crate::config::api_address(), "/api/shutdown")
 }
 
-/// Returns whether a local HTTP endpoint is responding successfully.
-fn endpoint_is_running(url: &str) -> bool {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
+/// Requests the Inspector's own shutdown route before any owned-PID fallback.
+fn request_inspector_shutdown() -> bool {
+    request_loopback_shutdown(&crate::config::inspector_address(), "/shutdown")
+}
+
+/// Sends one minimal local HTTP shutdown request without creating a blocking
+/// async runtime inside the async CLI process.
+fn request_loopback_shutdown(address: &str, path: &str) -> bool {
+    loopback_request_succeeded(address, "POST", path)
+}
+
+/// Returns whether one local component endpoint accepts a health request.
+fn endpoint_is_running(address: &str, path: &str) -> bool {
+    loopback_request_succeeded(address, "GET", path)
+}
+
+/// Sends one bounded local HTTP request without constructing a nested Tokio
+/// runtime inside the asynchronous CLI process.
+fn loopback_request_succeeded(address: &str, method: &str, path: &str) -> bool {
+    let Ok(socket) = address.to_socket_addrs().and_then(|mut addresses| {
+        addresses
+            .next()
+            .ok_or_else(|| std::io::Error::other("shutdown address has no socket"))
+    }) else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&socket, Duration::from_secs(2)) else {
+        return false;
+    };
+    if stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .is_err()
+        || stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .is_err()
+    {
+        return false;
+    }
+
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut response = [0_u8; 128];
+    let Ok(length) = stream.read(&mut response) else {
+        return false;
+    };
+    std::str::from_utf8(&response[..length])
         .ok()
-        .and_then(|client| client.get(url).send().ok())
-        .is_some_and(|response| response.status().is_success())
+        .is_some_and(|status| status.starts_with("HTTP/1.1 2") || status.starts_with("HTTP/1.0 2"))
 }
 
 fn inspector_executable() -> Result<PathBuf> {

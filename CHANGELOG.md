@@ -7,6 +7,11 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Split gateway, API, Inspector, and tray lifecycle into independent commands
+  and foreground development runs; the tray no longer stops the runtime as a
+  group, while `windie status` reports every component.
+- Added graceful loopback shutdown for the standalone Inspector so lifecycle
+  controls request its own clean exit before falling back to an owned process.
 - Made marketplace releases package-owned: the build now discovers packages
   that opt in through `plugin.json`, generates the complete catalog, and can
   publish immutable archives to GitHub Releases before deploying the catalog

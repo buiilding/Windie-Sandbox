@@ -50,6 +50,26 @@ pub(crate) fn stop_inspector_process() -> Result<()> {
     Ok(())
 }
 
+/// Starts the detached native tray process.
+pub(crate) fn start_tray_process() -> Result<()> {
+    let report = operation::start_tray()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Stops only the native tray process.
+pub(crate) fn stop_tray_process() -> Result<()> {
+    let report = operation::stop_tray()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Runs the native tray in the foreground for its detached and development
+/// entrypoints.
+pub(crate) fn run_tray() -> Result<()> {
+    crate::local::tray::run()
+}
+
 /// Prints persisted output for one independent local component.
 pub(crate) fn output_component(component: ManagedComponent) -> Result<()> {
     let output = operation::component_output(component)?;
@@ -159,7 +179,8 @@ pub(crate) async fn list_models() -> Result<()> {
 
 /// Prints current local runtime readiness.
 pub(crate) async fn status() -> Result<()> {
-    TerminalOutput.status(operation::gateway_status(gateway_url()).await);
+    let statuses = operation::component_statuses(gateway_url()).await?;
+    TerminalOutput.status(&statuses);
     Ok(())
 }
 

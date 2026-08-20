@@ -1,8 +1,8 @@
 //! Simple desktop tray controller for the Windie runtime.
 //!
-//! The tray is a mode of the main `windie` executable. It invokes the sibling
-//! executable path with `gateway`, `api`, and `inspector` lifecycle commands;
-//! those commands still detach and manage their own independent processes.
+//! The tray is an independent presentation component. It observes component
+//! availability and requests explicit lifecycle actions through the same shared
+//! operations as the CLI; it never supervises or shuts down the whole runtime.
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn run() -> anyhow::Result<()> {
@@ -12,23 +12,13 @@ pub fn run() -> anyhow::Result<()> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app {
-    use std::env;
-    use std::path::PathBuf;
-    use std::process::{Command, Stdio};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::thread;
     use std::time::Duration;
 
-    use anyhow::{Context, Result, anyhow};
-    use reqwest::blocking::Client;
-
-    #[cfg(windows)]
-    use std::os::windows::process::CommandExt;
-
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    use anyhow::{Context, Result};
 
     #[cfg(windows)]
     #[link(name = "kernel32")]
@@ -47,7 +37,6 @@ mod app {
     use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
 
     const STATUS_INTERVAL: Duration = Duration::from_millis(500);
-    const HEALTH_TIMEOUT: Duration = Duration::from_millis(500);
 
     /// A local service controlled by one tray toggle.
     #[derive(Clone, Copy)]
@@ -63,21 +52,12 @@ mod app {
     }
 
     impl Component {
-        /// Returns the lifecycle command subject accepted by the CLI parser.
-        const fn command(self) -> &'static str {
+        /// Returns the lifecycle identity used by shared component status.
+        const fn managed_component(self) -> crate::local::process::ManagedComponent {
             match self {
-                Self::Gateway => "gateway",
-                Self::Api => "api",
-                Self::Inspector => "inspector",
-            }
-        }
-
-        /// Returns the localhost endpoint used for status polling.
-        fn health_url(self) -> String {
-            match self {
-                Self::Gateway => format!("{}/health", crate::config::gateway_url()),
-                Self::Api => format!("{}/api/health", crate::config::api_url()),
-                Self::Inspector => format!("http://{}/", crate::config::inspector_address()),
+                Self::Gateway => crate::local::process::ManagedComponent::Gateway,
+                Self::Api => crate::local::process::ManagedComponent::Api,
+                Self::Inspector => crate::local::process::ManagedComponent::Inspector,
             }
         }
     }
@@ -136,38 +116,40 @@ mod app {
         }
     }
 
-    /// Locates the main executable and runs CLI lifecycle commands for it.
+    /// Requests individual component actions while keeping the tray event loop
+    /// responsive. Lifecycle ownership remains in `operation::system`.
     #[derive(Clone)]
     struct RuntimeController {
-        client: Client,
-        windie_binary: PathBuf,
         action_running: Arc<AtomicBool>,
         pending_actions: Arc<std::sync::Mutex<PendingActions>>,
     }
 
     impl RuntimeController {
-        /// Creates a controller using the current `windie` executable path.
-        fn new() -> Result<Self> {
-            let windie_binary = env::current_exe().context("failed to locate windie")?;
-            let client = Client::builder()
-                .timeout(HEALTH_TIMEOUT)
-                .build()
-                .context("failed to create local health client")?;
-
-            Ok(Self {
-                client,
-                windie_binary,
+        /// Creates the tray's local presentation controller.
+        fn new() -> Self {
+            Self {
                 action_running: Arc::new(AtomicBool::new(false)),
                 pending_actions: Arc::new(std::sync::Mutex::new(PendingActions::default())),
-            })
+            }
         }
 
-        /// Reads service availability without depending on process ownership.
-        fn status(&self) -> StatusSnapshot {
+        /// Reads the shared component status without changing any process.
+        async fn status(&self) -> StatusSnapshot {
+            let statuses = crate::operation::component_statuses(
+                crate::llm::gateway::GatewayUrl::new(crate::config::gateway_url()),
+            )
+            .await
+            .unwrap_or_default();
+            let running = |component| {
+                statuses
+                    .iter()
+                    .any(|status| status.component == component && status.running)
+            };
+
             StatusSnapshot {
-                gateway_running: self.is_running(Component::Gateway),
-                api_running: self.is_running(Component::Api),
-                inspector_running: self.is_running(Component::Inspector),
+                gateway_running: running(Component::Gateway.managed_component()),
+                api_running: running(Component::Api.managed_component()),
+                inspector_running: running(Component::Inspector.managed_component()),
             }
         }
 
@@ -200,14 +182,14 @@ mod app {
             });
         }
 
-        /// Chooses start or stop from the current health state.
+        /// Chooses one explicit lifecycle request from the current health
+        /// state. This does not make the tray a process supervisor.
         fn toggle(&self, component: Component) -> Result<()> {
-            let action = if self.is_running(component) {
-                "stop"
+            if self.status_for(component) {
+                self.stop_component(component)
             } else {
-                "start"
-            };
-            self.run_cli(component, action)
+                self.start_component(component)
+            }
         }
 
         /// Sets or clears the transition shown in the tray menu.
@@ -228,81 +210,48 @@ mod app {
             pending.get(component)
         }
 
-        /// Invokes the current executable as a short-lived CLI command.
-        fn run_cli(&self, component: Component, action: &str) -> Result<()> {
-            let mut command = Command::new(&self.windie_binary);
-            command
-                .args([component.command(), action])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            #[cfg(windows)]
-            command.creation_flags(CREATE_NO_WINDOW);
-            let status = command.status().with_context(|| {
-                format!("failed to run windie {} {}", component.command(), action)
-            })?;
-
-            if status.success() {
-                Ok(())
-            } else {
-                Err(anyhow!(
-                    "windie {} {} exited with {status}",
-                    component.command(),
-                    action
-                ))
-            }
+        /// Starts only the selected component through the shared lifecycle
+        /// boundary used by its CLI command.
+        fn start_component(&self, component: Component) -> Result<()> {
+            match component {
+                Component::Gateway => tray_runtime().block_on(crate::operation::start_gateway(
+                    crate::llm::gateway::GatewayUrl::new(crate::config::gateway_url()),
+                ))?,
+                Component::Api => crate::operation::start_api()?,
+                Component::Inspector => crate::operation::start_inspector()?,
+            };
+            Ok(())
         }
 
-        /// Invokes the shared non-interactive uninstall command after the
-        /// tray event loop has released its PID registration.
-        fn run_uninstall(&self) -> Result<()> {
-            let mut command = Command::new(&self.windie_binary);
-            command
-                .args(["uninstall", "--yes"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            #[cfg(windows)]
-            command.creation_flags(CREATE_NO_WINDOW);
-            let status = command
-                .status()
-                .context("failed to run windie uninstall --yes")?;
-
-            if status.success() {
-                Ok(())
-            } else {
-                Err(anyhow!("windie uninstall --yes exited with {status}"))
-            }
+        /// Stops only the selected component through the shared lifecycle
+        /// boundary used by its CLI command.
+        fn stop_component(&self, component: Component) -> Result<()> {
+            match component {
+                Component::Gateway => tray_runtime().block_on(crate::operation::stop_gateway(
+                    crate::llm::gateway::GatewayUrl::new(crate::config::gateway_url()),
+                ))?,
+                Component::Api => crate::operation::stop_api()?,
+                Component::Inspector => crate::operation::stop_inspector()?,
+            };
+            Ok(())
         }
 
-        /// Stops every managed component, continuing if one stop command
-        /// fails so that a failure in one component cannot leave the others
-        /// running unintentionally.
-        fn stop_all(&self) -> Result<()> {
-            let mut failures = Vec::new();
-            for component in [Component::Gateway, Component::Api, Component::Inspector] {
-                if let Err(error) = self.run_cli(component, "stop") {
-                    failures.push(format!("{}: {error:#}", component.command()));
-                }
-            }
-
-            if failures.is_empty() {
-                Ok(())
-            } else {
-                Err(anyhow!(
-                    "one or more Windie components failed to stop: {}",
-                    failures.join("; ")
-                ))
-            }
+        /// Reads one component status for an explicit menu action. This runs
+        /// only in the tray worker thread, never in the UI event loop.
+        fn status_for(&self, component: Component) -> bool {
+            tray_runtime()
+                .block_on(self.status())
+                .running(component)
         }
+    }
 
-        /// Returns whether a component responds successfully on localhost.
-        fn is_running(&self, component: Component) -> bool {
-            self.client
-                .get(component.health_url())
-                .send()
-                .is_ok_and(|response| response.status().is_success())
-        }
+    /// Builds a small runtime for the tray worker thread's asynchronous gateway
+    /// lifecycle request. The UI event loop itself remains synchronous.
+    fn tray_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tray lifecycle runtime can be created")
     }
 
     /// Polls health endpoints in the background for menu label updates.
@@ -312,8 +261,18 @@ mod app {
         stopping: Arc<AtomicBool>,
     ) {
         thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("failed to create tray status runtime: {error}");
+                    return;
+                }
+            };
             while !stopping.load(Ordering::Acquire) {
-                if sender.send(controller.status()).is_err() {
+                if sender.send(runtime.block_on(controller.status())).is_err() {
                     break;
                 }
                 thread::sleep(STATUS_INTERVAL);
@@ -365,7 +324,7 @@ mod app {
         #[cfg(windows)]
         hide_console_window();
 
-        let controller = RuntimeController::new()?;
+        let controller = RuntimeController::new();
         crate::local::process::register_tray()?;
         let (status_sender, status_receiver) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
@@ -374,13 +333,11 @@ mod app {
         let gateway = MenuItem::new("Start Gateway", true, None);
         let api = MenuItem::new("Start API", true, None);
         let inspector = MenuItem::new("Start Inspector", true, None);
-        let uninstall = MenuItem::new("Uninstall Windie", true, None);
-        let quit = MenuItem::new("Quit and Stop Services", true, None);
+        let quit = MenuItem::new("Quit Tray", true, None);
         let menu = Menu::new();
         menu.append(&gateway)?;
         menu.append(&api)?;
         menu.append(&inspector)?;
-        menu.append(&uninstall)?;
         menu.append(&quit)?;
 
         let event_loop = EventLoop::<TrayEvent>::with_user_event()
@@ -393,8 +350,6 @@ mod app {
         let mut tray: Option<TrayIcon> = None;
         let event_loop_controller = controller.clone();
         let event_loop_stopping = stopping.clone();
-        let uninstall_requested = Arc::new(AtomicBool::new(false));
-        let event_loop_uninstall_requested = uninstall_requested.clone();
         let mut current_status = StatusSnapshot::default();
         let result = event_loop.run(move |event, event_loop| {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
@@ -441,10 +396,6 @@ mod app {
                 } else if event.id() == inspector.id() {
                     event_loop_controller
                         .toggle_async(Component::Inspector, current_status.inspector_running);
-                } else if event.id() == uninstall.id() {
-                    event_loop_uninstall_requested.store(true, Ordering::Release);
-                    event_loop_stopping.store(true, Ordering::Release);
-                    event_loop.exit();
                 } else if event.id() == quit.id() {
                     event_loop_stopping.store(true, Ordering::Release);
                     event_loop.exit();
@@ -457,30 +408,15 @@ mod app {
         let _ = ctrl_c_monitor.join();
 
         let event_loop_result = result.context("Windie tray event loop failed");
-        let shutdown_result = controller.stop_all();
         let unregister_result = crate::local::process::unregister_tray();
-        match (event_loop_result, shutdown_result, unregister_result) {
-            (Ok(()), Ok(()), Ok(())) => Ok(()),
-            (Err(event_error), Ok(()), Ok(())) => Err(event_error),
-            (Ok(()), Err(shutdown_error), Ok(())) => Err(shutdown_error),
-            (Ok(()), Ok(()), Err(unregister_error)) => Err(unregister_error),
-            (Err(event_error), Err(shutdown_error), Ok(())) => Err(anyhow!(
-                "{event_error}; tray shutdown cleanup failed: {shutdown_error:#}"
-            )),
-            (Err(event_error), Ok(()), Err(unregister_error)) => Err(anyhow!(
+        match (event_loop_result, unregister_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(event_error), Ok(())) => Err(event_error),
+            (Ok(()), Err(unregister_error)) => Err(unregister_error),
+            (Err(event_error), Err(unregister_error)) => Err(anyhow::anyhow!(
                 "{event_error}; tray PID cleanup failed: {unregister_error:#}"
             )),
-            (Ok(()), Err(shutdown_error), Err(unregister_error)) => Err(anyhow!(
-                "{shutdown_error:#}; tray PID cleanup failed: {unregister_error:#}"
-            )),
-            (Err(event_error), Err(shutdown_error), Err(unregister_error)) => Err(anyhow!(
-                "{event_error}; tray shutdown cleanup failed: {shutdown_error:#}; tray PID cleanup failed: {unregister_error:#}"
-            )),
         }?;
-
-        if uninstall_requested.load(Ordering::Acquire) {
-            controller.run_uninstall()?;
-        }
 
         Ok(())
     }

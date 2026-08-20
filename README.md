@@ -38,18 +38,15 @@ The public `windie` binary is the only CLI.
 From the repository root, run:
 
 ```bash
-cargo run --bin windie -- dev up
-```
-
-That starts the development gateway, API, and hot-reloading Inspector.
-
-Useful companions:
-
-```bash
-cargo run --bin windie -- dev status
-cargo run --bin windie -- dev down
+cargo run --bin windie -- dev run gateway
 cargo run --bin windie -- dev run api
+cargo run --bin windie -- dev run inspector
+cargo run --bin windie -- dev run tray
 ```
+
+Each command runs exactly one foreground development component. Start the
+components you need in separate terminals; Windie intentionally has no
+aggregate development runner.
 
 For any normal CLI command during development, use the same pattern:
 
@@ -83,10 +80,10 @@ catalog, manifests, README files, and icons to Vercel. It requires authenticated
 `gh` and `vercel` CLIs and does not modify the checked-in `marketplace/index.json`
 fixture.
 
-In development, React uses HMR. The Rust API and Bifrost gateway are built
-when `windie dev run` or `windie dev up` starts them; rerun the command after
-backend source changes. The release Inspector embeds the frontend and is
-intentionally not hot reloaded; use `windie dev up` for UI development.
+In development, React uses HMR when `windie dev run inspector` starts it. The
+Rust API and Bifrost gateway are built by their individual `windie dev run`
+commands; rerun the relevant command after backend source changes. The release
+Inspector embeds the frontend and is intentionally not hot reloaded.
 Installations in separate
 worktrees can run together by assigning distinct
 `WINDIE_GATEWAY_PORT`, `WINDIE_API_PORT`, and `WINDIE_INSPECTOR_PORT` values.

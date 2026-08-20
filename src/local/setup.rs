@@ -163,6 +163,22 @@ pub fn component_pid_file_path(
     })
 }
 
+/// Returns a component PID path without creating the Windie home directory.
+///
+/// Read-only status checks use this path so observing an uninstalled runtime
+/// does not create local state as a side effect.
+pub(crate) fn existing_component_pid_file_path(
+    component: crate::local::process::ManagedComponent,
+) -> Result<PathBuf> {
+    let layout = windie_layout()?;
+    Ok(match component {
+        crate::local::process::ManagedComponent::Gateway => layout.gateway_pid_file,
+        crate::local::process::ManagedComponent::Api => layout.api_pid_file,
+        crate::local::process::ManagedComponent::Inspector => layout.inspector_pid_file,
+        crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
+    })
+}
+
 /// Returns the exact Windie-owned paths that uninstall may remove.
 ///
 /// The data root is the only recursive target. Installed binaries are always

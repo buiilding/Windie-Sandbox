@@ -44,7 +44,12 @@ pub async fn run(command: Command) -> Result<()> {
         Command::GatewayOutput => {
             system::output_component(crate::local::process::ManagedComponent::Gateway)
         }
-        Command::Tray => crate::local::tray::run(),
+        Command::TrayStart => system::start_tray_process(),
+        Command::TrayStop => system::stop_tray_process(),
+        Command::TrayOutput => {
+            system::output_component(crate::local::process::ManagedComponent::Tray)
+        }
+        Command::TrayRun => system::run_tray(),
         Command::Status => system::status().await,
         Command::New => conversation::new_conversation().await,
         Command::List { json } => conversation::list_conversations(json),

@@ -10,7 +10,6 @@ use super::{
 /// Parses the `windie dev` command group.
 pub(super) fn parse_dev_command(args: &[String]) -> Command {
     match args {
-        [action] if action == "up" => Command::Dev(DevCommand::Up),
         [action, component] if action == "run" => match component.as_str() {
             "gateway" => Command::Dev(DevCommand::Run {
                 component: DevComponent::Gateway,
@@ -21,10 +20,11 @@ pub(super) fn parse_dev_command(args: &[String]) -> Command {
             "inspector" => Command::Dev(DevCommand::Run {
                 component: DevComponent::Inspector,
             }),
+            "tray" => Command::Dev(DevCommand::Run {
+                component: DevComponent::Tray,
+            }),
             _ => Command::Invalid,
         },
-        [action] if action == "status" => Command::Dev(DevCommand::Status),
-        [action] if action == "down" => Command::Dev(DevCommand::Down),
         _ => Command::Invalid,
     }
 }

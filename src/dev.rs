@@ -38,10 +38,7 @@ const LOCAL_MARKETPLACE_PORT: u16 = 8788;
 /// Runs the selected development workflow through the public CLI.
 pub async fn run_dev(command: DevCommand) -> Result<()> {
     match command {
-        DevCommand::Up => dev_up().await,
         DevCommand::Run { component } => dev_run(component).await,
-        DevCommand::Status => dev_status().await,
-        DevCommand::Down => dev_down().await,
     }
 }
 
@@ -75,39 +72,6 @@ pub async fn run_benchmark(command: BenchmarkCommand) -> Result<()> {
     }
 }
 
-/// Builds and runs gateway, API, and the HMR Inspector together.
-async fn dev_up() -> Result<()> {
-    println!("windie: starting development gateway");
-    let mut gateway = spawn_gateway().await?;
-    if let Err(error) = wait_for_gateway(&mut gateway).await {
-        stop_child(&mut gateway).await;
-        return Err(error);
-    }
-
-    let mut api = match spawn_component("api").await {
-        Ok(child) => child,
-        Err(error) => {
-            stop_child(&mut gateway).await;
-            return Err(error);
-        }
-    };
-    let mut inspector = match spawn_component("inspector").await {
-        Ok(child) => child,
-        Err(error) => {
-            stop_child(&mut api).await;
-            stop_child(&mut gateway).await;
-            return Err(error);
-        }
-    };
-    println!("windie: development API and Inspector are running; press Ctrl-C to stop");
-
-    let result = supervise_children(&mut gateway, &mut api, &mut inspector).await;
-    stop_child(&mut api).await;
-    stop_child(&mut inspector).await;
-    stop_child(&mut gateway).await;
-    result
-}
-
 /// Runs one development component in the foreground.
 async fn dev_run(component: DevComponent) -> Result<()> {
     match component {
@@ -122,10 +86,11 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             stop_child(&mut gateway).await;
             result
         }
-        DevComponent::Api | DevComponent::Inspector => {
+        DevComponent::Api | DevComponent::Inspector | DevComponent::Tray => {
             let component = match component {
                 DevComponent::Api => "api",
                 DevComponent::Inspector => "inspector",
+                DevComponent::Tray => "tray",
                 DevComponent::Gateway => unreachable!("gateway is handled above"),
             };
             let mut child = spawn_component(component).await?;
@@ -135,36 +100,6 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             result
         }
     }
-}
-
-/// Reports health for all three local runtime endpoints.
-async fn dev_status() -> Result<()> {
-    println!("windie dev status");
-    println!(
-        "gateway: {}",
-        health(&format!("{}/health", config::gateway_url())).await
-    );
-    println!(
-        "api: {}",
-        health(&format!("{}/api/health", config::api_url())).await
-    );
-    println!(
-        "inspector: {}",
-        health(&format!("http://{}/", config::inspector_address())).await
-    );
-    Ok(())
-}
-
-/// Stops all detached runtime components owned by the current environment.
-async fn dev_down() -> Result<()> {
-    for args in [
-        ["api", "stop"].as_slice(),
-        ["inspector", "stop"].as_slice(),
-        ["gateway", "stop"].as_slice(),
-    ] {
-        run_windie(args).await?;
-    }
-    Ok(())
 }
 
 /// One generated marketplace output, separated into a catalog site and archive assets.
@@ -767,6 +702,11 @@ async fn spawn_component(component: &str) -> Result<Child> {
         let mut command = Command::new(executable);
         command.args(["api", "run"]);
         command
+    } else if component == "tray" {
+        let executable = build_windie_binary(&root).await?;
+        let mut command = Command::new(executable);
+        command.args(["tray", "run"]);
+        command
     } else {
         bail!("unknown development component {component}");
     };
@@ -842,36 +782,6 @@ fn executable_name(name: &str) -> String {
 }
 
 /// Waits until one foreground child exits or Ctrl-C is pressed.
-async fn supervise_children(
-    gateway: &mut Child,
-    api: &mut Child,
-    inspector: &mut Child,
-) -> Result<()> {
-    loop {
-        if let Some(status) = gateway
-            .try_wait()
-            .context("failed to poll Bifrost process")?
-        {
-            return Err(anyhow!("Bifrost development process exited with {status}"));
-        }
-        if let Some(status) = api.try_wait().context("failed to poll API process")? {
-            return Err(anyhow!("API development process exited with {status}"));
-        }
-        if let Some(status) = inspector
-            .try_wait()
-            .context("failed to poll Inspector process")?
-        {
-            return Err(anyhow!(
-                "Inspector development process exited with {status}"
-            ));
-        }
-        if ctrl_c_or_tick().await {
-            return Ok(());
-        }
-    }
-}
-
-/// Waits until one foreground child exits or Ctrl-C is pressed.
 async fn supervise_one(child: &mut Child) -> Result<()> {
     loop {
         if let Some(status) = child.try_wait().context("failed to poll process")? {
@@ -896,27 +806,6 @@ async fn stop_child(child: &mut Child) {
     if child.try_wait().ok().flatten().is_none() {
         let _ = child.kill().await;
         let _ = timeout(Duration::from_secs(3), child.wait()).await;
-    }
-}
-
-/// Runs the public Windie executable through Cargo so the dev command uses the
-/// current checkout rather than a stale installed binary.
-async fn run_windie(args: &[&str]) -> Result<()> {
-    let root = repository_root()?;
-    let status = Command::new("cargo")
-        .args(["run", "--bin", "windie", "--"])
-        .args(args)
-        .current_dir(root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await
-        .context("failed to run windie lifecycle command")?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("windie lifecycle command exited with {status}")
     }
 }
 

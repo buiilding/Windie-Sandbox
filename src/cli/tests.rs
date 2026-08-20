@@ -93,10 +93,16 @@ fn reads_inspector_lifecycle_commands() {
 }
 
 #[test]
-fn reads_tray_command() {
-    let command = command_from_args(["windie".to_string(), "tray".to_string()]);
+fn reads_tray_lifecycle_commands_and_rejects_the_bare_command() {
+    let start = command_from_args(["windie", "tray", "start"].map(String::from));
+    let stop = command_from_args(["windie", "tray", "stop"].map(String::from));
+    let output = command_from_args(["windie", "tray", "output"].map(String::from));
+    let bare = command_from_args(["windie", "tray"].map(String::from));
 
-    assert!(matches!(command, Command::Tray));
+    assert!(matches!(start, Command::TrayStart));
+    assert!(matches!(stop, Command::TrayStop));
+    assert!(matches!(output, Command::TrayOutput));
+    assert!(matches!(bare, Command::Invalid));
 }
 
 #[test]
@@ -145,7 +151,7 @@ fn reads_onboard_command() {
 
 #[test]
 fn reads_repository_workflow_commands() {
-    let dev = command_from_args(["windie".to_string(), "dev".to_string(), "up".to_string()]);
+    let dev = command_from_args(["windie", "dev", "run", "tray"].map(String::from));
     let release = command_from_args([
         "windie".to_string(),
         "release".to_string(),
@@ -170,7 +176,12 @@ fn reads_repository_workflow_commands() {
         "--json".to_string(),
     ]);
 
-    assert!(matches!(dev, Command::Dev(DevCommand::Up)));
+    assert!(matches!(
+        dev,
+        Command::Dev(DevCommand::Run {
+            component: DevComponent::Tray
+        })
+    ));
     assert!(matches!(release, Command::Release(ReleaseCommand::Verify)));
     assert!(matches!(
         marketplace,
@@ -186,6 +197,26 @@ fn reads_repository_workflow_commands() {
             conversation_id: Some(conversation_id),
             options,
         }) if conversation_id.as_str() == "conversation-id" && options.runs == 10 && options.json
+    ));
+}
+
+#[test]
+fn rejects_aggregate_development_lifecycle_commands() {
+    assert!(matches!(
+        command_from_args(["windie", "dev", "up"].map(String::from)),
+        Command::Invalid
+    ));
+    assert!(matches!(
+        command_from_args(["windie", "dev", "down"].map(String::from)),
+        Command::Invalid
+    ));
+    assert!(matches!(
+        command_from_args(["windie", "dev", "status"].map(String::from)),
+        Command::Invalid
+    ));
+    assert!(matches!(
+        command_from_args(["windie", "dev", "run"].map(String::from)),
+        Command::Invalid
     ));
 }
 

@@ -126,8 +126,9 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, Inspector, and tray components.
 - ../vendor/windie-inspector/host/src/main.rs: standalone Inspector static host; its address
   and API endpoint are configurable through the local endpoint environment
-  settings. It is an independent Cargo package, not a Windie runtime target.
-- local/tray.rs: simple macOS/Windows tray controller that invokes the lifecycle CLI commands and polls localhost health.
+  settings. Its loopback `POST /shutdown` route lets the Inspector stop itself
+  gracefully. It is an independent Cargo package, not a Windie runtime target.
+- local/tray.rs: macOS/Windows tray presentation component that polls local component health and requests explicit single-component lifecycle operations.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers

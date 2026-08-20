@@ -17,3 +17,4 @@ pub use setup::{
     list_env_keys, remove_uninstall_plan, set_env_values, uninstall_plan, unset_env_values,
     user_home_dir, windie_home_dir,
 };
+pub(crate) use setup::existing_component_pid_file_path;
