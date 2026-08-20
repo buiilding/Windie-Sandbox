@@ -43,28 +43,26 @@ windie inspector start|stop|output
 
 ## Repository development workflow
 
-The public `windie` binary is the runtime CLI. Repository-only development,
-release packaging, and benchmarks live in the separate `windie-dev` binary:
+The public `windie` binary is the only CLI. Repository development, release
+packaging, marketplace work, and benchmarks use its command groups:
 
 ```bash
-source ./scripts/activate_windie-dev
-windie-dev dev up                 # build/start gateway and API, HMR Inspector
-windie-dev dev status
-windie-dev dev down
+cargo run --bin windie -- dev up                 # build/start gateway and API, HMR Inspector
+cargo run --bin windie -- dev status
+cargo run --bin windie -- dev down
 
-windie-dev release build
-windie-dev release install
-windie-dev release verify
+cargo run --bin windie -- release build
+cargo run --bin windie -- release install
+cargo run --bin windie -- release verify
 source ./scripts/activate_windie
 windie status
 ```
 
-`windie-dev` is built from the checkout and is not included in public release
-archives. In development, React uses HMR. The Rust API and Bifrost gateway are
-built when `windie-dev dev run` or `windie-dev dev up` starts them; rerun the
-command after backend source changes. The release Inspector embeds the
-frontend and is intentionally not hot reloaded; use `windie-dev dev up` for UI
-development. Installations in separate
+In development, React uses HMR. The Rust API and Bifrost gateway are built
+when `windie dev run` or `windie dev up` starts them; rerun the command after
+backend source changes. The release Inspector embeds the frontend and is
+intentionally not hot reloaded; use `windie dev up` for UI development.
+Installations in separate
 worktrees can run together by assigning distinct
 `WINDIE_GATEWAY_PORT`, `WINDIE_API_PORT`, and `WINDIE_INSPECTOR_PORT` values.
 

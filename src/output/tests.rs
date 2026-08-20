@@ -83,11 +83,15 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie gateway start".to_string()));
     assert!(lines.contains(&"  windie gateway stop".to_string()));
     assert!(lines.contains(&"  windie gateway output".to_string()));
+    assert!(lines.contains(&"  windie dev up".to_string()));
+    assert!(lines.contains(&"  windie dev run <gateway|api|inspector>".to_string()));
+    assert!(lines.contains(&"  windie release build|install|verify".to_string()));
+    assert!(lines.contains(&"  windie marketplace build|serve".to_string()));
     assert!(lines.contains(&"  windie install <target>".to_string()));
     assert!(lines.contains(&"  windie env MCP_KEY=value".to_string()));
-    assert!(!lines.contains(&"  windie bench".to_string()));
-    assert!(!lines.contains(&"  windie compare baseline".to_string()));
-    assert!(!lines.contains(&"  windie update baseline".to_string()));
+    assert!(lines.contains(&"  windie bench [conversation_id] [options]".to_string()));
+    assert!(lines.contains(&"  windie compare baseline [options]".to_string()));
+    assert!(lines.contains(&"  windie update baseline [options]".to_string()));
     assert!(!lines.contains(&"  windie bench live".to_string()));
     assert!(!lines.contains(&"Notes:".to_string()));
     assert!(lines.contains(&"Options:".to_string()));

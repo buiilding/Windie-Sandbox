@@ -44,8 +44,8 @@ for GitHub release descriptions; the detailed engineering history is kept in
 
 ## [0.2.9] - 2026-08-05
 
-- Added `windie-dev` for local development, release testing, and performance
-  checks.
+- Added repository development utilities for local development, release
+  testing, and performance checks.
 - Added easier commands for starting, stopping, and checking Windie locally.
 - Improved the welcome screen, theme defaults, conversation controls, and tool
   approval prompts.

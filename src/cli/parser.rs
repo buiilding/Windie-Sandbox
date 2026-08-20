@@ -20,6 +20,16 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [] => Command::Help,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" || arg == "-v" => Command::Version,
+        [command, rest @ ..] if command == "dev" => parse_dev_command(rest),
+        [command, rest @ ..] if command == "release" => parse_release_command(rest),
+        [command, rest @ ..] if command == "marketplace" => parse_marketplace_command(rest),
+        [command, rest @ ..] if command == "bench" => parse_benchmark_command(rest),
+        [command, subject, rest @ ..] if command == "compare" && subject == "baseline" => {
+            parse_compare_baseline_command(rest)
+        }
+        [command, subject, rest @ ..] if command == "update" && subject == "baseline" => {
+            parse_update_baseline_command(rest)
+        }
         [command, action] if command == "api" && action == "start" => Command::ApiStart,
         [command, action] if command == "api" && action == "stop" => Command::ApiStop,
         [command, action] if command == "api" && action == "output" => Command::ApiOutput,

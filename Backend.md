@@ -95,8 +95,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 ## CLI
 
-- lib.rs: shared module library consumed by both the public `windie` binary
-  and the repository-only `windie-dev` binary.
+- lib.rs: shared module library consumed by the public `windie` binary,
+  including its repository development command groups.
 - cli/: parses terminal arguments into typed CLI commands and adapts those
   commands to shared runtime operations for the terminal process.
 - cli/mod.rs: Public boundary and re-exports for cli folder.
@@ -117,13 +117,12 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - cli/session.rs: Parses session commands, `windie run ...`, etc.
 - cli/message.rs: Parses message-related commands, `insert .. message`, `update ... message`, etc.
 - cli/tool_schema.rs: Parses tool schema commands, `windie insert <conversation_id> toolschema ... `, etc.
-- bin/windie-dev.rs: Repository-only development supervisor, release workflow,
-  and benchmark command surface. It is not included in public release archives.
+- dev.rs: repository development supervisor, release workflow, local
+  marketplace, and benchmark command implementations reached through `windie`.
 - cli/env.rs: Parses environment variable commands, `windie env KEY=value`, etc.
 - cli/onboard.rs: terminal input/output adapter for onboarding. it prompts for provider choices, api keys, mcp secrets, and displays progress
-- bin/windie-dev.rs: foreground development supervisor, release workflow
-  adapter, and benchmark entry point. It is deliberately excluded from public
-  release archives.
+- dev.rs: foreground development supervisor, release workflow adapter, local
+  marketplace, and benchmark entry point dispatched by the public CLI.
 - local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, Inspector, and tray components.
 - ../vendor/windie-inspector/host/src/main.rs: standalone Inspector static host; its address
   and API endpoint are configurable through the local endpoint environment
@@ -293,7 +292,7 @@ Keep boundaries strict:
 - Only `runtime.rs` should coordinate query-like runtime flows.
 - Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and local Windie process/tray management.
 - Only `managed_runtime/` should install and resolve Windie-managed Node.js and uv runtimes for packaged components.
-- Only `dev/` should own repository-only development helper launchers, while
+- Only `dev.rs` should own repository development helper launchers, while
   `vendor/windie-inspector/` owns the first-party Inspector client and host.
 - Only `tool/` should own the model-facing provider registry and provider lifecycle projection.
 - Only `mcp/` should own MCP protocol, transport, MCPB, MCP tool discovery, and MCP result adaptation.

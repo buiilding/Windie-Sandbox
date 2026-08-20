@@ -123,8 +123,8 @@ require HTTPS; HTTP is accepted only for localhost fixtures.
 To build and host the current Parallel package locally:
 
 ```text
-cargo run --bin windie-dev -- marketplace build
-cargo run --bin windie-dev -- marketplace serve
+cargo run --bin windie -- marketplace build
+cargo run --bin windie -- marketplace serve
 ```
 
 The development server generates `target/local-marketplace`, calculates the

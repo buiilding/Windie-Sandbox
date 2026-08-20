@@ -1,8 +1,8 @@
-//! Repository-only Windie development supervisor.
+//! Repository development, release, marketplace, and benchmark workflows.
 //!
-//! `windie-dev` is intentionally separate from the installed runtime CLI.
-//! It owns foreground development processes, release packaging orchestration,
-//! and benchmarks that should never be part of a public Windie installation.
+//! This module keeps checkout-specific process supervision separate from the
+//! runtime adapters while exposing every command through the public `windie`
+//! CLI. It never creates a second executable or runtime path.
 
 use std::env;
 use std::fs;
@@ -19,14 +19,15 @@ use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 
-use windie::config;
-use windie::conversation::ConversationId;
-use windie::llm::gateway::GatewayUrl;
-use windie::llm::{BaseUrl, ModelName};
-use windie::operation;
-use windie::output::TerminalOutput;
-use windie::perf::{self, BenchmarkCategory, BenchmarkMode, BenchmarkOptions};
-use windie::plugin::{
+use crate::cli::{BenchmarkCommand, DevCommand, DevComponent, MarketplaceCommand, ReleaseCommand};
+use crate::config;
+use crate::conversation::ConversationId;
+use crate::llm::gateway::GatewayUrl;
+use crate::llm::{BaseUrl, ModelName};
+use crate::operation;
+use crate::output::TerminalOutput;
+use crate::perf::{self, BenchmarkMode, BenchmarkOptions};
+use crate::plugin::{
     InstalledPlugin, MarketplaceIndex, MarketplacePlugin, MarketplacePresentation,
     MarketplaceVersion, PluginComponentKind,
 };
@@ -34,65 +35,48 @@ use windie::plugin::{
 const DEV_GATEWAY_START_TIMEOUT: Duration = Duration::from_secs(180);
 const LOCAL_MARKETPLACE_PORT: u16 = 8788;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    if args.is_empty()
-        || args
-            .first()
-            .is_some_and(|arg| matches!(arg.as_str(), "help" | "--help" | "-h"))
-    {
-        return print_help();
-    }
-    match args.as_slice() {
-        [arg] if matches!(arg.as_str(), "--version" | "-V" | "-v") => {
-            println!("windie-dev {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        [command, action] if command == "dev" && action == "up" => dev_up().await,
-        [command, action, component] if command == "dev" && action == "run" => {
-            dev_run(component).await
-        }
-        [command, action] if command == "dev" && action == "status" => dev_status().await,
-        [command, action] if command == "dev" && action == "down" => dev_down().await,
-        [command, action] if command == "release" && action == "build" => {
-            release_script("package-release").await
-        }
-        [command, action] if command == "release" && action == "install" => {
-            release_script("test-local-installer").await
-        }
-        [command, action] if command == "release" && action == "verify" => release_verify().await,
-        [command, action] if command == "marketplace" && action == "build" => {
-            build_local_marketplace().map(|_| ())
-        }
-        [command, action] if command == "marketplace" && action == "serve" => {
-            serve_local_marketplace().await
-        }
-        [command, rest @ ..] if command == "bench" => benchmark(rest).await,
-        [command, subject, rest @ ..] if command == "compare" && subject == "baseline" => {
-            compare_baseline(rest).await
-        }
-        [command, subject, rest @ ..] if command == "update" && subject == "baseline" => {
-            update_baseline(rest).await
-        }
-        _ => {
-            print_help()?;
-            bail!("invalid windie-dev command")
-        }
+/// Runs the selected development workflow through the public CLI.
+pub async fn run_dev(command: DevCommand) -> Result<()> {
+    match command {
+        DevCommand::Up => dev_up().await,
+        DevCommand::Run { component } => dev_run(component).await,
+        DevCommand::Status => dev_status().await,
+        DevCommand::Down => dev_down().await,
     }
 }
 
-/// Prints the development-only command surface.
-fn print_help() -> Result<()> {
-    println!(
-        "windie-dev\n\nUsage:\n  windie-dev dev up\n  windie-dev dev run <gateway|api|inspector>\n  windie-dev dev status\n  windie-dev dev down\n  windie-dev release build\n  windie-dev release install\n  windie-dev release verify\n  windie-dev marketplace build\n  windie-dev marketplace serve\n  windie-dev bench [conversation_id] [options]\n  windie-dev compare baseline [options]\n  windie-dev update baseline [options]\n\nDevelopment processes run in the foreground. Press Ctrl-C to stop them.\n\nThe local marketplace is generated under target/local-marketplace and served at\nhttp://127.0.0.1:8788.\n\nBenchmark options:\n  --all --runs <n> --json\n  --persistence --conversation --serialization --runtime\n  --sessions --tools --mutations --mcp --api --lifecycle"
-    );
-    Ok(())
+/// Runs the selected release workflow through the public CLI.
+pub async fn run_release(command: ReleaseCommand) -> Result<()> {
+    match command {
+        ReleaseCommand::Build => release_script("package-release").await,
+        ReleaseCommand::Install => release_script("test-local-installer").await,
+        ReleaseCommand::Verify => release_verify().await,
+    }
+}
+
+/// Runs the selected local marketplace workflow through the public CLI.
+pub async fn run_marketplace(command: MarketplaceCommand) -> Result<()> {
+    match command {
+        MarketplaceCommand::Build => build_local_marketplace().map(|_| ()),
+        MarketplaceCommand::Serve => serve_local_marketplace().await,
+    }
+}
+
+/// Runs the selected deterministic benchmark workflow through the public CLI.
+pub async fn run_benchmark(command: BenchmarkCommand) -> Result<()> {
+    match command {
+        BenchmarkCommand::Run {
+            conversation_id,
+            options,
+        } => benchmark(conversation_id, options).await,
+        BenchmarkCommand::CompareBaseline { options } => compare_baseline(options).await,
+        BenchmarkCommand::UpdateBaseline { options } => update_baseline(options).await,
+    }
 }
 
 /// Builds and runs gateway, API, and the HMR Inspector together.
 async fn dev_up() -> Result<()> {
-    println!("windie-dev: starting gateway");
+    println!("windie: starting development gateway");
     let mut gateway = spawn_gateway().await?;
     if let Err(error) = wait_for_gateway(&mut gateway).await {
         stop_child(&mut gateway).await;
@@ -114,7 +98,7 @@ async fn dev_up() -> Result<()> {
             return Err(error);
         }
     };
-    println!("windie-dev: api and inspector are running; press Ctrl-C to stop");
+    println!("windie: development API and Inspector are running; press Ctrl-C to stop");
 
     let result = supervise_children(&mut gateway, &mut api, &mut inspector).await;
     stop_child(&mut api).await;
@@ -124,33 +108,37 @@ async fn dev_up() -> Result<()> {
 }
 
 /// Runs one development component in the foreground.
-async fn dev_run(component: &str) -> Result<()> {
+async fn dev_run(component: DevComponent) -> Result<()> {
     match component {
-        "gateway" => {
+        DevComponent::Gateway => {
             let mut gateway = spawn_gateway().await?;
             if let Err(error) = wait_for_gateway(&mut gateway).await {
                 stop_child(&mut gateway).await;
                 return Err(error);
             }
-            println!("windie-dev: gateway is running; press Ctrl-C to stop");
+            println!("windie: development gateway is running; press Ctrl-C to stop");
             let result = supervise_one(&mut gateway).await;
             stop_child(&mut gateway).await;
             result
         }
-        "api" | "inspector" => {
+        DevComponent::Api | DevComponent::Inspector => {
+            let component = match component {
+                DevComponent::Api => "api",
+                DevComponent::Inspector => "inspector",
+                DevComponent::Gateway => unreachable!("gateway is handled above"),
+            };
             let mut child = spawn_component(component).await?;
-            println!("windie-dev: {component} is running; press Ctrl-C to stop");
+            println!("windie: development {component} is running; press Ctrl-C to stop");
             let result = supervise_one(&mut child).await;
             stop_child(&mut child).await;
             result
         }
-        _ => bail!("unknown component {component}; expected gateway, api, or inspector"),
     }
 }
 
 /// Reports health for all three local runtime endpoints.
 async fn dev_status() -> Result<()> {
-    println!("windie-dev dev status");
+    println!("windie dev status");
     println!(
         "gateway: {}",
         health(&format!("{}/health", config::gateway_url())).await
@@ -791,10 +779,10 @@ async fn spawn_gateway() -> Result<Child> {
     }
     prepare_bifrost_workspace(&bifrost_root).await?;
 
-    let app_dir = windie::local::windie_home_dir()?.join("bifrost/data");
+    let app_dir = crate::local::windie_home_dir()?.join("bifrost/data");
     let port = gateway_url().port();
     let executable = root
-        .join("target/windie-dev")
+        .join("target/development")
         .join(executable_name("bifrost-http"));
     fs::create_dir_all(
         executable
@@ -1191,8 +1179,15 @@ fn local_install_dir() -> Result<PathBuf> {
 }
 
 /// Runs one provider-free benchmark command through the shared perf module.
-async fn benchmark(args: &[String]) -> Result<()> {
-    let (mode, conversation_id, options) = parse_benchmark_args(args)?;
+async fn benchmark(
+    conversation_id: Option<ConversationId>,
+    options: BenchmarkOptions,
+) -> Result<()> {
+    let mode = if conversation_id.is_some() {
+        BenchmarkMode::Conversation
+    } else {
+        BenchmarkMode::Local
+    };
     let model = benchmark_model().await?;
     let output = TerminalOutput;
     if options.runs == 1 && !options.json {
@@ -1226,8 +1221,7 @@ async fn benchmark(args: &[String]) -> Result<()> {
 }
 
 /// Compares the current local benchmark run with the checked-in baseline.
-async fn compare_baseline(args: &[String]) -> Result<()> {
-    let options = parse_options(args)?;
+async fn compare_baseline(options: BenchmarkOptions) -> Result<()> {
     let model = benchmark_model().await?;
     let baseline_path = perf::default_baseline_path()?;
     let baseline = perf::read_report(&baseline_path)?;
@@ -1245,8 +1239,7 @@ async fn compare_baseline(args: &[String]) -> Result<()> {
 }
 
 /// Replaces the checked-in benchmark baseline with a current local run.
-async fn update_baseline(args: &[String]) -> Result<()> {
-    let options = parse_options(args)?;
+async fn update_baseline(options: BenchmarkOptions) -> Result<()> {
     let model = benchmark_model().await?;
     let baseline_path = perf::default_baseline_path()?;
     let report = perf::run_report(
@@ -1274,72 +1267,6 @@ async fn benchmark_model() -> Result<ModelName> {
         .ok_or_else(|| anyhow!("no models are available; configure a provider key first"))
 }
 
-/// Parses the optional conversation selector and benchmark flags.
-fn parse_benchmark_args(
-    args: &[String],
-) -> Result<(BenchmarkMode, Option<ConversationId>, BenchmarkOptions)> {
-    let (mode, conversation_id, option_args) = match args.first() {
-        Some(value) if !value.starts_with('-') => (
-            BenchmarkMode::Conversation,
-            Some(ConversationId::new(value)),
-            &args[1..],
-        ),
-        _ => (BenchmarkMode::Local, None, args),
-    };
-    Ok((mode, conversation_id, parse_options(option_args)?))
-}
-
-/// Parses benchmark options shared by run, compare, and update commands.
-fn parse_options(args: &[String]) -> Result<BenchmarkOptions> {
-    let mut options = BenchmarkOptions::default();
-    let mut categories = Vec::new();
-    let mut all = false;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--json" => options.json = true,
-            "--all" => all = true,
-            "--runs" => {
-                index += 1;
-                options.runs = args
-                    .get(index)
-                    .ok_or_else(|| anyhow!("--runs requires a positive integer"))?
-                    .parse()
-                    .context("--runs requires a positive integer")?;
-                if options.runs == 0 {
-                    bail!("--runs requires a positive integer");
-                }
-            }
-            flag => {
-                let category = match flag {
-                    "--persistence" => BenchmarkCategory::Persistence,
-                    "--conversation" => BenchmarkCategory::Conversation,
-                    "--serialization" => BenchmarkCategory::Serialization,
-                    "--runtime" => BenchmarkCategory::Runtime,
-                    "--sessions" => BenchmarkCategory::Sessions,
-                    "--tools" => BenchmarkCategory::Tools,
-                    "--mutations" => BenchmarkCategory::Mutations,
-                    "--mcp" => BenchmarkCategory::Mcp,
-                    "--api" => BenchmarkCategory::Api,
-                    "--lifecycle" => BenchmarkCategory::Lifecycle,
-                    _ => bail!("unknown benchmark option {flag}"),
-                };
-                categories.push(category);
-            }
-        }
-        index += 1;
-    }
-    if all {
-        options.categories = BenchmarkCategory::all();
-    } else if !categories.is_empty() {
-        options.categories = BenchmarkCategory::all()
-            .into_iter()
-            .filter(|category| categories.contains(category))
-            .collect();
-    }
-    Ok(options)
-}
-
 fn gateway_url() -> GatewayUrl {
     GatewayUrl::new(config::gateway_url())
 }
@@ -1358,7 +1285,7 @@ async fn health(url: &str) -> &'static str {
 }
 
 fn repository_root() -> Result<PathBuf> {
-    if let Ok(root) = env::var("WINDIE_DEV_ROOT") {
+    if let Ok(root) = env::var("WINDIE_REPOSITORY_ROOT") {
         let root = PathBuf::from(root);
         if root.join("Cargo.toml").is_file() {
             return Ok(root);

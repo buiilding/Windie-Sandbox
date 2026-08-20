@@ -144,6 +144,43 @@ fn reads_onboard_command() {
 }
 
 #[test]
+fn reads_repository_workflow_commands() {
+    let dev = command_from_args(["windie".to_string(), "dev".to_string(), "up".to_string()]);
+    let release = command_from_args([
+        "windie".to_string(),
+        "release".to_string(),
+        "verify".to_string(),
+    ]);
+    let marketplace = command_from_args([
+        "windie".to_string(),
+        "marketplace".to_string(),
+        "build".to_string(),
+    ]);
+    let benchmark = command_from_args([
+        "windie".to_string(),
+        "bench".to_string(),
+        "conversation-id".to_string(),
+        "--runs".to_string(),
+        "10".to_string(),
+        "--json".to_string(),
+    ]);
+
+    assert!(matches!(dev, Command::Dev(DevCommand::Up)));
+    assert!(matches!(release, Command::Release(ReleaseCommand::Verify)));
+    assert!(matches!(
+        marketplace,
+        Command::Marketplace(MarketplaceCommand::Build)
+    ));
+    assert!(matches!(
+        benchmark,
+        Command::Benchmark(BenchmarkCommand::Run {
+            conversation_id: Some(conversation_id),
+            options,
+        }) if conversation_id.as_str() == "conversation-id" && options.runs == 10 && options.json
+    ));
+}
+
+#[test]
 fn reads_tools_command() {
     let command = command_from_args(["windie".to_string(), "tools".to_string()]);
 
@@ -982,15 +1019,23 @@ fn reads_status_command() {
 }
 
 #[test]
-fn rejects_developer_commands_from_public_cli() {
-    for args in [
-        vec!["windie", "bench"],
-        vec!["windie", "compare", "baseline"],
-        vec!["windie", "update", "baseline"],
-    ] {
-        let command = command_from_args(args.into_iter().map(String::from));
-        assert!(matches!(command, Command::Invalid));
-    }
+fn reads_benchmark_workflows_from_public_cli() {
+    let benchmark = command_from_args(["windie", "bench"].map(String::from));
+    let compare = command_from_args(["windie", "compare", "baseline"].map(String::from));
+    let update = command_from_args(["windie", "update", "baseline"].map(String::from));
+
+    assert!(matches!(
+        benchmark,
+        Command::Benchmark(BenchmarkCommand::Run { .. })
+    ));
+    assert!(matches!(
+        compare,
+        Command::Benchmark(BenchmarkCommand::CompareBaseline { .. })
+    ));
+    assert!(matches!(
+        update,
+        Command::Benchmark(BenchmarkCommand::UpdateBaseline { .. })
+    ));
 }
 
 #[test]

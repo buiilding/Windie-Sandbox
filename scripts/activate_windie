@@ -37,7 +37,7 @@ fi
 
 if [[ ! -x "$windie_install_dir/windie" ]]; then
   echo "local Windie binary not found at $windie_install_dir/windie" >&2
-  echo "run: windie-dev release install" >&2
+  echo "run: cargo run --bin windie -- release install" >&2
   return 1
 fi
 

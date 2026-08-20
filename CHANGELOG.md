@@ -10,6 +10,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 - Clarified that the generated plugin capability index is separate runtime
   context and remains present when a user replaces or clears a conversation
   system prompt.
+- Consolidated repository development, release, marketplace, and benchmark
+  workflows into the public `windie` CLI, removing the separate development
+  executable and activation scripts.
 - Added a durable database-wide session event stream with replayable numeric
   cursors for API and CLI clients.
 - Tightened SQLite-backed session execution claims with a unique fencing token
@@ -199,8 +202,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [0.2.9] - 2026-08-05
 
-- Added `windie-dev` for local development, release testing, and performance
-  checks.
+- Added repository development utilities for local development, release
+  testing, and performance checks.
 - Added performance tracking to help catch slowdowns.
 - Added custom ports so multiple Windie installs can run side by side.
 - Added `windie -v` and simpler help output.

@@ -17,6 +17,10 @@ mod tool;
 /// Dispatches one parsed command to its terminal adapter.
 pub async fn run(command: Command) -> Result<()> {
     match command {
+        Command::Dev(command) => crate::dev::run_dev(command).await,
+        Command::Release(command) => crate::dev::run_release(command).await,
+        Command::Marketplace(command) => crate::dev::run_marketplace(command).await,
+        Command::Benchmark(command) => crate::dev::run_benchmark(command).await,
         Command::ApiStart => system::start_api_process(),
         Command::ApiStop => system::stop_api_process(),
         Command::ApiOutput => {

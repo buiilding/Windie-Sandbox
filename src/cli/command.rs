@@ -1,12 +1,21 @@
 //! Typed CLI command data.
 
 use super::*;
+use crate::perf::BenchmarkOptions;
 
 /// Parsed startup action for one `windie` process.
 ///
 /// This is the CLI boundary's typed contract. Downstream code should match on
 /// this enum instead of inspecting raw argv strings.
 pub enum Command {
+    /// Run a repository development workflow through the public CLI.
+    Dev(DevCommand),
+    /// Run a repository release workflow through the public CLI.
+    Release(ReleaseCommand),
+    /// Build or serve the repository's local marketplace through the public CLI.
+    Marketplace(MarketplaceCommand),
+    /// Run, compare, or update deterministic local benchmarks.
+    Benchmark(BenchmarkCommand),
     /// Start the detached localhost developer API server.
     ApiStart,
     /// Stop the detached localhost developer API server.
@@ -167,4 +176,46 @@ pub enum EnvCommand {
     List,
     Unset(Vec<String>),
     Path,
+}
+
+/// Repository development workflow selected by `windie dev`.
+pub enum DevCommand {
+    Up,
+    Run { component: DevComponent },
+    Status,
+    Down,
+}
+
+/// Foreground repository component selected by `windie dev run`.
+pub enum DevComponent {
+    Gateway,
+    Api,
+    Inspector,
+}
+
+/// Repository release workflow selected by `windie release`.
+pub enum ReleaseCommand {
+    Build,
+    Install,
+    Verify,
+}
+
+/// Local marketplace workflow selected by `windie marketplace`.
+pub enum MarketplaceCommand {
+    Build,
+    Serve,
+}
+
+/// Deterministic local benchmark workflow selected by the public CLI.
+pub enum BenchmarkCommand {
+    Run {
+        conversation_id: Option<ConversationId>,
+        options: BenchmarkOptions,
+    },
+    CompareBaseline {
+        options: BenchmarkOptions,
+    },
+    UpdateBaseline {
+        options: BenchmarkOptions,
+    },
 }
