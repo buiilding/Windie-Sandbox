@@ -239,9 +239,7 @@ mod app {
         /// Reads one component status for an explicit menu action. This runs
         /// only in the tray worker thread, never in the UI event loop.
         fn status_for(&self, component: Component) -> bool {
-            tray_runtime()
-                .block_on(self.status())
-                .running(component)
+            tray_runtime().block_on(self.status()).running(component)
         }
     }
 
@@ -329,6 +327,8 @@ mod app {
         let (status_sender, status_receiver) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         start_status_monitor(controller.clone(), status_sender, stopping.clone());
+        let _notification_observer =
+            crate::local::tray_notification::start_test_completion_observer(stopping.clone());
 
         let gateway = MenuItem::new("Start Gateway", true, None);
         let api = MenuItem::new("Start API", true, None);

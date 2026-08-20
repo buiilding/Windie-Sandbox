@@ -88,6 +88,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/component.rs: HTTP handlers for listing and managing installed tool components. The current `/api/providers` routes remain backward-compatible.
 - api/plugin.rs: marketplace discovery plus plugin install and uninstall routes;
   returns generated presentation summaries alongside versioned releases.
+- api/dev.rs: volatile development-only presentation signals, including the
+  tray assistant-completed notification probe; it never writes session state.
 - api/env.rs: securely writes manifest-declared provider secrets to ~/.windie/.env and refuses arbitrary environment keys.
 - api/shutdown.rs: unauthenticated localhost graceful-stop route used by `windie api stop`; signals api/mod.rs without changing Bifrost.
 - api/tests.rs: test HTTP routes, unauthenticated access, error mapping, SSE/session behavior, conversation operating, tools, and mock Bifrost responses.
@@ -128,7 +130,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
   and API endpoint are configurable through the local endpoint environment
   settings. Its loopback `POST /shutdown` route lets the Inspector stop itself
   gracefully. It is an independent Cargo package, not a Windie runtime target.
-- local/tray.rs: macOS/Windows tray presentation component that polls local component health and requests explicit single-component lifecycle operations.
+- local/tray.rs: macOS/Windows tray presentation component that polls local component health, requests explicit single-component lifecycle operations, and starts the notification observer.
+- local/tray_notification.rs: reconnecting development-only tray SSE observer that turns an explicit assistant-completed probe into a native notification without touching durable session state.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers
@@ -186,7 +189,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/mod.rs: Public boundary and re-exports for local folder.
 - local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, and temporary compatibility dependency installs.
 - local/process.rs: local Windie process lifecycle, PID files, logs, and shutdown.
-- local/tray.rs: local desktop tray lifecycle and health polling.
+- local/tray.rs: local desktop tray lifecycle, health polling, and notification-observer startup.
+- local/tray_notification.rs: local native notification probe observer for the tray.
 - managed_runtime/: downloads, verifies, extracts, and resolves managed Node.js/uv runtimes for packaged MCP components.
 - managed_runtime/mod.rs: owns shared managed runtime installation and executable resolution.
 - output/:

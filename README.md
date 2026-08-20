@@ -48,6 +48,19 @@ Each command runs exactly one foreground development component. Start the
 components you need in separate terminals; Windie intentionally has no
 aggregate development runner.
 
+### Tray notification probe (macOS)
+
+After restarting the development API and tray, send the development-only
+completion probe from a third terminal:
+
+```bash
+curl -i -X POST http://127.0.0.1:8787/api/dev/tray-notifications/assistant-completed
+```
+
+The response includes `tray_receivers: 1` when the tray is connected, then the
+tray shows a native `Windie — Assistant finished` notification. This probe does
+not create a conversation, session, or durable runtime event.
+
 For any normal CLI command during development, use the same pattern:
 
 ```bash

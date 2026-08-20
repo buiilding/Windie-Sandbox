@@ -14,6 +14,9 @@ pub(super) struct ApiState {
     pub(super) plugin_catalog: Arc<crate::plugin::PluginCatalog>,
     pub(super) tool_registry: Arc<ToolProviderRegistry>,
     pub(super) session_manager: Arc<SessionManager>,
+    /// Volatile, development-only signals consumed by the native tray test.
+    pub(super) tray_test_notifications:
+        tokio::sync::broadcast::Sender<crate::api::dev::TrayTestNotification>,
     /// Broadcasts a requested API shutdown to the server task.
     pub(super) shutdown_tx: tokio::sync::watch::Sender<bool>,
 }

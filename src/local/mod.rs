@@ -7,6 +7,7 @@
 pub mod process;
 mod setup;
 pub mod tray;
+pub mod tray_notification;
 
 #[cfg(test)]
 pub(crate) static ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

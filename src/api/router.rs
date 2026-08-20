@@ -43,6 +43,11 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/status", get(status))
         .route("/api/events", get(global_events))
         .route("/api/events/cursor", get(global_event_cursor))
+        .route("/api/dev/tray-notifications", get(tray_test_notifications))
+        .route(
+            "/api/dev/tray-notifications/assistant-completed",
+            post(report_assistant_completed_for_tray),
+        )
         .route("/api/shutdown", post(shutdown))
         .route("/api/models", get(list_models))
         .route("/api/llm/providers", get(list_provider_catalog))

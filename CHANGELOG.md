@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added a development-only API-to-tray notification probe that leaves sessions
+  and conversations untouched, allowing macOS tray notification delivery to be
+  verified independently before durable completion notifications are enabled.
 - Added optional, validated upstream GitHub repository links to package
   presentation metadata; marketplace builds publish them and Inspector shows
   them as plugin resources.

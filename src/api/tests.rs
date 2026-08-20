@@ -129,6 +129,26 @@ fn aggregate_event_envelope_namespaces_session_events() {
 }
 
 #[tokio::test]
+async fn tray_notification_probe_route_accepts_a_completion_signal() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+
+    let response = app
+        .oneshot(authed_request(
+            Method::POST,
+            "/api/dev/tray-notifications/assistant-completed",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = response_json_body(response).await;
+    assert_eq!(body["tray_receivers"], 0);
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn aggregate_event_routes_replay_filtered_cross_session_events() {
     let db_path = temp_database_path();
     let app = test_app(db_path.clone());
@@ -1616,6 +1636,7 @@ fn test_app_with_urls_and_shutdown(
         )
         .with_plugin_catalog(plugin_catalog.clone()),
     );
+    let (tray_test_notifications, _) = tokio::sync::broadcast::channel(16);
     router(ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
@@ -1626,6 +1647,7 @@ fn test_app_with_urls_and_shutdown(
         plugin_catalog,
         tool_registry,
         session_manager,
+        tray_test_notifications,
         shutdown_tx,
     })
 }
@@ -1650,6 +1672,7 @@ fn test_app_with_tool_registry(
         )
         .with_plugin_catalog(plugin_catalog.clone()),
     );
+    let (tray_test_notifications, _) = tokio::sync::broadcast::channel(16);
     router(ApiState {
         gateway_url: "http://localhost:8080".to_string(),
         base_url: "http://localhost:8080/v1".to_string(),
@@ -1660,6 +1683,7 @@ fn test_app_with_tool_registry(
         plugin_catalog,
         tool_registry,
         session_manager,
+        tray_test_notifications,
         shutdown_tx: watch::channel(false).0,
     })
 }
