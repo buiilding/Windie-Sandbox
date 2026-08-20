@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use tokio::sync::broadcast;
@@ -32,6 +33,9 @@ use crate::store::{SessionRuntimeMessage, Store};
 use crate::tool::ToolProviderRegistry;
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
+/// Idle duration between explicit user activity or completed idle wakeups.
+pub const IDLE_WAKEUP_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const IDLE_WAKEUP_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Live subscription to events from one session.
 pub struct SessionSubscription {
@@ -196,6 +200,73 @@ impl SessionManager {
         )
     }
 
+    /// Persists whether this session should autonomously wake after inactivity.
+    pub fn set_keep_awake(&self, session_id: &SessionId, keep_awake: bool) -> Result<Session> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
+        let mut store = self.open_store()?;
+        store.set_session_keep_awake(session_id, keep_awake)
+    }
+
+    /// Starts every enabled session whose user-activity and wakeup cooldowns
+    /// have elapsed. The SQLite claim repeats the eligibility check so a user
+    /// interaction can win a race with this process-local scheduler.
+    pub fn start_due_idle_wakeups(&self) -> Result<usize> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| anyhow::anyhow!("system clock is before unix epoch"))?
+            .as_millis() as i64;
+        self.start_due_idle_wakeups_at(now)
+    }
+
+    /// Starts eligible idle wakeups using an explicit clock value for tests.
+    pub fn start_due_idle_wakeups_at(&self, now: i64) -> Result<usize> {
+        let eligible_before = now - IDLE_WAKEUP_INTERVAL.as_millis() as i64;
+        let store = self.open_store()?;
+        let sessions = store
+            .list_sessions()?
+            .into_iter()
+            .filter(|session| {
+                session.keep_awake
+                    && session.last_user_activity_at <= eligible_before
+                    && session
+                        .last_idle_wakeup_completed_at
+                        .is_none_or(|completed_at| completed_at <= eligible_before)
+            })
+            .collect::<Vec<_>>();
+        drop(store);
+
+        let mut started = 0;
+        for session in sessions {
+            if self.start_idle_wakeup(&session.id, eligible_before)? {
+                started += 1;
+            }
+        }
+        Ok(started)
+    }
+
+    /// Runs the API process's lightweight idle-wakeup scheduler until shutdown.
+    pub async fn run_idle_wakeup_scheduler(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let mut interval = tokio::time::interval(IDLE_WAKEUP_POLL_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(error) = self.start_due_idle_wakeups() {
+                        eprintln!("failed to start due idle wakeups: {error}");
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolves a conversation head to its backend-owned session branch.
     pub fn resolve_session_at_head(
         &self,
@@ -266,6 +337,7 @@ impl SessionManager {
                 "session is waiting for tool approval",
             ));
         }
+        store.record_session_user_activity(session_id)?;
 
         let prepared = operation::prepare_message_input(parts)?;
         if active {
@@ -398,6 +470,7 @@ impl SessionManager {
                 "session is waiting for tool approval",
             ));
         }
+        store.record_session_user_activity(session_id)?;
 
         if store.session_input_count(session_id)? > 0 {
             let claimed = store.claim_session_execution(
@@ -423,6 +496,7 @@ impl SessionManager {
                 &claimed.claim,
                 SessionStatus::Failed,
                 Some("queued session input disappeared after execution claim"),
+                false,
             )?;
             return Err(anyhow::anyhow!(
                 "queued session input disappeared after execution claim"
@@ -597,6 +671,8 @@ impl SessionManager {
         let manager = self.clone();
         let run_id_for_task = session_id.clone();
         let task = tokio::spawn(async move {
+            let record_idle_wakeup_completion =
+                matches!(&command, operation::SessionExecutionCommand::IdleWakeup);
             let result = manager
                 .run_task(SessionTaskInput {
                     session_id: run_id_for_task.clone(),
@@ -607,7 +683,12 @@ impl SessionManager {
                 .await;
             if let Err(error) = result {
                 manager
-                    .record_failure(&run_id_for_task, &claim, &error)
+                    .record_failure(
+                        &run_id_for_task,
+                        &claim,
+                        &error,
+                        record_idle_wakeup_completion,
+                    )
                     .unwrap_or_else(|failure_error| {
                         eprintln!("failed to persist run failure: {failure_error}");
                     });
@@ -649,12 +730,20 @@ impl SessionManager {
             self.tools.as_ref(),
             self.plugin_catalog.as_deref(),
         );
+        let record_idle_wakeup_completion =
+            matches!(&command, operation::SessionExecutionCommand::IdleWakeup);
 
         let outcome =
             operation::execute_session(&output, &messages, &mut store, &session, command, runtime)
                 .await?;
 
-        if let Some(record) = operation::finish_session(&mut store, &session_id, &claim, outcome)? {
+        if let Some(record) = operation::finish_session(
+            &mut store,
+            &session_id,
+            &claim,
+            outcome,
+            record_idle_wakeup_completion,
+        )? {
             let _ = messages.sender.send(record);
         } else {
             store.release_cancelled_session_execution(&session_id, &claim)?;
@@ -668,9 +757,16 @@ impl SessionManager {
         session_id: &SessionId,
         claim: &SessionExecutionClaim,
         error: &anyhow::Error,
+        record_idle_wakeup_completion: bool,
     ) -> Result<()> {
         let mut store = self.open_store()?;
-        let record = operation::record_session_failure(&mut store, session_id, claim, error)?;
+        let record = operation::record_session_failure(
+            &mut store,
+            session_id,
+            claim,
+            error,
+            record_idle_wakeup_completion,
+        )?;
         if record.is_none() {
             store.release_cancelled_session_execution(session_id, claim)?;
         }
@@ -738,6 +834,7 @@ impl SessionManager {
                         &claimed.claim,
                         SessionStatus::Completed,
                         None,
+                        false,
                     );
                 }
                 Err(error) => {
@@ -756,6 +853,38 @@ impl SessionManager {
                 .expect("run manager lock poisoned")
                 .remove(session_id.as_str());
         }
+    }
+
+    /// Claims and starts one eligible autonomous session without adding a user
+    /// message to its conversation tree.
+    fn start_idle_wakeup(&self, session_id: &SessionId, eligible_before: i64) -> Result<bool> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
+        if self
+            .active
+            .lock()
+            .expect("run manager lock poisoned")
+            .contains_key(session_id.as_str())
+        {
+            return Ok(false);
+        }
+
+        let mut store = self.open_store()?;
+        let claimed = match store.claim_session_execution(
+            session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::IdleWakeup { eligible_before },
+        ) {
+            Ok(claimed) => claimed,
+            Err(_) => return Ok(false),
+        };
+        drop(store);
+        self.spawn(
+            claimed.session.id,
+            claimed.claim,
+            operation::SessionExecutionCommand::IdleWakeup,
+        );
+        Ok(true)
     }
 
     /// Returns the process-local gate for one session.
@@ -812,6 +941,7 @@ impl SessionManager {
                 &claim,
                 SessionStatus::Failed,
                 Some("session task was interrupted by Windie restart"),
+                false,
             )?;
             store.append_session_event(
                 &session.id,

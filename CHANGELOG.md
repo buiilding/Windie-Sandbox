@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added a durable per-session Keep awake toggle in Inspector. Enabled sessions
+  run the normal runtime after 30 minutes without user activity, receive the
+  configured open-ended wakeup prompt, and repeat 30 minutes after each idle
+  run completes until the user pauses the session.
 - Allowed the hosted Inspector at `app.windieos.com` to call Windie's local
   loopback API for the no-login browser-connection experiment, and added
   Vercel deployment configuration for the Inspector frontend.

@@ -105,7 +105,7 @@ async fn execute_cli_session(
     let claimed = store.claim_session_execution(session_id, SessionExecutionOwner::Cli, start)?;
     let session = &claimed.session;
     let runtime_context = CliRuntimeContext::load()?;
-    let runtime = runtime_context.dependencies(&session, gateway_url, base_url);
+    let runtime = runtime_context.dependencies(session, gateway_url, base_url);
     let recorder = SessionEventRecorder::new(None, session_id.clone(), claimed.claim.clone());
     let cli_output = CliSessionOutput::new(recorder.clone());
     let outcome = execute_session(&cli_output, &recorder, store, session, command, runtime).await;
@@ -122,7 +122,7 @@ fn finish_cli_session(
     outcome: Result<RuntimeOutcome>,
 ) -> Result<()> {
     let result = outcome.and_then(|outcome| {
-        finish_session(store, session_id, claim, outcome).and_then(|record| {
+        finish_session(store, session_id, claim, outcome, false).and_then(|record| {
             if record.is_none() {
                 store.release_cancelled_session_execution(session_id, claim)?;
             }
@@ -130,7 +130,7 @@ fn finish_cli_session(
         })
     });
     if let Err(error) = result {
-        match record_session_failure(store, session_id, claim, &error) {
+        match record_session_failure(store, session_id, claim, &error, false) {
             Ok(None) => {
                 store.release_cancelled_session_execution(session_id, claim)?;
             }

@@ -1231,6 +1231,40 @@ async fn session_responses_include_latest_event_cursor() {
 }
 
 #[tokio::test]
+async fn session_keep_awake_route_persists_the_setting() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("keep-awake-api-session");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+    drop(store);
+
+    let response = response_json(
+        app.oneshot(authed_request(
+            Method::PATCH,
+            &format!("/api/sessions/{session_id}/keep-awake"),
+            Some(json!({"keep_awake": true})),
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+
+    assert_eq!(response["keep_awake"], true);
+    assert!(
+        Store::open_at(&db_path)
+            .unwrap()
+            .load_session(&session_id)
+            .unwrap()
+            .keep_awake
+    );
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn resolve_session_route_uses_backend_head_resolution() {
     let db_path = temp_database_path();
     let app = test_app(db_path.clone());

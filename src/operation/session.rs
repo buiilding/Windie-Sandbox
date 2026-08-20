@@ -26,6 +26,8 @@ pub struct SessionResume {
 /// same runtime workflow for continuation and approval decisions.
 pub enum SessionExecutionCommand {
     Continue,
+    /// Runs one autonomous turn after an enabled session has been idle long enough.
+    IdleWakeup,
     ApproveTool(ToolCallId),
     DenyTool(ToolCallId),
 }
@@ -268,6 +270,7 @@ pub fn finish_session(
     session_id: &SessionId,
     claim: &SessionExecutionClaim,
     outcome: RuntimeOutcome,
+    record_idle_wakeup_completion: bool,
 ) -> Result<Option<crate::session::SessionEventRecord>> {
     match outcome {
         RuntimeOutcome::Completed { head_message_id } => {
@@ -280,6 +283,7 @@ pub fn finish_session(
                 SessionEvent::Completed {
                     message_id: event_message_id,
                 },
+                record_idle_wakeup_completion,
             )
         }
         RuntimeOutcome::WaitingForApproval { head_message_id } => store
@@ -289,6 +293,7 @@ pub fn finish_session(
                 SessionStatus::WaitingForApproval,
                 Some(&head_message_id),
                 SessionEvent::WaitingForApproval,
+                record_idle_wakeup_completion,
             ),
     }
 }
@@ -341,6 +346,7 @@ pub fn record_session_failure(
     session_id: &SessionId,
     claim: &SessionExecutionClaim,
     error: &anyhow::Error,
+    record_idle_wakeup_completion: bool,
 ) -> Result<Option<crate::session::SessionEventRecord>> {
     let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
     let message = error
@@ -354,6 +360,7 @@ pub fn record_session_failure(
         claim,
         SessionStatus::Failed,
         Some(&message),
+        record_idle_wakeup_completion,
     )? {
         return Ok(None);
     }
@@ -390,6 +397,19 @@ where
                 &session.conversation_id,
                 session.current_head_message_id.as_ref(),
                 runtime,
+                None,
+            )
+            .await
+        }
+        SessionExecutionCommand::IdleWakeup => {
+            advance_session_until_blocked(
+                output,
+                messages,
+                store,
+                &session.conversation_id,
+                session.current_head_message_id.as_ref(),
+                runtime,
+                Some(crate::runtime::wakeup::IDLE_WAKEUP_PROMPT),
             )
             .await
         }
@@ -428,6 +448,7 @@ pub(in crate::operation) async fn advance_session_until_blocked<O, E>(
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     runtime: RuntimeDependencies<'_>,
+    wakeup_prompt: Option<&str>,
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
@@ -451,6 +472,7 @@ where
             tools: runtime.tools,
             plugin_catalog: runtime.plugin_catalog,
             model_request: RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
+            wakeup_prompt,
         },
         events,
     )

@@ -132,6 +132,13 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
     );
     session_manager.recover_interrupted_sessions()?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let idle_wakeup_manager = session_manager.clone();
+    let idle_wakeup_shutdown = shutdown_tx.clone();
+    tokio::spawn(async move {
+        idle_wakeup_manager
+            .run_idle_wakeup_scheduler(idle_wakeup_shutdown.subscribe())
+            .await;
+    });
     let (tray_test_notifications, _) = tokio::sync::broadcast::channel(16);
     let state = ApiState {
         gateway_url: gateway_url.to_string(),

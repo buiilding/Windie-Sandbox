@@ -43,13 +43,23 @@ where
         events,
     )?;
 
-    let model_context = ContextBuilder::build_model_context(
+    let mut model_context = ContextBuilder::build_model_context(
         store,
         input.conversation_id,
         head_message_id.as_ref(),
         input.tools,
         input.plugin_catalog,
     )?;
+    if let Some(wakeup_prompt) = input.wakeup_prompt {
+        model_context.messages.push(Message {
+            id: None,
+            parent_message_id: None,
+            role: Role::System,
+            content: wakeup_prompt.to_string(),
+            parts: Vec::new(),
+            metadata: None,
+        });
+    }
 
     let assistant_response =
         stream_with_retry(output, llm, &model_context, input.model_request).await?;
@@ -99,6 +109,7 @@ where
     E: RuntimeMessagePersistence,
 {
     let mut head_message_id = input.head_message_id.cloned();
+    let mut wakeup_prompt = input.wakeup_prompt;
 
     loop {
         match resolve_next_automatic_tool_call_at_head(
@@ -127,9 +138,11 @@ where
                     tools: input.tools,
                     plugin_catalog: input.plugin_catalog,
                     model_request: input.model_request,
+                    wakeup_prompt,
                 };
                 let message = advance_turn(output, llm, store, turn_input, events).await?;
                 head_message_id = message.id.clone();
+                wakeup_prompt = None;
                 let has_tool_calls = message
                     .metadata
                     .as_ref()

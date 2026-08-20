@@ -211,6 +211,64 @@ fn sets_database_schema_version() {
 }
 
 #[test]
+fn keep_awake_session_claim_requires_idle_cooldowns_and_records_completion() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("keep-awake-session");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    let enabled = store.set_session_keep_awake(&session_id, true).unwrap();
+    assert!(enabled.keep_awake);
+    assert!(
+        store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::IdleWakeup {
+                    eligible_before: enabled.last_user_activity_at - 1,
+                },
+            )
+            .is_err()
+    );
+
+    let claimed = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::IdleWakeup {
+                eligible_before: enabled.last_user_activity_at,
+            },
+        )
+        .unwrap();
+    store
+        .finish_claimed_session_execution_at_head(
+            &session_id,
+            &claimed.claim,
+            SessionStatus::Completed,
+            None,
+            SessionEvent::Completed { message_id: None },
+            true,
+        )
+        .unwrap();
+
+    let completed = store.load_session(&session_id).unwrap();
+    let completion = completed.last_idle_wakeup_completed_at.unwrap();
+    assert!(
+        store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::IdleWakeup {
+                    eligible_before: completion - 1,
+                },
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn creates_performance_indexes() {
     let store = Store::open_memory().unwrap();
 
@@ -3179,6 +3237,7 @@ fn durable_execution_claim_serializes_api_and_cli_and_preserves_cancellation() {
                 &claimed.claim,
                 SessionStatus::Completed,
                 None,
+                false,
             )
             .unwrap()
     );

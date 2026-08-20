@@ -9,6 +9,10 @@
 use crate::conversation::ToolCallId;
 use crate::session::SessionId;
 
+/// Open-ended runtime message injected for an enabled idle session's first
+/// model turn. It is not stored as user input in the conversation tree.
+pub const IDLE_WAKEUP_PROMPT: &str = "You have been woken because the user has been inactive for a while. Review the current context and use this time as you judge most useful. You may take any available action. If there is nothing useful to do, say so briefly.";
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Reason Windie should resume runtime activity on a durable session.

@@ -155,6 +155,17 @@ impl Store {
                 ],
             )
             .context("failed to enqueue session input")?;
+        self.connection
+            .execute(
+                "
+                UPDATE sessions
+                SET last_user_activity_at = ?1,
+                    updated_at = ?1
+                WHERE id = ?2
+                ",
+                params![now, session_id.as_str()],
+            )
+            .context("failed to record queued session user activity")?;
 
         Ok(input_id)
     }
@@ -395,10 +406,11 @@ impl Store {
                                 model,
                                 reasoning,
                                 error,
+                                last_user_activity_at,
                                 created_at,
                                 updated_at
                             )
-                            VALUES (?1, ?2, ?3, ?4, 'ready', ?5, ?6, NULL, ?7, ?7)
+                            VALUES (?1, ?2, ?3, ?4, 'ready', ?5, ?6, NULL, ?7, ?7, ?7)
                             ",
                             params![
                                 session_id.as_str(),
@@ -472,10 +484,11 @@ impl Store {
                     model,
                     reasoning,
                     error,
+                    last_user_activity_at,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?8)
                 ",
                 params![
                     session_id.as_str(),
@@ -510,6 +523,9 @@ impl Store {
                     model,
                     reasoning,
                     error,
+                    keep_awake,
+                    last_user_activity_at,
+                    last_idle_wakeup_completed_at,
                     created_at,
                     updated_at
                 FROM sessions
@@ -540,6 +556,9 @@ impl Store {
                     model,
                     reasoning,
                     error,
+                    keep_awake,
+                    last_user_activity_at,
+                    last_idle_wakeup_completed_at,
                     created_at,
                     updated_at
                 FROM sessions
@@ -575,6 +594,9 @@ impl Store {
                     model,
                     reasoning,
                     error,
+                    keep_awake,
+                    last_user_activity_at,
+                    last_idle_wakeup_completed_at,
                     created_at,
                     updated_at
                 FROM sessions
@@ -589,6 +611,51 @@ impl Store {
             .context("failed to list conversation runtime sessions")?
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("failed to decode conversation runtime sessions")
+    }
+
+    /// Enables or pauses autonomous idle wakeups for one session.
+    ///
+    /// Turning the setting on counts as user activity so a long-dormant
+    /// session does not wake immediately after the user enables it.
+    pub fn set_session_keep_awake(
+        &mut self,
+        session_id: &SessionId,
+        keep_awake: bool,
+    ) -> Result<Session> {
+        self.ensure_session_exists(session_id)?;
+        let now = now_millis()?;
+        self.connection
+            .execute(
+                "
+                UPDATE sessions
+                SET keep_awake = ?1,
+                    last_user_activity_at = CASE WHEN ?1 THEN ?2 ELSE last_user_activity_at END,
+                    updated_at = ?2
+                WHERE id = ?3
+                ",
+                params![keep_awake, now, session_id.as_str()],
+            )
+            .context("failed to update session keep-awake setting")?;
+        self.load_session(session_id)
+    }
+
+    /// Records an explicit user interaction that should reset idle wakeup
+    /// eligibility without changing the session's selected conversation head.
+    pub fn record_session_user_activity(&mut self, session_id: &SessionId) -> Result<()> {
+        self.ensure_session_exists(session_id)?;
+        let now = now_millis()?;
+        self.connection
+            .execute(
+                "
+                UPDATE sessions
+                SET last_user_activity_at = ?1,
+                    updated_at = ?1
+                WHERE id = ?2
+                ",
+                params![now, session_id.as_str()],
+            )
+            .context("failed to record session user activity")?;
+        Ok(())
     }
 
     /// Deletes one terminal session and its exclusive message suffix.
@@ -831,6 +898,7 @@ impl Store {
         let message_id = MessageId::new(Uuid::new_v4().to_string());
         let metadata_json = encode_message_metadata(message.metadata)?;
         let now = now_millis()?;
+        let user_activity = matches!(message.role, Role::User);
         let event = match message.role {
             Role::User => None,
             Role::Assistant => Some(SessionEvent::AssistantMessageSaved {
@@ -922,10 +990,16 @@ impl Store {
                 "
                 UPDATE sessions
                 SET current_head_message_id = ?1,
-                    updated_at = ?2
-                WHERE id = ?3
+                    updated_at = ?2,
+                    last_user_activity_at = CASE WHEN ?3 THEN ?2 ELSE last_user_activity_at END
+                WHERE id = ?4
                 ",
-                params![message_id.as_str(), now, message.session_id.as_str()],
+                params![
+                    message_id.as_str(),
+                    now,
+                    user_activity,
+                    message.session_id.as_str()
+                ],
             )
             .context("failed to update session head for runtime message")?;
         let record = event
@@ -958,9 +1032,18 @@ impl Store {
 
         let claim = SessionExecutionClaim::fresh(owner);
         let now = now_millis()?;
-        let (requires_waiting, requires_head, expected_head, conflict_message) = match &start {
+        let (
+            requires_waiting,
+            requires_head,
+            expected_head,
+            requires_idle_wakeup,
+            idle_eligible_before,
+            conflict_message,
+        ) = match &start {
             SessionExecutionStart::Runnable => (
                 false,
+                false,
+                None,
                 false,
                 None,
                 "session is already running or waiting for approval",
@@ -969,13 +1052,25 @@ impl Store {
                 false,
                 true,
                 expected_head.as_ref().map(MessageId::as_str),
+                false,
+                None,
                 "session changed while claiming execution; reload and retry",
             ),
             SessionExecutionStart::WaitingForApproval => (
                 true,
                 false,
                 None,
+                false,
+                None,
                 "session is no longer waiting for approval",
+            ),
+            SessionExecutionStart::IdleWakeup { eligible_before } => (
+                false,
+                false,
+                None,
+                true,
+                Some(*eligible_before),
+                "session is not eligible for an idle wakeup",
             ),
         };
         let changed = self
@@ -996,6 +1091,17 @@ impl Store {
                       OR (?6 = 0 AND status NOT IN (?1, ?7))
                   )
                   AND (?8 = 0 OR current_head_message_id IS ?9)
+                  AND (
+                      ?10 = 0
+                      OR (
+                          keep_awake = 1
+                          AND last_user_activity_at <= ?11
+                          AND (
+                              last_idle_wakeup_completed_at IS NULL
+                              OR last_idle_wakeup_completed_at <= ?11
+                          )
+                      )
+                  )
                 ",
                 params![
                     SessionStatus::Running.as_storage(),
@@ -1007,6 +1113,8 @@ impl Store {
                     SessionStatus::WaitingForApproval.as_storage(),
                     requires_head,
                     expected_head,
+                    requires_idle_wakeup,
+                    idle_eligible_before,
                 ],
             )
             .context("failed to claim runtime session execution")?;
@@ -1085,6 +1193,7 @@ impl Store {
         claim: &SessionExecutionClaim,
         status: SessionStatus,
         error: Option<&str>,
+        record_idle_wakeup_completion: bool,
     ) -> Result<bool> {
         debug_assert!(matches!(
             status,
@@ -1102,16 +1211,21 @@ impl Store {
                     error = ?2,
                     execution_owner = NULL,
                     execution_claim_id = NULL,
-                    updated_at = ?3
-                WHERE id = ?4
-                  AND status = ?5
-                  AND execution_owner = ?6
-                  AND execution_claim_id = ?7
+                    updated_at = ?3,
+                    last_idle_wakeup_completed_at = CASE
+                        WHEN ?4 THEN ?3
+                        ELSE last_idle_wakeup_completed_at
+                    END
+                WHERE id = ?5
+                  AND status = ?6
+                  AND execution_owner = ?7
+                  AND execution_claim_id = ?8
                 ",
                 params![
                     status.as_storage(),
                     error,
                     now,
+                    record_idle_wakeup_completion,
                     session_id.as_str(),
                     SessionStatus::Running.as_storage(),
                     claim.owner.as_storage(),
@@ -1136,6 +1250,7 @@ impl Store {
         status: SessionStatus,
         head_message_id: Option<&MessageId>,
         event: SessionEvent,
+        record_idle_wakeup_completion: bool,
     ) -> Result<Option<SessionEventRecord>> {
         debug_assert!(matches!(
             status,
@@ -1160,16 +1275,21 @@ impl Store {
                     error = NULL,
                     execution_owner = NULL,
                     execution_claim_id = NULL,
-                    updated_at = ?3
-                WHERE id = ?4
-                  AND status = ?5
-                  AND execution_owner = ?6
-                  AND execution_claim_id = ?7
+                    updated_at = ?3,
+                    last_idle_wakeup_completed_at = CASE
+                        WHEN ?4 THEN ?3
+                        ELSE last_idle_wakeup_completed_at
+                    END
+                WHERE id = ?5
+                  AND status = ?6
+                  AND execution_owner = ?7
+                  AND execution_claim_id = ?8
                 ",
                 params![
                     head_message_id.map(MessageId::as_str),
                     status.as_storage(),
                     now,
+                    record_idle_wakeup_completion,
                     session_id.as_str(),
                     SessionStatus::Running.as_storage(),
                     claim.owner.as_storage(),
@@ -1524,6 +1644,9 @@ fn sessions_at_head(
                 model,
                 reasoning,
                 error,
+                keep_awake,
+                last_user_activity_at,
+                last_idle_wakeup_completed_at,
                 created_at,
                 updated_at
             FROM sessions
@@ -1553,7 +1676,9 @@ fn sessions_at_head(
 fn session_resolution_from_matches(sessions: Vec<Session>) -> SessionResolution {
     match sessions.len() {
         0 => SessionResolution::NoSessionAtHead,
-        1 => SessionResolution::Existing(sessions.into_iter().next().expect("one session")),
+        1 => {
+            SessionResolution::Existing(Box::new(sessions.into_iter().next().expect("one session")))
+        }
         _ => SessionResolution::Ambiguous(sessions),
     }
 }
@@ -1587,7 +1712,10 @@ fn session_from_row(row: &Row<'_>) -> rusqlite::Result<Session> {
         model: row.get(5)?,
         reasoning,
         error: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        keep_awake: row.get::<_, i64>(8)? != 0,
+        last_user_activity_at: row.get(9)?,
+        last_idle_wakeup_completed_at: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }

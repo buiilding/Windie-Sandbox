@@ -210,6 +210,10 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/sessions/{session_id}/events", get(session_events))
         .route("/api/sessions/{session_id}/stop", post(stop_run))
         .route(
+            "/api/sessions/{session_id}/keep-awake",
+            patch(set_session_keep_awake),
+        )
+        .route(
             "/api/sessions/{session_id}/approvals/{tool_call_id}/approve",
             post(approve_session_tool),
         )

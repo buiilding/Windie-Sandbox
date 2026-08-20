@@ -87,6 +87,8 @@ pub(crate) struct RuntimeInput<'a> {
     pub(crate) tools: &'a ToolProviderRegistry,
     pub(crate) plugin_catalog: Option<&'a PluginCatalog>,
     pub(crate) model_request: RuntimeModelRequest<'a>,
+    /// Optional ephemeral runtime message for the first model turn only.
+    pub(crate) wakeup_prompt: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

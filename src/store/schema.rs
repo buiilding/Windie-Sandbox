@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 23;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 24;
 
 impl Store {
     /// Creates or validates the current schema.
@@ -86,6 +86,9 @@ impl Store {
                     error TEXT,
                     execution_owner TEXT,
                     execution_claim_id TEXT,
+                    keep_awake INTEGER NOT NULL DEFAULT 0,
+                    last_user_activity_at INTEGER NOT NULL,
+                    last_idle_wakeup_completed_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
 

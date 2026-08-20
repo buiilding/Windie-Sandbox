@@ -43,6 +43,9 @@ pub enum SessionExecutionStart {
     RunnableAtHead(Option<MessageId>),
     /// Resumes a session that is paused for an approval decision.
     WaitingForApproval,
+    /// Starts one enabled session after its user-activity and wakeup cooldowns
+    /// have both elapsed.
+    IdleWakeup { eligible_before: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +138,12 @@ pub struct Session {
     pub model: String,
     pub reasoning: Option<ReasoningRequest>,
     pub error: Option<String>,
+    /// Whether this session should autonomously wake after the user is idle.
+    pub keep_awake: bool,
+    /// Latest explicit user interaction with this session, in Unix milliseconds.
+    pub last_user_activity_at: i64,
+    /// Completion time of the most recent idle wakeup, in Unix milliseconds.
+    pub last_idle_wakeup_completed_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -143,7 +152,7 @@ pub struct Session {
 /// Backend-owned resolution of one conversation head to a durable session branch.
 pub enum SessionResolution {
     /// Exactly one session currently ends at the requested head.
-    Existing(Session),
+    Existing(Box<Session>),
     /// No session currently ends at the requested head.
     NoSessionAtHead,
     /// More than one session currently ends at the requested head.
