@@ -66,7 +66,8 @@ windie status
 ```
 
 For marketplace publishing, mark a package with `"marketplace": { "publish": true }`
-in its `plugin.json`, then run:
+in its `plugin.json`. Its `presentation.repository_url` may optionally name the
+canonical `https://github.com/<owner>/<repository>` source project. Then run:
 
 ```bash
 cargo run --bin windie -- marketplace build

@@ -9,7 +9,8 @@
     "name": "Blender MCP",
     "description": "Inspect and control a local Blender instance through MCP.",
     "readme": "README.md",
-    "icon": "assets/icon.svg"
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/ahujasid/blender-mcp"
   },
   "marketplace": { "publish": true },
   "components": [

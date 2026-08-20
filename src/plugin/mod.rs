@@ -503,4 +503,48 @@ mod tests {
 
         assert!(PluginManifest::parse(document).is_err());
     }
+
+    #[test]
+    fn manifest_validates_optional_github_repository_url() {
+        let valid = r#"{
+            "manifest_version": 1,
+            "plugin": {"id": "safe", "version": "1.0.0", "publisher": "test"},
+            "presentation": {"name": "Safe", "description": "", "readme": "README.md", "icon": "icon.svg", "repository_url": "https://github.com/example/safe"},
+            "components": [{"type": "mcp", "id": "safe", "manifest": "mcp.json"}]
+        }"#;
+        let invalid = valid.replace(
+            "https://github.com/example/safe",
+            "https://example.com/example/safe",
+        );
+
+        assert!(PluginManifest::parse(valid).is_ok());
+        assert!(PluginManifest::parse(&invalid).is_err());
+    }
+
+    #[test]
+    fn marketplace_index_rejects_invalid_repository_url() {
+        let index = r#"{
+            "index_version": 1,
+            "plugins": [{
+                "id": "safe",
+                "versions": [{
+                    "version": "1.0.0",
+                    "components": ["mcp"],
+                    "capabilities": [],
+                    "presentation": {
+                        "name": "Safe",
+                        "description": "Safe plugin.",
+                        "repository_url": "https://example.com/safe"
+                    },
+                    "manifest_url": "packages/safe/plugin.json",
+                    "artifact_url": "packages/safe",
+                    "digest": "bundled",
+                    "publisher": "test",
+                    "status": "verified"
+                }]
+            }]
+        }"#;
+
+        assert!(MarketplaceIndex::parse(index).is_err());
+    }
 }

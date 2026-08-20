@@ -9,7 +9,8 @@
     "name": "Bright Data",
     "description": "Search and access live web data through Bright Data MCP.",
     "readme": "README.md",
-    "icon": "assets/icon.svg"
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/brightdata/brightdata-mcp"
   },
   "marketplace": { "publish": true },
   "components": [

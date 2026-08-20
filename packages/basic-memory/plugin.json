@@ -9,7 +9,8 @@
     "name": "Basic Memory",
     "description": "Store and search Windie’s local user memory through Basic Memory.",
     "readme": "README.md",
-    "icon": "assets/icon.svg"
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/basicmachines-co/basic-memory"
   },
   "marketplace": { "publish": true },
   "components": [

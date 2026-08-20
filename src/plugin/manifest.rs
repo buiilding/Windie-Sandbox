@@ -50,6 +50,13 @@ pub struct PluginPresentation {
     pub description: String,
     pub readme: String,
     pub icon: String,
+    /// Optional canonical GitHub repository for the plugin's upstream source.
+    ///
+    /// This is presentation metadata only: it does not participate in package
+    /// installation or grant the runtime access to the repository. Hosted or
+    /// closed-source integrations may omit it.
+    #[serde(default)]
+    pub repository_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +299,9 @@ impl PluginManifest {
         if self.presentation.name.trim().is_empty() {
             bail!("plugin presentation name cannot be empty");
         }
+        if let Some(repository_url) = &self.presentation.repository_url {
+            validate_github_repository_url(repository_url)?;
+        }
         if self.components.is_empty() {
             bail!("plugin must contain at least one component");
         }
@@ -306,6 +316,33 @@ impl PluginManifest {
         }
         Ok(())
     }
+}
+
+/// Ensures a presentation repository link is a canonical public GitHub project URL.
+///
+/// Marketplace indexes use the same check before exposing the link to browser
+/// clients, so generated and remotely fetched metadata follow one contract.
+pub(crate) fn validate_github_repository_url(value: &str) -> Result<()> {
+    let url = reqwest::Url::parse(value).context("invalid plugin repository URL")?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        bail!("plugin repository URL must use https://github.com");
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.port().is_some() {
+        bail!("plugin repository URL cannot contain credentials or a port");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("plugin repository URL cannot contain a query or fragment");
+    }
+    let Some(segments) = url.path_segments() else {
+        bail!("plugin repository URL must name an owner and repository");
+    };
+    let segments = segments
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() != 2 || segments.iter().any(|segment| segment.trim().is_empty()) {
+        bail!("plugin repository URL must name an owner and repository");
+    }
+    Ok(())
 }
 
 impl SkillManifest {

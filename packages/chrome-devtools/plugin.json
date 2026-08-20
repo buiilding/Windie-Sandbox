@@ -9,7 +9,8 @@
     "name": "Chrome DevTools",
     "description": "Inspect, debug, and automate an explicitly selected Chrome browser session through MCP.",
     "readme": "README.md",
-    "icon": "assets/icon.svg"
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/ChromeDevTools/chrome-devtools-mcp"
   },
   "marketplace": { "publish": true },
   "components": [

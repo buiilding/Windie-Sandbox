@@ -9,7 +9,8 @@
     "name": "CUA Driver",
     "description": "Operate the local computer through the CUA Driver MCP server.",
     "readme": "README.md",
-    "icon": "assets/icon.svg"
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/trycua/cua"
   },
   "marketplace": { "publish": true },
   "components": [

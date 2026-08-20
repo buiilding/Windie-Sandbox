@@ -9,7 +9,8 @@
     "name": "Desktop Commander",
     "description": "Read, write, and manage files and local processes through Desktop Commander.",
     "readme": "README.md",
-    "icon": "assets/icon.svg"
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/wonderwhy-er/DesktopCommanderMCP"
   },
   "marketplace": { "publish": true },
   "components": [

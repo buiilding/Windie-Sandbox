@@ -528,6 +528,7 @@ fn marketplace_presentation(
             "{release_root}/{}",
             package.manifest.presentation.icon
         )),
+        repository_url: package.manifest.presentation.repository_url.clone(),
     }
 }
 

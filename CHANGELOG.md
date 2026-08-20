@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added optional, validated upstream GitHub repository links to package
+  presentation metadata; marketplace builds publish them and Inspector shows
+  them as plugin resources.
 - Split gateway, API, Inspector, and tray lifecycle into independent commands
   and foreground development runs; the tray no longer stops the runtime as a
   group, while `windie status` reports every component.

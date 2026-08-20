@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::store::Store;
 use crate::tool::{ProviderInstallState, ProviderReadiness, ToolProviderId, ToolProviderRegistry};
 
-use super::manifest::validate_relative_path;
+use super::manifest::{validate_github_repository_url, validate_relative_path};
 use super::{InstalledPlugin, PluginStore};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +60,8 @@ pub struct MarketplacePresentation {
     pub readme_url: Option<String>,
     #[serde(default)]
     pub icon_url: Option<String>,
+    #[serde(default)]
+    pub repository_url: Option<String>,
 }
 
 /// The only catalog snapshot exposed to the model.
@@ -484,6 +486,13 @@ impl MarketplaceIndex {
                 }
                 if version.status.trim().is_empty() {
                     bail!("marketplace plugin release is missing status");
+                }
+                if let Some(repository_url) = version
+                    .presentation
+                    .as_ref()
+                    .and_then(|presentation| presentation.repository_url.as_deref())
+                {
+                    validate_github_repository_url(repository_url)?;
                 }
                 validate_reference("marketplace manifest URL", &version.manifest_url)?;
                 validate_reference("marketplace artifact URL", &version.artifact_url)?;
