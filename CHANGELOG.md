@@ -11,6 +11,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [0.4.0] - 2026-08-20
 
+- Fixed cross-platform compilation for native notification handling and Windows
+  cleanup commands.
 - Moved the Inspector out of installed releases. Packages and installers now
   contain and start only Windie, Bifrost, the tray, and the notifier; after the
   local API is healthy, installation opens the paired hosted Inspector at

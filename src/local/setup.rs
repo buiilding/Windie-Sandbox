@@ -8,6 +8,8 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 

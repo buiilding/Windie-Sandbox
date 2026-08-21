@@ -10,7 +10,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+use anyhow::Result;
 
 /// Runs the notification component until its foreground process receives
 /// Ctrl-C or its detached process is stopped by the lifecycle boundary.
