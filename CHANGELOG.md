@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added a hosted-account authorization boundary for the local API. The first
+  signed-in Inspector explicitly pairs one Supabase account with a local Windie
+  database; later API and SSE calls require that account's verified token, and
+  a different account cannot overwrite the pairing.
 - Separated durable completion observation and OS notification delivery into
   the independent `notifier` component. It now has its own lifecycle and
   development command, macOS app identity, Windows toast adapter, Linux

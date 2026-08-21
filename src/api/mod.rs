@@ -13,9 +13,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
@@ -56,6 +57,7 @@ mod inspection;
 mod message;
 mod plugin;
 mod router;
+mod runtime_access;
 mod session;
 mod session_approval;
 mod shutdown;
@@ -75,6 +77,7 @@ use inspection::*;
 use message::*;
 use plugin::*;
 use router::router;
+use runtime_access::*;
 use session::*;
 use session_approval::*;
 use shutdown::*;
@@ -150,6 +153,7 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
         plugin_catalog,
         tool_registry,
         session_manager,
+        runtime_access: RuntimeAccessControl::hosted(),
         notifier_test_notifications,
         shutdown_tx: shutdown_tx.clone(),
     };
@@ -222,6 +226,7 @@ pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
         plugin_catalog,
         tool_registry,
         session_manager,
+        runtime_access: RuntimeAccessControl::unrestricted_for_isolated_tests(),
         notifier_test_notifications,
         shutdown_tx,
     })

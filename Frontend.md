@@ -14,11 +14,20 @@ renders them.
 ## Application entry point
 
 - `src/index.js`: mounts the React application into the browser document.
-- `src/App.js`: creates the application shell, `WindieProvider`, browser
-  routes, and the global toast surface.
+- `src/App.js`: creates the application shell, hosted-account and local-runtime
+  access gates, `WindieProvider`, browser routes, and the global toast surface.
 - `src/pages/Windie.jsx`: composes the inspector layout: top bar, conversation
   tree sidebar, chat panel, and optional inspector overlay. It also owns the
   first-run provider onboarding check and the persisted tree-panel toggle.
+- `src/components/auth/AuthGate.jsx`: restores the hosted Google/Supabase
+  account session and exposes its short-lived token to the loopback transport.
+- `src/components/auth/RuntimeAccessGate.jsx`: reads local pairing status and
+  requires the signed-in user to explicitly connect their account before the
+  runtime client mounts.
+- `src/context/AuthContext.jsx`: exposes hosted session and sign-out state to
+  authenticated presentation components.
+- `src/lib/supabase.js`: creates the browser-only Supabase client from public
+  deployment configuration.
 
 The Inspector has a workspace route at `/` and an addressable session route at
 `/sessions/:sessionId`. The session route asks the local API for the durable
@@ -370,8 +379,9 @@ treated as durable history.
 - `lib/windieApi.js`: the only general HTTP client. It resolves the API base
   URL, parses JSON errors, and exposes typed-ish frontend operations for
   conversations, backend-owned session-head resolution/query/continue,
-  sessions, models, tools, providers, gateway state, approvals, and image
-  assets.
+  sessions, models, tools, providers, gateway state, approvals, image assets,
+  and local-runtime pairing. It sends the Supabase access token only to a
+  loopback API URL.
 - `lib/sessionStream.js`: the SSE client for one session's event stream. It
   parses SSE framing and JSON payloads, but does not decide how events affect
   application state.
@@ -387,11 +397,12 @@ treated as durable history.
 - `lib/treeLayout.js`: computes positions and edges for the visual tree. It is
   a layout calculation, not a conversation operation.
 
-The standalone Inspector calls the localhost API directly without an API token.
-The default API endpoint is
+The hosted Inspector gates the application behind Google/Supabase sign-in and
+an explicit local-runtime pairing. Its Supabase access token is attached only
+to the browser machine's loopback API. The default API endpoint is
 `http://127.0.0.1:8787`, overridable with `REACT_APP_WINDIE_API_URL` during a
-frontend build or by the standalone Inspector's runtime
-`WINDIE_API_ADDRESS`/`WINDIE_API_PORT` settings.
+frontend build. The legacy standalone Inspector is not an authenticated
+client; it remains only until the coordinated installer migration removes it.
 
 ## Live session lifecycle
 

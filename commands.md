@@ -74,9 +74,10 @@ Start the detached localhost developer API server at
 `http://127.0.0.1:8787`. The command returns immediately; use
 `windie api output` to inspect its stdout and stderr.
 
-The API is intentionally a localhost-only, unauthenticated developer API. The
-standalone Inspector calls it directly and does not receive or store a Windie
-API token.
+The API stays bound to localhost. Runtime-data, tool, and session routes
+require the access token from the signed-in hosted Inspector and a local
+runtime pairing approved by that account. Health and graceful shutdown retain
+their loopback-only lifecycle role.
 
 ```text
 windie api stop

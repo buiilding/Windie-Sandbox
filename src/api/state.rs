@@ -14,6 +14,8 @@ pub(super) struct ApiState {
     pub(super) plugin_catalog: Arc<crate::plugin::PluginCatalog>,
     pub(super) tool_registry: Arc<ToolProviderRegistry>,
     pub(super) session_manager: Arc<SessionManager>,
+    /// Hosted-account identity verification and local runtime ownership policy.
+    pub(super) runtime_access: RuntimeAccessControl,
     /// Volatile, development-only signals consumed by the native notifier test.
     pub(super) notifier_test_notifications:
         tokio::sync::broadcast::Sender<crate::api::dev::NotifierTestNotification>,

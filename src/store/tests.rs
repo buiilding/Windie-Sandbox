@@ -299,7 +299,7 @@ fn rejects_newer_database_schema_version() {
 #[test]
 fn rejects_older_database_schema_version() {
     let store = Store::open_memory().unwrap();
-    let older_version = DATABASE_SCHEMA_VERSION - 1;
+    let older_version = DATABASE_SCHEMA_VERSION - 2;
     store
         .connection
         .pragma_update(None, "user_version", older_version)
@@ -313,6 +313,28 @@ fn rejects_older_database_schema_version() {
             "database schema version {older_version} is older than supported version {DATABASE_SCHEMA_VERSION}; remove the old Windie database or recreate it"
         )
     );
+}
+
+#[test]
+fn migrates_previous_schema_to_add_runtime_access() {
+    let store = Store::open_memory().unwrap();
+    store
+        .connection
+        .execute("DROP TABLE runtime_access", [])
+        .unwrap();
+    store
+        .connection
+        .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION - 1)
+        .unwrap();
+
+    store.migrate().unwrap();
+
+    assert!(store.runtime_access().unwrap().is_none());
+    let version: i32 = store
+        .connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, DATABASE_SCHEMA_VERSION);
 }
 
 #[test]

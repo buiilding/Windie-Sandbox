@@ -39,6 +39,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - store/compaction.rs: summary checkpoint store, saves and loads compaction checkpoints.
 - store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
 - store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
+- store/runtime_access.rs: persists the one hosted account explicitly authorized to use this local runtime and prevents another account from replacing it.
 - docs/conversation-tree-and-paths.md: explains why the shared message tree is canonical and why model context resolves a selected root-to-head path instead of storing duplicated linear paths.
 - store/schema.rs: database shape, schema version checks, table creation, indexes, and unsupported database version rejection.
 - store/session.rs: stores sessions and queued inputs, updates current heads/status, resolves session branches at conversation heads, atomically resolves-or-creates branches, and stores/replays session events.
@@ -71,7 +72,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/router.rs: maps HTTP URLs to API handlers and applies shared request rules.
 - api/state.rs: shared API server state passed into route handlers.
 - api/error.rs: turns internal Windie errors into HTTP JSON errors.
-- api/router.rs: localhost API routes are intentionally unauthenticated and stay bound to the loopback interface.
+- api/runtime_access.rs: validates hosted Supabase account sessions and requires the one explicitly paired account before access to local runtime state.
+- api/router.rs: local runtime routes remain loopback-bound and require hosted-account authorization; health and shutdown stay available for local lifecycle checks.
 - api/sse.rs: serializes replayed and live session events for HTTP streaming, hydrating state-changing events with session and message snapshots plus the canonical final assistant text on aggregate completion events.
 - api/event.rs: exposes the database-wide durable session-event cursor and
   aggregate SSE feed for clients that need to observe durable activity across
@@ -92,8 +94,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
   tray assistant-completed notification probe; it never writes session state.
 - api/env.rs: securely writes manifest-declared provider secrets to ~/.windie/.env and refuses arbitrary environment keys.
 - api/shutdown.rs: unauthenticated localhost graceful-stop route used by `windie api stop`; signals api/mod.rs without changing Bifrost.
-- api/tests.rs: test HTTP routes, unauthenticated access, error mapping, SSE/session behavior, conversation operating, tools, and mock Bifrost responses.
-- config.rs: shared environment-backed gateway, API, and Inspector endpoint configuration.
+- api/tests.rs: test HTTP routes, hosted-account pairing, error mapping, SSE/session behavior, conversation operating, tools, and mock Bifrost responses.
+- config.rs: shared environment-backed gateway, API, Inspector, and hosted-account configuration.
 
 ## CLI
 
@@ -336,6 +338,7 @@ surface auditable when files are added or moved.
 - `src/api/mod.rs`: local API server boundary and startup.
 - `src/api/plugin.rs`: marketplace plugin API handlers.
 - `src/api/router.rs`: local API route table and HTTP middleware wiring.
+- `src/api/runtime_access.rs`: hosted-account validation and local runtime pairing handlers/middleware.
 - `src/api/session.rs`: session lifecycle and event API route handlers.
 - `src/api/session_approval.rs`: session-approval API route handlers.
 - `src/api/shutdown.rs`: local API graceful-shutdown handling.
@@ -469,6 +472,7 @@ surface auditable when files are added or moved.
 - `src/store/conversation.rs`: conversation-row persistence and conversation-level settings.
 - `src/store/message.rs`: message-tree, message-part, image-asset, and fork persistence.
 - `src/store/mod.rs`: SQLite persistence boundary.
+- `src/store/runtime_access.rs`: durable hosted-account ownership for the local runtime.
 - `src/store/schema.rs`: SQLite schema creation and version validation.
 - `src/store/session.rs`: runtime-session and replayable session-event persistence.
 - `src/store/system_prompt.rs`: tree-wide user-owned system-prompt persistence.
