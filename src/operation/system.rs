@@ -59,6 +59,16 @@ pub fn stop_tray() -> Result<ProcessReport> {
     crate::local::process::stop_tray()
 }
 
+/// Starts the detached notification component without starting the tray.
+pub fn start_notifier() -> Result<ProcessReport> {
+    crate::local::process::start_notifier()
+}
+
+/// Stops only the notification component.
+pub fn stop_notifier() -> Result<ProcessReport> {
+    crate::local::process::stop_notifier()
+}
+
 /// Reads all independently managed component states without starting,
 /// stopping, or otherwise changing any of them.
 pub async fn component_statuses(
@@ -67,8 +77,7 @@ pub async fn component_statuses(
     let gateway = crate::operation::gateway_status(gateway_url);
     let api = endpoint_is_running(format!("{}/api/health", crate::config::api_url()));
     let inspector = endpoint_is_running(format!("http://{}/", crate::config::inspector_address()));
-    let (gateway_running, api_running, inspector_running) =
-        tokio::join!(gateway, api, inspector);
+    let (gateway_running, api_running, inspector_running) = tokio::join!(gateway, api, inspector);
 
     Ok(vec![
         ComponentStatus {
@@ -86,6 +95,12 @@ pub async fn component_statuses(
         ComponentStatus {
             component: ManagedComponent::Tray,
             running: crate::local::process::is_managed_component_running(ManagedComponent::Tray)?,
+        },
+        ComponentStatus {
+            component: ManagedComponent::Notifier,
+            running: crate::local::process::is_managed_component_running(
+                ManagedComponent::Notifier,
+            )?,
         },
     ])
 }

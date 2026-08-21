@@ -70,6 +70,27 @@ pub(crate) fn run_tray() -> Result<()> {
     crate::local::tray::run()
 }
 
+/// Starts the detached notification component without changing the tray or
+/// any runtime service.
+pub(crate) fn start_notifier_process() -> Result<()> {
+    let report = operation::start_notifier()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Stops only the notification component.
+pub(crate) fn stop_notifier_process() -> Result<()> {
+    let report = operation::stop_notifier()?;
+    TerminalOutput.component_report(&report);
+    Ok(())
+}
+
+/// Runs the notification component in the foreground for detached and
+/// development entrypoints.
+pub(crate) fn run_notifier() -> Result<()> {
+    crate::local::notifier::run()
+}
+
 /// Prints persisted output for one independent local component.
 pub(crate) fn output_component(component: ManagedComponent) -> Result<()> {
     let output = operation::component_output(component)?;

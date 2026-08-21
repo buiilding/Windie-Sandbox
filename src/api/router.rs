@@ -47,10 +47,17 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/status", get(status))
         .route("/api/events", get(global_events))
         .route("/api/events/cursor", get(global_event_cursor))
-        .route("/api/dev/tray-notifications", get(tray_test_notifications))
+        .route("/api/dev/notifications", get(notifier_test_notifications))
+        .route(
+            "/api/dev/notifications/assistant-completed",
+            post(report_assistant_completed_for_notifier),
+        )
+        // Keep the initial manual probe URL working while clients migrate to
+        // the notifier-owned endpoint above.
+        .route("/api/dev/tray-notifications", get(notifier_test_notifications))
         .route(
             "/api/dev/tray-notifications/assistant-completed",
-            post(report_assistant_completed_for_tray),
+            post(report_assistant_completed_for_notifier),
         )
         .route("/api/shutdown", post(shutdown))
         .route("/api/models", get(list_models))

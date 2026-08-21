@@ -29,3 +29,6 @@ winit = "0.30"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-usernotifications = "0.3.1"
+
+[target.'cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))'.dependencies]
+notify-rust = "4.18.0"

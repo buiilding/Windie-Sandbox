@@ -42,35 +42,36 @@ cargo run --bin windie -- dev run gateway
 cargo run --bin windie -- dev run api
 cargo run --bin windie -- dev run inspector
 cargo run --bin windie -- dev run tray
+cargo run --bin windie -- dev run notifier
 ```
 
 Each command runs exactly one foreground development component. Start the
 components you need in separate terminals; Windie intentionally has no
 aggregate development runner.
 
-### Tray notification probe (macOS)
+### Notification probe
 
-After restarting the development API and tray, send the development-only
+After restarting the development API and notifier, send the development-only
 completion probe from a third terminal:
 
 ```bash
-curl -i -X POST http://127.0.0.1:8787/api/dev/tray-notifications/assistant-completed
+curl -i -X POST http://127.0.0.1:8787/api/dev/notifications/assistant-completed
 ```
 
-The response includes `tray_receivers: 1` when the tray is connected, then the
-tray shows a native `Windie — Assistant finished` notification. This probe does
+The response includes `notifier_receivers: 1` when the notifier is connected, then
+the notifier shows a native `Windie — Assistant finished` notification. This probe does
 not create a conversation, session, or durable runtime event.
 
-For normal runtime work, the tray listens only for durable final
+For normal runtime work, the notifier listens only for durable final
 `session.completed` events. It shows a whitespace-normalized preview of the
 actual final assistant text (up to 240 characters), never a tool call or tool
 result; the cursor is stored locally so a reconnect does not repeat
 notifications already shown.
 
-Installed macOS releases run the tray from `Windie Tray.app`, so clicking a
+Installed macOS releases run notifications from `Windie Notifier.app`, so clicking a
 completed-response notification opens the exact hosted Inspector session at
 `https://app.windieos.com/sessions/<session-id>`. A checkout's `cargo run ...
-dev run tray` remains intentionally unbundled: it can show the development
+dev run notifier` remains intentionally unbundled: it can show the development
 notification but cannot receive an operating-system notification click callback.
 
 For any normal CLI command during development, use the same pattern:

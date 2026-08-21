@@ -7,6 +7,11 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Separated durable completion observation and OS notification delivery into
+  the independent `notifier` component. It now has its own lifecycle and
+  development command, macOS app identity, Windows toast adapter, Linux
+  Freedesktop adapter, and session click-through URL; the tray only presents
+  runtime component status and controls.
 - Added canonical hosted Inspector session URLs and macOS tray notification
   click-through for completed responses in installed app-bundle releases.
 - Added a durable per-session Keep awake toggle in Inspector. Enabled sessions

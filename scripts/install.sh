@@ -110,6 +110,15 @@ done
 install -m 0755 "$tmp_dir/windie" "$install_dir/windie"
 install -m 0755 "$tmp_dir/bifrost" "$install_dir/bifrost"
 install -m 0755 "$tmp_dir/windie-inspector" "$install_dir/windie-inspector"
+if [ "$os" = "darwin" ]; then
+  notifier_bundle="$tmp_dir/Windie Notifier.app"
+  if [ ! -d "$notifier_bundle" ]; then
+    echo "release asset did not contain Windie Notifier.app" >&2
+    exit 1
+  fi
+  rm -rf "$install_dir/Windie Notifier.app"
+  mv "$notifier_bundle" "$install_dir/Windie Notifier.app"
+fi
 
 gateway_health_url="$gateway_url/health"
 api_health_url="http://$api_address/api/health"
@@ -164,18 +173,21 @@ case "$os" in
   darwin)
     open "$ui_url" >/dev/null 2>&1 || true
     "$install_dir/windie" tray start >/dev/null 2>&1
+    "$install_dir/windie" notifier start >/dev/null 2>&1
     echo "Click on the tray on your desktop to manage these processes."
     ;;
   linux)
     if command -v xdg-open >/dev/null 2>&1; then
       xdg-open "$ui_url" >/dev/null 2>&1 || true
     fi
+    "$install_dir/windie" notifier start >/dev/null 2>&1
     echo "Manage these processes with: $install_dir/windie gateway|api|inspector start|stop"
     ;;
 esac
 
 echo "windie installed at $install_dir/windie"
 echo "Windie tray available as: $install_dir/windie tray start|stop|output"
+echo "Windie notifications available as: $install_dir/windie notifier start|stop|output"
 echo "bundled Bifrost installed at $install_dir/bifrost"
 echo "Inspector installed at $install_dir/windie-inspector"
 echo "Windie home ready at $windie_home"

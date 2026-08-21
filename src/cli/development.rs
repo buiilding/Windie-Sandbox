@@ -23,6 +23,9 @@ pub(super) fn parse_dev_command(args: &[String]) -> Command {
             "tray" => Command::Dev(DevCommand::Run {
                 component: DevComponent::Tray,
             }),
+            "notifier" => Command::Dev(DevCommand::Run {
+                component: DevComponent::Notifier,
+            }),
             _ => Command::Invalid,
         },
         _ => Command::Invalid,

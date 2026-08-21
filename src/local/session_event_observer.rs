@@ -1,6 +1,6 @@
-//! Durable session-completion observation for the native tray.
+//! Durable session-completion observation for the native notifier.
 //!
-//! The tray is presentation only. This component reconnects to Windie's
+//! The notifier is presentation only. This component reconnects to Windie's
 //! database-backed aggregate session-event stream, persists the last displayed
 //! completion cursor, and forwards only final `session.completed` events to
 //! the native notification presenter. It never runs a model, changes a
@@ -20,12 +20,12 @@ use serde::Deserialize;
 
 const RECONNECT_DELAY: Duration = Duration::from_millis(250);
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
-const COMPLETION_CURSOR_FILE_NAME: &str = "tray-completed-event.cursor";
+const COMPLETION_CURSOR_FILE_NAME: &str = "notifier-completed-event.cursor";
 const COMPLETION_EVENT_NAME: &str = "session.completed";
 const MAX_NOTIFICATION_BODY_CHARS: usize = 240;
 
 #[derive(Debug, Deserialize)]
-/// API response used to establish the tray's first durable replay cursor.
+/// API response used to establish the notifier's first durable replay cursor.
 struct CompletionCursorResponse {
     latest_event_id: Option<i64>,
 }
@@ -46,9 +46,9 @@ struct CompletionMessage {
 /// Starts the durable final-response observer on its own native thread.
 ///
 /// On its first connection it deliberately begins after existing completed
-/// sessions, so installing or restarting the tray does not produce a burst of
+/// sessions, so installing or restarting the notifier does not produce a burst of
 /// stale notifications. Every later reconnect resumes after the persisted
-/// cursor and therefore replays any completion that the tray has not displayed.
+/// cursor and therefore replays any completion that the notifier has not displayed.
 pub fn start_completed_session_observer(stopping: Arc<AtomicBool>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut cursor = None;
@@ -58,7 +58,9 @@ pub fn start_completed_session_observer(stopping: Arc<AtomicBool>) -> thread::Jo
                 match initialize_completion_cursor() {
                     Ok(initialized) => cursor = Some(initialized),
                     Err(error) => {
-                        eprintln!("windie tray: failed to initialize completion cursor: {error:#}");
+                        eprintln!(
+                            "windie notifier: failed to initialize completion cursor: {error:#}"
+                        );
                         thread::sleep(RECONNECT_DELAY);
                     }
                 }
@@ -104,7 +106,7 @@ fn observe_completed_sessions(cursor: &mut i64, stopping: &AtomicBool) -> Result
                 let content = data.join("\n");
                 match completion_notification(&content) {
                     Some(notification) => {
-                        eprintln!("windie tray: received final assistant response");
+                        eprintln!("windie notifier: received final assistant response");
                         crate::local::tray_notification::show_assistant_completed(
                             &notification.body,
                             &notification.session_id,
@@ -114,7 +116,7 @@ fn observe_completed_sessions(cursor: &mut i64, stopping: &AtomicBool) -> Result
                     }
                     None => {
                         eprintln!(
-                            "windie tray: completed session {id} had no presentable final response"
+                            "windie notifier: completed session {id} had no presentable final response"
                         );
                         save_completion_cursor(id)?;
                         *cursor = id;
@@ -133,8 +135,8 @@ fn observe_completed_sessions(cursor: &mut i64, stopping: &AtomicBool) -> Result
 /// Opens one local SSE stream through bounded loopback connection setup.
 ///
 /// The returned connection intentionally has no read timeout: an SSE stream is
-/// expected to remain quiet until a final completion happens. The tray process
-/// exits independently, so its worker thread does not delay tray shutdown.
+/// expected to remain quiet until a final completion happens. The notifier
+/// exits independently, so its worker thread does not delay notifier shutdown.
 pub(crate) fn open_local_sse_stream(path: &str) -> Result<BufReader<TcpStream>> {
     open_local_http_stream(path, "text/event-stream", "keep-alive")
 }
@@ -194,7 +196,7 @@ struct CompletionNotification {
 /// a completed event.
 ///
 /// Native notification centres truncate long text inconsistently. Normalizing
-/// whitespace and applying one explicit Unicode-safe limit keeps the tray
+/// whitespace and applying one explicit Unicode-safe limit keeps the notifier
 /// surface readable while preserving the beginning of the actual response.
 fn completion_notification(event_data: &str) -> Option<CompletionNotification> {
     let event = serde_json::from_str::<CompletionEventData>(event_data).ok()?;
@@ -223,12 +225,12 @@ fn notification_preview(content: &str) -> Option<String> {
     })
 }
 
-/// Returns the local file holding the last completion shown by the tray.
+/// Returns the local file holding the last completion shown by the notifier.
 fn completion_cursor_path() -> Result<PathBuf> {
     Ok(crate::local::windie_home_dir()?.join(COMPLETION_CURSOR_FILE_NAME))
 }
 
-/// Loads an optional durable completion cursor. A missing file is the tray's
+/// Loads an optional durable completion cursor. A missing file is the notifier's
 /// first-run state, not an error.
 fn load_completion_cursor() -> Result<Option<i64>> {
     load_cursor_at(&completion_cursor_path()?)
@@ -272,11 +274,16 @@ fn load_cursor_at(path: &Path) -> Result<Option<i64>> {
     }
 
     fs::read_to_string(path)
-        .with_context(|| format!("failed to read tray completion cursor {}", path.display()))?
+        .with_context(|| {
+            format!(
+                "failed to read notifier completion cursor {}",
+                path.display()
+            )
+        })?
         .trim()
         .parse::<i64>()
         .map(Some)
-        .with_context(|| format!("invalid tray completion cursor {}", path.display()))
+        .with_context(|| format!("invalid notifier completion cursor {}", path.display()))
 }
 
 /// Atomically records a displayed completion before a reconnect can replay it.
@@ -287,23 +294,23 @@ fn save_completion_cursor(cursor: i64) -> Result<()> {
 fn save_cursor_at(path: &Path, cursor: i64) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| anyhow!("tray completion cursor has no parent directory"))?;
+        .ok_or_else(|| anyhow!("notifier completion cursor has no parent directory"))?;
     fs::create_dir_all(parent).with_context(|| {
         format!(
-            "failed to create tray cursor directory {}",
+            "failed to create notifier cursor directory {}",
             parent.display()
         )
     })?;
     let temporary = path.with_extension("cursor.tmp");
     fs::write(&temporary, format!("{cursor}\n")).with_context(|| {
         format!(
-            "failed to write tray completion cursor {}",
+            "failed to write notifier completion cursor {}",
             temporary.display()
         )
     })?;
     fs::rename(&temporary, path).with_context(|| {
         format!(
-            "failed to publish tray completion cursor {}",
+            "failed to publish notifier completion cursor {}",
             path.display()
         )
     })
@@ -339,7 +346,7 @@ mod tests {
     #[test]
     fn completion_cursor_round_trips_atomically() {
         let path = std::env::temp_dir().join(format!(
-            "windie-tray-cursor-{}-{}",
+            "windie-notifier-cursor-{}-{}",
             std::process::id(),
             CURSOR_TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));

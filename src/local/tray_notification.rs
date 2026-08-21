@@ -1,8 +1,8 @@
-//! Native tray notification presentation and test observation.
+//! Native notification presentation and test observation.
 //!
 //! This component presents completed-assistant notifications and owns only the
 //! development notification probe. Production notifications name a durable
-//! session and, when the macOS tray is running from its app bundle, can open
+//! session and, when the macOS notifier is running from its app bundle, can open
 //! that session's canonical hosted Inspector URL. The probe reconnects to the
 //! local API's volatile test SSE stream. Neither path changes session state.
 
@@ -21,24 +21,21 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(250);
 /// Hosted Inspector origin used by native session-notification actions.
 const INSPECTOR_ORIGIN: &str = "https://app.windieos.com";
 
-/// Stable identifier for the explicit macOS notification action.
-#[cfg(target_os = "macos")]
+/// Stable identifier for an explicit notification action on every platform.
 const OPEN_SESSION_ACTION: &str = "windie.open-session";
 
 /// Finite lifetime for an actionable notification response listener.
 #[cfg(target_os = "macos")]
 const NOTIFICATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// Records whether the installed macOS tray received notification permission.
+/// Records whether the installed macOS notifier received notification permission.
 #[cfg(target_os = "macos")]
 static NATIVE_NOTIFICATIONS_ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// Starts the development notification observer on a dedicated native thread.
 ///
-/// The tray event loop is synchronous, while SSE is blocking I/O. Keeping the
-/// observer on its own thread makes a disconnected API harmless to tray menu
-/// responsiveness and prevents HTTP runtime teardown from happening inside a
-/// Tokio task.
+/// The notification component runs independently from the API, so its blocking
+/// SSE observer stays on a dedicated thread.
 pub fn start_test_completion_observer(stopping: Arc<AtomicBool>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         while !stopping.load(Ordering::Acquire) {
@@ -50,11 +47,11 @@ pub fn start_test_completion_observer(stopping: Arc<AtomicBool>) -> thread::Join
 }
 
 /// Holds one SSE connection open until it is interrupted, disconnects, or the
-/// tray exits. The connection stays open for the lifetime of the tray, so a
+/// notifier exits. The connection stays open for the lifetime of the notifier, so a
 /// volatile test signal cannot disappear in a reconnect gap.
 fn observe_test_notifications(stopping: &AtomicBool) -> anyhow::Result<()> {
     let reader =
-        crate::local::session_event_observer::open_local_sse_stream("/api/dev/tray-notifications")?;
+        crate::local::session_event_observer::open_local_sse_stream("/api/dev/notifications")?;
 
     let mut event_name = None;
     for line in reader.lines() {
@@ -67,7 +64,7 @@ fn observe_test_notifications(stopping: &AtomicBool) -> anyhow::Result<()> {
             event_name = Some(name.trim().to_string());
         } else if line.is_empty() {
             if is_assistant_completed_event(event_name.as_deref()) {
-                eprintln!("windie tray: received assistant-completed test notification");
+                eprintln!("windie notifier: received assistant-completed test notification");
                 if let Err(error) = show_development_completion() {
                     eprintln!("failed to show Windie notification: {error:#}");
                 }
@@ -83,19 +80,19 @@ fn observe_test_notifications(stopping: &AtomicBool) -> anyhow::Result<()> {
 
 /// Opens the localhost SSE stream with bounded raw HTTP I/O.
 ///
-/// This intentionally does not use a blocking HTTP client. The tray owns a
-/// synchronous event loop, and raw bounded loopback I/O keeps its observer
-/// independent from Tokio runtime lifetime rules.
+/// This intentionally does not use a blocking HTTP client. Raw bounded
+/// loopback I/O keeps the observer independent from Tokio runtime lifetime
+/// rules.
 /// Returns whether an SSE event is the explicit test completion signal.
 fn is_assistant_completed_event(event_name: Option<&str>) -> bool {
-    event_name == Some("tray.assistant_completed")
+    event_name == Some("notifier.assistant_completed")
 }
 
-/// Requests macOS notification permission for the installed tray app.
+/// Requests macOS notification permission for the installed notifier app.
 ///
-/// A development tray is an unbundled Cargo process, so it continues through
+/// A development notifier is an unbundled Cargo process, so it continues through
 /// the AppleScript fallback without requesting permission for a non-existent
-/// application identity. An installed `Windie Tray.app` has its own identity,
+/// application identity. An installed `Windie Notifier.app` has its own identity,
 /// which macOS uses both for permission and notification click callbacks.
 #[cfg(target_os = "macos")]
 pub(crate) fn initialize_native_notifications() {
@@ -103,18 +100,18 @@ pub(crate) fn initialize_native_notifications() {
         Err(_) => false,
         Ok(()) => match mac_usernotifications::blocking::request_auth() {
             Ok(true) => {
-                eprintln!("windie tray: macOS notifications are enabled");
+                eprintln!("windie notifier: macOS notifications are enabled");
                 true
             }
             Ok(false) => {
                 eprintln!(
-                    "windie tray: macOS notifications were denied; using the development notification fallback"
+                    "windie notifier: macOS notifications were denied; using the development notification fallback"
                 );
                 false
             }
             Err(error) => {
                 eprintln!(
-                    "windie tray: could not initialize macOS notifications; using the development notification fallback: {error}"
+                    "windie notifier: could not initialize macOS notifications; using the development notification fallback: {error}"
                 );
                 false
             }
@@ -151,7 +148,7 @@ fn show_notification(content: &str, session_id: Option<&crate::session::SessionI
     show_apple_script_notification(content)
 }
 
-/// Returns whether the production tray can use the native callback path.
+/// Returns whether the production notifier can use the native callback path.
 #[cfg(target_os = "macos")]
 fn native_notifications_enabled() -> bool {
     *NATIVE_NOTIFICATIONS_ENABLED.get_or_init(|| false)
@@ -159,7 +156,7 @@ fn native_notifications_enabled() -> bool {
 
 /// Delivers a bundled-app notification before the durable observer advances its
 /// cursor, then waits for a body click or explicit `Open session` action on a
-/// dedicated worker. The tray's winit loop remains on macOS's main run loop,
+/// dedicated worker. The notifier's run loop remains on macOS's main run loop,
 /// which delivers the response callback; this worker only waits and opens the
 /// already-constructed URL.
 #[cfg(target_os = "macos")]
@@ -175,19 +172,19 @@ fn show_actionable_macos_notification(content: &str, session_url: String) -> Res
         .context("macOS rejected the Windie notification")?;
 
     thread::Builder::new()
-        .name("windie-tray-notification".to_string())
+        .name("windie-notification-response".to_string())
         .spawn(move || {
             let response = match mac_usernotifications::block_on_current(response_handle.response())
             {
                 Ok(Ok(response)) => response,
                 Ok(Err(error)) | Err(error) => {
-                    eprintln!("windie tray: native notification interaction failed: {error}");
+                    eprintln!("windie notifier: native notification interaction failed: {error}");
                     return;
                 }
             };
             if response.is_default_action() || response.action_identifier == OPEN_SESSION_ACTION {
                 if let Err(error) = open_session_url(&session_url) {
-                    eprintln!("windie tray: failed to open completed session: {error:#}");
+                    eprintln!("windie notifier: failed to open completed session: {error:#}");
                 }
             }
         })
@@ -264,26 +261,110 @@ fn apple_script_string_literal(content: &str) -> String {
     format!("\"{}\"", content.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Keeps the tray buildable on Windows while native Windows toast delivery and
-/// session navigation remain a separately implemented platform component.
 #[cfg(target_os = "windows")]
 fn show_notification(content: &str, session_id: Option<&crate::session::SessionId>) -> Result<()> {
-    eprintln!(
-        "Windie tray received final assistant response{}: {content}",
-        session_id.map_or(String::new(), |id| format!(" for session {id}"))
-    );
+    use notify_rust::{Notification, NotificationResponse};
+
+    let mut notification = Notification::new();
+    // A Win32 toast requires a Start Menu shortcut with a registered AUMID.
+    // Until Windie has a Windows installer that owns that registration,
+    // notify-rust's supported PowerShell identity keeps delivery functional;
+    // this long-lived notifier process still receives click callbacks itself.
+    notification.summary("Windie").body(content);
+    let session_url = session_id.map(session_url);
+    if session_url.is_some() {
+        notification.action(OPEN_SESSION_ACTION, "Open session");
+    }
+    let response_handle = notification
+        .show()
+        .context("Windows rejected the Windie notification")?;
+    if let Some(session_url) = session_url {
+        thread::Builder::new()
+            .name("windie-notification-response".to_string())
+            .spawn(move || {
+                if let Err(error) = response_handle.wait_for_response(|response| {
+                    if response.is_default_action()
+                        || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION)
+                    {
+                        if let Err(error) = open_session_url(&session_url) {
+                            eprintln!("windie notifier: failed to open completed session: {error:#}");
+                        }
+                    }
+                }) {
+                    eprintln!("windie notifier: notification interaction failed: {error}");
+                }
+            })
+            .context("failed to start the Windie notification worker")?;
+    }
     Ok(())
 }
 
-/// The tray itself is unavailable on these targets; keep the library's local
-/// observer component portable for test and documentation builds.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Delivers a Freedesktop notification through the active desktop notification
+/// service. A session-bearing notification keeps an interaction listener so a
+/// body click or explicit action opens the hosted Inspector session.
+#[cfg(all(unix, not(target_os = "macos")))]
 fn show_notification(content: &str, session_id: Option<&crate::session::SessionId>) -> Result<()> {
-    eprintln!(
-        "Windie tray received final assistant response{}: {content}",
-        session_id.map_or(String::new(), |id| format!(" for session {id}"))
-    );
+    use notify_rust::{Notification, NotificationResponse};
+
+    let mut notification = Notification::new();
+    notification
+        .appname("Windie")
+        .summary("Windie")
+        .body(content);
+    let session_url = session_id.map(session_url);
+    if session_url.is_some() {
+        notification.action(OPEN_SESSION_ACTION, "Open session");
+    }
+    let response_handle = notification
+        .show()
+        .context("Linux notification service rejected the Windie notification")?;
+    if let Some(session_url) = session_url {
+        thread::Builder::new()
+            .name("windie-notification-response".to_string())
+            .spawn(move || {
+                if let Err(error) = response_handle.wait_for_response(|response| {
+                    if response.is_default_action()
+                        || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION)
+                    {
+                        if let Err(error) = open_session_url(&session_url) {
+                            eprintln!("windie notifier: failed to open completed session: {error:#}");
+                        }
+                    }
+                }) {
+                    eprintln!("windie notifier: notification interaction failed: {error}");
+                }
+            })
+            .context("failed to start the Windie notification worker")?;
+    }
     Ok(())
+}
+
+/// Opens a known hosted Inspector URL through the Windows shell association.
+#[cfg(target_os = "windows")]
+fn open_session_url(url: &str) -> Result<()> {
+    let status = std::process::Command::new("explorer.exe")
+        .arg(url)
+        .status()
+        .context("failed to ask Windows to open the Windie session")?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("Windows explorer exited with {status}"))
+    }
+}
+
+/// Opens a known hosted Inspector URL through the desktop's URL handler.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_session_url(url: &str) -> Result<()> {
+    let status = std::process::Command::new("xdg-open")
+        .arg(url)
+        .status()
+        .context("failed to ask Linux to open the Windie session")?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("xdg-open exited with {status}"))
+    }
 }
 
 #[cfg(test)]
@@ -291,7 +372,7 @@ mod tests {
     #[test]
     fn completion_event_name_matches_the_api_contract() {
         assert!(super::is_assistant_completed_event(Some(
-            "tray.assistant_completed"
+            "notifier.assistant_completed"
         )));
         assert!(!super::is_assistant_completed_event(Some(
             "session.completed"

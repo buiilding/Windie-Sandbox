@@ -125,7 +125,7 @@ impl TerminalOutput {
     pub fn uninstall_report(&self, report: &UninstallReport) {
         if report.dry_run {
             println!("windie uninstall: dry run");
-            println!("would stop: tray, api, inspector, gateway");
+            println!("would stop: notifier, tray, api, inspector, gateway");
             println!("would remove data: {}", report.plan.windie_home.display());
             for binary in &report.plan.binaries {
                 println!("would remove binary: {}", binary.display());

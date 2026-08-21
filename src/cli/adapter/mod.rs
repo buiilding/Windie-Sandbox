@@ -50,6 +50,12 @@ pub async fn run(command: Command) -> Result<()> {
             system::output_component(crate::local::process::ManagedComponent::Tray)
         }
         Command::TrayRun => system::run_tray(),
+        Command::NotifierStart => system::start_notifier_process(),
+        Command::NotifierStop => system::stop_notifier_process(),
+        Command::NotifierOutput => {
+            system::output_component(crate::local::process::ManagedComponent::Notifier)
+        }
+        Command::NotifierRun => system::run_notifier(),
         Command::Status => system::status().await,
         Command::New => conversation::new_conversation().await,
         Command::List { json } => conversation::list_conversations(json),

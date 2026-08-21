@@ -21,6 +21,8 @@ const INSPECTOR_LOG_FILE_NAME: &str = "windie-inspector.log";
 const INSPECTOR_PID_FILE_NAME: &str = "windie-inspector.pid";
 const TRAY_LOG_FILE_NAME: &str = "windie-tray.log";
 const TRAY_PID_FILE_NAME: &str = "windie-tray.pid";
+const NOTIFIER_LOG_FILE_NAME: &str = "windie-notifier.log";
+const NOTIFIER_PID_FILE_NAME: &str = "windie-notifier.pid";
 const LLM_ENV_KEYS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -97,6 +99,8 @@ pub struct WindieLayout {
     pub inspector_pid_file: PathBuf,
     pub tray_log_file: PathBuf,
     pub tray_pid_file: PathBuf,
+    pub notifier_log_file: PathBuf,
+    pub notifier_pid_file: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +153,7 @@ pub fn component_log_file_path(
         crate::local::process::ManagedComponent::Api => layout.api_log_file,
         crate::local::process::ManagedComponent::Inspector => layout.inspector_log_file,
         crate::local::process::ManagedComponent::Tray => layout.tray_log_file,
+        crate::local::process::ManagedComponent::Notifier => layout.notifier_log_file,
     })
 }
 
@@ -162,6 +167,7 @@ pub fn component_pid_file_path(
         crate::local::process::ManagedComponent::Api => layout.api_pid_file,
         crate::local::process::ManagedComponent::Inspector => layout.inspector_pid_file,
         crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
+        crate::local::process::ManagedComponent::Notifier => layout.notifier_pid_file,
     })
 }
 
@@ -178,12 +184,13 @@ pub(crate) fn existing_component_pid_file_path(
         crate::local::process::ManagedComponent::Api => layout.api_pid_file,
         crate::local::process::ManagedComponent::Inspector => layout.inspector_pid_file,
         crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
+        crate::local::process::ManagedComponent::Notifier => layout.notifier_pid_file,
     })
 }
 
 /// Returns the exact Windie-owned paths that uninstall may remove.
 ///
-/// The data root and a named, release-owned macOS tray bundle are the only
+/// The data root and named, release-owned macOS desktop bundles are the only
 /// recursive targets. Installed binaries remain individual files inside the
 /// configured install directory; the directory itself is never removed because
 /// it may contain unrelated user programs.
@@ -388,6 +395,8 @@ fn windie_layout() -> Result<WindieLayout> {
         inspector_pid_file: root.join(INSPECTOR_PID_FILE_NAME),
         tray_log_file: root.join(TRAY_LOG_FILE_NAME),
         tray_pid_file: root.join(TRAY_PID_FILE_NAME),
+        notifier_log_file: root.join(NOTIFIER_LOG_FILE_NAME),
+        notifier_pid_file: root.join(NOTIFIER_PID_FILE_NAME),
         root,
     })
 }
@@ -589,7 +598,10 @@ fn executable_name(name: &str) -> String {
 fn owned_install_directories(install_dir: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        return vec![install_dir.join("Windie Tray.app")];
+        return vec![
+            install_dir.join("Windie Notifier.app"),
+            install_dir.join("Windie Tray.app"),
+        ];
     }
 
     #[cfg(not(target_os = "macos"))]

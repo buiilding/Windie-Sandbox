@@ -125,14 +125,15 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - cli/onboard.rs: terminal input/output adapter for onboarding. it prompts for provider choices, api keys, mcp secrets, and displays progress
 - dev.rs: foreground development supervisor, release workflow adapter, local
   marketplace, and benchmark entry point dispatched by the public CLI.
-- local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, Inspector, and tray components.
+- local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, Inspector, tray, and notifier components.
 - ../vendor/windie-inspector/host/src/main.rs: standalone Inspector static host; its address
   and API endpoint are configurable through the local endpoint environment
   settings. Its loopback `POST /shutdown` route lets the Inspector stop itself
   gracefully. It is an independent Cargo package, not a Windie runtime target.
-- local/tray.rs: macOS/Windows tray presentation component that polls local component health, requests explicit single-component lifecycle operations, and starts the notification observer.
-- local/session_event_observer.rs: reconnecting aggregate session-completion SSE observer that persists the last displayed cursor and forwards a preview of only canonical final durable assistant responses to the tray.
-- local/tray_notification.rs: native notification presenter plus the development-only tray SSE probe. Bundled macOS tray notifications open the durable session's hosted Inspector URL; the probe never touches durable session state.
+- local/tray.rs: macOS/Windows tray presentation component that polls local component health and requests explicit single-component lifecycle operations.
+- local/notifier.rs: independent notification process that starts durable completion and development-probe observers without owning a tray or runtime service.
+- local/session_event_observer.rs: reconnecting aggregate session-completion SSE observer that persists the last displayed cursor and forwards a preview of only canonical final durable assistant responses to the notifier.
+- local/tray_notification.rs: native notification presenter plus the development-only notification SSE probe. Platform click actions open the durable session's hosted Inspector URL; the probe never touches durable session state.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers
@@ -188,10 +189,11 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - local/: user-local Windie environment setup.
 - local/mod.rs: Public boundary and re-exports for local folder.
-- local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, temporary compatibility dependency installs, and exact release-owned tray-bundle removal during uninstall.
+- local/setup.rs: user-local Windie setup, ~/.windie/.env editing, component PID/log paths, temporary compatibility dependency installs, and exact release-owned desktop-bundle removal during uninstall.
 - local/process.rs: local Windie process lifecycle, PID files, logs, and shutdown.
-- local/tray.rs: local desktop tray lifecycle, health polling, and notification-observer startup.
-- local/session_event_observer.rs: durable final-session-completion observer with a persisted tray cursor and native-text preview boundary.
+- local/tray.rs: local desktop tray lifecycle and health polling.
+- local/notifier.rs: local cross-platform notification lifecycle and observer ownership.
+- local/session_event_observer.rs: durable final-session-completion observer with a persisted notifier cursor and native-text preview boundary.
 - local/tray_notification.rs: native notification presenter and local development probe observer.
 - managed_runtime/: downloads, verifies, extracts, and resolves managed Node.js/uv runtimes for packaged MCP components.
 - managed_runtime/mod.rs: owns shared managed runtime installation and executable resolution.

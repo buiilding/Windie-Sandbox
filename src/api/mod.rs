@@ -139,7 +139,7 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
             .run_idle_wakeup_scheduler(idle_wakeup_shutdown.subscribe())
             .await;
     });
-    let (tray_test_notifications, _) = tokio::sync::broadcast::channel(16);
+    let (notifier_test_notifications, _) = tokio::sync::broadcast::channel(16);
     let state = ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
@@ -150,7 +150,7 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
         plugin_catalog,
         tool_registry,
         session_manager,
-        tray_test_notifications,
+        notifier_test_notifications,
         shutdown_tx: shutdown_tx.clone(),
     };
     let listener = match TcpListener::bind(address).await {
@@ -211,7 +211,7 @@ pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
         .with_plugin_catalog(plugin_catalog.clone()),
     );
     let (shutdown_tx, _) = watch::channel(false);
-    let (tray_test_notifications, _) = tokio::sync::broadcast::channel(16);
+    let (notifier_test_notifications, _) = tokio::sync::broadcast::channel(16);
     router(ApiState {
         gateway_url: "http://127.0.0.1:8080".to_string(),
         base_url: "http://127.0.0.1:8080/v1".to_string(),
@@ -222,7 +222,7 @@ pub(crate) fn benchmark_router(store_path: PathBuf) -> Router {
         plugin_catalog,
         tool_registry,
         session_manager,
-        tray_test_notifications,
+        notifier_test_notifications,
         shutdown_tx,
     })
 }

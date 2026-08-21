@@ -226,11 +226,13 @@ Wait-WindieHealth $inspectorHealthUrl 30 "the Windie Inspector UI"
 $uiUrl = "http://$inspectorAddress"
 Start-Process $uiUrl
 Start-Process -FilePath $windie -ArgumentList @("tray", "start") -WindowStyle Hidden
+Start-Process -FilePath $windie -ArgumentList @("notifier", "start") -WindowStyle Hidden
 Write-Host "Started the UI at $uiUrl"
 Write-Host "Click on the tray on your desktop to manage these processes."
 
 Write-Output "windie installed at $(Join-Path $installDir 'windie.exe')"
 Write-Output "Windie tray available as: $windie tray start|stop|output"
+Write-Output "Windie notifications available as: $windie notifier start|stop|output"
 Write-Output "bundled Bifrost installed at $(Join-Path $installDir 'bifrost.exe')"
 Write-Output "Inspector installed at $(Join-Path $installDir 'windie-inspector.exe')"
 Write-Output "Windie home ready at $windieHome"

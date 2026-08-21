@@ -4,6 +4,7 @@
 //! environment, such as `~/.windie`, provider-key env editing, and
 //! approved dependency checks.
 
+pub mod notifier;
 pub mod process;
 pub mod session_event_observer;
 mod setup;

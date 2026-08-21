@@ -86,11 +86,15 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             stop_child(&mut gateway).await;
             result
         }
-        DevComponent::Api | DevComponent::Inspector | DevComponent::Tray => {
+        DevComponent::Api
+        | DevComponent::Inspector
+        | DevComponent::Tray
+        | DevComponent::Notifier => {
             let component = match component {
                 DevComponent::Api => "api",
                 DevComponent::Inspector => "inspector",
                 DevComponent::Tray => "tray",
+                DevComponent::Notifier => "notifier",
                 DevComponent::Gateway => unreachable!("gateway is handled above"),
             };
             let mut child = spawn_component(component).await?;
@@ -707,6 +711,11 @@ async fn spawn_component(component: &str) -> Result<Child> {
         let executable = build_windie_binary(&root).await?;
         let mut command = Command::new(executable);
         command.args(["tray", "run"]);
+        command
+    } else if component == "notifier" {
+        let executable = build_windie_binary(&root).await?;
+        let mut command = Command::new(executable);
+        command.args(["notifier", "run"]);
         command
     } else {
         bail!("unknown development component {component}");

@@ -34,6 +34,7 @@ pub enum ManagedComponent {
     Api,
     Inspector,
     Tray,
+    Notifier,
 }
 
 impl ManagedComponent {
@@ -44,6 +45,7 @@ impl ManagedComponent {
             Self::Api => "api",
             Self::Inspector => "inspector",
             Self::Tray => "tray",
+            Self::Notifier => "notifier",
         }
     }
 }
@@ -112,7 +114,7 @@ pub fn start_inspector() -> Result<ProcessReport> {
 /// component.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn start_tray() -> Result<ProcessReport> {
-    let executable = tray_executable()?;
+    let executable = env::current_exe().context("failed to locate the Windie executable")?;
     start_detached(
         ManagedComponent::Tray,
         &executable,
@@ -121,29 +123,41 @@ pub fn start_tray() -> Result<ProcessReport> {
     )
 }
 
-/// Resolves the tray executable for one supported desktop platform.
+/// Starts the detached cross-platform notification component without changing
+/// the tray or any runtime service.
+pub fn start_notifier() -> Result<ProcessReport> {
+    let executable = notifier_executable()?;
+    start_detached(
+        ManagedComponent::Notifier,
+        &executable,
+        &["notifier", "run"],
+        &executable,
+    )
+}
+
+/// Resolves the notification executable for this platform.
 ///
-/// Installed macOS releases include the same binary inside `Windie Tray.app`.
-/// Launching that copy gives `UNUserNotificationCenter` the application bundle
-/// identity required for reliable notification click callbacks. Checkout and
-/// development runs intentionally fall back to the current unbundled binary.
+/// Installed macOS releases include the same binary inside `Windie
+/// Notifier.app`, which gives the notification presenter an application bundle
+/// identity. Checkout and other platform runs use the current executable.
 #[cfg(target_os = "macos")]
-fn tray_executable() -> Result<PathBuf> {
+fn notifier_executable() -> Result<PathBuf> {
     let current = env::current_exe().context("failed to locate the Windie executable")?;
     let directory = current
         .parent()
         .ok_or_else(|| anyhow!("Windie executable has no parent directory"))?;
-    let bundled_tray = directory.join("Windie Tray.app/Contents/MacOS/windie");
-    if bundled_tray.is_file() {
-        Ok(bundled_tray)
+    let bundled_notifier = directory.join("Windie Notifier.app/Contents/MacOS/windie");
+    if bundled_notifier.is_file() {
+        Ok(bundled_notifier)
     } else {
         Ok(current)
     }
 }
 
-/// Windows does not use the macOS application-bundle notification boundary.
-#[cfg(target_os = "windows")]
-fn tray_executable() -> Result<PathBuf> {
+/// Windows and Linux use the normal installed executable as their notification
+/// component identity.
+#[cfg(not(target_os = "macos"))]
+fn notifier_executable() -> Result<PathBuf> {
     env::current_exe().context("failed to locate the Windie executable")
 }
 
@@ -207,6 +221,31 @@ pub fn unregister_tray() -> Result<()> {
     remove_pid_file(ManagedComponent::Tray)
 }
 
+/// Registers the foreground notification component so lifecycle commands can
+/// safely verify and stop its one owned process.
+pub fn register_notifier() -> Result<()> {
+    let current_pid = std::process::id();
+    let pid_file = local::component_pid_file_path(ManagedComponent::Notifier)?;
+    if read_pid_file(&pid_file)? == Some(current_pid) {
+        return Ok(());
+    }
+
+    let report = existing_report(ManagedComponent::Notifier)?;
+    if report.state == ProcessState::AlreadyRunning {
+        return Err(anyhow!(
+            "Windie notifier is already running with PID {}",
+            report.pid.unwrap_or_default()
+        ));
+    }
+
+    write_pid_file(&pid_file, current_pid)
+}
+
+/// Removes the foreground notification component's PID record on clean exit.
+pub fn unregister_notifier() -> Result<()> {
+    remove_pid_file(ManagedComponent::Notifier)
+}
+
 /// Stops the Windie tray process when its PID file still identifies a tray.
 pub fn stop_tray() -> Result<ProcessReport> {
     let report = existing_report(ManagedComponent::Tray)?;
@@ -215,6 +254,16 @@ pub fn stop_tray() -> Result<ProcessReport> {
     };
 
     stop_recorded_process(ManagedComponent::Tray, pid, &report.log_file)
+}
+
+/// Stops the notification component when its PID file identifies its process.
+pub fn stop_notifier() -> Result<ProcessReport> {
+    let report = existing_report(ManagedComponent::Notifier)?;
+    let Some(pid) = report.pid else {
+        return Ok(report);
+    };
+
+    stop_recorded_process(ManagedComponent::Notifier, pid, &report.log_file)
 }
 
 /// Stops and verifies every Windie process managed by this process boundary.
@@ -226,6 +275,7 @@ pub fn stop_windie_processes() -> Result<Vec<ProcessReport>> {
     let mut reports = Vec::new();
     let mut failures = Vec::new();
     for stop in [
+        stop_notifier as fn() -> Result<ProcessReport>,
         stop_tray as fn() -> Result<ProcessReport>,
         stop_api,
         stop_inspector,
@@ -475,6 +525,7 @@ fn process_matches_component(component: ManagedComponent, pid: u32) -> bool {
         ManagedComponent::Api => "windie",
         ManagedComponent::Inspector => "windie-inspector",
         ManagedComponent::Tray => "windie",
+        ManagedComponent::Notifier => "windie",
     };
     let executable = command
         .trim_matches('"')
@@ -487,12 +538,16 @@ fn process_matches_component(component: ManagedComponent, pid: u32) -> bool {
         return false;
     }
 
-    if component == ManagedComponent::Tray {
+    if matches!(
+        component,
+        ManagedComponent::Tray | ManagedComponent::Notifier
+    ) {
+        let component_command = component.as_str();
         return process_command_line(pid)
-            .map(|command| {
-                command
+            .map(|process_command| {
+                process_command
                     .split_whitespace()
-                    .any(|argument| argument.trim_matches('"') == "tray")
+                    .any(|argument| argument.trim_matches('"') == component_command)
             })
             .unwrap_or(false);
     }

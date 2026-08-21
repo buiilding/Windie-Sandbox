@@ -83,6 +83,14 @@ pub enum Command {
     TrayOutput,
     /// Internal foreground tray entrypoint used by `tray start`.
     TrayRun,
+    /// Start the detached cross-platform notification component.
+    NotifierStart,
+    /// Stop the detached notification component.
+    NotifierStop,
+    /// Print the detached notification component output.
+    NotifierOutput,
+    /// Internal foreground notification entrypoint used by `notifier start`.
+    NotifierRun,
     /// Remove Windie's processes, local data, and installed binaries.
     Uninstall {
         yes: bool,
@@ -195,6 +203,7 @@ pub enum DevComponent {
     Api,
     Inspector,
     Tray,
+    Notifier,
 }
 
 /// Repository release workflow selected by `windie release`.

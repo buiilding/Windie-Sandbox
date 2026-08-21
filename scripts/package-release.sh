@@ -15,7 +15,7 @@
 #
 # Tarball layout consumed by install.sh:
 #   windie            CLI + API server
-#   Windie Tray.app   macOS-native notification host (macOS releases only)
+#   Windie Notifier.app  macOS-native notification host (macOS releases only)
 #   bifrost           owned Bifrost gateway binary (sibling of `windie`)
 #   windie-inspector  standalone Inspector server
 #   release-manifest.txt  target/version metadata for installer diagnostics
@@ -137,13 +137,13 @@ echo "==> assembling tarball"
 install -m 0755 "$WINDIE_BIN" "$STAGING_DIR/windie"
 install -m 0755 "$BIFROST_BIN" "$STAGING_DIR/bifrost"
 install -m 0755 "$INSPECTOR_BIN" "$STAGING_DIR/windie-inspector"
-TRAY_BUNDLE_NAME="Windie Tray.app"
+NOTIFIER_BUNDLE_NAME="Windie Notifier.app"
 RELEASE_CONTENTS="windie,bifrost,windie-inspector"
 if [ "$RELEASE_OS" = "macos" ]; then
-  tray_bundle="$STAGING_DIR/$TRAY_BUNDLE_NAME"
-  mkdir -p "$tray_bundle/Contents/MacOS"
-  install -m 0755 "$WINDIE_BIN" "$tray_bundle/Contents/MacOS/windie"
-  cat > "$tray_bundle/Contents/Info.plist" <<EOF
+  notifier_bundle="$STAGING_DIR/$NOTIFIER_BUNDLE_NAME"
+  mkdir -p "$notifier_bundle/Contents/MacOS"
+  install -m 0755 "$WINDIE_BIN" "$notifier_bundle/Contents/MacOS/windie"
+  cat > "$notifier_bundle/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -151,9 +151,9 @@ if [ "$RELEASE_OS" = "macos" ]; then
   <key>CFBundleExecutable</key>
   <string>windie</string>
   <key>CFBundleIdentifier</key>
-  <string>com.windieos.tray</string>
+  <string>com.windieos.notifier</string>
   <key>CFBundleName</key>
-  <string>Windie Tray</string>
+  <string>Windie Notifier</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -161,8 +161,8 @@ if [ "$RELEASE_OS" = "macos" ]; then
 </dict>
 </plist>
 EOF
-  codesign --force --sign - "$tray_bundle"
-  RELEASE_CONTENTS="$RELEASE_CONTENTS,$TRAY_BUNDLE_NAME"
+  codesign --force --sign - "$notifier_bundle"
+  RELEASE_CONTENTS="$RELEASE_CONTENTS,$NOTIFIER_BUNDLE_NAME"
 fi
 cat > "$STAGING_DIR/release-manifest.txt" <<EOF
 windie_version=$VERSION
@@ -181,7 +181,7 @@ EOF
 mkdir -p "$DIST_DIR"
 TARBALL="$DIST_DIR/windie-$ASSET_LABEL.tar.gz"
 if [ "$RELEASE_OS" = "macos" ]; then
-  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector "$TRAY_BUNDLE_NAME" release-manifest.txt
+  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector "$NOTIFIER_BUNDLE_NAME" release-manifest.txt
 else
   tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector release-manifest.txt
 fi

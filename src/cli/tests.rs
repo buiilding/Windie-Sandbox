@@ -106,6 +106,19 @@ fn reads_tray_lifecycle_commands_and_rejects_the_bare_command() {
 }
 
 #[test]
+fn reads_notifier_lifecycle_commands_and_rejects_the_bare_command() {
+    let start = command_from_args(["windie", "notifier", "start"].map(String::from));
+    let stop = command_from_args(["windie", "notifier", "stop"].map(String::from));
+    let output = command_from_args(["windie", "notifier", "output"].map(String::from));
+    let bare = command_from_args(["windie", "notifier"].map(String::from));
+
+    assert!(matches!(start, Command::NotifierStart));
+    assert!(matches!(stop, Command::NotifierStop));
+    assert!(matches!(output, Command::NotifierOutput));
+    assert!(matches!(bare, Command::Invalid));
+}
+
+#[test]
 fn reads_uninstall_commands() {
     let plain = command_from_args(["windie".to_string(), "uninstall".to_string()]);
     let yes = command_from_args([
@@ -157,6 +170,7 @@ fn reads_repository_workflow_commands() {
         "release".to_string(),
         "verify".to_string(),
     ]);
+    let notifier = command_from_args(["windie", "dev", "run", "notifier"].map(String::from));
     let marketplace = command_from_args([
         "windie".to_string(),
         "marketplace".to_string(),
@@ -183,6 +197,12 @@ fn reads_repository_workflow_commands() {
         })
     ));
     assert!(matches!(release, Command::Release(ReleaseCommand::Verify)));
+    assert!(matches!(
+        notifier,
+        Command::Dev(DevCommand::Run {
+            component: DevComponent::Notifier
+        })
+    ));
     assert!(matches!(
         marketplace,
         Command::Marketplace(MarketplaceCommand::Build)

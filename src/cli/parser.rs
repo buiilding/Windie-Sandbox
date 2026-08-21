@@ -86,6 +86,10 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [command, action] if command == "tray" && action == "stop" => Command::TrayStop,
         [command, action] if command == "tray" && action == "output" => Command::TrayOutput,
         [command, action] if command == "tray" && action == "run" => Command::TrayRun,
+        [command, action] if command == "notifier" && action == "start" => Command::NotifierStart,
+        [command, action] if command == "notifier" && action == "stop" => Command::NotifierStop,
+        [command, action] if command == "notifier" && action == "output" => Command::NotifierOutput,
+        [command, action] if command == "notifier" && action == "run" => Command::NotifierRun,
         [arg] if arg == "new" => Command::New,
         [arg] if arg == "ls" => Command::List { json: false },
         [command, json_flag] if command == "ls" && json_flag == "--json" => {
