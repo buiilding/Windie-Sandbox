@@ -432,7 +432,10 @@ mod tests {
             .find(|(key, _)| key == "HOME")
             .map(|(_, value)| value)
             .expect("Desktop Commander should receive an isolated HOME");
-        assert!(home.ends_with("runtime/desktop-commander/home"));
+        let isolated_home_suffix = std::path::Path::new("runtime")
+            .join("desktop-commander")
+            .join("home");
+        assert!(std::path::Path::new(home).ends_with(isolated_home_suffix));
         let config = std::fs::read_to_string(
             std::path::Path::new(home).join(".claude-server-commander/config.json"),
         )
