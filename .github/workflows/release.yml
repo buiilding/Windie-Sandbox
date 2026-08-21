@@ -28,33 +28,22 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Windie submodules
-        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
+      - name: Checkout Bifrost submodule
+        run: git submodule update --init --depth 1 vendor/bifrost
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:
           path: vendor/bifrost/tmp
           key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
-      - name: Restore Inspector build
-        uses: actions/cache@v4
-        with:
-          path: target/${{ matrix.target }}/release/windie-inspector*
-          key: inspector-v3-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('vendor/windie-inspector/host/Cargo.toml', 'vendor/windie-inspector/host/Cargo.lock', 'vendor/windie-inspector/host/src/**', 'vendor/windie-inspector/frontend/**', '!vendor/windie-inspector/frontend/node_modules/**', '!vendor/windie-inspector/frontend/build/**') }}
       - name: Package release
         env:
           WINDIE_REUSE_BIFROST: "1"
-          WINDIE_REUSE_INSPECTOR: "1"
         run: scripts/package-release.sh "${{ matrix.target }}" "${{ matrix.label }}" dist
       - uses: actions/upload-artifact@v4
         with:
@@ -71,34 +60,23 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Windie submodules
-        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
+      - name: Checkout Bifrost submodule
+        run: git submodule update --init --depth 1 vendor/bifrost
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:
           path: vendor/bifrost/tmp
           key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
-      - name: Restore Inspector build
-        uses: actions/cache@v4
-        with:
-          path: target/${{ matrix.target }}/release/windie-inspector*
-          key: inspector-v3-${{ runner.os }}-${{ matrix.target }}-rust-stable-${{ hashFiles('vendor/windie-inspector/host/Cargo.toml', 'vendor/windie-inspector/host/Cargo.lock', 'vendor/windie-inspector/host/src/**', 'vendor/windie-inspector/frontend/**', '!vendor/windie-inspector/frontend/node_modules/**', '!vendor/windie-inspector/frontend/build/**') }}
       - name: Package Windows release
         shell: pwsh
         env:
           WINDIE_REUSE_BIFROST: "1"
-          WINDIE_REUSE_INSPECTOR: "1"
         run: ./scripts/package-release.ps1 ${{ matrix.target }} ${{ matrix.label }} dist
       - uses: actions/upload-artifact@v4
         with:

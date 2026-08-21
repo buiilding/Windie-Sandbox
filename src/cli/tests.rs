@@ -70,29 +70,6 @@ fn reads_api_output_command() {
 }
 
 #[test]
-fn reads_inspector_lifecycle_commands() {
-    let start = command_from_args([
-        "windie".to_string(),
-        "inspector".to_string(),
-        "start".to_string(),
-    ]);
-    let stop = command_from_args([
-        "windie".to_string(),
-        "inspector".to_string(),
-        "stop".to_string(),
-    ]);
-    let output = command_from_args([
-        "windie".to_string(),
-        "inspector".to_string(),
-        "output".to_string(),
-    ]);
-
-    assert!(matches!(start, Command::InspectorStart));
-    assert!(matches!(stop, Command::InspectorStop));
-    assert!(matches!(output, Command::InspectorOutput));
-}
-
-#[test]
 fn reads_tray_lifecycle_commands_and_rejects_the_bare_command() {
     let start = command_from_args(["windie", "tray", "start"].map(String::from));
     let stop = command_from_args(["windie", "tray", "stop"].map(String::from));

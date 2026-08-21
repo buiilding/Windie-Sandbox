@@ -32,8 +32,6 @@ fn formats_help_lines() {
     assert!(lines.contains(&"  windie".to_string()));
     assert!(lines.contains(&"  windie api start".to_string()));
     assert!(lines.contains(&"  windie api output".to_string()));
-    assert!(lines.contains(&"  windie inspector start".to_string()));
-    assert!(lines.contains(&"  windie inspector output".to_string()));
     assert!(lines.contains(&"  windie tray start".to_string()));
     assert!(lines.contains(&"  windie tray stop".to_string()));
     assert!(lines.contains(&"  windie tray output".to_string()));

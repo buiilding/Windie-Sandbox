@@ -2,7 +2,7 @@
 //!
 //! This module exposes Windie's existing runtime and store primitives over a
 //! localhost-only JSON API. It is a test harness boundary for clients such as
-//! `windie-inspector`; persistence, context construction, gateway checks, and
+//! the hosted Inspector; persistence, context construction, gateway checks, and
 //! model requests still flow through the same modules used by the CLI.
 
 use std::collections::VecDeque;

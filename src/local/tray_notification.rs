@@ -182,10 +182,10 @@ fn show_actionable_macos_notification(content: &str, session_url: String) -> Res
                     return;
                 }
             };
-            if response.is_default_action() || response.action_identifier == OPEN_SESSION_ACTION {
-                if let Err(error) = open_session_url(&session_url) {
-                    eprintln!("windie notifier: failed to open completed session: {error:#}");
-                }
+            if (response.is_default_action() || response.action_identifier == OPEN_SESSION_ACTION)
+                && let Err(error) = open_session_url(&session_url)
+            {
+                eprintln!("windie notifier: failed to open completed session: {error:#}");
             }
         })
         .context("failed to start the Windie notification worker")?;

@@ -43,7 +43,6 @@ mod app {
     enum Component {
         Gateway,
         Api,
-        Inspector,
     }
 
     /// Events sent to the tray event loop by non-UI shutdown sources.
@@ -57,17 +56,15 @@ mod app {
             match self {
                 Self::Gateway => crate::local::process::ManagedComponent::Gateway,
                 Self::Api => crate::local::process::ManagedComponent::Api,
-                Self::Inspector => crate::local::process::ManagedComponent::Inspector,
             }
         }
     }
 
-    /// Current availability of the three independently managed components.
+    /// Current availability of the independently managed runtime components.
     #[derive(Clone, Copy, Default)]
     struct StatusSnapshot {
         gateway_running: bool,
         api_running: bool,
-        inspector_running: bool,
     }
 
     impl StatusSnapshot {
@@ -76,7 +73,6 @@ mod app {
             match component {
                 Component::Gateway => self.gateway_running,
                 Component::Api => self.api_running,
-                Component::Inspector => self.inspector_running,
             }
         }
     }
@@ -93,7 +89,6 @@ mod app {
     struct PendingActions {
         gateway: Option<PendingAction>,
         api: Option<PendingAction>,
-        inspector: Option<PendingAction>,
     }
 
     impl PendingActions {
@@ -102,7 +97,6 @@ mod app {
             match component {
                 Component::Gateway => self.gateway,
                 Component::Api => self.api,
-                Component::Inspector => self.inspector,
             }
         }
 
@@ -111,7 +105,6 @@ mod app {
             match component {
                 Component::Gateway => self.gateway = action,
                 Component::Api => self.api = action,
-                Component::Inspector => self.inspector = action,
             }
         }
     }
@@ -149,7 +142,6 @@ mod app {
             StatusSnapshot {
                 gateway_running: running(Component::Gateway.managed_component()),
                 api_running: running(Component::Api.managed_component()),
-                inspector_running: running(Component::Inspector.managed_component()),
             }
         }
 
@@ -218,7 +210,6 @@ mod app {
                     crate::llm::gateway::GatewayUrl::new(crate::config::gateway_url()),
                 ))?,
                 Component::Api => crate::operation::start_api()?,
-                Component::Inspector => crate::operation::start_inspector()?,
             };
             Ok(())
         }
@@ -231,7 +222,6 @@ mod app {
                     crate::llm::gateway::GatewayUrl::new(crate::config::gateway_url()),
                 ))?,
                 Component::Api => crate::operation::stop_api()?,
-                Component::Inspector => crate::operation::stop_inspector()?,
             };
             Ok(())
         }
@@ -329,12 +319,10 @@ mod app {
         start_status_monitor(controller.clone(), status_sender, stopping.clone());
         let gateway = MenuItem::new("Start Gateway", true, None);
         let api = MenuItem::new("Start API", true, None);
-        let inspector = MenuItem::new("Start Inspector", true, None);
         let quit = MenuItem::new("Quit Tray", true, None);
         let menu = Menu::new();
         menu.append(&gateway)?;
         menu.append(&api)?;
-        menu.append(&inspector)?;
         menu.append(&quit)?;
 
         let event_loop = EventLoop::<TrayEvent>::with_user_event()
@@ -374,13 +362,9 @@ mod app {
                 event_loop.exit();
             }
 
-            if let Some(status) = update_menu_labels(
-                &status_receiver,
-                &gateway,
-                &api,
-                &inspector,
-                &event_loop_controller,
-            ) {
+            if let Some(status) =
+                update_menu_labels(&status_receiver, &gateway, &api, &event_loop_controller)
+            {
                 current_status = status;
             }
 
@@ -390,9 +374,6 @@ mod app {
                         .toggle_async(Component::Gateway, current_status.gateway_running);
                 } else if event.id() == api.id() {
                     event_loop_controller.toggle_async(Component::Api, current_status.api_running);
-                } else if event.id() == inspector.id() {
-                    event_loop_controller
-                        .toggle_async(Component::Inspector, current_status.inspector_running);
                 } else if event.id() == quit.id() {
                     event_loop_stopping.store(true, Ordering::Release);
                     event_loop.exit();
@@ -433,7 +414,6 @@ mod app {
         receiver: &Receiver<StatusSnapshot>,
         gateway: &MenuItem,
         api: &MenuItem,
-        inspector: &MenuItem,
         controller: &RuntimeController,
     ) -> Option<StatusSnapshot> {
         let mut latest = None;
@@ -451,11 +431,6 @@ mod app {
             "API",
             status.running(Component::Api),
             controller.pending_action(Component::Api),
-        ));
-        inspector.set_text(toggle_label(
-            "Inspector",
-            status.running(Component::Inspector),
-            controller.pending_action(Component::Inspector),
         ));
         Some(status)
     }

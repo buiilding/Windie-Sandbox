@@ -25,16 +25,9 @@ $apiAddress = if ($env:WINDIE_API_ADDRESS) {
 } else {
     "127.0.0.1:8787"
 }
-$inspectorAddress = if ($env:WINDIE_INSPECTOR_ADDRESS) {
-    $env:WINDIE_INSPECTOR_ADDRESS
-} elseif ($env:WINDIE_INSPECTOR_PORT) {
-    "127.0.0.1:$($env:WINDIE_INSPECTOR_PORT)"
-} else {
-    "127.0.0.1:3000"
-}
+$hostedAppUrl = "https://app.windieos.com"
 $env:WINDIE_GATEWAY_URL = $gatewayUrl
 $env:WINDIE_API_ADDRESS = $apiAddress
-$env:WINDIE_INSPECTOR_ADDRESS = $inspectorAddress
 
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw "Windie requires a 64-bit Windows installation."
@@ -72,7 +65,7 @@ try {
     Invoke-WebRequest -Uri $assetUrl -OutFile $archive
     Expand-Archive -LiteralPath $archive -DestinationPath $tempDir -Force
 
-    foreach ($name in @("windie.exe", "bifrost.exe", "windie-inspector.exe")) {
+    foreach ($name in @("windie.exe", "bifrost.exe")) {
         $source = Join-Path $tempDir $name
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "Release asset did not contain $name."
@@ -109,7 +102,6 @@ if (-not $hasInstallDir) {
 $windie = Join-Path $installDir "windie.exe"
 $gatewayHealthUrl = "$gatewayUrl/health"
 $apiHealthUrl = "http://$apiAddress/api/health"
-$inspectorHealthUrl = "http://$inspectorAddress/"
 
 function Test-WindieHealth {
     param([string]$Uri)
@@ -216,27 +208,18 @@ catch {
 }
 Write-Host "Started the runtime at http://$apiAddress"
 
-Write-Host "Installing Windie Inspector UI"
-if (-not (Test-WindieHealth $inspectorHealthUrl)) {
-    Write-WindieProgressBar 5
-    Invoke-WindieLifecycle @("inspector", "start") "inspector" 30
-}
-Wait-WindieHealth $inspectorHealthUrl 30 "the Windie Inspector UI"
-
-$uiUrl = "http://$inspectorAddress"
-Start-Process $uiUrl
+Start-Process $hostedAppUrl
 Start-Process -FilePath $windie -ArgumentList @("tray", "start") -WindowStyle Hidden
 Start-Process -FilePath $windie -ArgumentList @("notifier", "start") -WindowStyle Hidden
-Write-Host "Started the UI at $uiUrl"
+Write-Host "Opened Windie at $hostedAppUrl"
 Write-Host "Click on the tray on your desktop to manage these processes."
 
 Write-Output "windie installed at $(Join-Path $installDir 'windie.exe')"
 Write-Output "Windie tray available as: $windie tray start|stop|output"
 Write-Output "Windie notifications available as: $windie notifier start|stop|output"
 Write-Output "bundled Bifrost installed at $(Join-Path $installDir 'bifrost.exe')"
-Write-Output "Inspector installed at $(Join-Path $installDir 'windie-inspector.exe')"
 Write-Output "Windie home ready at $windieHome"
 Write-Output "provider keys file: $envFile"
 Write-Output "Bifrost: $gatewayUrl"
 Write-Output "Windie API: http://$apiAddress"
-Write-Output "Inspector: $uiUrl"
+Write-Output "Windie: $hostedAppUrl"

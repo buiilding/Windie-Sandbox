@@ -36,20 +36,6 @@ pub(crate) fn stop_api_process() -> Result<()> {
     Ok(())
 }
 
-/// Starts the detached Inspector process.
-pub(crate) fn start_inspector_process() -> Result<()> {
-    let report = operation::start_inspector()?;
-    TerminalOutput.component_report(&report);
-    Ok(())
-}
-
-/// Stops the Inspector process without touching the API or Bifrost.
-pub(crate) fn stop_inspector_process() -> Result<()> {
-    let report = operation::stop_inspector()?;
-    TerminalOutput.component_report(&report);
-    Ok(())
-}
-
 /// Starts the detached native tray process.
 pub(crate) fn start_tray_process() -> Result<()> {
     let report = operation::start_tray()?;

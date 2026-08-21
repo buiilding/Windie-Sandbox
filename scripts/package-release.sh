@@ -8,8 +8,8 @@
 #   <dist-dir>     Output directory for the finished tarball
 #
 # The script runs on a runner whose OS already matches <rust-target>, so the
-# Rust runtime build, the Inspector host build, the embedded UI build, and the
-# CGO-backed Bifrost build are all native compilations. Cross-compiling Bifrost
+# Rust runtime build and the CGO-backed Bifrost build are native compilations.
+# Cross-compiling Bifrost
 # is intentionally out of scope: it links SQLite through CGO, which needs a
 # native C toolchain.
 #
@@ -17,7 +17,6 @@
 #   windie            CLI + API server
 #   Windie Notifier.app  macOS-native notification host (macOS releases only)
 #   bifrost           owned Bifrost gateway binary (sibling of `windie`)
-#   windie-inspector  standalone Inspector server
 #   release-manifest.txt  target/version metadata for installer diagnostics
 
 set -euo pipefail
@@ -27,9 +26,6 @@ ASSET_LABEL="${2:?usage: package-release.sh <rust-target> <asset-label> <dist-di
 DIST_DIR="${3:?usage: package-release.sh <rust-target> <asset-label> <dist-dir>}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSPECTOR_REPO_DIR="$REPO_ROOT/vendor/windie-inspector"
-INSPECTOR_DIR="$INSPECTOR_REPO_DIR/frontend"
-INSPECTOR_HOST_MANIFEST="$INSPECTOR_REPO_DIR/host/Cargo.toml"
 BIFROST_DIR="$REPO_ROOT/vendor/bifrost"
 BIFROST_HTTP_DIR="$BIFROST_DIR/transports/bifrost-http"
 BIFROST_BIN="$BIFROST_DIR/tmp/bifrost-http"
@@ -54,31 +50,12 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 echo "==> windie release: target=$RUST_TARGET label=$ASSET_LABEL version=$VERSION"
 
 WINDIE_BIN="$REPO_ROOT/target/$RUST_TARGET/release/windie"
-INSPECTOR_BIN="$REPO_ROOT/target/$RUST_TARGET/release/windie-inspector"
-
-# --- 1. Build or reuse the Inspector host ------------------------------------
-# The host is a separate Cargo package. It embeds the UI build, but it is not a
-# binary target of the Windie runtime package. Both packages use the repository
-# target directory so the release staging path stays predictable.
-if [ "${WINDIE_REUSE_INSPECTOR:-0}" = "1" ] && [ -f "$INSPECTOR_BIN" ]; then
-  echo "==> reusing cached windie inspector"
-else
-  # rust-embed captures vendor/windie-inspector/frontend/build at compile time, so the UI must be
-  # built before the independent Inspector host package.
-  echo "==> building inspector UI"
-  npm ci --prefix "$INSPECTOR_DIR" --legacy-peer-deps
-  npm run build --prefix "$INSPECTOR_DIR"
-  echo "==> building windie inspector host ($RUST_TARGET)"
-  cargo build --release --target "$RUST_TARGET" --target-dir "$REPO_ROOT/target" --manifest-path "$INSPECTOR_HOST_MANIFEST"
-fi
-[ -f "$INSPECTOR_BIN" ] || { echo "windie inspector binary not found at $INSPECTOR_BIN" >&2; exit 1; }
-
-# --- 2. Build the windie binary ----------------------------------------------
+# --- 1. Build the windie binary ----------------------------------------------
 echo "==> building windie ($RUST_TARGET)"
 cargo build --release --target "$RUST_TARGET" --manifest-path "$REPO_ROOT/Cargo.toml" --bin windie
 [ -f "$WINDIE_BIN" ] || { echo "windie binary not found at $WINDIE_BIN" >&2; exit 1; }
 
-# --- 3. Build or reuse the Bifrost binary -----------------------------------
+# --- 2. Build or reuse the Bifrost binary -----------------------------------
 # Bifrost is cached independently per target. Its version is intentionally
 # stable because Windie releases do not necessarily change Bifrost.
 if [ "${WINDIE_REUSE_BIFROST:-0}" = "1" ] && [ -f "$BIFROST_BIN" ]; then
@@ -132,13 +109,12 @@ else
 fi
 [ -f "$BIFROST_BIN" ] || { echo "bifrost binary not found at $BIFROST_BIN" >&2; exit 1; }
 
-# --- 4. Assemble the tarball --------------------------------------------------
+# --- 3. Assemble the tarball --------------------------------------------------
 echo "==> assembling tarball"
 install -m 0755 "$WINDIE_BIN" "$STAGING_DIR/windie"
 install -m 0755 "$BIFROST_BIN" "$STAGING_DIR/bifrost"
-install -m 0755 "$INSPECTOR_BIN" "$STAGING_DIR/windie-inspector"
 NOTIFIER_BUNDLE_NAME="Windie Notifier.app"
-RELEASE_CONTENTS="windie,bifrost,windie-inspector"
+RELEASE_CONTENTS="windie,bifrost"
 if [ "$RELEASE_OS" = "macos" ]; then
   notifier_bundle="$STAGING_DIR/$NOTIFIER_BUNDLE_NAME"
   mkdir -p "$notifier_bundle/Contents/MacOS"
@@ -171,7 +147,6 @@ asset_label=$ASSET_LABEL
 rust_target=$RUST_TARGET
 os=$RELEASE_OS
 cpu=$RELEASE_CPU
-inspector_commit=$(git -C "$INSPECTOR_REPO_DIR" rev-parse HEAD)
 contents=$RELEASE_CONTENTS
 EOF
 
@@ -181,9 +156,9 @@ EOF
 mkdir -p "$DIST_DIR"
 TARBALL="$DIST_DIR/windie-$ASSET_LABEL.tar.gz"
 if [ "$RELEASE_OS" = "macos" ]; then
-  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector "$NOTIFIER_BUNDLE_NAME" release-manifest.txt
+  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost "$NOTIFIER_BUNDLE_NAME" release-manifest.txt
 else
-  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost windie-inspector release-manifest.txt
+  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost release-manifest.txt
 fi
 sha256sum "$TARBALL" > "$TARBALL.sha256"
 

@@ -7,6 +7,14 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- No unreleased changes yet.
+
+## [0.4.0] - 2026-08-20
+
+- Moved the Inspector out of installed releases. Packages and installers now
+  contain and start only Windie, Bifrost, the tray, and the notifier; after the
+  local API is healthy, installation opens the paired hosted Inspector at
+  `app.windieos.com`.
 - Added a hosted-account authorization boundary for the local API. The first
   signed-in Inspector explicitly pairs one Supabase account with a local Windie
   database; later API and SSE calls require that account's verified token, and
@@ -382,7 +390,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.0
 [0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
 [0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1
 [0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0

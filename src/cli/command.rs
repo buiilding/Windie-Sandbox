@@ -24,12 +24,6 @@ pub enum Command {
     ApiOutput,
     /// Internal foreground API server entrypoint used by `api start`.
     ApiRun,
-    /// Start the detached Inspector server.
-    InspectorStart,
-    /// Stop the detached Inspector server.
-    InspectorStop,
-    /// Print the detached Inspector process output.
-    InspectorOutput,
     /// Run the terminal-only first-run onboarding wizard.
     Onboard,
     /// Attach one provider tool to a conversation.

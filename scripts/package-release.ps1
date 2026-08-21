@@ -2,8 +2,8 @@
 #
 # Usage: scripts/package-release.ps1 <rust-target> <asset-label> <dist-dir>
 # The Windows runner already matches the target, so Rust and CGO builds remain
-# native and the resulting archive contains the unified Windie executable,
-# Bifrost, and Inspector.
+# native and the resulting archive contains the unified Windie executable and
+# Bifrost.
 
 [CmdletBinding()]
 param(
@@ -20,9 +20,6 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$InspectorRepoDir = Join-Path $RepoRoot "vendor\windie-inspector"
-$InspectorDir = Join-Path $InspectorRepoDir "frontend"
-$InspectorHostManifest = Join-Path $InspectorRepoDir "host\Cargo.toml"
 $BifrostDir = Join-Path $RepoRoot "vendor\bifrost"
 $BifrostHttpDir = Join-Path $BifrostDir "transports\bifrost-http"
 $BifrostVersion = "stable"
@@ -49,22 +46,6 @@ try {
     New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
 
     $WindieBinary = Join-Path $RepoRoot "target\$RustTarget\release\windie.exe"
-    $InspectorBinary = Join-Path $RepoRoot "target\$RustTarget\release\windie-inspector.exe"
-
-    if ($env:WINDIE_REUSE_INSPECTOR -eq "1" -and (Test-Path -LiteralPath $InspectorBinary -PathType Leaf)) {
-        Write-Host "==> reusing cached windie inspector"
-    }
-    else {
-        Write-Host "==> building inspector UI"
-        Invoke-Native "npm" @("ci", "--prefix", $InspectorDir, "--legacy-peer-deps")
-        Invoke-Native "npm" @("run", "build", "--prefix", $InspectorDir)
-        Write-Host "==> building windie inspector host ($RustTarget)"
-        Invoke-Native "cargo" @("build", "--release", "--target", $RustTarget, "--target-dir", (Join-Path $RepoRoot "target"), "--manifest-path", $InspectorHostManifest)
-    }
-    if (-not (Test-Path -LiteralPath $InspectorBinary -PathType Leaf)) {
-        throw "windie inspector binary not found at $InspectorBinary"
-    }
-
     Write-Host "==> building windie ($RustTarget)"
     Invoke-Native "cargo" @("build", "--release", "--target", $RustTarget, "--manifest-path", (Join-Path $RepoRoot "Cargo.toml"), "--bin", "windie")
     if (-not (Test-Path -LiteralPath $WindieBinary -PathType Leaf)) {
@@ -143,7 +124,6 @@ try {
 
     Copy-Item -LiteralPath $WindieBinary -Destination (Join-Path $StagingDir "windie.exe")
     Copy-Item -LiteralPath $BifrostBinary -Destination (Join-Path $StagingDir "bifrost.exe")
-    Copy-Item -LiteralPath $InspectorBinary -Destination (Join-Path $StagingDir "windie-inspector.exe")
     @(
         "windie_version=$Version"
         "bifrost_version=$BifrostVersion"
@@ -151,13 +131,12 @@ try {
         "rust_target=$RustTarget"
         "os=windows"
         "cpu=$(if ($RustTarget.StartsWith('aarch64')) { 'aarch64' } else { 'x86_64' })"
-        "inspector_commit=$((git -C $InspectorRepoDir rev-parse HEAD).Trim())"
-        "contents=windie.exe,bifrost.exe,windie-inspector.exe"
+        "contents=windie.exe,bifrost.exe"
     ) | Set-Content -LiteralPath (Join-Path $StagingDir "release-manifest.txt") -Encoding ascii
     Invoke-Native $WindieBinary @("--version")
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
     $Archive = Join-Path $DistDir "windie-$AssetLabel.zip"
-    Compress-Archive -Path (Join-Path $StagingDir "windie.exe"), (Join-Path $StagingDir "bifrost.exe"), (Join-Path $StagingDir "windie-inspector.exe"), (Join-Path $StagingDir "release-manifest.txt") -DestinationPath $Archive -Force
+    Compress-Archive -Path (Join-Path $StagingDir "windie.exe"), (Join-Path $StagingDir "bifrost.exe"), (Join-Path $StagingDir "release-manifest.txt") -DestinationPath $Archive -Force
     (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant() + "  " + (Split-Path $Archive -Leaf) | Set-Content -LiteralPath "$Archive.sha256" -Encoding ascii
     Write-Host "==> wrote $Archive"
     Get-Item -LiteralPath $Archive | Select-Object FullName, Length

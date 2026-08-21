@@ -7,7 +7,7 @@
 # Usage: scripts/test-local-installer.sh
 #
 # Optional endpoint settings are inherited by the installed processes:
-#   WINDIE_GATEWAY_PORT=8081 WINDIE_API_PORT=8788 WINDIE_INSPECTOR_PORT=3001 \
+#   WINDIE_GATEWAY_PORT=8081 WINDIE_API_PORT=8788 \
 #     scripts/test-local-installer.sh
 
 set -euo pipefail
@@ -67,7 +67,6 @@ fi
 echo "==> packaging local release"
 GITHUB_REF_NAME=local-dev \
 WINDIE_REUSE_BIFROST=1 \
-WINDIE_REUSE_INSPECTOR=1 \
   "$repo_root/scripts/package-release.sh" "$rust_target" "$asset_label" "$dist_dir"
 
 if [ ! -f "$asset" ] || [ ! -f "$asset.sha256" ]; then

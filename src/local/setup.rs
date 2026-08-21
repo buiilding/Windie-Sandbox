@@ -17,8 +17,6 @@ const GATEWAY_LOG_FILE_NAME: &str = "windie-gateway.log";
 const GATEWAY_PID_FILE_NAME: &str = "bifrost.pid";
 const API_LOG_FILE_NAME: &str = "windie-api.log";
 const API_PID_FILE_NAME: &str = "windie-api.pid";
-const INSPECTOR_LOG_FILE_NAME: &str = "windie-inspector.log";
-const INSPECTOR_PID_FILE_NAME: &str = "windie-inspector.pid";
 const TRAY_LOG_FILE_NAME: &str = "windie-tray.log";
 const TRAY_PID_FILE_NAME: &str = "windie-tray.pid";
 const NOTIFIER_LOG_FILE_NAME: &str = "windie-notifier.log";
@@ -95,8 +93,6 @@ pub struct WindieLayout {
     pub gateway_pid_file: PathBuf,
     pub api_log_file: PathBuf,
     pub api_pid_file: PathBuf,
-    pub inspector_log_file: PathBuf,
-    pub inspector_pid_file: PathBuf,
     pub tray_log_file: PathBuf,
     pub tray_pid_file: PathBuf,
     pub notifier_log_file: PathBuf,
@@ -151,7 +147,6 @@ pub fn component_log_file_path(
     Ok(match component {
         crate::local::process::ManagedComponent::Gateway => layout.gateway_log_file,
         crate::local::process::ManagedComponent::Api => layout.api_log_file,
-        crate::local::process::ManagedComponent::Inspector => layout.inspector_log_file,
         crate::local::process::ManagedComponent::Tray => layout.tray_log_file,
         crate::local::process::ManagedComponent::Notifier => layout.notifier_log_file,
     })
@@ -165,7 +160,6 @@ pub fn component_pid_file_path(
     Ok(match component {
         crate::local::process::ManagedComponent::Gateway => layout.gateway_pid_file,
         crate::local::process::ManagedComponent::Api => layout.api_pid_file,
-        crate::local::process::ManagedComponent::Inspector => layout.inspector_pid_file,
         crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
         crate::local::process::ManagedComponent::Notifier => layout.notifier_pid_file,
     })
@@ -182,7 +176,6 @@ pub(crate) fn existing_component_pid_file_path(
     Ok(match component {
         crate::local::process::ManagedComponent::Gateway => layout.gateway_pid_file,
         crate::local::process::ManagedComponent::Api => layout.api_pid_file,
-        crate::local::process::ManagedComponent::Inspector => layout.inspector_pid_file,
         crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
         crate::local::process::ManagedComponent::Notifier => layout.notifier_pid_file,
     })
@@ -203,7 +196,7 @@ pub fn uninstall_plan() -> Result<UninstallPlan> {
     Ok(UninstallPlan {
         windie_home,
         install_dir: install_dir.clone(),
-        binaries: ["windie", "bifrost", "windie-inspector"]
+        binaries: ["windie", "bifrost"]
             .into_iter()
             .map(|name| install_dir.join(executable_name(name)))
             .collect(),
@@ -391,8 +384,6 @@ fn windie_layout() -> Result<WindieLayout> {
         gateway_pid_file: root.join(BIFROST_DIR).join(GATEWAY_PID_FILE_NAME),
         api_log_file: root.join(API_LOG_FILE_NAME),
         api_pid_file: root.join(API_PID_FILE_NAME),
-        inspector_log_file: root.join(INSPECTOR_LOG_FILE_NAME),
-        inspector_pid_file: root.join(INSPECTOR_PID_FILE_NAME),
         tray_log_file: root.join(TRAY_LOG_FILE_NAME),
         tray_pid_file: root.join(TRAY_PID_FILE_NAME),
         notifier_log_file: root.join(NOTIFIER_LOG_FILE_NAME),
@@ -511,7 +502,7 @@ fn validate_uninstall_paths(
 /// Validates both the safe roots and the exact binary list selected by Windie.
 fn validate_uninstall_plan(plan: &UninstallPlan, user_home: &Path) -> Result<()> {
     validate_uninstall_paths(user_home, &plan.windie_home, &plan.install_dir)?;
-    let expected = ["windie", "bifrost", "windie-inspector"]
+    let expected = ["windie", "bifrost"]
         .into_iter()
         .map(|name| plan.install_dir.join(executable_name(name)))
         .collect::<Vec<_>>();
@@ -598,10 +589,10 @@ fn executable_name(name: &str) -> String {
 fn owned_install_directories(install_dir: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        return vec![
+        vec![
             install_dir.join("Windie Notifier.app"),
             install_dir.join("Windie Tray.app"),
-        ];
+        ]
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -772,7 +763,7 @@ mod tests {
             fs::write(directory.join("owned"), "owned").unwrap();
         }
 
-        let binaries = ["windie", "bifrost", "windie-inspector"]
+        let binaries = ["windie", "bifrost"]
             .into_iter()
             .map(|name| install_dir.join(executable_name(name)))
             .collect();

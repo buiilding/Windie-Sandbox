@@ -12,24 +12,19 @@ pub(super) fn router(state: ApiState) -> Router {
 
 /// Builds the localhost `/api/*` route table.
 ///
-/// CORS stays scoped to the API so the standalone Inspector and browser clients
-/// served from webpack dev servers (ports 3000/5173) or the hosted Inspector
-/// can call localhost. The hosted origin is deliberately exact: this
+/// CORS stays scoped to the API so browser clients served from local developer
+/// servers (ports 3000/5173) or the hosted Inspector can call localhost. The
+/// hosted origin is deliberately exact: this
 /// authenticated runtime access must not grant every website access to a
 /// user's local Windie runtime.
 fn api_router(state: ApiState) -> Router {
-    let mut origins = vec![
+    let origins = vec![
         HeaderValue::from_static("http://localhost:3000"),
         HeaderValue::from_static("http://127.0.0.1:3000"),
         HeaderValue::from_static("http://localhost:5173"),
         HeaderValue::from_static("http://127.0.0.1:5173"),
         HeaderValue::from_static("https://app.windieos.com"),
     ];
-    if let Ok(origin) =
-        HeaderValue::try_from(format!("http://{}", crate::config::inspector_address()))
-    {
-        origins.push(origin);
-    }
 
     let cors = CorsLayer::new()
         .allow_origin(origins)
@@ -60,7 +55,10 @@ fn api_router(state: ApiState) -> Router {
         )
         // Keep the initial manual probe URL working while clients migrate to
         // the notifier-owned endpoint above.
-        .route("/api/dev/tray-notifications", get(notifier_test_notifications))
+        .route(
+            "/api/dev/tray-notifications",
+            get(notifier_test_notifications),
+        )
         .route(
             "/api/dev/tray-notifications/assistant-completed",
             post(report_assistant_completed_for_notifier),

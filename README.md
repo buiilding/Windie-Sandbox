@@ -109,11 +109,12 @@ fixture.
 
 In development, React uses HMR when `windie dev run inspector` starts it. The
 Rust API and Bifrost gateway are built by their individual `windie dev run`
-commands; rerun the relevant command after backend source changes. The release
-Inspector embeds the frontend and is intentionally not hot reloaded.
+commands; rerun the relevant command after backend source changes. Production
+deploys the Inspector to `app.windieos.com`; it is not embedded in the local
+Windie release.
 Installations in separate
 worktrees can run together by assigning distinct
-`WINDIE_GATEWAY_PORT`, `WINDIE_API_PORT`, and `WINDIE_INSPECTOR_PORT` values.
+`WINDIE_GATEWAY_PORT` and `WINDIE_API_PORT` values.
 
 ---
 

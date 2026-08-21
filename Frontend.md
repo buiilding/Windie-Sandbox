@@ -401,8 +401,8 @@ The hosted Inspector gates the application behind Google/Supabase sign-in and
 an explicit local-runtime pairing. Its Supabase access token is attached only
 to the browser machine's loopback API. The default API endpoint is
 `http://127.0.0.1:8787`, overridable with `REACT_APP_WINDIE_API_URL` during a
-frontend build. The legacy standalone Inspector is not an authenticated
-client; it remains only until the coordinated installer migration removes it.
+frontend build. Production uses this hosted client; releases do not include a
+standalone Inspector server.
 
 ## Live session lifecycle
 

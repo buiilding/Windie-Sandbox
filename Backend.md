@@ -61,7 +61,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - operation/session_approval.rs: session-owned tool approval workflows.
 - operation/session_cli.rs: CLI adapter over session workflows.
 - operation/component.rs: coordinates installed component lifecycle workflows: setup, installation, health checks, enabling, disabling, repairing and uninstalling.
-- operation/system.rs: shared lifecycle operations for API, Inspector, and gateway process management.
+- operation/system.rs: shared lifecycle operations for API, notifier, tray, and gateway process management.
 - operation/onboarding.rs: shared onboarding workflow. Configures Bifrost LLM providers, stores MCP secrets, sets up MCP components, checks component health, and enables healthy components.
 - operation/tests.rs: tests cross-component workflows built on top of storage, providers, tools, input handling, inspection, and sessions.
 
@@ -95,7 +95,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/env.rs: securely writes manifest-declared provider secrets to ~/.windie/.env and refuses arbitrary environment keys.
 - api/shutdown.rs: unauthenticated localhost graceful-stop route used by `windie api stop`; signals api/mod.rs without changing Bifrost.
 - api/tests.rs: test HTTP routes, hosted-account pairing, error mapping, SSE/session behavior, conversation operating, tools, and mock Bifrost responses.
-- config.rs: shared environment-backed gateway, API, Inspector, and hosted-account configuration.
+- config.rs: shared environment-backed gateway, API, and hosted-account configuration.
 
 ## CLI
 
@@ -127,11 +127,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - cli/onboard.rs: terminal input/output adapter for onboarding. it prompts for provider choices, api keys, mcp secrets, and displays progress
 - dev.rs: foreground development supervisor, release workflow adapter, local
   marketplace, and benchmark entry point dispatched by the public CLI.
-- local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, Inspector, tray, and notifier components.
-- ../vendor/windie-inspector/host/src/main.rs: standalone Inspector static host; its address
-  and API endpoint are configurable through the local endpoint environment
-  settings. Its loopback `POST /shutdown` route lets the Inspector stop itself
-  gracefully. It is an independent Cargo package, not a Windie runtime target.
+- local/process.rs: persistent PID files, detached stdout/stderr logs, and process lifecycle for independent gateway, API, tray, and notifier components.
 - local/tray.rs: macOS/Windows tray presentation component that polls local component health and requests explicit single-component lifecycle operations.
 - local/notifier.rs: independent notification process that starts durable completion and development-probe observers without owning a tray or runtime service.
 - local/session_event_observer.rs: reconnecting aggregate session-completion SSE observer that persists the last displayed cursor and forwards a preview of only canonical final durable assistant responses to the notifier.
@@ -225,8 +221,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - main.rs: front desk for the windie binary.
 - llm/gateway.rs: manages the local Bifrost LLM gateway lifecycle and health checks.
 - error.rs: Typed Windie errors.
-- ../vendor/windie-inspector/frontend: local browser client for inspecting and testing Windie through
-  the API.
+- ../vendor/windie-inspector/frontend: hosted browser client for inspecting and
+  controlling a paired local Windie runtime through its loopback API.
 
 ## Runtime behavior and invariants
 
@@ -302,7 +298,7 @@ Keep boundaries strict:
 - Only `local/` should own user-local directory setup, `~/.windie/.env` editing, and local Windie process/tray management.
 - Only `managed_runtime/` should install and resolve Windie-managed Node.js and uv runtimes for packaged components.
 - Only `dev.rs` should own repository development helper launchers, while
-  `vendor/windie-inspector/` owns the first-party Inspector client and host.
+  `vendor/windie-inspector/` owns the first-party hosted Inspector client.
 - Only `tool/` should own the model-facing provider registry and provider lifecycle projection.
 - Only `mcp/` should own MCP protocol, transport, MCPB, MCP tool discovery, and MCP result adaptation.
 - Only `store/` should own persisted message history, attached tools, and know about SQLite tables and queries.

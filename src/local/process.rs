@@ -32,7 +32,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub enum ManagedComponent {
     Gateway,
     Api,
-    Inspector,
     Tray,
     Notifier,
 }
@@ -43,7 +42,6 @@ impl ManagedComponent {
         match self {
             Self::Gateway => "gateway",
             Self::Api => "api",
-            Self::Inspector => "inspector",
             Self::Tray => "tray",
             Self::Notifier => "notifier",
         }
@@ -104,12 +102,6 @@ pub fn stop_api() -> Result<ProcessReport> {
     stop_recorded_process(ManagedComponent::Api, pid, &report.log_file)
 }
 
-/// Starts the standalone Inspector server beside the Windie executable.
-pub fn start_inspector() -> Result<ProcessReport> {
-    let executable = inspector_executable()?;
-    start_detached(ManagedComponent::Inspector, &executable, &[], &executable)
-}
-
 /// Starts the detached native tray process without starting any other Windie
 /// component.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -168,30 +160,6 @@ pub fn start_tray() -> Result<ProcessReport> {
     Err(anyhow!(
         "Windie tray is currently supported on macOS and Windows only"
     ))
-}
-
-/// Stops the standalone Inspector server.
-pub fn stop_inspector() -> Result<ProcessReport> {
-    let report = existing_report(ManagedComponent::Inspector)?;
-    let Some(pid) = report.pid else {
-        if endpoint_is_running(&crate::config::inspector_address(), "/") {
-            return Err(anyhow!(
-                "Windie Inspector is running without an owned PID file; refusing to remove it"
-            ));
-        }
-        return Ok(report);
-    };
-
-    if request_inspector_shutdown() {
-        wait_for_exit(pid)?;
-        remove_pid_file(ManagedComponent::Inspector)?;
-        return Ok(ProcessReport {
-            state: ProcessState::Stopped,
-            ..report
-        });
-    }
-
-    stop_recorded_process(ManagedComponent::Inspector, pid, &report.log_file)
 }
 
 /// Registers the foreground tray process so another Windie command can stop
@@ -278,7 +246,6 @@ pub fn stop_windie_processes() -> Result<Vec<ProcessReport>> {
         stop_notifier as fn() -> Result<ProcessReport>,
         stop_tray as fn() -> Result<ProcessReport>,
         stop_api,
-        stop_inspector,
     ] {
         match stop() {
             Ok(report) => reports.push(report),
@@ -441,11 +408,6 @@ fn request_api_shutdown() -> bool {
     request_loopback_shutdown(&crate::config::api_address(), "/api/shutdown")
 }
 
-/// Requests the Inspector's own shutdown route before any owned-PID fallback.
-fn request_inspector_shutdown() -> bool {
-    request_loopback_shutdown(&crate::config::inspector_address(), "/shutdown")
-}
-
 /// Sends one minimal local HTTP shutdown request without creating a blocking
 /// async runtime inside the async CLI process.
 fn request_loopback_shutdown(address: &str, path: &str) -> bool {
@@ -496,18 +458,6 @@ fn loopback_request_succeeded(address: &str, method: &str, path: &str) -> bool {
         .is_some_and(|status| status.starts_with("HTTP/1.1 2") || status.starts_with("HTTP/1.0 2"))
 }
 
-fn inspector_executable() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("WINDIE_INSPECTOR_BIN") {
-        return Ok(PathBuf::from(path));
-    }
-
-    let current = env::current_exe().context("failed to locate the Windie executable")?;
-    let directory = current
-        .parent()
-        .ok_or_else(|| anyhow!("Windie executable has no parent directory"))?;
-    Ok(directory.join(executable_name("windie-inspector")))
-}
-
 fn executable_name(name: &str) -> String {
     if cfg!(windows) {
         format!("{name}.exe")
@@ -523,7 +473,6 @@ fn process_matches_component(component: ManagedComponent, pid: u32) -> bool {
     let expected = match component {
         ManagedComponent::Gateway => "bifrost",
         ManagedComponent::Api => "windie",
-        ManagedComponent::Inspector => "windie-inspector",
         ManagedComponent::Tray => "windie",
         ManagedComponent::Notifier => "windie",
     };

@@ -2,7 +2,7 @@
 //!
 //! This process owns the durable `session.completed` observer and the
 //! development notification probe. It deliberately does not create a tray or
-//! start, stop, or otherwise supervise the API, gateway, or Inspector. The
+//! start, stop, or otherwise supervise the API or gateway. The
 //! presenter in `tray_notification` is currently named for historical
 //! compatibility; its responsibility is platform notification delivery, not
 //! tray ownership.

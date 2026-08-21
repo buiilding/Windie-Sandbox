@@ -53,13 +53,12 @@ Use this to print the package version compiled into the binary.
 
 The installer starts the notification component and, where supported, the
 simple Windie tray controller along with Bifrost, the Windie API, and the
-standalone Inspector as independent local processes. The components use these
+notifier as independent local processes. The components use these
 CLI lifecycle commands:
 
 ```text
 windie gateway start|stop|output
 windie api start|stop|output
-windie inspector start|stop|output
 windie notifier start|stop|output
 windie tray start|stop|output
 ```
@@ -92,8 +91,8 @@ windie api output
 Print the persistent Windie API process log.
 
 The API is a JSON test harness over Windie's existing runtime and store
-primitives. It is intended for local tools such as `vendor/windie-inspector/frontend` to
-test conversation trees, explicit-head path inspection, message mutation,
+primitives. It is intended for the hosted Inspector and local development
+clients to test conversation trees, explicit-head path inspection, message mutation,
 system prompts, attached tools, gateway lifecycle, and session-owned execution
 without shelling out for each operation.
 
@@ -643,9 +642,8 @@ does not start or stop it; use the gateway commands explicitly without Node,
 npm, Docker, or a separate Bifrost checkout.
 
 The default gateway port is `8080`. Set `WINDIE_GATEWAY_PORT` to change it, or
-set `WINDIE_GATEWAY_URL` to provide the complete gateway URL. The API and
-Inspector have equivalent `WINDIE_API_PORT`/`WINDIE_API_ADDRESS` and
-`WINDIE_INSPECTOR_PORT`/`WINDIE_INSPECTOR_ADDRESS` settings.
+set `WINDIE_GATEWAY_URL` to provide the complete gateway URL. Set
+`WINDIE_API_PORT` or `WINDIE_API_ADDRESS` to change the local API endpoint.
 
 Windie launches Bifrost with the same inherited environment as the Windie
 process. It does not clear, filter, or reconstruct environment variables.
@@ -674,29 +672,12 @@ windie gateway output
 
 Print the persistent Bifrost process log.
 
-## Inspector
+## Hosted Inspector
 
-```text
-windie inspector start
-```
-
-Start the standalone Inspector server at `http://127.0.0.1:3000`. It serves
-the browser UI and calls the Windie API independently. Set
-`WINDIE_INSPECTOR_PORT` or `WINDIE_INSPECTOR_ADDRESS` to change its bind
-address. `WINDIE_API_PORT` or `WINDIE_API_ADDRESS` changes the API endpoint
-the Inspector uses.
-
-```text
-windie inspector stop
-```
-
-Stop the standalone Inspector server. This does not stop Windie or Bifrost.
-
-```text
-windie inspector output
-```
-
-Print the persistent Inspector process log.
+The installed runtime opens [app.windieos.com](https://app.windieos.com) after
+the local API is healthy. Sign in, then approve pairing this computer once.
+The browser sends the signed-in session only to this computer's loopback API;
+the Inspector is not installed or run as a local server.
 
 ## Benchmarks
 
