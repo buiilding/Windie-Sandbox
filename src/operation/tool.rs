@@ -5,7 +5,7 @@ use super::*;
 
 pub fn available_tools() -> Result<Vec<ToolDefinition>> {
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     available_tools_with_registry(&store, &registry)
 }
 
@@ -27,7 +27,7 @@ pub fn available_tools_with_registry(
 
 pub fn available_provider_tools(provider_id: &ToolProviderId) -> Result<Vec<ToolDefinition>> {
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     available_provider_tools_with_registry(&store, &registry, provider_id)
 }
 
@@ -36,7 +36,7 @@ pub fn available_provider_tools_with_registry(
     registry: &ToolProviderRegistry,
     provider_id: &ToolProviderId,
 ) -> Result<Vec<ToolDefinition>> {
-    super::provider::require_enabled_provider(store, registry, provider_id)?;
+    super::component::require_enabled_provider(store, registry, provider_id)?;
     stored_provider_tools(store, provider_id)
 }
 
@@ -46,7 +46,7 @@ pub fn attach_tool(
     provider_id: &ToolProviderId,
     tool_name: &ProviderToolName,
 ) -> Result<ToolSchemaName> {
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     attach_tool_with_registry(store, conversation_id, provider_id, tool_name, &registry)
 }
 
@@ -57,7 +57,7 @@ pub fn attach_tool_with_registry(
     tool_name: &ProviderToolName,
     registry: &ToolProviderRegistry,
 ) -> Result<ToolSchemaName> {
-    super::provider::require_enabled_provider(store, registry, provider_id)?;
+    super::component::require_enabled_provider(store, registry, provider_id)?;
     let definition = stored_provider_tools(store, provider_id)?
         .into_iter()
         .find(|tool| tool.provider.tool_name == *tool_name)
@@ -96,7 +96,7 @@ pub fn attach_tools_with_registry(
         HashMap::new();
 
     for request in requests {
-        super::provider::require_enabled_provider(store, registry, &request.provider_id)?;
+        super::component::require_enabled_provider(store, registry, &request.provider_id)?;
         if provider_catalogs.contains_key(&request.provider_id) {
             continue;
         }

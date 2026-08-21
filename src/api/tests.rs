@@ -3,6 +3,7 @@
 use super::*;
 use axum::body::{Body, to_bytes};
 use axum::http::Request as HttpRequest;
+use futures_util::StreamExt;
 use serde_json::json;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,8 +15,8 @@ use tower::ServiceExt;
 use crate::conversation::{MessageMetadata, MessagePart, Role, ToolCall};
 use crate::mcp::McpCommand;
 use crate::session::{SessionEvent, SessionId, SessionStatus};
+use crate::tool::ProviderInstallState;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
-use crate::tool_provider::ProviderInstallState;
 
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -107,6 +108,270 @@ fn saved_sse_event_includes_authoritative_message_and_session_snapshots() {
 }
 
 #[tokio::test]
+async fn hosted_account_must_pair_before_using_the_local_runtime() {
+    let db_path = temp_database_path();
+    let auth = spawn_mock_hosted_auth().await;
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+    let app = test_app_with_urls_shutdown_and_access(
+        db_path.clone(),
+        "http://localhost:8080",
+        "http://localhost:8080/v1",
+        shutdown_tx,
+        RuntimeAccessControl::hosted_for_tests(auth.url),
+    );
+
+    let missing_identity = app
+        .clone()
+        .oneshot(authed_request(Method::GET, "/api/conversations", None))
+        .await
+        .unwrap();
+    assert_eq!(missing_identity.status(), StatusCode::UNAUTHORIZED);
+
+    let unpaired = app
+        .clone()
+        .oneshot(hosted_request(
+            Method::GET,
+            "/api/conversations",
+            "account-a",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unpaired.status(), StatusCode::CONFLICT);
+
+    let paired = app
+        .clone()
+        .oneshot(hosted_request(
+            Method::POST,
+            "/api/runtime/access",
+            "account-a",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(paired.status(), StatusCode::OK);
+    assert_eq!(response_json_body(paired).await["state"], "linked");
+
+    let owner_access = app
+        .clone()
+        .oneshot(hosted_request(
+            Method::GET,
+            "/api/conversations",
+            "account-a",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(owner_access.status(), StatusCode::OK);
+
+    let different_account = app
+        .oneshot(hosted_request(
+            Method::GET,
+            "/api/conversations",
+            "account-b",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(different_account.status(), StatusCode::FORBIDDEN);
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[test]
+fn aggregate_event_envelope_namespaces_session_events() {
+    let db_path = temp_database_path();
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let message_id = store
+        .insert_message(
+            &conversation_id,
+            None,
+            Role::Assistant,
+            "the actual final response",
+            None,
+        )
+        .unwrap();
+    let session_id = SessionId::new("aggregate-envelope");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+    let record = SessionEventRecord {
+        id: 42,
+        session_id,
+        event: SessionEvent::Completed {
+            message_id: Some(message_id.as_str().to_string()),
+        },
+        created_at: 1234,
+    };
+
+    let body: serde_json::Value =
+        serde_json::from_str(&global_event_data(&store, &record)).unwrap();
+
+    assert_eq!(global_event_name(&record.event), "session.completed");
+    assert_eq!(body["event_id"], 42);
+    assert_eq!(body["type"], "session.completed");
+    assert_eq!(body["session_id"], "aggregate-envelope");
+    assert_eq!(body["payload"]["message_id"], message_id.as_str());
+    assert_eq!(body["message"]["content"], "the actual final response");
+    assert!(body["payload"].get("type").is_none());
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn notifier_notification_probe_route_accepts_a_completion_signal() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+
+    let response = app
+        .oneshot(authed_request(
+            Method::POST,
+            "/api/dev/notifications/assistant-completed",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = response_json_body(response).await;
+    assert_eq!(body["notifier_receivers"], 0);
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn aggregate_event_routes_replay_filtered_cross_session_events() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first_session_id = SessionId::new("aggregate-route-first");
+    let second_session_id = SessionId::new("aggregate-route-second");
+    for session_id in [&first_session_id, &second_session_id] {
+        store
+            .create_session(session_id, &conversation_id, None, "openai/test", None)
+            .unwrap();
+    }
+    store
+        .append_session_event(
+            &first_session_id,
+            SessionEvent::AssistantDelta {
+                text: "ignored by filter".to_string(),
+            },
+        )
+        .unwrap();
+    let final_message_id = store
+        .insert_message(
+            &conversation_id,
+            None,
+            Role::Assistant,
+            "the notification body",
+            None,
+        )
+        .unwrap();
+    let completed = store
+        .append_session_event(
+            &second_session_id,
+            SessionEvent::Completed {
+                message_id: Some(final_message_id.as_str().to_string()),
+            },
+        )
+        .unwrap();
+    drop(store);
+
+    let cursor = response_json(
+        app.clone()
+            .oneshot(authed_request(
+                Method::GET,
+                "/api/events/cursor?kind=completed",
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(cursor["latest_event_id"], completed.id);
+
+    let response = app
+        .oneshot(authed_request(
+            Method::GET,
+            "/api/events?after=0&kind=completed",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"))
+    );
+    let mut body = response.into_body().into_data_stream();
+    let chunk = tokio::time::timeout(Duration::from_secs(1), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("event: session.completed"));
+    assert!(text.contains(second_session_id.as_str()));
+    assert!(text.contains("the notification body"));
+    assert!(!text.contains("ignored by filter"));
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn aggregate_event_stream_without_cursor_starts_after_existing_history() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("aggregate-live-baseline");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+    store
+        .append_session_event(
+            &session_id,
+            SessionEvent::Completed {
+                message_id: Some("historical-message".to_string()),
+            },
+        )
+        .unwrap();
+    drop(store);
+
+    let response = app
+        .oneshot(authed_request(
+            Method::GET,
+            "/api/events?kind=completed",
+            None,
+        ))
+        .await
+        .unwrap();
+    let mut body = response.into_body().into_data_stream();
+
+    Store::open_at(&db_path)
+        .unwrap()
+        .append_session_event(
+            &session_id,
+            SessionEvent::Completed {
+                message_id: Some("live-message".to_string()),
+            },
+        )
+        .unwrap();
+
+    let chunk = tokio::time::timeout(Duration::from_secs(1), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("live-message"));
+    assert!(!text.contains("historical-message"));
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn health_does_not_require_token() {
     let app = test_app(temp_database_path());
     let response = app
@@ -149,7 +414,7 @@ async fn shutdown_does_not_require_token_and_signals_server() {
 }
 
 #[tokio::test]
-async fn api_routes_accept_requests_without_a_token() {
+async fn isolated_api_route_fixture_bypasses_hosted_authorization() {
     let app = test_app(temp_database_path());
     let missing = app
         .clone()
@@ -198,6 +463,38 @@ async fn typed_windie_errors_map_to_http_status_codes() {
 
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn plugin_marketplace_route_lists_bundled_plugins_and_rejects_unknown_install() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+
+    let marketplace = response_json(
+        app.clone()
+            .oneshot(authed_request(Method::GET, "/api/plugins", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(marketplace["index"]["index_version"], 1);
+    assert_eq!(marketplace["index"]["plugins"][0]["id"], "parallel-search");
+    assert_eq!(
+        marketplace["index"]["plugins"][0]["versions"][0]["presentation"]["name"],
+        "Parallel Search"
+    );
+
+    let missing = app
+        .oneshot(authed_request(
+            Method::POST,
+            "/api/plugins/missing/install",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
     let _ = fs::remove_file(db_path);
 }
 
@@ -1001,6 +1298,40 @@ async fn session_responses_include_latest_event_cursor() {
 }
 
 #[tokio::test]
+async fn session_keep_awake_route_persists_the_setting() {
+    let db_path = temp_database_path();
+    let app = test_app(db_path.clone());
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("keep-awake-api-session");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+    drop(store);
+
+    let response = response_json(
+        app.oneshot(authed_request(
+            Method::PATCH,
+            &format!("/api/sessions/{session_id}/keep-awake"),
+            Some(json!({"keep_awake": true})),
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+
+    assert_eq!(response["keep_awake"], true);
+    assert!(
+        Store::open_at(&db_path)
+            .unwrap()
+            .load_session(&session_id)
+            .unwrap()
+            .keep_awake
+    );
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn resolve_session_route_uses_backend_head_resolution() {
     let db_path = temp_database_path();
     let app = test_app(db_path.clone());
@@ -1418,20 +1749,52 @@ fn test_app_with_urls_and_shutdown(
     base_url: &str,
     shutdown_tx: watch::Sender<bool>,
 ) -> Router {
+    test_app_with_urls_shutdown_and_access(
+        store_path,
+        gateway_url,
+        base_url,
+        shutdown_tx,
+        RuntimeAccessControl::unrestricted_for_isolated_tests(),
+    )
+}
+
+fn test_app_with_urls_shutdown_and_access(
+    store_path: PathBuf,
+    gateway_url: &str,
+    base_url: &str,
+    shutdown_tx: watch::Sender<bool>,
+    runtime_access: RuntimeAccessControl,
+) -> Router {
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
-    let session_manager = Arc::new(SessionManager::new(
-        Some(store_path.clone()),
-        gateway_url.to_string(),
-        base_url.to_string(),
-        tool_registry.clone(),
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(
+        std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
     ));
+    let plugin_catalog = Arc::new(crate::plugin::PluginCatalog::new(
+        plugin_store.clone(),
+        crate::plugin::bundled_index().unwrap(),
+    ));
+    let session_manager = Arc::new(
+        SessionManager::new(
+            Some(store_path.clone()),
+            gateway_url.to_string(),
+            base_url.to_string(),
+            tool_registry.clone(),
+        )
+        .with_plugin_catalog(plugin_catalog.clone()),
+    );
+    let (notifier_test_notifications, _) = tokio::sync::broadcast::channel(16);
     router(ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
         model: Some("openai/test".to_string()),
         store_path: Some(store_path),
+        marketplace_index_url: None,
+        plugin_store,
+        plugin_catalog,
         tool_registry,
         session_manager,
+        runtime_access,
+        notifier_test_notifications,
         shutdown_tx,
     })
 }
@@ -1440,19 +1803,35 @@ fn test_app_with_tool_registry(
     store_path: PathBuf,
     tool_registry: Arc<ToolProviderRegistry>,
 ) -> Router {
-    let session_manager = Arc::new(SessionManager::new(
-        Some(store_path.clone()),
-        "http://localhost:8080".to_string(),
-        "http://localhost:8080/v1".to_string(),
-        tool_registry.clone(),
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(
+        std::env::temp_dir().join(format!("windie-api-plugins-{}", std::process::id())),
     ));
+    let plugin_catalog = Arc::new(crate::plugin::PluginCatalog::new(
+        plugin_store.clone(),
+        crate::plugin::bundled_index().unwrap(),
+    ));
+    let session_manager = Arc::new(
+        SessionManager::new(
+            Some(store_path.clone()),
+            "http://localhost:8080".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            tool_registry.clone(),
+        )
+        .with_plugin_catalog(plugin_catalog.clone()),
+    );
+    let (notifier_test_notifications, _) = tokio::sync::broadcast::channel(16);
     router(ApiState {
         gateway_url: "http://localhost:8080".to_string(),
         base_url: "http://localhost:8080/v1".to_string(),
         model: Some("openai/test".to_string()),
         store_path: Some(store_path),
+        marketplace_index_url: None,
+        plugin_store,
+        plugin_catalog,
         tool_registry,
         session_manager,
+        runtime_access: RuntimeAccessControl::unrestricted_for_isolated_tests(),
+        notifier_test_notifications,
         shutdown_tx: watch::channel(false).0,
     })
 }
@@ -1460,6 +1839,54 @@ fn test_app_with_tool_registry(
 struct MockBifrost {
     gateway_url: String,
     base_url: String,
+}
+
+struct MockHostedAuth {
+    url: String,
+}
+
+async fn spawn_mock_hosted_auth() -> MockHostedAuth {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(handle_mock_hosted_auth_connection(stream));
+        }
+    });
+
+    MockHostedAuth {
+        url: format!("http://{address}"),
+    }
+}
+
+async fn handle_mock_hosted_auth_connection(mut stream: tokio::net::TcpStream) {
+    let mut buffer = vec![0_u8; 8192];
+    let Ok(size) = stream.read(&mut buffer).await else {
+        return;
+    };
+    let request = String::from_utf8_lossy(&buffer[..size]);
+    let account = if request.contains("authorization: Bearer account-a") {
+        Some("account-a")
+    } else if request.contains("authorization: Bearer account-b") {
+        Some("account-b")
+    } else {
+        None
+    };
+
+    match account {
+        Some(account) => {
+            write_mock_response(
+                &mut stream,
+                "application/json",
+                &format!(r#"{{"id":"{account}"}}"#),
+            )
+            .await;
+        }
+        None => write_mock_status(&mut stream, 401, "invalid token").await,
+    }
 }
 
 async fn spawn_mock_bifrost(response_delay: Duration) -> MockBifrost {
@@ -1544,6 +1971,15 @@ fn authed_request(method: Method, uri: &str, body: Option<Value>) -> HttpRequest
     };
 
     builder.body(body).unwrap()
+}
+
+fn hosted_request(method: Method, uri: &str, account: &str) -> HttpRequest<Body> {
+    HttpRequest::builder()
+        .method(method)
+        .uri(uri)
+        .header(AUTHORIZATION, format!("Bearer {account}"))
+        .body(Body::empty())
+        .unwrap()
 }
 
 async fn response_json(response: Response) -> Value {

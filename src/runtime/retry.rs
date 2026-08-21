@@ -9,9 +9,9 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use tokio::time::sleep;
 
-use crate::context::ModelContext;
 use crate::llm::{AssistantResponse, LlmError, LlmStreamEvent, RuntimeLlm};
 use crate::output::RuntimeOutput;
+use crate::runtime::context::ModelContext;
 
 use super::RuntimeModelRequest;
 

@@ -3,16 +3,102 @@
 use std::path::Path;
 
 use serde::Serialize;
+use serde_json::Value;
+use tokio::time::{Duration, Interval};
 
 use crate::conversation::{Message, MessagePart};
 use crate::session::SessionEvent;
 
 use super::*;
 
+const GLOBAL_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 pub(super) struct SessionSseState {
     pub(super) replay: VecDeque<SessionEventRecord>,
     pub(super) subscription: Option<SessionSubscription>,
     pub(super) store_path: Option<PathBuf>,
+}
+
+/// Polling state for the cross-process aggregate event stream.
+///
+/// SQLite is the coordination boundary because CLI and API runners can both
+/// append session events. Polling the durable log avoids an in-process channel
+/// that would silently miss events written by another Windie process.
+pub(super) struct GlobalSseState {
+    replay: VecDeque<SessionEventRecord>,
+    cursor: i64,
+    kind: Option<crate::session::SessionEventKind>,
+    poll: Interval,
+    store: Store,
+}
+
+impl GlobalSseState {
+    /// Creates a stream positioned after the consumer's durable cursor.
+    pub(super) fn new(
+        store: Store,
+        cursor: i64,
+        kind: Option<crate::session::SessionEventKind>,
+    ) -> Self {
+        Self {
+            replay: VecDeque::new(),
+            cursor,
+            kind,
+            poll: tokio::time::interval(GLOBAL_EVENT_POLL_INTERVAL),
+            store,
+        }
+    }
+
+    /// Waits until the next matching record exists, retrying transient store
+    /// failures without terminating the event consumer.
+    pub(super) async fn next_record(&mut self) -> SessionEventRecord {
+        loop {
+            if let Some(record) = self.replay.pop_front() {
+                self.cursor = record.id;
+                return record;
+            }
+
+            self.poll.tick().await;
+            match self
+                .store
+                .load_global_session_events_after(Some(self.cursor), self.kind)
+            {
+                Ok(records) => self.replay.extend(records),
+                Err(error) => eprintln!("failed to poll aggregate runtime events: {error}"),
+            }
+        }
+    }
+
+    /// Serializes an aggregate record with the canonical final assistant text
+    /// when a completion event names one. The durable event remains the
+    /// delivery fact; this is only a read-only message projection for clients
+    /// that need to present the completion without a second request.
+    pub(super) fn event_data(&self, record: &SessionEventRecord) -> String {
+        global_event_data(&self.store, record)
+    }
+}
+
+#[derive(Debug, Serialize)]
+/// Stable global envelope that namespaces session event kinds for future
+/// event sources.
+struct GlobalEventEnvelope {
+    event_id: i64,
+    #[serde(rename = "type")]
+    event_type: String,
+    session_id: String,
+    created_at: i64,
+    payload: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<GlobalEventMessage>,
+}
+
+#[derive(Debug, Serialize)]
+/// Minimal canonical message projection attached only to completed events.
+///
+/// Aggregate consumers need the final text for presentation, but should not
+/// receive the full Inspector-oriented message snapshot or recreate a
+/// conversation lookup themselves.
+struct GlobalEventMessage {
+    content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,6 +177,74 @@ fn open_event_store(store_path: Option<&Path>) -> Result<Store> {
         Some(path) => Store::open_at(path),
         None => Store::open(),
     }
+}
+
+/// Returns the namespaced event type used by the aggregate SSE feed.
+pub(super) fn global_event_name(event: &SessionEvent) -> String {
+    format!("session.{}", event.event_name())
+}
+
+/// Serializes one aggregate event and, for final completions, projects the
+/// referenced canonical assistant text from SQLite.
+///
+/// The text is not copied into the durable event log. It is loaded through the
+/// session's authoritative conversation boundary at stream-delivery time.
+pub(super) fn global_event_data(store: &Store, record: &SessionEventRecord) -> String {
+    let message = match &record.event {
+        SessionEvent::Completed {
+            message_id: Some(message_id),
+        } => store
+            .load_session(&record.session_id)
+            .ok()
+            .and_then(|session| {
+                store
+                    .load_message(&session.conversation_id, &MessageId::new(message_id))
+                    .ok()
+            })
+            .filter(|message| message.role == crate::conversation::Role::Assistant)
+            .map(|message| GlobalEventMessage {
+                content: message.content,
+            }),
+        _ => None,
+    };
+
+    serialize_global_event_data(record, message)
+}
+
+/// Builds the stable aggregate envelope after any optional read-only message
+/// projection has been resolved.
+fn serialize_global_event_data(
+    record: &SessionEventRecord,
+    message: Option<GlobalEventMessage>,
+) -> String {
+    let event_type = global_event_name(&record.event);
+    let mut payload = serde_json::to_value(&record.event).unwrap_or_else(|error| {
+        serde_json::json!({
+            "error": format!("failed to serialize runtime event: {error}")
+        })
+    });
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("type");
+    }
+
+    serde_json::to_string(&GlobalEventEnvelope {
+        event_id: record.id,
+        event_type,
+        session_id: record.session_id.as_str().to_string(),
+        created_at: record.created_at,
+        payload,
+        message,
+    })
+    .unwrap_or_else(|error| {
+        serde_json::json!({
+            "event_id": record.id,
+            "type": "session.failed",
+            "session_id": record.session_id.as_str(),
+            "created_at": record.created_at,
+            "payload": {"error": format!("failed to serialize aggregate event: {error}")},
+        })
+        .to_string()
+    })
 }
 
 /// Serializes one event and, for state-changing events, hydrates the durable

@@ -12,7 +12,10 @@ mod manager;
 mod model;
 
 pub use control::{SessionCancellation, SessionControl};
-pub use event::{SessionEvent, SessionEventRecord};
-pub use id::{SessionId, SessionInputId};
+pub use event::{SessionEvent, SessionEventKind, SessionEventRecord};
+pub use id::{SessionExecutionClaimId, SessionId, SessionInputId};
 pub use manager::{SessionManager, SessionSubscription};
-pub use model::{Session, SessionQueryResult, SessionResolution, SessionStatus};
+pub use model::{
+    ClaimedSession, Session, SessionExecutionClaim, SessionExecutionOwner, SessionExecutionStart,
+    SessionQueryResult, SessionResolution, SessionStatus,
+};

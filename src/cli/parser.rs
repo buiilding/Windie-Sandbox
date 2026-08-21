@@ -20,15 +20,20 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [] => Command::Help,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" || arg == "-v" => Command::Version,
+        [command, rest @ ..] if command == "dev" => parse_dev_command(rest),
+        [command, rest @ ..] if command == "release" => parse_release_command(rest),
+        [command, rest @ ..] if command == "marketplace" => parse_marketplace_command(rest),
+        [command, rest @ ..] if command == "bench" => parse_benchmark_command(rest),
+        [command, subject, rest @ ..] if command == "compare" && subject == "baseline" => {
+            parse_compare_baseline_command(rest)
+        }
+        [command, subject, rest @ ..] if command == "update" && subject == "baseline" => {
+            parse_update_baseline_command(rest)
+        }
         [command, action] if command == "api" && action == "start" => Command::ApiStart,
         [command, action] if command == "api" && action == "stop" => Command::ApiStop,
         [command, action] if command == "api" && action == "output" => Command::ApiOutput,
         [command, action] if command == "api" && action == "run" => Command::ApiRun,
-        [command, action] if command == "inspector" && action == "start" => Command::InspectorStart,
-        [command, action] if command == "inspector" && action == "stop" => Command::InspectorStop,
-        [command, action] if command == "inspector" && action == "output" => {
-            Command::InspectorOutput
-        }
         [arg] if arg == "onboard" => Command::Onboard,
         [arg] if arg == "uninstall" => Command::Uninstall {
             yes: false,
@@ -72,7 +77,14 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [command, action] if command == "gateway" && action == "start" => Command::GatewayStart,
         [command, action] if command == "gateway" && action == "stop" => Command::GatewayStop,
         [command, action] if command == "gateway" && action == "output" => Command::GatewayOutput,
-        [arg] if arg == "tray" => Command::Tray,
+        [command, action] if command == "tray" && action == "start" => Command::TrayStart,
+        [command, action] if command == "tray" && action == "stop" => Command::TrayStop,
+        [command, action] if command == "tray" && action == "output" => Command::TrayOutput,
+        [command, action] if command == "tray" && action == "run" => Command::TrayRun,
+        [command, action] if command == "notifier" && action == "start" => Command::NotifierStart,
+        [command, action] if command == "notifier" && action == "stop" => Command::NotifierStop,
+        [command, action] if command == "notifier" && action == "output" => Command::NotifierOutput,
+        [command, action] if command == "notifier" && action == "run" => Command::NotifierRun,
         [arg] if arg == "new" => Command::New,
         [arg] if arg == "ls" => Command::List { json: false },
         [command, json_flag] if command == "ls" && json_flag == "--json" => {

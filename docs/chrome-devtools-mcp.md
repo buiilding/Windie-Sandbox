@@ -23,7 +23,8 @@ approval and readiness handshake.
 
 ## Managed Chrome behavior
 
-- Windie launches `chrome-devtools-mcp@1.6.0` through `npx` over stdio.
+- Windie installs `chrome-devtools-mcp@1.6.0` inside the verified Chrome
+  DevTools MCPB and launches the package-owned Node wrapper over stdio.
 - Windie uses the normal, full Chrome DevTools MCP tool catalog. It does not
   pass `--slim`.
 - Windie launches a separate Chrome profile at:
@@ -45,9 +46,9 @@ approval and readiness handshake.
 ## Switching modes
 
 The provider's **Configure** action switches between the two modes. Windie
-stops the current MCP session, updates the saved mode, starts MCP with the new
-arguments, and rediscovers the catalog and readiness state. The npm package
-and managed runtime are reused; they are not downloaded again.
+stops the current MCP session, updates the saved mode, starts the package-owned
+wrapper with the new mode, and rediscovers the catalog and readiness state. The
+verified MCPB and managed runtime are reused; they are not downloaded again.
 
 Stopping an existing-Chrome MCP session only disconnects Windie's MCP process;
 it does not terminate the user's Chrome process.

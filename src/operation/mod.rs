@@ -13,10 +13,10 @@ mod input;
 mod inspection;
 mod message;
 mod onboarding;
-mod provider;
 mod session;
 mod session_approval;
 mod session_cli;
+mod system;
 mod tool;
 
 pub use component::*;
@@ -26,10 +26,10 @@ pub use input::{MessageInputPart, PreparedMessageInput, prepare_message_input};
 pub use inspection::*;
 pub use message::*;
 pub use onboarding::*;
-pub use provider::*;
 pub use session::*;
 pub use session_approval::*;
 pub use session_cli::*;
+pub use system::*;
 pub use tool::*;
 
 #[cfg(test)]
@@ -43,33 +43,35 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::context::ContextBuilder;
 use crate::conversation::{
     ConversationId, Message, MessageId, MessageMetadata, MessagePart, Role, ToolCallId,
     UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::error;
-use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::input::{ImageInput, read_image_input, validate_image_input_bytes};
+use crate::llm::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::llm::{
     self, BaseUrl, BifrostClient, InputTokenCount, ModelInfo, ModelName, ModelParameter,
     ModelParameterOption, PromptCacheRequest, ReasoningRequest,
 };
 use crate::output::{RuntimeOutput, TerminalOutput};
+use crate::runtime::context::ContextBuilder;
+use crate::runtime::wakeup::Wakeup;
 use crate::runtime::{
-    PendingToolExecution, RuntimeEventSink, RuntimeInput, RuntimeModelRequest, RuntimeOutcome,
-    advance_until_blocked as runtime_advance_until_blocked, deny_pending_tool_call,
-    execute_pending_tool_call, load_pending_tool_call_at_head, pending_approvals_at_head,
-    prepare_pending_tool_execution, store_pending_tool_result_at_head,
+    PendingToolExecution, RuntimeInput, RuntimeMessagePersistence, RuntimeModelRequest,
+    RuntimeOutcome, advance_until_blocked as runtime_advance_until_blocked, deny_pending_tool_call,
+    execute_pending_tool_call_with_catalog, load_pending_tool_call_at_head,
+    pending_approvals_at_head, prepare_pending_tool_execution,
 };
-use crate::session::{Session, SessionControl, SessionEvent, SessionId, SessionStatus};
+use crate::session::{
+    Session, SessionCancellation, SessionControl, SessionEvent, SessionId, SessionStatus,
+};
 use crate::store::{Compaction, ConversationInfo, Store};
+use crate::tool::ToolProviderRegistry;
 use crate::tool::{
     ProviderToolName, ToolApprovalMode, ToolApprovalRequest, ToolDefinition, ToolProviderId,
     ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::ToolProviderRegistry;
-use crate::wakeup::Wakeup;
 
 #[cfg(test)]
 mod tests;

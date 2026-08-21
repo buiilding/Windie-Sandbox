@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::mcp::McpCommand;
+use crate::tool::ProviderInstallState;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
-use crate::tool_provider::ProviderInstallState;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -287,7 +287,8 @@ fn input_token_context_uses_synthetic_input_for_tool_only_setup() {
     )
     .unwrap();
 
-    let context = conversation_input_token_context(&store, &conversation_id, None)
+    let tools = ToolProviderRegistry::new();
+    let context = conversation_input_token_context(&store, &conversation_id, None, &tools, None)
         .unwrap()
         .unwrap();
 
@@ -301,7 +302,7 @@ fn input_token_context_uses_synthetic_input_for_tool_only_setup() {
         context.model_messages[0].content,
         SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE
     );
-    assert_eq!(context.tool_schemas.len(), 1);
+    assert_eq!(context.tool_schemas.len(), 3);
 }
 
 #[test]
@@ -334,7 +335,9 @@ fn inspection_snapshot_includes_runtime_state() {
         .save_compaction(&conversation_id, &user_id, "hello happened")
         .unwrap();
 
-    let report = inspect_conversation(&store, &conversation_id, Some(&user_id), None).unwrap();
+    let tools = ToolProviderRegistry::new();
+    let report =
+        inspect_conversation(&store, &conversation_id, Some(&user_id), None, &tools, None).unwrap();
     let value = serde_json::to_value(report).unwrap();
 
     assert_eq!(value["conversation_id"], conversation_id.as_str());
@@ -343,10 +346,13 @@ fn inspection_snapshot_includes_runtime_state() {
     assert_eq!(value["reasoning"]["effort"], "high");
     assert_eq!(value["system_prompt"], "You are concise.");
     assert_eq!(value["tool_schemas"][0]["name"], "run_shell");
+    assert_eq!(value["model_tool_schemas"].as_array().unwrap().len(), 3);
+    assert_eq!(value["model_tool_schemas"][1]["name"], "windie__read_skill");
+    assert_eq!(value["model_tool_schemas"][2]["name"], "windie__attach_mcp");
     // Tree-wide: system prompt is stored in conversations table, not as a message in the tree.
     assert_eq!(value["messages"][0]["id"], user_id.as_str());
     assert_eq!(value["path"][0]["id"], user_id.as_str());
-    // model_context = [system_prompt, compaction] when compaction is through the head
+    // model_context = [system_prompt, compaction] when compaction is through the head.
     assert_eq!(value["model_context"][0]["role"], "system");
     assert_eq!(value["model_context"][0]["content"], "You are concise.");
     assert_eq!(
@@ -575,6 +581,28 @@ fn create_session_branch_captures_requested_head() {
 }
 
 #[test]
+fn cancel_session_records_a_durable_cancelled_event() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
+    let session_id = SessionId::fresh();
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    let (session, record) = cancel_session(&mut store, &session_id).unwrap();
+
+    assert_eq!(session.status, SessionStatus::Cancelled);
+    assert!(matches!(record.event, SessionEvent::Cancelled));
+    assert!(
+        store
+            .load_session_events_after(&session_id, None)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.event, SessionEvent::Cancelled))
+    );
+}
+
+#[test]
 fn resume_session_from_wakeup_resolves_waiting_approval() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = create_conversation(&store, &ModelName::new("openai/test")).unwrap();
@@ -602,7 +630,7 @@ fn resume_session_from_wakeup_resolves_waiting_approval() {
 
     let resume = resume_session_from_wakeup(
         &store,
-        crate::wakeup::Wakeup::ApproveTool(crate::wakeup::ToolDecisionWakeup {
+        crate::runtime::wakeup::Wakeup::ApproveTool(crate::runtime::wakeup::ToolDecisionWakeup {
             session_id: session_id.clone(),
             tool_call_id: ToolCallId::new("call_1"),
         }),
@@ -645,7 +673,7 @@ fn resume_session_from_wakeup_ignores_non_waiting_approval() {
 
     let resume = resume_session_from_wakeup(
         &store,
-        crate::wakeup::Wakeup::DenyTool(crate::wakeup::ToolDecisionWakeup {
+        crate::runtime::wakeup::Wakeup::DenyTool(crate::runtime::wakeup::ToolDecisionWakeup {
             session_id,
             tool_call_id: ToolCallId::new("call_1"),
         }),

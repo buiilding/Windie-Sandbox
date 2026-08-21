@@ -3,44 +3,64 @@
 //! This module exposes the runtime boundary while implementation details live
 //! in turn and tool-execution modules.
 
+pub(crate) mod context;
 mod retry;
 mod tool_execution;
 mod turn;
+pub(crate) mod wakeup;
 
 pub(crate) use tool_execution::{
-    PendingToolExecution, deny_pending_tool_call, execute_pending_tool_call,
+    PendingToolExecution, deny_pending_tool_call, execute_pending_tool_call_with_catalog,
     load_pending_tool_call_at_head, prepare_pending_tool_execution,
-    store_pending_tool_result_at_head,
 };
 pub(crate) use turn::{advance_until_blocked, pending_approvals_at_head, prepare_head_turn};
 
 #[cfg(test)]
-pub(crate) use tool_execution::{PendingToolCall, active_tool_execution};
+pub(crate) use tool_execution::{
+    PendingToolCall, active_tool_execution, execute_pending_tool_call,
+};
 #[cfg(test)]
-pub(crate) use turn::{advance_turn, build_model_context};
+pub(crate) use turn::advance_turn;
 
-use crate::conversation::{ConversationId, MessageId};
+use anyhow::Result;
+
+use crate::conversation::{
+    ConversationId, MessageId, MessageMetadata, ToolCallId, UnsavedMessagePart,
+};
 use crate::llm::{PromptCacheRequest, ReasoningRequest};
-use crate::tool_provider::ToolProviderRegistry;
+use crate::plugin::PluginCatalog;
+use crate::store::Store;
+use crate::tool::ToolProviderRegistry;
 
-#[cfg(test)]
-use crate::conversation::Role;
-#[cfg(test)]
-use crate::error;
 #[cfg(test)]
 use crate::llm::RuntimeLlm;
 #[cfg(test)]
 use crate::output::RuntimeOutput;
-#[cfg(test)]
-use crate::store::Store;
-pub(crate) trait RuntimeEventSink {
-    fn assistant_message_saved(&self, _message_id: &MessageId) {}
-    fn tool_result_saved(&self, _message_id: &MessageId) {}
+/// Required persistence boundary for every runtime-produced message.
+///
+/// Production session runners implement this contract through the atomic
+/// session transaction. Requiring both methods prevents a caller from silently
+/// falling back to a second persistence model.
+pub(crate) trait RuntimeMessagePersistence {
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId>;
+
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId>;
 }
-
-pub(crate) struct NoopRuntimeEventSink;
-
-impl RuntimeEventSink for NoopRuntimeEventSink {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct RuntimeModelRequest<'a> {
@@ -65,7 +85,10 @@ pub(crate) struct RuntimeInput<'a> {
     pub(crate) conversation_id: &'a ConversationId,
     pub(crate) head_message_id: Option<&'a MessageId>,
     pub(crate) tools: &'a ToolProviderRegistry,
+    pub(crate) plugin_catalog: Option<&'a PluginCatalog>,
     pub(crate) model_request: RuntimeModelRequest<'a>,
+    /// Optional ephemeral runtime message for the first model turn only.
+    pub(crate) wakeup_prompt: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

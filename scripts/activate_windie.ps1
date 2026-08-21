@@ -7,7 +7,7 @@ if ($env:WINDIE_INSTALL_DIR) {
 }
 $windieExecutable = Join-Path $windieInstallDir "windie.exe"
 if (-not (Test-Path -LiteralPath $windieExecutable -PathType Leaf)) {
-    throw "local Windie binary not found at $windieExecutable; run windie-dev release install"
+    throw "local Windie binary not found at $windieExecutable; run cargo run --bin windie -- release install"
 }
 $env:Path = "$windieInstallDir;$env:Path"
 Write-Host "windie active: $windieExecutable"

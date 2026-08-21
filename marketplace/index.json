@@ -1,0 +1,136 @@
+{
+  "index_version": 1,
+  "plugins": [
+    {
+      "id": "parallel-search",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "components": ["mcp"],
+          "capabilities": ["web_search", "url_extraction"],
+          "presentation": {
+            "name": "Parallel Search",
+            "description": "Search the web and extract content from URLs.",
+            "readme_url": "packages/parallel-search/README.md",
+            "icon_url": "packages/parallel-search/assets/icon.svg"
+          },
+          "manifest_url": "packages/parallel-search/plugin.json",
+          "artifact_url": "packages/parallel-search",
+          "digest": "bundled",
+          "publisher": "parallel",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "basic-memory",
+      "versions": [
+        {
+          "version": "0.22.1",
+          "components": ["mcp"],
+          "capabilities": ["memory", "notes", "local"],
+          "presentation": {
+            "name": "Basic Memory",
+            "description": "A local MCP server for persistent notes and memory.",
+            "readme_url": "packages/basic-memory/README.md",
+            "icon_url": "packages/basic-memory/assets/icon.svg",
+            "repository_url": "https://github.com/basicmachines-co/basic-memory"
+          },
+          "manifest_url": "packages/basic-memory/plugin.json",
+          "artifact_url": "packages/basic-memory",
+          "digest": "bundled",
+          "publisher": "basic-machines",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "blender-mcp",
+      "versions": [
+        {
+          "version": "1.8.3",
+          "components": ["mcp"],
+          "capabilities": ["blender", "3d", "local"],
+          "presentation": {
+            "name": "Blender MCP",
+            "description": "Control Blender through a local MCP server.",
+            "readme_url": "packages/blender-mcp/README.md",
+            "icon_url": "packages/blender-mcp/assets/icon.svg",
+            "repository_url": "https://github.com/ahujasid/blender-mcp"
+          },
+          "manifest_url": "packages/blender-mcp/plugin.json",
+          "artifact_url": "packages/blender-mcp",
+          "digest": "bundled",
+          "publisher": "ahujasid",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "chrome-devtools",
+      "versions": [
+        {
+          "version": "1.6.0",
+          "components": ["mcp"],
+          "capabilities": ["browser", "chrome", "devtools", "debugging"],
+          "presentation": {
+            "name": "Chrome DevTools",
+            "description": "Inspect and automate Chrome through DevTools MCP.",
+            "readme_url": "packages/chrome-devtools/README.md",
+            "icon_url": "packages/chrome-devtools/assets/icon.svg",
+            "repository_url": "https://github.com/ChromeDevTools/chrome-devtools-mcp"
+          },
+          "manifest_url": "packages/chrome-devtools/plugin.json",
+          "artifact_url": "packages/chrome-devtools",
+          "digest": "bundled",
+          "publisher": "ChromeDevTools",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "brightdata",
+      "versions": [
+        {
+          "version": "2.11.1",
+          "components": ["mcp"],
+          "capabilities": ["web_data", "web_search", "scraping", "cloud"],
+          "presentation": {
+            "name": "Bright Data",
+            "description": "Search, browse, and extract web data through Bright Data.",
+            "readme_url": "packages/brightdata/README.md",
+            "icon_url": "packages/brightdata/assets/icon.svg",
+            "repository_url": "https://github.com/brightdata/brightdata-mcp"
+          },
+          "manifest_url": "packages/brightdata/plugin.json",
+          "artifact_url": "packages/brightdata",
+          "digest": "bundled",
+          "publisher": "Bright Data",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "cua-driver",
+      "versions": [
+        {
+          "version": "0.12.6",
+          "components": ["mcp"],
+          "capabilities": ["computer_control", "computer_use", "local"],
+          "presentation": {
+            "name": "CUA Driver",
+            "description": "Operate the local computer through the CUA Driver MCP server.",
+            "readme_url": "packages/cua-driver/README.md",
+            "icon_url": "packages/cua-driver/assets/icon.svg",
+            "repository_url": "https://github.com/trycua/cua"
+          },
+          "manifest_url": "packages/cua-driver/plugin.json",
+          "artifact_url": "packages/cua-driver",
+          "digest": "bundled",
+          "publisher": "TryCua",
+          "status": "verified"
+        }
+      ]
+    }
+  ]
+}

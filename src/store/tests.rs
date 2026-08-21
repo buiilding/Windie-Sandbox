@@ -4,13 +4,16 @@ use super::*;
 use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
-use crate::session::{SessionEvent, SessionId, SessionResolution, SessionStatus};
+use crate::session::{
+    SessionEvent, SessionEventKind, SessionExecutionOwner, SessionExecutionStart, SessionId,
+    SessionResolution, SessionStatus,
+};
+use crate::tool::ProviderInstallState;
 use crate::tool::ToolProviderId;
 use crate::tool::{
     ToolAnnotations, ToolApprovalMode, ToolDefinition, ToolPermission, ToolProviderKind,
     ToolProviderRef, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::ProviderInstallState;
 
 fn unsaved_text(text: &str) -> UnsavedMessagePart {
     UnsavedMessagePart::Text(text.to_string())
@@ -175,7 +178,7 @@ fn insert_tool_result_with_parts(
     parts: &[UnsavedMessagePart],
 ) -> MessageId {
     store
-        .insert_run_tool_result_message_with_parts(
+        .insert_test_runtime_tool_result_with_parts(
             conversation_id,
             parent_message_id,
             &ToolCallId::new(tool_call_id),
@@ -205,6 +208,64 @@ fn sets_database_schema_version() {
         .unwrap();
 
     assert_eq!(version, DATABASE_SCHEMA_VERSION);
+}
+
+#[test]
+fn keep_awake_session_claim_requires_idle_cooldowns_and_records_completion() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("keep-awake-session");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    let enabled = store.set_session_keep_awake(&session_id, true).unwrap();
+    assert!(enabled.keep_awake);
+    assert!(
+        store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::IdleWakeup {
+                    eligible_before: enabled.last_user_activity_at - 1,
+                },
+            )
+            .is_err()
+    );
+
+    let claimed = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::IdleWakeup {
+                eligible_before: enabled.last_user_activity_at,
+            },
+        )
+        .unwrap();
+    store
+        .finish_claimed_session_execution_at_head(
+            &session_id,
+            &claimed.claim,
+            SessionStatus::Completed,
+            None,
+            SessionEvent::Completed { message_id: None },
+            true,
+        )
+        .unwrap();
+
+    let completed = store.load_session(&session_id).unwrap();
+    let completion = completed.last_idle_wakeup_completed_at.unwrap();
+    assert!(
+        store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::IdleWakeup {
+                    eligible_before: completion - 1,
+                },
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -238,7 +299,7 @@ fn rejects_newer_database_schema_version() {
 #[test]
 fn rejects_older_database_schema_version() {
     let store = Store::open_memory().unwrap();
-    let older_version = DATABASE_SCHEMA_VERSION - 1;
+    let older_version = DATABASE_SCHEMA_VERSION - 2;
     store
         .connection
         .pragma_update(None, "user_version", older_version)
@@ -252,6 +313,28 @@ fn rejects_older_database_schema_version() {
             "database schema version {older_version} is older than supported version {DATABASE_SCHEMA_VERSION}; remove the old Windie database or recreate it"
         )
     );
+}
+
+#[test]
+fn migrates_previous_schema_to_add_runtime_access() {
+    let store = Store::open_memory().unwrap();
+    store
+        .connection
+        .execute("DROP TABLE runtime_access", [])
+        .unwrap();
+    store
+        .connection
+        .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION - 1)
+        .unwrap();
+
+    store.migrate().unwrap();
+
+    assert!(store.runtime_access().unwrap().is_none());
+    let version: i32 = store
+        .connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, DATABASE_SCHEMA_VERSION);
 }
 
 #[test]
@@ -2768,9 +2851,17 @@ fn queues_and_materializes_inputs_in_fifo_order() {
         .unwrap();
     assert_ne!(first_input, second_input);
     assert_eq!(store.session_input_count(&session_id).unwrap(), 2);
+    let claim = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap()
+        .claim;
 
-    let first = store
-        .materialize_next_session_input(&session_id)
+    let (first, _record) = store
+        .materialize_next_session_input(&session_id, &claim)
         .unwrap()
         .unwrap();
     let session = store.load_session(&session_id).unwrap();
@@ -2794,8 +2885,8 @@ fn queues_and_materializes_inputs_in_fifo_order() {
     );
     assert_eq!(store.session_input_count(&session_id).unwrap(), 1);
 
-    let second = store
-        .materialize_next_session_input(&session_id)
+    let (second, _record) = store
+        .materialize_next_session_input(&session_id, &claim)
         .unwrap()
         .unwrap();
     assert_eq!(second.id, second_input);
@@ -2843,6 +2934,396 @@ fn loads_latest_session_event_cursor() {
         store.latest_session_event_id(&session_id).unwrap(),
         Some(second.id)
     );
+}
+
+#[test]
+fn loads_filtered_session_events_in_database_wide_order() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let first_session_id = SessionId::new("global-events-first");
+    let second_session_id = SessionId::new("global-events-second");
+    for session_id in [&first_session_id, &second_session_id] {
+        store
+            .create_session(session_id, &conversation_id, None, "openai/test", None)
+            .unwrap();
+    }
+
+    let delta = store
+        .append_session_event(
+            &first_session_id,
+            SessionEvent::AssistantDelta {
+                text: "streaming".to_string(),
+            },
+        )
+        .unwrap();
+    let first_completion = store
+        .append_session_event(
+            &second_session_id,
+            SessionEvent::Completed {
+                message_id: Some("assistant-two".to_string()),
+            },
+        )
+        .unwrap();
+    let second_completion = store
+        .append_session_event(
+            &first_session_id,
+            SessionEvent::Completed {
+                message_id: Some("assistant-one".to_string()),
+            },
+        )
+        .unwrap();
+
+    let all = store
+        .load_global_session_events_after(Some(delta.id), None)
+        .unwrap();
+    assert_eq!(
+        all.iter().map(|record| record.id).collect::<Vec<_>>(),
+        vec![first_completion.id, second_completion.id]
+    );
+
+    let completed = store
+        .load_global_session_events_after(None, Some(SessionEventKind::Completed))
+        .unwrap();
+    assert_eq!(completed.len(), 2);
+    assert_eq!(completed[0].session_id, second_session_id);
+    assert_eq!(completed[1].session_id, first_session_id);
+    assert_eq!(
+        store
+            .latest_global_session_event_id(Some(SessionEventKind::Completed))
+            .unwrap(),
+        Some(second_completion.id)
+    );
+    assert_eq!(
+        store.latest_global_session_event_id(None).unwrap(),
+        Some(second_completion.id)
+    );
+}
+
+#[test]
+fn atomically_saves_assistant_message_session_head_and_event() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let session_id = SessionId::new("atomic-assistant-message");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    let claim = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap()
+        .claim;
+
+    let commit = store
+        .insert_session_runtime_message(
+            &session_id,
+            &claim,
+            &conversation_id,
+            SessionRuntimeMessage::Assistant {
+                parent_message_id: Some(&user_id),
+                content: "hello back",
+                metadata: None,
+            },
+        )
+        .unwrap();
+    let message_id = commit.message_id;
+    let record = commit.event.unwrap();
+
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .current_head_message_id
+            .as_ref(),
+        Some(&message_id)
+    );
+    assert_eq!(
+        store
+            .load_message(&conversation_id, &message_id)
+            .unwrap()
+            .content,
+        "hello back"
+    );
+    assert!(matches!(
+        record.event,
+        SessionEvent::AssistantMessageSaved { message_id: ref saved_id }
+            if saved_id == message_id.as_str()
+    ));
+    let events = store.load_session_events_after(&session_id, None).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, record.id);
+}
+
+#[test]
+fn atomic_session_message_rolls_back_when_event_insert_fails() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let session_id = SessionId::new("atomic-assistant-message-rollback");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    let claim = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap()
+        .claim;
+    store
+        .connection
+        .execute_batch(
+            "
+            CREATE TRIGGER fail_session_event_insert
+            BEFORE INSERT ON session_events
+            BEGIN
+                SELECT RAISE(FAIL, 'forced session event failure');
+            END;
+            ",
+        )
+        .unwrap();
+
+    let error = store
+        .insert_session_runtime_message(
+            &session_id,
+            &claim,
+            &conversation_id,
+            SessionRuntimeMessage::Assistant {
+                parent_message_id: Some(&user_id),
+                content: "must roll back",
+                metadata: None,
+            },
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("failed to append runtime event"));
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .current_head_message_id
+            .as_ref(),
+        Some(&user_id)
+    );
+    assert!(
+        store
+            .load_session_events_after(&session_id, None)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn atomically_saves_multipart_tool_result_session_head_and_event() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "use a tool", None)
+        .unwrap();
+    let tool_call_id = ToolCallId::new("atomic-tool-call");
+    let metadata = MessageMetadata {
+        tool_calls: vec![ToolCall::function(
+            tool_call_id.as_str(),
+            "desktop_commander__read_file",
+            r#"{"path":"/tmp/example"}"#,
+        )],
+        ..Default::default()
+    };
+    let assistant_id = store
+        .insert_message(
+            &conversation_id,
+            Some(&user_id),
+            Role::Assistant,
+            "",
+            Some(&metadata),
+        )
+        .unwrap();
+    let session_id = SessionId::new("atomic-tool-result");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&assistant_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    let claim = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap()
+        .claim;
+    let parts = vec![unsaved_text("tool output")];
+
+    let commit = store
+        .insert_session_runtime_message(
+            &session_id,
+            &claim,
+            &conversation_id,
+            SessionRuntimeMessage::ToolResult {
+                parent_message_id: &assistant_id,
+                tool_call_id: &tool_call_id,
+                content: "tool output",
+                parts: &parts,
+            },
+        )
+        .unwrap();
+    let message_id = commit.message_id;
+    let record = commit.event.unwrap();
+
+    let message = store.load_message(&conversation_id, &message_id).unwrap();
+    assert_eq!(message.role, Role::Tool);
+    assert_eq!(
+        message.parts,
+        vec![MessagePart::Text("tool output".to_string())]
+    );
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .current_head_message_id
+            .as_ref(),
+        Some(&message_id)
+    );
+    assert!(matches!(
+        record.event,
+        SessionEvent::ToolResultSaved { message_id: ref saved_id }
+            if saved_id == message_id.as_str()
+    ));
+}
+
+#[test]
+fn durable_execution_claim_serializes_api_and_cli_and_preserves_cancellation() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("durable-execution-claim");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    let claimed = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap();
+    assert_eq!(claimed.session.status, SessionStatus::Running);
+    assert_eq!(
+        store.session_execution_claim(&session_id).unwrap(),
+        Some(claimed.claim.clone())
+    );
+    assert!(
+        store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Cli,
+                SessionExecutionStart::Runnable,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("already running")
+    );
+
+    store
+        .update_session_status(&session_id, SessionStatus::Cancelled, None)
+        .unwrap();
+    assert!(
+        !store
+            .finish_claimed_session_execution(
+                &session_id,
+                &claimed.claim,
+                SessionStatus::Completed,
+                None,
+                false,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        store.load_session(&session_id).unwrap().status,
+        SessionStatus::Cancelled
+    );
+    assert_eq!(
+        store.session_execution_claim(&session_id).unwrap(),
+        Some(claimed.claim.clone())
+    );
+
+    store
+        .release_cancelled_session_execution(&session_id, &claimed.claim)
+        .unwrap();
+    assert_eq!(store.session_execution_claim(&session_id).unwrap(), None);
+
+    let replacement = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap();
+    assert_ne!(replacement.claim.id, claimed.claim.id);
+    assert!(
+        store
+            .insert_session_runtime_message(
+                &session_id,
+                &claimed.claim,
+                &conversation_id,
+                SessionRuntimeMessage::Assistant {
+                    parent_message_id: None,
+                    content: "stale assistant",
+                    metadata: None,
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled or transferred")
+    );
+    assert!(store.load_messages(&conversation_id).unwrap().is_empty());
+    assert!(
+        store
+            .append_session_execution_event(
+                &session_id,
+                &claimed.claim,
+                SessionEvent::AssistantDelta {
+                    text: "stale".to_string(),
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled or transferred")
+    );
+    store
+        .append_session_execution_event(
+            &session_id,
+            &replacement.claim,
+            SessionEvent::AssistantDelta {
+                text: "current".to_string(),
+            },
+        )
+        .unwrap();
 }
 
 #[test]

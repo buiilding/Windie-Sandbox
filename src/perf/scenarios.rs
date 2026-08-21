@@ -5,7 +5,9 @@
 //! compared without conflating unrelated operations.
 
 use super::*;
-use crate::session::{SessionEvent, SessionId, SessionStatus};
+use crate::session::{
+    SessionEvent, SessionExecutionOwner, SessionExecutionStart, SessionId, SessionStatus,
+};
 use crate::tool::{ToolSchema, ToolSchemaName};
 
 /// Runs the deterministic provider-free benchmark scenarios selected by the
@@ -238,10 +240,13 @@ pub(super) async fn run(categories: &[BenchmarkCategory]) -> Result<Vec<Scenario
                     attach_test_mcp_tool(store, &conversation_id)?;
                     let assistant = create_completed_tool_chain(store, &conversation_id, 2)?;
                     let started = Instant::now();
+                    let tools = ToolProviderRegistry::new();
                     let context = ContextBuilder::build_model_context(
                         store,
                         &conversation_id,
                         Some(&assistant),
+                        &tools,
+                        None,
                     )?;
                     debug_assert!(!context.messages.is_empty());
                     Ok(started.elapsed())
@@ -652,7 +657,14 @@ fn benchmark_model_context(system_prompt: bool, compaction: bool, image: bool) -
             store.save_compaction(&conversation_id, &head, "previous history")?;
         }
         let started = Instant::now();
-        let context = ContextBuilder::build_model_context(store, &conversation_id, Some(&head))?;
+        let tools = ToolProviderRegistry::new();
+        let context = ContextBuilder::build_model_context(
+            store,
+            &conversation_id,
+            Some(&head),
+            &tools,
+            None,
+        )?;
         debug_assert!(!context.messages.is_empty());
         Ok(started.elapsed())
     })
@@ -682,7 +694,14 @@ fn benchmark_serialization(image: bool, tool_calls: bool) -> Result<Duration> {
             create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?
                 .ok_or_else(|| anyhow::anyhow!("serialization fixture has no head"))?
         };
-        let context = ContextBuilder::build_model_context(store, &conversation_id, Some(&head))?;
+        let tools = ToolProviderRegistry::new();
+        let context = ContextBuilder::build_model_context(
+            store,
+            &conversation_id,
+            Some(&head),
+            &tools,
+            None,
+        )?;
         let started = Instant::now();
         let bytes = crate::llm::benchmark_responses_request_size(
             "openai/test",
@@ -700,7 +719,14 @@ fn benchmark_serialization_with_schema() -> Result<Duration> {
         let head = create_message_chain(store, &conversation_id, SCALE_PATH_MESSAGES)?
             .ok_or_else(|| anyhow::anyhow!("serialization fixture has no head"))?;
         store.insert_tool_schema(&conversation_id, &manual_schema("read_file"))?;
-        let context = ContextBuilder::build_model_context(store, &conversation_id, Some(&head))?;
+        let tools = ToolProviderRegistry::new();
+        let context = ContextBuilder::build_model_context(
+            store,
+            &conversation_id,
+            Some(&head),
+            &tools,
+            None,
+        )?;
         let started = Instant::now();
         let bytes = crate::llm::benchmark_responses_request_size(
             "openai/test",
@@ -741,9 +767,16 @@ fn benchmark_session_queue_and_materialize() -> Result<Duration> {
         store.create_session(&session_id, &conversation_id, None, "openai/test", None)?;
         store.enqueue_session_input(&session_id, "first", &[])?;
         store.enqueue_session_input(&session_id, "second", &[])?;
+        let claim = store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?
+            .claim;
         let started = Instant::now();
-        let _ = store.materialize_next_session_input(&session_id)?;
-        let _ = store.materialize_next_session_input(&session_id)?;
+        let _ = store.materialize_next_session_input(&session_id, &claim)?;
+        let _ = store.materialize_next_session_input(&session_id, &claim)?;
         Ok(started.elapsed())
     })
 }
@@ -822,12 +855,12 @@ fn benchmark_provider_state_lifecycle() -> Result<Duration> {
         store.install_provider(&provider_id)?;
         store.set_provider_state(
             &provider_id,
-            crate::tool_provider::ProviderInstallState::Enabled,
+            crate::tool::ProviderInstallState::Enabled,
             None,
         )?;
         store.set_provider_state(
             &provider_id,
-            crate::tool_provider::ProviderInstallState::Disabled,
+            crate::tool::ProviderInstallState::Disabled,
             None,
         )?;
         store.uninstall_provider(&provider_id)?;

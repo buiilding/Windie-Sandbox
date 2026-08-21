@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ahujasid/blender-mcp",
+  "title": "Blender MCP",
+  "description": "Inspect and control a local Blender instance through MCP.",
+  "version": "1.8.3",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/blender-mcp.mcpb",
+      "version": "1.8.3",
+      "fileSha256": "4cb08241e7c8d4dbe2c0dcf224b1556eff2bb53ae73003ad788bb832d70d3ec9",
+      "runtimeHint": "uv",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

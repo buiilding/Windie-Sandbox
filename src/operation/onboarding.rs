@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use crate::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
+use crate::llm::gateway::{BifrostGateway, GatewayStart, GatewayStop, GatewayUrl};
 use crate::llm::{
     BaseUrl, BifrostManagementClient, CreateProviderKey, ProviderCatalog, ProviderCatalogEntry,
     list_models,
@@ -14,7 +14,7 @@ use crate::llm::{
 use crate::local;
 use crate::store::Store;
 use crate::tool::ToolProviderId;
-use crate::tool_provider::{ProviderInstallState, ProviderManifest, ToolProviderRegistry};
+use crate::tool::{ProviderInstallState, ProviderManifest, ToolProviderRegistry};
 
 use super::{
     ProviderInstallation, enable_provider, health_check_provider, list_provider_installations,
@@ -134,7 +134,7 @@ async fn run_onboarding_steps<P: OnboardingPrompter>(
     prompter.models_available(model_count);
 
     let store = Store::open()?;
-    let registry = ToolProviderRegistry::new();
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     let installations = list_provider_installations(&store, &registry)?;
     let selected_mcp_ids = prompter.choose_mcp_providers(&installations)?;
 

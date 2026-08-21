@@ -14,15 +14,27 @@ renders them.
 ## Application entry point
 
 - `src/index.js`: mounts the React application into the browser document.
-- `src/App.js`: creates the application shell, `WindieProvider`, browser
-  routes, and the global toast surface.
+- `src/App.js`: creates the application shell, hosted-account and local-runtime
+  access gates, `WindieProvider`, browser routes, and the global toast surface.
 - `src/pages/Windie.jsx`: composes the inspector layout: top bar, conversation
   tree sidebar, chat panel, and optional inspector overlay. It also owns the
   first-run provider onboarding check and the persisted tree-panel toggle.
+- `src/components/auth/AuthGate.jsx`: restores the hosted Google/Supabase
+  account session and exposes its short-lived token to the loopback transport.
+- `src/components/auth/RuntimeAccessGate.jsx`: reads local pairing status and
+  requires the signed-in user to explicitly connect their account before the
+  runtime client mounts.
+- `src/context/AuthContext.jsx`: exposes hosted session and sign-out state to
+  authenticated presentation components.
+- `src/lib/supabase.js`: creates the browser-only Supabase client from public
+  deployment configuration.
 
-There is currently one main browser route. Routing is kept at the application
-boundary so additional inspector pages can be added without moving runtime
-logic into components.
+The Inspector has a workspace route at `/` and an addressable session route at
+`/sessions/:sessionId`. The session route asks the local API for the durable
+session record before selecting its owning conversation, so browser state never
+guesses session ownership. Routing remains at the application boundary so
+additional Inspector pages can be added without moving runtime logic into
+components.
 
 ## Complete frontend code map
 
@@ -89,12 +101,13 @@ Paths below are relative to `vendor/windie-inspector/frontend/`.
 - `src/components/windie/ToolApprovalPrompt.jsx`: inline session-owned tool
   approval surface rendered immediately above the composer when approval is
   required.
-- `src/components/windie/ExtensionsPanel.jsx`: executable tool-provider
-  installation lifecycle controls: setup, enable, disable, repair, and
-  uninstall.
-- `src/components/windie/ExtensionDetailPage.jsx`: renders the provider's
-  Windie-managed README in Overview and the persisted discovered tool schemas
-  in Tools; it does not invent provider documentation or discover tools itself.
+- `src/components/windie/ExtensionsPanel.jsx`: plugin marketplace catalog and
+  installed-plugin navigation. It does not present MCPs as independent
+  marketplace products.
+- `src/components/windie/ExtensionDetailPage.jsx`: renders one plugin's
+  presentation metadata and its component runtime controls. MCP-specific
+  enable, disable, repair, credentials, and uninstall actions are nested under
+  the owning plugin.
 - `src/components/windie/LlmProvidersPanel.jsx`: LLM provider discovery,
   provider enablement, and provider-key creation through the API.
 - `src/components/windie/FloatingDeleteMenu.jsx`: positioned reusable delete
@@ -161,6 +174,8 @@ wrappers. They contain no Windie runtime or persistence rules:
   to resolve/create conversation-head branches, selects returned sessions,
   sends/continues/stops queries, subscribes to SSE, reduces live events,
   handles cursors, commits saved messages, and handles approvals.
+- `src/hooks/usePluginCatalog.js`: loads marketplace plugin listings and owns
+  outer plugin install/uninstall requests.
 - `src/hooks/useSessionRuntime.test.js`: tests session-head projection helpers
   used alongside backend-owned session resolution.
 - `src/hooks/use-toast.js`: standalone reducer/store for the older reusable
@@ -170,8 +185,8 @@ wrappers. They contain no Windie runtime or persistence rules:
 
 - `src/lib/windieApi.js`: localhost HTTP boundary for Windie API requests;
   covers health/status, conversations, images, models, model parameters,
-  sessions, approvals, providers, and conversation settings. Gateway process
-  lifecycle remains a CLI concern.
+  sessions, approvals, marketplace plugins, providers, and conversation
+  settings. Gateway process lifecycle remains a CLI concern.
 - `src/lib/sessionStream.js`: localhost SSE transport; reads streamed
   session events, parses `id`, `event`, and multiline `data` fields, and turns
   failed events into client errors.
@@ -298,7 +313,7 @@ conversation
 │       ├── parts: text | image
 │       └── metadata: tool calls | reasoning | usage | refusal | annotations | audio
 ├── selectedPath: MessageID[]
-├── modelContext
+├── modelContext, modelToolSchemas
 ├── latestCompaction
 ├── paths
 └── toolSchemas
@@ -307,7 +322,11 @@ conversation
 The backend inspection response is authoritative. The mapper reconstructs
 `childrenIds` from each node's `parentId`, converts provider-shaped metadata
 into display-shaped metadata, and keeps image assets as references that can be
-loaded later.
+loaded later. `modelContext` is the final runtime-context projection and
+`modelToolSchemas` is the exact runtime schema list for the selected head,
+including ephemeral plugin-index instructions and built-in control schemas.
+`toolSchemas` remains the editable durable attachment list, so those
+runtime-only capabilities are not mistaken for conversation data.
 
 Conversation summaries are intentionally smaller than inspections. The
 conversation picker can list and sort summaries without loading every message;
@@ -360,8 +379,9 @@ treated as durable history.
 - `lib/windieApi.js`: the only general HTTP client. It resolves the API base
   URL, parses JSON errors, and exposes typed-ish frontend operations for
   conversations, backend-owned session-head resolution/query/continue,
-  sessions, models, tools, providers, gateway state, approvals, and image
-  assets.
+  sessions, models, tools, providers, gateway state, approvals, image assets,
+  and local-runtime pairing. It sends the Supabase access token only to a
+  loopback API URL.
 - `lib/sessionStream.js`: the SSE client for one session's event stream. It
   parses SSE framing and JSON payloads, but does not decide how events affect
   application state.
@@ -377,11 +397,12 @@ treated as durable history.
 - `lib/treeLayout.js`: computes positions and edges for the visual tree. It is
   a layout calculation, not a conversation operation.
 
-The standalone Inspector calls the localhost API directly without an API token.
-The default API endpoint is
+The hosted Inspector gates the application behind Google/Supabase sign-in and
+an explicit local-runtime pairing. Its Supabase access token is attached only
+to the browser machine's loopback API. The default API endpoint is
 `http://127.0.0.1:8787`, overridable with `REACT_APP_WINDIE_API_URL` during a
-frontend build or by the standalone Inspector's runtime
-`WINDIE_API_ADDRESS`/`WINDIE_API_PORT` settings.
+frontend build. Production uses this hosted client; releases do not include a
+standalone Inspector server.
 
 ## Live session lifecycle
 
@@ -475,11 +496,11 @@ decide whether a tool call is allowed; that is the backend tool policy.
 
 ### Provider and model setup
 
-The tools overlay manages two separate catalogs:
+The inspector exposes two separate extension concerns:
 
 - LLM providers and model keys, which configure model access through the
   backend gateway;
-- executable tool providers, whose schemas can be attached to a conversation.
+- marketplace plugins, whose components can expose executable tool providers.
 
 Provider setup actions refresh provider installation status and the persisted
 provider tool catalog. Model changes refresh model parameters and conversation
@@ -512,8 +533,11 @@ renders the provider schemas returned by the backend.
   installation controls, and LLM provider setup.
 - `components/windie/LlmProvidersPanel.jsx`: configures available LLM
   providers and stores provider keys through the API.
-- `components/windie/ExtensionsPanel.jsx`: installs, enables, repairs,
-  disables, and uninstalls executable tool providers.
+- `components/windie/ExtensionsPanel.jsx`: discovers and installs marketplace
+  plugins and opens their plugin detail pages.
+- `components/windie/ExtensionDetailPage.jsx`: shows a plugin's package
+  metadata and nests component lifecycle controls, including MCP provider
+  setup and tool state.
 - `components/ui/*`: reusable visual primitives. These components do not own
   Windie domain state.
 
@@ -532,7 +556,8 @@ renders the provider schemas returned by the backend.
 - Long user messages and tool outputs are collapsed in the browser and can be
   expanded without changing stored content.
 - The token meter is valid only when its context signature matches the current
-  model, system prompt, tools, compaction state, and selected path.
+  model, system prompt, tools and installed-plugin index, compaction state, and
+  selected path.
 
 ## Frontend boundary rules
 

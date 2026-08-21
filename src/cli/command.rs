@@ -1,12 +1,21 @@
 //! Typed CLI command data.
 
 use super::*;
+use crate::perf::BenchmarkOptions;
 
 /// Parsed startup action for one `windie` process.
 ///
 /// This is the CLI boundary's typed contract. Downstream code should match on
 /// this enum instead of inspecting raw argv strings.
 pub enum Command {
+    /// Run a repository development workflow through the public CLI.
+    Dev(DevCommand),
+    /// Run a repository release workflow through the public CLI.
+    Release(ReleaseCommand),
+    /// Build or serve the repository's local marketplace through the public CLI.
+    Marketplace(MarketplaceCommand),
+    /// Run, compare, or update deterministic local benchmarks.
+    Benchmark(BenchmarkCommand),
     /// Start the detached localhost developer API server.
     ApiStart,
     /// Stop the detached localhost developer API server.
@@ -15,12 +24,6 @@ pub enum Command {
     ApiOutput,
     /// Internal foreground API server entrypoint used by `api start`.
     ApiRun,
-    /// Start the detached Inspector server.
-    InspectorStart,
-    /// Stop the detached Inspector server.
-    InspectorStop,
-    /// Print the detached Inspector process output.
-    InspectorOutput,
     /// Run the terminal-only first-run onboarding wizard.
     Onboard,
     /// Attach one provider tool to a conversation.
@@ -66,8 +69,22 @@ pub enum Command {
     GatewayStop,
     /// Print the detached Bifrost process output.
     GatewayOutput,
-    /// Run the desktop tray controller.
-    Tray,
+    /// Start the detached desktop tray process.
+    TrayStart,
+    /// Stop the detached desktop tray process.
+    TrayStop,
+    /// Print the detached tray process output.
+    TrayOutput,
+    /// Internal foreground tray entrypoint used by `tray start`.
+    TrayRun,
+    /// Start the detached cross-platform notification component.
+    NotifierStart,
+    /// Stop the detached notification component.
+    NotifierStop,
+    /// Print the detached notification component output.
+    NotifierOutput,
+    /// Internal foreground notification entrypoint used by `notifier start`.
+    NotifierRun,
     /// Remove Windie's processes, local data, and installed binaries.
     Uninstall {
         yes: bool,
@@ -167,4 +184,47 @@ pub enum EnvCommand {
     List,
     Unset(Vec<String>),
     Path,
+}
+
+/// Repository development workflow selected by `windie dev`.
+pub enum DevCommand {
+    Run { component: DevComponent },
+}
+
+/// Foreground repository component selected by `windie dev run`.
+pub enum DevComponent {
+    Gateway,
+    Api,
+    Inspector,
+    Tray,
+    Notifier,
+}
+
+/// Repository release workflow selected by `windie release`.
+pub enum ReleaseCommand {
+    Build,
+    Install,
+    Verify,
+}
+
+/// Local marketplace workflow selected by `windie marketplace`.
+pub enum MarketplaceCommand {
+    Build,
+    Serve,
+    /// Publish archives to GitHub Releases and the catalog site to Vercel.
+    Publish,
+}
+
+/// Deterministic local benchmark workflow selected by the public CLI.
+pub enum BenchmarkCommand {
+    Run {
+        conversation_id: Option<ConversationId>,
+        options: BenchmarkOptions,
+    },
+    CompareBaseline {
+        options: BenchmarkOptions,
+    },
+    UpdateBaseline {
+        options: BenchmarkOptions,
+    },
 }

@@ -7,7 +7,6 @@
 # Optional endpoint settings are inherited by the installed processes:
 #   $env:WINDIE_GATEWAY_PORT = "8081"
 #   $env:WINDIE_API_PORT = "8788"
-#   $env:WINDIE_INSPECTOR_PORT = "3001"
 
 [CmdletBinding()]
 param(
@@ -130,7 +129,6 @@ if (Test-Path -LiteralPath $PreviousWindie -PathType Leaf) {
 Write-Host "==> packaging local release"
 $env:GITHUB_REF_NAME = "local-dev"
 $env:WINDIE_REUSE_BIFROST = "1"
-$env:WINDIE_REUSE_INSPECTOR = "1"
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PackageScript $RustTarget $AssetLabel $DistDir
 if ($LASTEXITCODE -ne 0) {
     throw "local release packaging failed with exit code $LASTEXITCODE"

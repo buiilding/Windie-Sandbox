@@ -1,0 +1,64 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "brightdata",
+    "version": "2.11.1",
+    "publisher": "Bright Data"
+  },
+  "presentation": {
+    "name": "Bright Data",
+    "description": "Search and access live web data through Bright Data MCP.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/brightdata/brightdata-mcp"
+  },
+  "marketplace": { "publish": true },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "brightdata",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "authentication": {
+          "type": "api_key",
+          "required": true,
+          "secret_id": "BRIGHTDATA_API_TOKEN",
+          "setup_url": "https://brightdata.com/",
+          "delivery": {
+            "type": "environment",
+            "name": "API_TOKEN"
+          }
+        },
+        "permissions": ["external_process", "network"],
+        "capabilities": ["web_data", "web_search", "scraping", "cloud"],
+        "local_artifact": "mcp/brightdata.mcpb",
+        "setup": {
+          "isolated_home": true,
+          "environment": [
+            {
+              "name": "WEB_UNLOCKER_ZONE",
+              "value": {
+                "type": "literal",
+                "value": "mcp_unlocker"
+              }
+            },
+            {
+              "name": "BROWSER_ZONE",
+              "value": {
+                "type": "literal",
+                "value": "mcp_browser"
+              }
+            },
+            {
+              "name": "CHOKIDAR_USEPOLLING",
+              "value": {
+                "type": "literal",
+                "value": "false"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

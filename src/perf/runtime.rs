@@ -4,9 +4,22 @@ use super::*;
 
 /// Prepares the latest conversation head using the production runtime path.
 fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    let registry = ToolProviderRegistry::new();
-    let events = NoopRuntimeEventSink;
+    let registry = ToolProviderRegistry::with_installed_plugins()?;
     let mut head_message_id = latest_message_id(store, conversation_id)?;
+    let session_id = SessionId::fresh();
+    store.create_session(
+        &session_id,
+        conversation_id,
+        head_message_id.as_ref(),
+        "openai/test",
+        None,
+    )?;
+    let claimed = store.claim_session_execution(
+        &session_id,
+        SessionExecutionOwner::Api,
+        SessionExecutionStart::Runnable,
+    )?;
+    let events = SessionEventRecorder::new(None, session_id, claimed.claim);
 
     prepare_head_turn(
         store,

@@ -18,24 +18,15 @@ jobs:
         run: scripts/check-release-notes.sh
 
   rust:
-    needs: frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Inspector submodule
-        run: git submodule update --init --depth 1 vendor/windie-inspector
-      - uses: actions/download-artifact@v4
-        with:
-          name: inspector-build
-          path: vendor/windie-inspector/frontend/build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
       - run: cargo fmt --check
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
-      - name: Check Inspector host
-        run: cargo check --manifest-path vendor/windie-inspector/host/Cargo.toml
 
   frontend:
     runs-on: ubuntu-latest
@@ -54,23 +45,10 @@ jobs:
           cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
       - run: npm run build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: inspector-build
-          path: vendor/windie-inspector/frontend/build
-          if-no-files-found: error
-
   windows:
-    needs: frontend
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Inspector submodule
-        run: git submodule update --init --depth 1 vendor/windie-inspector
-      - uses: actions/download-artifact@v4
-        with:
-          name: inspector-build
-          path: vendor/windie-inspector/frontend/build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -78,4 +56,3 @@ jobs:
       - run: cargo fmt --check
       - run: cargo check --target x86_64-pc-windows-msvc
       - run: cargo test --target x86_64-pc-windows-msvc
-      - run: cargo check --manifest-path vendor/windie-inspector/host/Cargo.toml --target x86_64-pc-windows-msvc

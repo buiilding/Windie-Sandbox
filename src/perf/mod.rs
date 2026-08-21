@@ -16,21 +16,23 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::context::{ContextBuilder, ContextParts};
 use crate::conversation::{
     ConversationId, MessageId, MessageMetadata, Role, ToolCall, ToolCallId, UnsavedImagePart,
     UnsavedMessagePart,
 };
-use crate::gateway::GatewayUrl;
+use crate::llm::gateway::GatewayUrl;
 use crate::llm::{BaseUrl, ModelName};
 use crate::mcp::{self, McpCommand};
-use crate::runtime::{NoopRuntimeEventSink, prepare_head_turn};
+use crate::operation::SessionEventRecorder;
+use crate::runtime::context::{ContextBuilder, ContextParts};
+use crate::runtime::prepare_head_turn;
+use crate::session::{SessionExecutionOwner, SessionExecutionStart, SessionId};
 use crate::store::Store;
+use crate::tool::ToolProviderRegistry;
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolDefinition, ToolPermission, ToolProviderId,
     ToolProviderKind, ToolProviderRef,
 };
-use crate::tool_provider::ToolProviderRegistry;
 
 mod comparison;
 mod fixture;

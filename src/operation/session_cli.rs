@@ -5,6 +5,12 @@
 
 use super::*;
 
+use std::sync::Arc;
+
+use crate::session::SessionExecutionClaim;
+use crate::session::SessionExecutionOwner;
+use crate::session::SessionExecutionStart;
+
 /// Creates a session branch at a conversation head and advances it to blocked.
 pub async fn start_cli_session(
     conversation_id: ConversationId,
@@ -39,30 +45,15 @@ pub async fn approve_cli_session_tool(
     base_url: BaseUrl,
 ) -> Result<()> {
     let mut store = Store::open()?;
-    let session = store.load_session(&session_id)?;
-    let registry = ToolProviderRegistry::new();
-    let runtime = RuntimeDependencies::new(
+    execute_cli_session(
+        &mut store,
+        &session_id,
+        SessionExecutionStart::WaitingForApproval,
+        SessionExecutionCommand::ApproveTool(tool_call_id),
         gateway_url,
         base_url,
-        Some(ModelName::new(session.model)),
-        session.reasoning,
-        &registry,
-    );
-    let cli_output = CliSessionOutput::new(session_id.clone());
-    let events = CliSessionEvents::new(session_id.clone());
-    let outcome = approve_session_tool(
-        &cli_output,
-        &events,
-        &mut store,
-        &session.conversation_id,
-        session.current_head_message_id.as_ref(),
-        &tool_call_id,
-        runtime,
     )
-    .await?;
-
-    finish_session(&mut store, &session_id, outcome)?;
-    Ok(())
+    .await
 }
 
 /// Stores one denied CLI session-owned tool result and continues the session.
@@ -73,38 +64,15 @@ pub async fn deny_cli_session_tool(
     base_url: BaseUrl,
 ) -> Result<()> {
     let mut store = Store::open()?;
-    let session = store.load_session(&session_id)?;
-    let registry = ToolProviderRegistry::new();
-    let runtime = RuntimeDependencies::new(
+    execute_cli_session(
+        &mut store,
+        &session_id,
+        SessionExecutionStart::WaitingForApproval,
+        SessionExecutionCommand::DenyTool(tool_call_id),
         gateway_url,
         base_url,
-        Some(ModelName::new(session.model)),
-        session.reasoning,
-        &registry,
-    );
-    let cli_output = CliSessionOutput::new(session_id.clone());
-    let events = CliSessionEvents::new(session_id.clone());
-    let outcome = deny_session_tool(
-        &cli_output,
-        &events,
-        &mut store,
-        &session.conversation_id,
-        session.current_head_message_id.as_ref(),
-        &tool_call_id,
-        runtime,
     )
-    .await?;
-
-    finish_session(&mut store, &session_id, outcome)?;
-    Ok(())
-}
-
-/// Cancels one persisted CLI session and returns the updated state.
-pub fn cancel_session(session_id: &SessionId) -> Result<Session> {
-    let mut store = Store::open()?;
-
-    store.update_session_status(session_id, SessionStatus::Cancelled, None)?;
-    store.load_session(session_id)
+    .await
 }
 
 /// Continues a CLI-owned session until it completes or reaches approval.
@@ -114,50 +82,121 @@ async fn continue_cli_session(
     gateway_url: GatewayUrl,
     base_url: BaseUrl,
 ) -> Result<()> {
-    let session = store.load_session(session_id)?;
-    store.update_session_status(session_id, SessionStatus::Running, None)?;
-    let registry = ToolProviderRegistry::new();
-    let runtime = RuntimeDependencies::new(
+    execute_cli_session(
+        store,
+        session_id,
+        SessionExecutionStart::Runnable,
+        SessionExecutionCommand::Continue,
         gateway_url,
         base_url,
-        Some(ModelName::new(session.model)),
-        session.reasoning,
-        &registry,
-    );
-    let cli_output = CliSessionOutput::new(session_id.clone());
-    let events = CliSessionEvents::new(session_id.clone());
-    let outcome = advance_session_until_blocked(
-        &cli_output,
-        &events,
-        store,
-        &session.conversation_id,
-        session.current_head_message_id.as_ref(),
-        runtime,
     )
-    .await?;
+    .await
+}
 
-    finish_session(store, session_id, outcome)?;
+/// Claims and executes one CLI command through the same runner used by the API.
+async fn execute_cli_session(
+    store: &mut Store,
+    session_id: &SessionId,
+    start: SessionExecutionStart,
+    command: SessionExecutionCommand,
+    gateway_url: GatewayUrl,
+    base_url: BaseUrl,
+) -> Result<()> {
+    let claimed = store.claim_session_execution(session_id, SessionExecutionOwner::Cli, start)?;
+    let session = &claimed.session;
+    let runtime_context = CliRuntimeContext::load()?;
+    let runtime = runtime_context.dependencies(session, gateway_url, base_url);
+    let recorder = SessionEventRecorder::new(None, session_id.clone(), claimed.claim.clone());
+    let cli_output = CliSessionOutput::new(recorder.clone());
+    let outcome = execute_session(&cli_output, &recorder, store, session, command, runtime).await;
+
+    finish_cli_session(store, session_id, &claimed.claim, outcome)
+}
+
+/// Finishes a CLI session and persists a failure when runtime advancement
+/// fails, matching the API session manager's failure behavior.
+fn finish_cli_session(
+    store: &mut Store,
+    session_id: &SessionId,
+    claim: &SessionExecutionClaim,
+    outcome: Result<RuntimeOutcome>,
+) -> Result<()> {
+    let result = outcome.and_then(|outcome| {
+        finish_session(store, session_id, claim, outcome, false).and_then(|record| {
+            if record.is_none() {
+                store.release_cancelled_session_execution(session_id, claim)?;
+            }
+            Ok(())
+        })
+    });
+    if let Err(error) = result {
+        match record_session_failure(store, session_id, claim, &error, false) {
+            Ok(None) => {
+                store.release_cancelled_session_execution(session_id, claim)?;
+            }
+            Ok(Some(_)) => {}
+            Err(failure_error) => {
+                eprintln!("failed to persist cli session failure: {failure_error}");
+            }
+        }
+        return Err(error);
+    }
+
     Ok(())
+}
+
+/// Owns the CLI process's provider registry and read-only plugin catalog for
+/// one session operation.
+struct CliRuntimeContext {
+    registry: ToolProviderRegistry,
+    plugin_catalog: crate::plugin::PluginCatalog,
+}
+
+impl CliRuntimeContext {
+    /// Loads the same provider and plugin sources used by API sessions.
+    fn load() -> Result<Self> {
+        Ok(Self {
+            registry: ToolProviderRegistry::with_installed_plugins()?,
+            plugin_catalog: crate::plugin::PluginCatalog::new(
+                Arc::new(crate::plugin::PluginStore::default_store()?),
+                crate::plugin::bundled_index()?,
+            ),
+        })
+    }
+
+    /// Builds runtime dependencies from the durable session record.
+    fn dependencies(
+        &self,
+        session: &Session,
+        gateway_url: GatewayUrl,
+        base_url: BaseUrl,
+    ) -> RuntimeDependencies<'_> {
+        RuntimeDependencies::for_session(
+            session,
+            gateway_url,
+            base_url,
+            &self.registry,
+            Some(&self.plugin_catalog),
+        )
+    }
 }
 
 /// CLI runtime output that prints to the terminal and appends replayable events.
 struct CliSessionOutput {
-    session_id: SessionId,
+    recorder: SessionEventRecorder,
     terminal: TerminalOutput,
 }
 
 impl CliSessionOutput {
-    fn new(session_id: SessionId) -> Self {
+    fn new(recorder: SessionEventRecorder) -> Self {
         Self {
-            session_id,
+            recorder,
             terminal: TerminalOutput,
         }
     }
 
     fn record(&self, event: SessionEvent) -> Result<()> {
-        let mut store = Store::open()?;
-        store.append_session_event(&self.session_id, event)?;
-
+        self.recorder.record(event)?;
         Ok(())
     }
 }
@@ -207,54 +246,5 @@ impl RuntimeOutput for CliSessionOutput {
 
     fn assistant_tool_calls(&self, tool_calls: &[crate::conversation::ToolCall]) {
         self.terminal.assistant_tool_calls(tool_calls);
-    }
-}
-
-/// CLI runtime sink for durable message events.
-struct CliSessionEvents {
-    session_id: SessionId,
-}
-
-impl CliSessionEvents {
-    fn new(session_id: SessionId) -> Self {
-        Self { session_id }
-    }
-
-    fn record(&self, event: SessionEvent) {
-        match Store::open()
-            .and_then(|mut store| store.append_session_event(&self.session_id, event))
-        {
-            Ok(_) => {}
-            Err(error) => eprintln!("failed to append runtime event: {error}"),
-        }
-    }
-}
-
-impl CliSessionEvents {
-    fn update_head(&self, message_id: &MessageId) {
-        let result: anyhow::Result<()> = (|| {
-            let mut store = Store::open()?;
-            store.update_session_head(&self.session_id, Some(message_id))?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            eprintln!("failed to update cli session head: {error}");
-        }
-    }
-}
-
-impl RuntimeEventSink for CliSessionEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
-        self.record(SessionEvent::AssistantMessageSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-        self.update_head(message_id);
-    }
-
-    fn tool_result_saved(&self, message_id: &MessageId) {
-        self.record(SessionEvent::ToolResultSaved {
-            message_id: message_id.as_str().to_string(),
-        });
-        self.update_head(message_id);
     }
 }

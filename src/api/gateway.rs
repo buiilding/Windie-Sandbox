@@ -175,6 +175,8 @@ pub(super) async fn count_input_tokens(
         &store,
         &conversation_id,
         head_message_id.as_ref(),
+        state.tool_registry.as_ref(),
+        Some(state.plugin_catalog.as_ref()),
     )?;
     let had_context = context.is_some();
     let source = context

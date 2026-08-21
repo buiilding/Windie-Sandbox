@@ -6,19 +6,22 @@
 
 mod chrome_devtools;
 mod compaction;
+mod component;
 mod conversation;
 mod message;
-mod provider;
-mod provider_tool_catalog;
+mod runtime_access;
 mod schema;
 mod session;
 mod system_prompt;
+mod tool_catalog;
 mod tool_schema;
 
 pub use compaction::Compaction;
+pub use component::InstalledProvider;
 pub use conversation::ConversationInfo;
-pub use provider::InstalledProvider;
-pub use provider_tool_catalog::{ProviderCatalogStatus, ProviderToolCatalog};
+pub use runtime_access::{RuntimeAccess, RuntimeAccessLink};
+pub(crate) use session::SessionRuntimeMessage;
+pub use tool_catalog::{ProviderCatalogStatus, ProviderToolCatalog};
 
 #[cfg(test)]
 use schema::DATABASE_SCHEMA_VERSION;
@@ -44,7 +47,9 @@ use crate::error;
 use crate::llm::ReasoningRequest;
 use crate::local;
 use crate::session::{
-    Session, SessionEvent, SessionEventRecord, SessionId, SessionResolution, SessionStatus,
+    ClaimedSession, Session, SessionEvent, SessionEventKind, SessionEventRecord,
+    SessionExecutionClaim, SessionExecutionClaimId, SessionExecutionOwner, SessionId,
+    SessionResolution, SessionStatus,
 };
 use crate::tool::{
     AttachedTool, ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolPermission,

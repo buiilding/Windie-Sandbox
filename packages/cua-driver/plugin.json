@@ -1,0 +1,31 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "cua-driver",
+    "version": "0.12.6",
+    "publisher": "TryCua"
+  },
+  "presentation": {
+    "name": "CUA Driver",
+    "description": "Operate the local computer through the CUA Driver MCP server.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/trycua/cua"
+  },
+  "marketplace": { "publish": true },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "cua-driver",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "permissions": ["external_process", "computer_control"],
+        "capabilities": ["computer_control", "computer_use", "local"],
+        "local_artifact": "mcp/cua-driver.mcpb",
+        "setup": {
+          "isolated_home": true
+        }
+      }
+    }
+  ]
+}

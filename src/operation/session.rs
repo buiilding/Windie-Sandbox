@@ -2,7 +2,8 @@
 
 use super::*;
 
-use crate::session::SessionResolution;
+use crate::plugin::PluginCatalog;
+use crate::session::{SessionExecutionClaim, SessionResolution};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Action a session manager should take for a session-targeted wakeup.
@@ -18,6 +19,19 @@ pub struct SessionResume {
     pub action: SessionResumeAction,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Work requested from the single shared session executor.
+///
+/// API and CLI translate their input into one of these commands, then use the
+/// same runtime workflow for continuation and approval decisions.
+pub enum SessionExecutionCommand {
+    Continue,
+    /// Runs one autonomous turn after an enabled session has been idle long enough.
+    IdleWakeup,
+    ApproveTool(ToolCallId),
+    DenyTool(ToolCallId),
+}
+
 /// Provider/runtime inputs needed to execute a run.
 ///
 /// Long-lived API execution and blocking CLI calls both pass through this
@@ -29,6 +43,7 @@ pub struct RuntimeDependencies<'a> {
     pub(in crate::operation) model_override: Option<ModelName>,
     pub(in crate::operation) reasoning: Option<ReasoningRequest>,
     pub(in crate::operation) tools: &'a ToolProviderRegistry,
+    pub(in crate::operation) plugin_catalog: Option<&'a PluginCatalog>,
 }
 
 impl<'a> RuntimeDependencies<'a> {
@@ -46,7 +61,174 @@ impl<'a> RuntimeDependencies<'a> {
             model_override,
             reasoning,
             tools,
+            plugin_catalog: None,
         }
+    }
+
+    /// Builds runtime dependencies from one durable session record.
+    ///
+    /// Session execution must use the persisted model and reasoning settings
+    /// rather than reconstructing them independently in each client adapter.
+    pub fn for_session(
+        session: &Session,
+        gateway_url: GatewayUrl,
+        base_url: BaseUrl,
+        tools: &'a ToolProviderRegistry,
+        plugin_catalog: Option<&'a PluginCatalog>,
+    ) -> Self {
+        let runtime = Self::new(
+            gateway_url,
+            base_url,
+            Some(ModelName::new(session.model.clone())),
+            session.reasoning.clone(),
+            tools,
+        );
+
+        match plugin_catalog {
+            Some(catalog) => runtime.with_plugin_catalog(catalog),
+            None => runtime,
+        }
+    }
+
+    /// Adds the read-only plugin catalog used to build model context and
+    /// resolve plugin-owned built-in actions.
+    pub fn with_plugin_catalog(mut self, catalog: &'a PluginCatalog) -> Self {
+        self.plugin_catalog = Some(catalog);
+        self
+    }
+}
+
+/// Persists session events and head changes for one client adapter.
+///
+/// API and CLI adapters may publish or display the resulting event
+/// differently, but the durable SQLite write and session-head update must stay
+/// identical. This helper deliberately has no live-event transport policy.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionEventRecorder {
+    store_path: Option<PathBuf>,
+    session_id: SessionId,
+    claim: SessionExecutionClaim,
+}
+
+impl SessionEventRecorder {
+    /// Creates a recorder for the default store or an explicit test store.
+    pub(crate) fn new(
+        store_path: Option<PathBuf>,
+        session_id: SessionId,
+        claim: SessionExecutionClaim,
+    ) -> Self {
+        Self {
+            store_path,
+            session_id,
+            claim,
+        }
+    }
+
+    /// Appends one replayable event and returns its persisted record.
+    pub(crate) fn record(&self, event: SessionEvent) -> Result<crate::session::SessionEventRecord> {
+        let mut store = self.open_store()?;
+        store.append_session_execution_event(&self.session_id, &self.claim, event)
+    }
+
+    /// Atomically saves one assistant message and its session state changes.
+    pub(crate) fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<(MessageId, crate::session::SessionEventRecord)> {
+        let commit = store.insert_session_runtime_message(
+            &self.session_id,
+            &self.claim,
+            conversation_id,
+            crate::store::SessionRuntimeMessage::Assistant {
+                parent_message_id,
+                content,
+                metadata,
+            },
+        )?;
+        let event = commit.event.ok_or_else(|| {
+            anyhow::anyhow!("assistant session message commit did not create an event")
+        })?;
+        Ok((commit.message_id, event))
+    }
+
+    /// Atomically saves one tool result and its session state changes.
+    pub(crate) fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<(MessageId, crate::session::SessionEventRecord)> {
+        let commit = store.insert_session_runtime_message(
+            &self.session_id,
+            &self.claim,
+            conversation_id,
+            crate::store::SessionRuntimeMessage::ToolResult {
+                parent_message_id,
+                tool_call_id,
+                content,
+                parts,
+            },
+        )?;
+        let event = commit.event.ok_or_else(|| {
+            anyhow::anyhow!("tool-result session message commit did not create an event")
+        })?;
+        Ok((commit.message_id, event))
+    }
+
+    fn open_store(&self) -> Result<Store> {
+        match self.store_path.as_ref() {
+            Some(path) => Store::open_at(path),
+            None => Store::open(),
+        }
+    }
+}
+
+impl RuntimeMessagePersistence for SessionEventRecorder {
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        SessionEventRecorder::save_assistant_message(
+            self,
+            store,
+            conversation_id,
+            parent_message_id,
+            content,
+            metadata,
+        )
+        .map(|(message_id, _)| message_id)
+    }
+
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        SessionEventRecorder::save_tool_result(
+            self,
+            store,
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+            content,
+            parts,
+        )
+        .map(|(message_id, _)| message_id)
     }
 }
 
@@ -86,25 +268,51 @@ pub fn resolve_session_control(store: &Store, control: SessionControl) -> Result
 pub fn finish_session(
     store: &mut Store,
     session_id: &SessionId,
+    claim: &SessionExecutionClaim,
     outcome: RuntimeOutcome,
-) -> Result<crate::session::SessionEventRecord> {
+    record_idle_wakeup_completion: bool,
+) -> Result<Option<crate::session::SessionEventRecord>> {
     match outcome {
         RuntimeOutcome::Completed { head_message_id } => {
-            store.update_session_head(session_id, head_message_id.as_ref())?;
-            store.update_session_status(session_id, SessionStatus::Completed, None)?;
-            store.append_session_event(
+            let event_message_id = head_message_id.as_ref().map(|id| id.as_str().to_string());
+            store.finish_claimed_session_execution_at_head(
                 session_id,
+                claim,
+                SessionStatus::Completed,
+                head_message_id.as_ref(),
                 SessionEvent::Completed {
-                    message_id: head_message_id.map(|id| id.as_str().to_string()),
+                    message_id: event_message_id,
                 },
+                record_idle_wakeup_completion,
             )
         }
-        RuntimeOutcome::WaitingForApproval { head_message_id } => {
-            store.update_session_head(session_id, Some(&head_message_id))?;
-            store.update_session_status(session_id, SessionStatus::WaitingForApproval, None)?;
-            store.append_session_event(session_id, SessionEvent::WaitingForApproval)
-        }
+        RuntimeOutcome::WaitingForApproval { head_message_id } => store
+            .finish_claimed_session_execution_at_head(
+                session_id,
+                claim,
+                SessionStatus::WaitingForApproval,
+                Some(&head_message_id),
+                SessionEvent::WaitingForApproval,
+                record_idle_wakeup_completion,
+            ),
     }
+}
+
+/// Cancels one session and records the same durable event used by the API
+/// session manager.
+pub fn cancel_session(
+    store: &mut Store,
+    session_id: &SessionId,
+) -> Result<(Session, crate::session::SessionEventRecord)> {
+    let _session = resolve_session_control(
+        store,
+        SessionControl::Cancel(SessionCancellation {
+            session_id: session_id.clone(),
+        }),
+    )?;
+    store.update_session_status(session_id, SessionStatus::Cancelled, None)?;
+    let record = store.append_session_event(session_id, SessionEvent::Cancelled)?;
+    Ok((store.load_session(session_id)?, record))
 }
 
 /// Removes one terminal session and its exclusive conversation-tree suffix.
@@ -136,8 +344,10 @@ pub fn resolve_or_create_session(
 pub fn record_session_failure(
     store: &mut Store,
     session_id: &SessionId,
+    claim: &SessionExecutionClaim,
     error: &anyhow::Error,
-) -> Result<crate::session::SessionEventRecord> {
+    record_idle_wakeup_completion: bool,
+) -> Result<Option<crate::session::SessionEventRecord>> {
     let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
     let message = error
         .chain()
@@ -145,28 +355,104 @@ pub fn record_session_failure(
         .map(ToString::to_string)
         .unwrap_or_else(|| error.to_string());
 
-    store.update_session_status(session_id, SessionStatus::Failed, Some(&message))?;
-    store.append_session_event(
+    if !store.finish_claimed_session_execution(
         session_id,
-        SessionEvent::Failed {
-            error: message,
-            causes,
-        },
-    )
+        claim,
+        SessionStatus::Failed,
+        Some(&message),
+        record_idle_wakeup_completion,
+    )? {
+        return Ok(None);
+    }
+    store
+        .append_session_event(
+            session_id,
+            SessionEvent::Failed {
+                error: message,
+                causes,
+            },
+        )
+        .map(Some)
+}
+
+/// Runs one claimed durable session through the shared API/CLI workflow.
+pub async fn execute_session<O, M>(
+    output: &O,
+    messages: &M,
+    store: &mut Store,
+    session: &Session,
+    command: SessionExecutionCommand,
+    runtime: RuntimeDependencies<'_>,
+) -> Result<RuntimeOutcome>
+where
+    O: RuntimeOutput,
+    M: RuntimeMessagePersistence,
+{
+    match command {
+        SessionExecutionCommand::Continue => {
+            advance_session_until_blocked(
+                output,
+                messages,
+                store,
+                &session.conversation_id,
+                session.current_head_message_id.as_ref(),
+                runtime,
+                None,
+            )
+            .await
+        }
+        SessionExecutionCommand::IdleWakeup => {
+            advance_session_until_blocked(
+                output,
+                messages,
+                store,
+                &session.conversation_id,
+                session.current_head_message_id.as_ref(),
+                runtime,
+                Some(crate::runtime::wakeup::IDLE_WAKEUP_PROMPT),
+            )
+            .await
+        }
+        SessionExecutionCommand::ApproveTool(tool_call_id) => {
+            approve_session_tool(
+                output,
+                messages,
+                store,
+                &session.conversation_id,
+                session.current_head_message_id.as_ref(),
+                &tool_call_id,
+                runtime,
+            )
+            .await
+        }
+        SessionExecutionCommand::DenyTool(tool_call_id) => {
+            deny_session_tool(
+                output,
+                messages,
+                store,
+                &session.conversation_id,
+                session.current_head_message_id.as_ref(),
+                &tool_call_id,
+                runtime,
+            )
+            .await
+        }
+    }
 }
 
 /// Advances one backend-owned execution until it completes or waits for approval.
-pub async fn advance_session_until_blocked<O, E>(
+pub(in crate::operation) async fn advance_session_until_blocked<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     runtime: RuntimeDependencies<'_>,
+    wakeup_prompt: Option<&str>,
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     require_gateway_running(runtime.gateway_url).await?;
     let model = resolve_conversation_model(store, conversation_id, runtime.model_override)?;
@@ -184,7 +470,9 @@ where
             conversation_id,
             head_message_id,
             tools: runtime.tools,
+            plugin_catalog: runtime.plugin_catalog,
             model_request: RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
+            wakeup_prompt,
         },
         events,
     )

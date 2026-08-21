@@ -16,7 +16,7 @@ provider-free baseline.
 Run the additional local API and lifecycle scenarios with:
 
 ```bash
-windie-dev bench --all
+windie bench --all
 ```
 
 The named layers are `storage`, `context`, `serialization`, `runtime`,
@@ -45,7 +45,7 @@ optimizing. The same fixture metadata is persisted in JSON reports.
 Generate a report for one linear conversation tree:
 
 ```bash
-windie-dev bench <conversation-id> --runs 100 --json > benches/100-messages-current.json
+windie bench <conversation-id> --runs 100 --json > benches/100-messages-current.json
 ```
 
 The conversation ID is resolved through the backend-owned current session head
@@ -55,7 +55,7 @@ legacy-fixture fallback.
 Compare two scenario reports:
 
 ```bash
-windie-dev compare baseline
+windie compare baseline
 ```
 
 Negative percentage changes mean the current code is faster. Positive
@@ -65,19 +65,19 @@ Conversation benchmarks use the actual selected session head and measure the
 current persisted conversation. Generate one with:
 
 ```bash
-windie-dev bench "$conversation_id" --runs 100 --json > benches/conversation-current.json
+windie bench "$conversation_id" --runs 100 --json > benches/conversation-current.json
 ```
 
 Compare two conversation reports:
 
 ```bash
-windie-dev compare baseline
+windie compare baseline
 ```
 
 Narrow a run to selected layers with flags such as:
 
 ```bash
-windie-dev bench --conversation --serialization --runtime --sessions --api
+windie bench --conversation --serialization --runtime --sessions --api
 ```
 
 External Bifrost inference, real provider/network behavior, browser Inspector

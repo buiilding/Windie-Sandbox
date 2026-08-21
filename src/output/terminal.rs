@@ -11,11 +11,10 @@ use anyhow::{Context, Result};
 
 use crate::conversation::{ConversationId, Message, MessageId, ToolCall};
 use crate::llm::{ModelInfo, ModelName};
+use crate::local::process::{ManagedComponent, ProcessReport, ProcessState};
 use crate::local::{InstallReport, InstallStatus};
-use crate::operation::InspectionReport;
-use crate::operation::UninstallReport;
+use crate::operation::{ComponentStatus, InspectionReport, UninstallReport};
 use crate::perf::{PerformanceBaseline, PerformanceComparison, PerformanceReport};
-use crate::process::{ManagedComponent, ProcessReport, ProcessState};
 use crate::session::{Session, SessionEvent, SessionEventRecord, SessionId};
 use crate::store::ConversationInfo;
 use crate::tool::{ToolDefinition, ToolSchemaName};
@@ -126,7 +125,7 @@ impl TerminalOutput {
     pub fn uninstall_report(&self, report: &UninstallReport) {
         if report.dry_run {
             println!("windie uninstall: dry run");
-            println!("would stop: tray, api, inspector, gateway");
+            println!("would stop: notifier, tray, api, gateway");
             println!("would remove data: {}", report.plan.windie_home.display());
             for binary in &report.plan.binaries {
                 println!("would remove binary: {}", binary.display());
@@ -224,7 +223,7 @@ impl TerminalOutput {
         }
     }
 
-    /// Prints the path written by `windie-dev update baseline`.
+    /// Prints the path written by `windie update baseline`.
     pub fn updated_baseline(&self, path: &Path) {
         println!("updated baseline {}", path.display());
     }
@@ -325,17 +324,20 @@ impl TerminalOutput {
         println!("{conversation_id}");
     }
 
-    /// Prints the local gateway readiness summary.
-    pub fn status(&self, gateway_running: bool) {
+    /// Prints the readiness of every independently managed local component.
+    pub fn status(&self, statuses: &[ComponentStatus]) {
         println!("status");
-        println!(
-            "gateway: {}",
-            if gateway_running {
-                "running"
-            } else {
-                "not running"
-            }
-        );
+        for status in statuses {
+            println!(
+                "{}: {}",
+                status.component.as_str(),
+                if status.running {
+                    "running"
+                } else {
+                    "not running"
+                }
+            );
+        }
     }
 
     /// Prints models currently reported by the running Bifrost gateway.

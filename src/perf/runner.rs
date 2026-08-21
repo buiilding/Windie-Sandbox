@@ -196,8 +196,14 @@ fn run_conversation_benchmark(
     );
 
     let model_context_started = Instant::now();
-    let model_context =
-        ContextBuilder::build_model_context(&store, conversation_id, head_message_id.as_ref())?;
+    let tools = ToolProviderRegistry::new();
+    let model_context = ContextBuilder::build_model_context(
+        &store,
+        conversation_id,
+        head_message_id.as_ref(),
+        &tools,
+        None,
+    )?;
     let model_context_build = model_context_started.elapsed();
     push_if_selected(
         &mut baseline.scenarios,

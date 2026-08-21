@@ -9,26 +9,33 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::conversation::{ConversationId, MessageId, ToolCallId};
-use crate::gateway::GatewayUrl;
-use crate::llm::{BaseUrl, ModelName, ReasoningRequest};
-use crate::operation::{self, MessageInputPart, RuntimeDependencies};
-use crate::output::RuntimeOutput;
-use crate::runtime::RuntimeEventSink;
-use crate::session::{
-    Session, SessionCancellation, SessionControl, SessionEvent, SessionEventRecord, SessionId,
-    SessionQueryResult, SessionResolution, SessionStatus,
+use crate::conversation::{
+    ConversationId, MessageId, MessageMetadata, ToolCallId, UnsavedMessagePart,
 };
-use crate::store::Store;
-use crate::tool_provider::ToolProviderRegistry;
-use crate::wakeup::{ToolDecisionWakeup, Wakeup};
+use crate::llm::gateway::GatewayUrl;
+use crate::llm::{BaseUrl, ReasoningRequest};
+use crate::operation::{self, MessageInputPart, RuntimeDependencies, SessionEventRecorder};
+use crate::output::RuntimeOutput;
+use crate::plugin::PluginCatalog;
+use crate::runtime::RuntimeMessagePersistence;
+use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
+use crate::session::{
+    Session, SessionEvent, SessionEventRecord, SessionExecutionClaim, SessionExecutionOwner,
+    SessionExecutionStart, SessionId, SessionQueryResult, SessionResolution, SessionStatus,
+};
+use crate::store::{SessionRuntimeMessage, Store};
+use crate::tool::ToolProviderRegistry;
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
+/// Idle duration between explicit user activity or completed idle wakeups.
+pub const IDLE_WAKEUP_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const IDLE_WAKEUP_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Live subscription to events from one session.
 pub struct SessionSubscription {
@@ -57,6 +64,7 @@ pub struct SessionManager {
     gateway_url: String,
     base_url: String,
     tools: Arc<ToolProviderRegistry>,
+    plugin_catalog: Option<Arc<PluginCatalog>>,
     /// Live running tasks, keyed by session. A task is removed when it finishes,
     /// including when the session pauses for approval.
     active: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
@@ -71,11 +79,8 @@ pub struct SessionManager {
 /// Complete input needed by one spawned session task.
 struct SessionTaskInput {
     session_id: SessionId,
-    conversation_id: ConversationId,
-    head_message_id: Option<MessageId>,
-    model_override: Option<ModelName>,
-    reasoning: Option<ReasoningRequest>,
-    command: SessionCommand,
+    claim: SessionExecutionClaim,
+    command: operation::SessionExecutionCommand,
     sender: broadcast::Sender<SessionEventRecord>,
 }
 
@@ -92,10 +97,17 @@ impl SessionManager {
             gateway_url,
             base_url,
             tools,
+            plugin_catalog: None,
             active: Arc::new(Mutex::new(HashMap::new())),
             gates: Arc::new(Mutex::new(HashMap::new())),
             channels: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Adds the shared read-only plugin catalog used by model sessions.
+    pub fn with_plugin_catalog(mut self, plugin_catalog: Arc<PluginCatalog>) -> Self {
+        self.plugin_catalog = Some(plugin_catalog);
+        self
     }
 
     /// Deletes one terminal session after confirming no live task still owns it.
@@ -188,6 +200,73 @@ impl SessionManager {
         )
     }
 
+    /// Persists whether this session should autonomously wake after inactivity.
+    pub fn set_keep_awake(&self, session_id: &SessionId, keep_awake: bool) -> Result<Session> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
+        let mut store = self.open_store()?;
+        store.set_session_keep_awake(session_id, keep_awake)
+    }
+
+    /// Starts every enabled session whose user-activity and wakeup cooldowns
+    /// have elapsed. The SQLite claim repeats the eligibility check so a user
+    /// interaction can win a race with this process-local scheduler.
+    pub fn start_due_idle_wakeups(&self) -> Result<usize> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| anyhow::anyhow!("system clock is before unix epoch"))?
+            .as_millis() as i64;
+        self.start_due_idle_wakeups_at(now)
+    }
+
+    /// Starts eligible idle wakeups using an explicit clock value for tests.
+    pub fn start_due_idle_wakeups_at(&self, now: i64) -> Result<usize> {
+        let eligible_before = now - IDLE_WAKEUP_INTERVAL.as_millis() as i64;
+        let store = self.open_store()?;
+        let sessions = store
+            .list_sessions()?
+            .into_iter()
+            .filter(|session| {
+                session.keep_awake
+                    && session.last_user_activity_at <= eligible_before
+                    && session
+                        .last_idle_wakeup_completed_at
+                        .is_none_or(|completed_at| completed_at <= eligible_before)
+            })
+            .collect::<Vec<_>>();
+        drop(store);
+
+        let mut started = 0;
+        for session in sessions {
+            if self.start_idle_wakeup(&session.id, eligible_before)? {
+                started += 1;
+            }
+        }
+        Ok(started)
+    }
+
+    /// Runs the API process's lightweight idle-wakeup scheduler until shutdown.
+    pub async fn run_idle_wakeup_scheduler(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let mut interval = tokio::time::interval(IDLE_WAKEUP_POLL_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(error) = self.start_due_idle_wakeups() {
+                        eprintln!("failed to start due idle wakeups: {error}");
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolves a conversation head to its backend-owned session branch.
     pub fn resolve_session_at_head(
         &self,
@@ -258,6 +337,7 @@ impl SessionManager {
                 "session is waiting for tool approval",
             ));
         }
+        store.record_session_user_activity(session_id)?;
 
         let prepared = operation::prepare_message_input(parts)?;
         if active {
@@ -281,30 +361,48 @@ impl SessionManager {
             });
         }
 
-        let user_message_id = operation::insert_prepared_user_message(
-            &mut store,
-            &session.conversation_id,
-            session.current_head_message_id.as_ref(),
-            &prepared,
+        if session.status == SessionStatus::Running {
+            return Err(crate::error::conflict(
+                "session is running in another Windie process",
+            ));
+        }
+
+        let claimed = if enforce_expected_head {
+            store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::RunnableAtHead(expected_head_message_id.cloned()),
+            )?
+        } else {
+            store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?
+        };
+        let commit = store.insert_session_runtime_message(
+            session_id,
+            &claimed.claim,
+            &claimed.session.conversation_id,
+            SessionRuntimeMessage::User {
+                parent_message_id: claimed.session.current_head_message_id.as_ref(),
+                content: &prepared.content,
+                parts: &prepared.parts,
+            },
         )?;
-        store.update_session_head(session_id, Some(&user_message_id))?;
-        store.update_session_status(session_id, SessionStatus::Running, None)?;
 
         let updated = store.load_session(session_id)?;
+        debug_assert_eq!(
+            updated.current_head_message_id.as_ref(),
+            Some(&commit.message_id)
+        );
         let session_id_for_spawn = updated.id.clone();
-        let conversation_id = updated.conversation_id.clone();
-        let head_message_id = updated.current_head_message_id.clone();
-        let model = updated.model.clone();
-        let reasoning = updated.reasoning.clone();
         drop(store);
 
         self.spawn(
             session_id_for_spawn,
-            conversation_id,
-            head_message_id,
-            Some(ModelName::new(model)),
-            reasoning,
-            SessionCommand::Continue,
+            claimed.claim,
+            operation::SessionExecutionCommand::Continue,
         );
 
         Ok(SessionQueryResult {
@@ -372,49 +470,60 @@ impl SessionManager {
                 "session is waiting for tool approval",
             ));
         }
+        store.record_session_user_activity(session_id)?;
 
         if store.session_input_count(session_id)? > 0 {
-            let input = store.materialize_next_session_input(session_id)?;
-            if let Some(input) = input {
+            let claimed = store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?;
+            if let Some((_input, record)) =
+                store.materialize_next_session_input(session_id, &claimed.claim)?
+            {
                 let updated = store.load_session(session_id)?;
-                let record = store.append_session_event(
-                    session_id,
-                    SessionEvent::InputStarted {
-                        input_id: input.id.as_str().to_string(),
-                        message_id: updated
-                            .current_head_message_id
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_default(),
-                    },
-                )?;
                 self.channel_for_session(session_id).send(record).ok();
                 drop(store);
                 self.spawn(
                     updated.id.clone(),
-                    updated.conversation_id.clone(),
-                    updated.current_head_message_id.clone(),
-                    Some(ModelName::new(updated.model.clone())),
-                    updated.reasoning.clone(),
-                    SessionCommand::Continue,
+                    claimed.claim,
+                    operation::SessionExecutionCommand::Continue,
                 );
                 return Ok(updated);
             }
+            store.finish_claimed_session_execution(
+                session_id,
+                &claimed.claim,
+                SessionStatus::Failed,
+                Some("queued session input disappeared after execution claim"),
+                false,
+            )?;
+            return Err(anyhow::anyhow!(
+                "queued session input disappeared after execution claim"
+            ));
         }
-        store.update_session_status(session_id, SessionStatus::Running, None)?;
-        let updated = store.load_session(session_id)?;
+        let claimed = if enforce_expected_head {
+            store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::RunnableAtHead(expected_head_message_id.cloned()),
+            )?
+        } else {
+            store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            )?
+        };
         drop(store);
 
         self.spawn(
-            updated.id.clone(),
-            updated.conversation_id.clone(),
-            updated.current_head_message_id.clone(),
-            Some(ModelName::new(updated.model.clone())),
-            updated.reasoning.clone(),
-            SessionCommand::Continue,
+            claimed.session.id.clone(),
+            claimed.claim,
+            operation::SessionExecutionCommand::Continue,
         );
 
-        Ok(updated)
+        Ok(claimed.session)
     }
 
     /// Stops one live session explicitly.
@@ -422,12 +531,8 @@ impl SessionManager {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
         let store = self.open_store()?;
-        let session = operation::resolve_session_control(
-            &store,
-            SessionControl::Cancel(SessionCancellation {
-                session_id: session_id.clone(),
-            }),
-        )?;
+        let session = store.load_session(session_id)?;
+        let claim = store.session_execution_claim(session_id)?;
         drop(store);
 
         let session_key = session.id.as_str().to_string();
@@ -437,13 +542,16 @@ impl SessionManager {
             .expect("run manager lock poisoned")
             .remove(&session_key);
 
+        let owns_running_task = running_task.is_some();
         if let Some(task) = &running_task {
             task.abort();
         }
 
         let mut store = self.open_store()?;
-        store.update_session_status(&session.id, SessionStatus::Cancelled, None)?;
-        let record = store.append_session_event(&session.id, SessionEvent::Cancelled)?;
+        let (_, record) = operation::cancel_session(&mut store, &session.id)?;
+        if owns_running_task && let Some(claim) = claim.as_ref() {
+            store.release_cancelled_session_execution(&session.id, claim)?;
+        }
 
         // Send the terminal event on the durable channel, then remove it so the
         // stream closes after delivering the cancellation.
@@ -477,9 +585,8 @@ impl SessionManager {
     pub fn resume(&self, session_id: &SessionId) -> Result<()> {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
-        let store = self.open_store()?;
+        let mut store = self.open_store()?;
         let session = store.load_session(session_id)?;
-        drop(store);
 
         if self
             .active
@@ -494,13 +601,17 @@ impl SessionManager {
             return Ok(());
         }
 
+        let claimed = store.claim_session_execution(
+            session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::WaitingForApproval,
+        )?;
+        drop(store);
+
         self.spawn(
-            session.id,
-            session.conversation_id,
-            session.current_head_message_id,
-            Some(ModelName::new(session.model)),
-            session.reasoning,
-            SessionCommand::Continue,
+            claimed.session.id,
+            claimed.claim,
+            operation::SessionExecutionCommand::Continue,
         );
 
         Ok(())
@@ -542,11 +653,8 @@ impl SessionManager {
     fn spawn(
         &self,
         session_id: SessionId,
-        conversation_id: ConversationId,
-        head_message_id: Option<MessageId>,
-        model_override: Option<ModelName>,
-        reasoning: Option<ReasoningRequest>,
-        command: SessionCommand,
+        claim: SessionExecutionClaim,
+        command: operation::SessionExecutionCommand,
     ) {
         let session_key = session_id.as_str().to_string();
 
@@ -563,20 +671,24 @@ impl SessionManager {
         let manager = self.clone();
         let run_id_for_task = session_id.clone();
         let task = tokio::spawn(async move {
+            let record_idle_wakeup_completion =
+                matches!(&command, operation::SessionExecutionCommand::IdleWakeup);
             let result = manager
                 .run_task(SessionTaskInput {
                     session_id: run_id_for_task.clone(),
-                    conversation_id,
-                    head_message_id,
-                    model_override,
-                    reasoning,
+                    claim: claim.clone(),
                     command,
                     sender: sender.clone(),
                 })
                 .await;
             if let Err(error) = result {
                 manager
-                    .record_failure(&run_id_for_task, &error)
+                    .record_failure(
+                        &run_id_for_task,
+                        &claim,
+                        &error,
+                        record_idle_wakeup_completion,
+                    )
                     .unwrap_or_else(|failure_error| {
                         eprintln!("failed to persist run failure: {failure_error}");
                     });
@@ -598,86 +710,73 @@ impl SessionManager {
     async fn run_task(&self, input: SessionTaskInput) -> Result<()> {
         let SessionTaskInput {
             session_id,
-            conversation_id,
-            head_message_id,
-            model_override,
-            reasoning,
+            claim,
             command,
             sender,
         } = input;
         let mut store = self.open_store()?;
-        store.update_session_status(&session_id, SessionStatus::Running, None)?;
+        let session = store.load_session(&session_id)?;
+        let recorder =
+            SessionEventRecorder::new(self.store_path.clone(), session_id.clone(), claim.clone());
         let output = SessionOutput {
-            store_path: self.store_path.clone(),
-            session_id: session_id.clone(),
+            recorder: recorder.clone(),
             sender: sender.clone(),
         };
-        let events = SessionEvents {
-            store_path: self.store_path.clone(),
-            session_id: session_id.clone(),
-            sender,
-        };
-        let runtime = RuntimeDependencies::new(
+        let messages = SessionMessages { recorder, sender };
+        let runtime = RuntimeDependencies::for_session(
+            &session,
             GatewayUrl::new(self.gateway_url.clone()),
             BaseUrl::new(self.base_url.clone()),
-            model_override,
-            reasoning,
             self.tools.as_ref(),
+            self.plugin_catalog.as_deref(),
         );
+        let record_idle_wakeup_completion =
+            matches!(&command, operation::SessionExecutionCommand::IdleWakeup);
 
-        let outcome = match command {
-            SessionCommand::Continue => {
-                operation::advance_session_until_blocked(
-                    &output,
-                    &events,
-                    &mut store,
-                    &conversation_id,
-                    head_message_id.as_ref(),
-                    runtime,
-                )
-                .await?
-            }
-            SessionCommand::ApproveTool(tool_call_id) => {
-                operation::approve_session_tool(
-                    &output,
-                    &events,
-                    &mut store,
-                    &conversation_id,
-                    head_message_id.as_ref(),
-                    &tool_call_id,
-                    runtime,
-                )
-                .await?
-            }
-            SessionCommand::DenyTool(tool_call_id) => {
-                operation::deny_session_tool(
-                    &output,
-                    &events,
-                    &mut store,
-                    &conversation_id,
-                    head_message_id.as_ref(),
-                    &tool_call_id,
-                    runtime,
-                )
-                .await?
-            }
-        };
+        let outcome =
+            operation::execute_session(&output, &messages, &mut store, &session, command, runtime)
+                .await?;
 
-        let record = operation::finish_session(&mut store, &session_id, outcome)?;
-        let _ = events.sender.send(record);
+        if let Some(record) = operation::finish_session(
+            &mut store,
+            &session_id,
+            &claim,
+            outcome,
+            record_idle_wakeup_completion,
+        )? {
+            let _ = messages.sender.send(record);
+        } else {
+            store.release_cancelled_session_execution(&session_id, &claim)?;
+        }
 
         Ok(())
     }
 
-    fn record_failure(&self, session_id: &SessionId, error: &anyhow::Error) -> Result<()> {
+    fn record_failure(
+        &self,
+        session_id: &SessionId,
+        claim: &SessionExecutionClaim,
+        error: &anyhow::Error,
+        record_idle_wakeup_completion: bool,
+    ) -> Result<()> {
         let mut store = self.open_store()?;
-        let record = operation::record_session_failure(&mut store, session_id, error)?;
-        if let Some(sender) = self
-            .channels
-            .lock()
-            .expect("run manager lock poisoned")
-            .get(session_id.as_str())
-        {
+        let record = operation::record_session_failure(
+            &mut store,
+            session_id,
+            claim,
+            error,
+            record_idle_wakeup_completion,
+        )?;
+        if record.is_none() {
+            store.release_cancelled_session_execution(session_id, claim)?;
+        }
+        if let (Some(record), Some(sender)) = (
+            record,
+            self.channels
+                .lock()
+                .expect("run manager lock poisoned")
+                .get(session_id.as_str()),
+        ) {
             let _ = sender.send(record);
         }
 
@@ -700,37 +799,44 @@ impl SessionManager {
             return;
         };
 
-        if session.status == SessionStatus::Completed {
-            match store.materialize_next_session_input(session_id) {
-                Ok(Some(input)) => {
+        let queued_input_count = match store.session_input_count(session_id) {
+            Ok(count) => count,
+            Err(error) => {
+                eprintln!("failed to count queued session inputs: {error}");
+                return;
+            }
+        };
+        if session.status == SessionStatus::Completed && queued_input_count > 0 {
+            let Ok(claimed) = store.claim_session_execution(
+                session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::Runnable,
+            ) else {
+                return;
+            };
+            match store.materialize_next_session_input(session_id, &claimed.claim) {
+                Ok(Some((_input, record))) => {
                     let Ok(updated) = store.load_session(session_id) else {
                         return;
                     };
-                    if let Ok(record) = store.append_session_event(
-                        session_id,
-                        SessionEvent::InputStarted {
-                            input_id: input.id.as_str().to_string(),
-                            message_id: updated
-                                .current_head_message_id
-                                .as_ref()
-                                .map(ToString::to_string)
-                                .unwrap_or_default(),
-                        },
-                    ) {
-                        self.channel_for_session(session_id).send(record).ok();
-                    }
+                    self.channel_for_session(session_id).send(record).ok();
                     drop(store);
                     self.spawn(
                         updated.id,
-                        updated.conversation_id,
-                        updated.current_head_message_id,
-                        Some(ModelName::new(updated.model)),
-                        updated.reasoning,
-                        SessionCommand::Continue,
+                        claimed.claim,
+                        operation::SessionExecutionCommand::Continue,
                     );
                     return;
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    let _ = store.finish_claimed_session_execution(
+                        session_id,
+                        &claimed.claim,
+                        SessionStatus::Completed,
+                        None,
+                        false,
+                    );
+                }
                 Err(error) => {
                     eprintln!("failed to start queued session input: {error}");
                     return;
@@ -747,6 +853,38 @@ impl SessionManager {
                 .expect("run manager lock poisoned")
                 .remove(session_id.as_str());
         }
+    }
+
+    /// Claims and starts one eligible autonomous session without adding a user
+    /// message to its conversation tree.
+    fn start_idle_wakeup(&self, session_id: &SessionId, eligible_before: i64) -> Result<bool> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
+        if self
+            .active
+            .lock()
+            .expect("run manager lock poisoned")
+            .contains_key(session_id.as_str())
+        {
+            return Ok(false);
+        }
+
+        let mut store = self.open_store()?;
+        let claimed = match store.claim_session_execution(
+            session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::IdleWakeup { eligible_before },
+        ) {
+            Ok(claimed) => claimed,
+            Err(_) => return Ok(false),
+        };
+        drop(store);
+        self.spawn(
+            claimed.session.id,
+            claimed.claim,
+            operation::SessionExecutionCommand::IdleWakeup,
+        );
+        Ok(true)
     }
 
     /// Returns the process-local gate for one session.
@@ -783,14 +921,27 @@ impl SessionManager {
     pub fn recover_interrupted_sessions(&self) -> Result<()> {
         let mut store = self.open_store()?;
         let sessions = store.list_sessions()?;
-        for session in sessions
+        let interrupted = sessions
             .into_iter()
-            .filter(|session| session.status == SessionStatus::Running)
-        {
-            store.update_session_status(
+            .filter_map(|session| {
+                if session.status != SessionStatus::Running {
+                    return None;
+                }
+                match store.session_execution_claim(&session.id) {
+                    Ok(Some(claim)) if claim.owner == SessionExecutionOwner::Api => {
+                        Some((session, claim))
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        for (session, claim) in interrupted {
+            store.finish_claimed_session_execution(
                 &session.id,
+                &claim,
                 SessionStatus::Failed,
                 Some("session task was interrupted by Windie restart"),
+                false,
             )?;
             store.append_session_event(
                 &session.id,
@@ -812,11 +963,10 @@ impl SessionManager {
         };
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
-        let store = self.open_store()?;
+        let mut store = self.open_store()?;
         let Some(resume) = operation::resume_session_from_wakeup(&store, wakeup)? else {
             return Ok(());
         };
-        drop(store);
 
         if self
             .active
@@ -827,101 +977,83 @@ impl SessionManager {
             return Ok(());
         }
 
+        let claimed = store.claim_session_execution(
+            &resume.session.id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::WaitingForApproval,
+        )?;
+        drop(store);
+
         let command = match resume.action {
             operation::SessionResumeAction::ApproveTool(tool_call_id) => {
-                SessionCommand::ApproveTool(tool_call_id)
+                operation::SessionExecutionCommand::ApproveTool(tool_call_id)
             }
             operation::SessionResumeAction::DenyTool(tool_call_id) => {
-                SessionCommand::DenyTool(tool_call_id)
+                operation::SessionExecutionCommand::DenyTool(tool_call_id)
             }
         };
 
-        self.spawn(
-            resume.session.id,
-            resume.session.conversation_id,
-            resume.session.current_head_message_id,
-            Some(ModelName::new(resume.session.model)),
-            resume.session.reasoning,
-            command,
-        );
+        self.spawn(claimed.session.id, claimed.claim, command);
 
         Ok(())
     }
 }
 
-enum SessionCommand {
-    Continue,
-    ApproveTool(ToolCallId),
-    DenyTool(ToolCallId),
-}
-
-struct SessionEvents {
-    store_path: Option<PathBuf>,
-    session_id: SessionId,
+struct SessionMessages {
+    recorder: SessionEventRecorder,
     sender: broadcast::Sender<SessionEventRecord>,
 }
 
-impl SessionEvents {
-    fn open_store(&self) -> Result<Store> {
-        match self.store_path.as_ref() {
-            Some(path) => Store::open_at(path),
-            None => Store::open(),
-        }
+impl RuntimeMessagePersistence for SessionMessages {
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        let (message_id, record) = self.recorder.save_assistant_message(
+            store,
+            conversation_id,
+            parent_message_id,
+            content,
+            metadata,
+        )?;
+        let _ = self.sender.send(record);
+        Ok(message_id)
     }
 
-    fn record(&self, event: SessionEvent) -> Result<SessionEventRecord> {
-        let mut store = self.open_store()?;
-        let record = store.append_session_event(&self.session_id, event)?;
-        let _ = self.sender.send(record.clone());
-
-        Ok(record)
-    }
-
-    fn update_head(&self, message_id: &MessageId) {
-        let result: Result<()> = (|| {
-            let mut store = self.open_store()?;
-            store.update_session_head(&self.session_id, Some(message_id))?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            eprintln!("failed to update session head: {error}");
-        }
-    }
-}
-
-impl RuntimeEventSink for SessionEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
-        self.update_head(message_id);
-        if let Err(error) = self.record(SessionEvent::AssistantMessageSaved {
-            message_id: message_id.as_str().to_string(),
-        }) {
-            eprintln!("failed to append runtime event: {error}");
-        }
-    }
-
-    fn tool_result_saved(&self, message_id: &MessageId) {
-        self.update_head(message_id);
-        if let Err(error) = self.record(SessionEvent::ToolResultSaved {
-            message_id: message_id.as_str().to_string(),
-        }) {
-            eprintln!("failed to append runtime event: {error}");
-        }
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        let (message_id, record) = self.recorder.save_tool_result(
+            store,
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+            content,
+            parts,
+        )?;
+        let _ = self.sender.send(record);
+        Ok(message_id)
     }
 }
 
 struct SessionOutput {
-    store_path: Option<PathBuf>,
-    session_id: SessionId,
+    recorder: SessionEventRecorder,
     sender: broadcast::Sender<SessionEventRecord>,
 }
 
 impl SessionOutput {
     fn record(&self, event: SessionEvent) -> Result<()> {
-        let mut store = match self.store_path.as_ref() {
-            Some(path) => Store::open_at(path),
-            None => Store::open(),
-        }?;
-        let record = store.append_session_event(&self.session_id, event)?;
+        let record = self.recorder.record(event)?;
         let _ = self.sender.send(record);
 
         Ok(())

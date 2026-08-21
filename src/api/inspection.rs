@@ -17,6 +17,8 @@ pub(super) async fn inspect_conversation(
         &conversation_id,
         head_message_id.as_ref(),
         model_override,
+        state.tool_registry.as_ref(),
+        Some(state.plugin_catalog.as_ref()),
     )?;
 
     Ok(Json(report))

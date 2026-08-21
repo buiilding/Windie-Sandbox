@@ -1,28 +1,26 @@
 //! Runtime turn orchestration.
 //!
-//! This module prepares model context, advances assistant turns, and coordinates
-//! automatic tool resolution until the session completes or needs approval.
-
-use std::collections::HashSet;
+//! This module advances assistant turns and coordinates automatic tool
+//! resolution until the session completes or needs approval. It asks
+//! `runtime::context` for the complete model payload but never changes it.
 
 use anyhow::Result;
 
-use crate::context::{ContextBuilder, ModelContext};
 use crate::conversation::{ConversationId, Message, MessageId, Role};
 use crate::error;
 use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
+use crate::runtime::context::ContextBuilder;
 use crate::store::Store;
+use crate::tool::ToolProviderRegistry;
 use crate::tool::{PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy};
-use crate::tool_provider::ToolProviderRegistry;
 
 use super::retry::stream_with_retry;
 use super::tool_execution::{
     AutomaticToolResolution, PendingToolCall, active_tool_execution, attached_tool_can_execute,
     load_attached_tool_for_call, resolve_next_automatic_tool_call_at_head,
-    store_pending_tool_result_at_head,
 };
-use super::{RuntimeEventSink, RuntimeInput, RuntimeOutcome};
+use super::{RuntimeInput, RuntimeMessagePersistence, RuntimeOutcome};
 
 pub(crate) async fn advance_turn<O, L, E>(
     output: &O,
@@ -34,7 +32,7 @@ pub(crate) async fn advance_turn<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let mut head_message_id = input.head_message_id.cloned();
     prepare_head_turn(
@@ -45,12 +43,23 @@ where
         events,
     )?;
 
-    let model_context = build_model_context(
+    let mut model_context = ContextBuilder::build_model_context(
         store,
         input.conversation_id,
         head_message_id.as_ref(),
         input.tools,
+        input.plugin_catalog,
     )?;
+    if let Some(wakeup_prompt) = input.wakeup_prompt {
+        model_context.messages.push(Message {
+            id: None,
+            parent_message_id: None,
+            role: Role::System,
+            content: wakeup_prompt.to_string(),
+            parts: Vec::new(),
+            metadata: None,
+        });
+    }
 
     let assistant_response =
         stream_with_retry(output, llm, &model_context, input.model_request).await?;
@@ -61,14 +70,13 @@ where
     } else {
         Some(assistant_response.metadata)
     };
-    let assistant_message_id = store.insert_run_message(
+    let assistant_message_id = events.save_assistant_message(
+        store,
         input.conversation_id,
         head_message_id.as_ref(),
-        Role::Assistant,
         &assistant_response.content,
         metadata.as_ref(),
     )?;
-    events.assistant_message_saved(&assistant_message_id);
     head_message_id = Some(assistant_message_id.clone());
     store_policy_denied_tool_results_at_head(
         store,
@@ -98,9 +106,10 @@ pub(crate) async fn advance_until_blocked<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let mut head_message_id = input.head_message_id.cloned();
+    let mut wakeup_prompt = input.wakeup_prompt;
 
     loop {
         match resolve_next_automatic_tool_call_at_head(
@@ -108,6 +117,7 @@ where
             input.conversation_id,
             &mut head_message_id,
             input.tools,
+            input.plugin_catalog,
             events,
         )
         .await?
@@ -126,10 +136,13 @@ where
                     conversation_id: input.conversation_id,
                     head_message_id: head_message_id.as_ref(),
                     tools: input.tools,
+                    plugin_catalog: input.plugin_catalog,
                     model_request: input.model_request,
+                    wakeup_prompt,
                 };
                 let message = advance_turn(output, llm, store, turn_input, events).await?;
                 head_message_id = message.id.clone();
+                wakeup_prompt = None;
                 let has_tool_calls = message
                     .metadata
                     .as_ref()
@@ -182,7 +195,7 @@ pub(crate) fn prepare_head_turn(
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
     tools: &ToolProviderRegistry,
-    events: &impl RuntimeEventSink,
+    events: &impl RuntimeMessagePersistence,
 ) -> Result<()> {
     store_policy_denied_tool_results_at_head(
         store,
@@ -229,7 +242,7 @@ fn store_policy_denied_tool_results_at_head(
     conversation_id: &ConversationId,
     head_message_id: &mut Option<MessageId>,
     tools: &ToolProviderRegistry,
-    events: &impl RuntimeEventSink,
+    events: &impl RuntimeMessagePersistence,
 ) -> Result<()> {
     let policy = ToolPolicy;
 
@@ -261,38 +274,14 @@ fn store_policy_denied_tool_results_at_head(
             pending.tool_call.name(),
             reason,
         );
-        let message_id =
-            store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+        let message_id = events.save_tool_result(
+            store,
+            conversation_id,
+            &pending.result_parent_message_id,
+            &result.tool_call_id,
+            &result.content,
+            &result.parts,
+        )?;
         *head_message_id = Some(message_id.clone());
-        events.tool_result_saved(&message_id);
     }
-}
-
-/// Builds runtime model context and adds Windie's implicit control tools.
-///
-/// Built-in tools are intentionally added only on the model-facing runtime
-/// path. They do not enter conversation inspection or conversation tool-schema
-/// persistence, so clients cannot detach or mistake them for providers.
-pub(crate) fn build_model_context(
-    store: &Store,
-    conversation_id: &ConversationId,
-    head_message_id: Option<&MessageId>,
-    registry: &ToolProviderRegistry,
-) -> Result<ModelContext> {
-    let mut context = ContextBuilder::build_model_context(store, conversation_id, head_message_id)?;
-    let mut names = context
-        .tool_schemas
-        .iter()
-        .map(|tool| tool.name.as_str().to_string())
-        .collect::<HashSet<_>>();
-
-    for definition in registry.builtin_tools() {
-        if names.insert(definition.schema_name.as_str().to_string()) {
-            context
-                .tool_schemas
-                .push(definition.attached_tool().schema());
-        }
-    }
-
-    Ok(context)
 }

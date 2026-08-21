@@ -9,6 +9,133 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 - No unreleased changes yet.
 
+## [0.4.0] - 2026-08-20
+
+- Fixed cross-platform native notification callbacks, cleanup commands, and
+  current Clippy checks.
+- Fixed platform-aware plugin tests so macOS-only packages are rejected on
+  unsupported systems during release validation.
+- Moved the Inspector out of installed releases. Packages and installers now
+  contain and start only Windie, Bifrost, the tray, and the notifier; after the
+  local API is healthy, installation opens the paired hosted Inspector at
+  `app.windieos.com`.
+- Added a hosted-account authorization boundary for the local API. The first
+  signed-in Inspector explicitly pairs one Supabase account with a local Windie
+  database; later API and SSE calls require that account's verified token, and
+  a different account cannot overwrite the pairing.
+- Separated durable completion observation and OS notification delivery into
+  the independent `notifier` component. It now has its own lifecycle and
+  development command, macOS app identity, Windows toast adapter, Linux
+  Freedesktop adapter, and session click-through URL; the tray only presents
+  runtime component status and controls.
+- Added canonical hosted Inspector session URLs and macOS tray notification
+  click-through for completed responses in installed app-bundle releases.
+- Added a durable per-session Keep awake toggle in Inspector. Enabled sessions
+  run the normal runtime after 30 minutes without user activity, receive the
+  configured open-ended wakeup prompt, and repeat 30 minutes after each idle
+  run completes until the user pauses the session.
+- Allowed the hosted Inspector at `app.windieos.com` to call Windie's local
+  loopback API for the no-login browser-connection experiment, and added
+  Vercel deployment configuration for the Inspector frontend.
+- Added durable tray notifications for final assistant responses. The tray
+  observes only replayable `session.completed` events, persists its cursor,
+  shows a safe preview of the canonical final assistant text, and does not
+  notify for assistant tool calls or saved tool results.
+- Added a development-only API-to-tray notification probe that leaves sessions
+  and conversations untouched, allowing macOS tray notification delivery to be
+  verified independently before durable completion notifications are enabled.
+- Added optional, validated upstream GitHub repository links to package
+  presentation metadata; marketplace builds publish them and Inspector shows
+  them as plugin resources.
+- Split gateway, API, Inspector, and tray lifecycle into independent commands
+  and foreground development runs; the tray no longer stops the runtime as a
+  group, while `windie status` reports every component.
+- Added graceful loopback shutdown for the standalone Inspector so lifecycle
+  controls request its own clean exit before falling back to an owned process.
+- Made marketplace releases package-owned: the build now discovers packages
+  that opt in through `plugin.json`, generates the complete catalog, and can
+  publish immutable archives to GitHub Releases before deploying the catalog
+  site to Vercel with one command and an automatically generated release tag.
+- Removed the obsolete `local-mcp-fixture` package and its package-specific
+  acceptance test.
+- Moved installed-runtime lifecycle instructions from the README into the CLI
+  command reference and clarified how to invoke the development CLI from a
+  checkout.
+- Added a complete `Backend.md` inventory for every Rust source file and
+  corrected stale module-boundary references.
+- Clarified that the generated plugin capability index is separate runtime
+  context and remains present when a user replaces or clears a conversation
+  system prompt.
+- Consolidated repository development, release, marketplace, and benchmark
+  workflows into the public `windie` CLI, removing the separate development
+  executable and activation scripts.
+- Added a durable database-wide session event stream with replayable numeric
+  cursors for API and CLI clients.
+- Tightened SQLite-backed session execution claims with a unique fencing token
+  for every run, so a cancelled runner cannot write through a later claim from
+  another API or CLI execution of the same session.
+- Routed API and CLI work through one `execute_session` workflow and replaced
+  the separate normal, selected-head, and approval claim functions with one
+  typed claim entry point.
+- Made claimed user/assistant/tool-result insertion, session-head advancement,
+  and applicable durable replay-event creation one SQLite transaction, with
+  persistence failures returned to the running session and rollback behavior
+  covered by tests.
+- Removed the runtime's production direct-message persistence path and the
+  duplicate CLI message saver, leaving session execution with one required
+  persistence contract.
+- Centralized final model-context construction so execution, inspection, and
+  input-token counting use the same plugin index and built-in tool schemas.
+- Refreshed Inspector provider installations and available tool schemas after
+  plugin install or uninstall, removing the need for a page reload.
+- Moved public CLI command handlers out of `src/main.rs` into domain-specific
+  `cli::adapter` modules, leaving the binary entrypoint responsible only for
+  parsing and dispatch wiring.
+- Unified CLI and API session runtime setup and event persistence, including
+  cancellation events and CLI failure recording.
+- Split the MCP runtime into protocol, stdio, session, and transport modules
+  behind a small compatibility facade, preserving existing MCP callers while
+  making process I/O and session lifecycle independently inspectable.
+- Removed the legacy code-owned Parallel Search MCP fallback. MCP providers
+  now come from installed plugin packages.
+- Fixed API startup by keeping the blocking marketplace HTTP client inside a
+  blocking worker instead of creating or dropping it from the Tokio runtime.
+- Simplified the Inspector plugin detail page by hiding component lifecycle
+  controls and redundant installation/version labels while preserving backend
+  plugin installation behavior.
+- Refined the Inspector extensions catalog with an inset search field and
+  collapsible Installed and Recommended sections.
+- Added the unified model-facing plugin index. Each turn now derives installed
+  plugin metadata from local packages, available plugin metadata from the
+  marketplace snapshot, and nested MCP lifecycle state from SQLite without
+  persisting the index or exposing MCP schemas in the prompt.
+- Restored the temporary `windie__read_skill` and `windie__attach_mcp`
+  compatibility controls, and removed the provider-listing and provider-
+  attachment built-ins. Installed plugin metadata and MCP schemas remain
+  available through the package and provider runtime paths.
+- Migrated Windie's MCP extension foundation from code-owned provider
+  definitions to versioned packaged plugins. Added plugin manifests,
+  marketplace index and artifact installation, standard MCP `server.json`
+  metadata, MCPB local packages, declarative runtime setup, package-owned
+  lifecycle cleanup, and marketplace API routes.
+- Migrated the checked-in MCP providers, including Parallel Search, Desktop
+  Commander, Blender, Bright Data, Chrome DevTools, CUA Driver, and Basic
+  Memory, into package fixtures and removed their code-owned definitions.
+- Updated the Inspector to treat plugins as the marketplace and installation
+  unit, while nesting MCP enablement, repair, credentials, and tool runtime
+  controls under each plugin's components.
+- Added local marketplace serving and end-to-end package lifecycle coverage for
+  remote MCPs and local MCPB runtimes.
+- Retained the checked-in marketplace index and package fixtures as a
+  deterministic development and test fallback while production continues to
+  use the hosted marketplace.
+- Documented that future skill and app runtime modules should be added only
+  when implemented, while their `SKILL.md` and connector files remain inside
+  installed plugin packages.
+- Reorganized the Rust source tree so plugin storage, MCP runtime, tool
+  execution, managed runtimes, local process control, and model runtime code
+  have separate module boundaries; removed the old `tool_provider` module.
+
 ## [0.3.2] - 2026-08-10
 
 - Updated the runtime for the current Rust Clippy checks used by release CI.
@@ -131,8 +258,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [0.2.9] - 2026-08-05
 
-- Added `windie-dev` for local development, release testing, and performance
-  checks.
+- Added repository development utilities for local development, release
+  testing, and performance checks.
 - Added performance tracking to help catch slowdowns.
 - Added custom ports so multiple Windie installs can run side by side.
 - Added `windie -v` and simpler help output.
@@ -267,7 +394,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.0
 [0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
 [0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1
 [0.3.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.0

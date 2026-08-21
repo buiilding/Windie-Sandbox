@@ -70,33 +70,29 @@ fn reads_api_output_command() {
 }
 
 #[test]
-fn reads_inspector_lifecycle_commands() {
-    let start = command_from_args([
-        "windie".to_string(),
-        "inspector".to_string(),
-        "start".to_string(),
-    ]);
-    let stop = command_from_args([
-        "windie".to_string(),
-        "inspector".to_string(),
-        "stop".to_string(),
-    ]);
-    let output = command_from_args([
-        "windie".to_string(),
-        "inspector".to_string(),
-        "output".to_string(),
-    ]);
+fn reads_tray_lifecycle_commands_and_rejects_the_bare_command() {
+    let start = command_from_args(["windie", "tray", "start"].map(String::from));
+    let stop = command_from_args(["windie", "tray", "stop"].map(String::from));
+    let output = command_from_args(["windie", "tray", "output"].map(String::from));
+    let bare = command_from_args(["windie", "tray"].map(String::from));
 
-    assert!(matches!(start, Command::InspectorStart));
-    assert!(matches!(stop, Command::InspectorStop));
-    assert!(matches!(output, Command::InspectorOutput));
+    assert!(matches!(start, Command::TrayStart));
+    assert!(matches!(stop, Command::TrayStop));
+    assert!(matches!(output, Command::TrayOutput));
+    assert!(matches!(bare, Command::Invalid));
 }
 
 #[test]
-fn reads_tray_command() {
-    let command = command_from_args(["windie".to_string(), "tray".to_string()]);
+fn reads_notifier_lifecycle_commands_and_rejects_the_bare_command() {
+    let start = command_from_args(["windie", "notifier", "start"].map(String::from));
+    let stop = command_from_args(["windie", "notifier", "stop"].map(String::from));
+    let output = command_from_args(["windie", "notifier", "output"].map(String::from));
+    let bare = command_from_args(["windie", "notifier"].map(String::from));
 
-    assert!(matches!(command, Command::Tray));
+    assert!(matches!(start, Command::NotifierStart));
+    assert!(matches!(stop, Command::NotifierStop));
+    assert!(matches!(output, Command::NotifierOutput));
+    assert!(matches!(bare, Command::Invalid));
 }
 
 #[test]
@@ -141,6 +137,84 @@ fn reads_onboard_command() {
     let command = command_from_args(["windie".to_string(), "onboard".to_string()]);
 
     assert!(matches!(command, Command::Onboard));
+}
+
+#[test]
+fn reads_repository_workflow_commands() {
+    let dev = command_from_args(["windie", "dev", "run", "tray"].map(String::from));
+    let release = command_from_args([
+        "windie".to_string(),
+        "release".to_string(),
+        "verify".to_string(),
+    ]);
+    let notifier = command_from_args(["windie", "dev", "run", "notifier"].map(String::from));
+    let marketplace = command_from_args([
+        "windie".to_string(),
+        "marketplace".to_string(),
+        "build".to_string(),
+    ]);
+    let publish = command_from_args([
+        "windie".to_string(),
+        "marketplace".to_string(),
+        "publish".to_string(),
+    ]);
+    let benchmark = command_from_args([
+        "windie".to_string(),
+        "bench".to_string(),
+        "conversation-id".to_string(),
+        "--runs".to_string(),
+        "10".to_string(),
+        "--json".to_string(),
+    ]);
+
+    assert!(matches!(
+        dev,
+        Command::Dev(DevCommand::Run {
+            component: DevComponent::Tray
+        })
+    ));
+    assert!(matches!(release, Command::Release(ReleaseCommand::Verify)));
+    assert!(matches!(
+        notifier,
+        Command::Dev(DevCommand::Run {
+            component: DevComponent::Notifier
+        })
+    ));
+    assert!(matches!(
+        marketplace,
+        Command::Marketplace(MarketplaceCommand::Build)
+    ));
+    assert!(matches!(
+        publish,
+        Command::Marketplace(MarketplaceCommand::Publish)
+    ));
+    assert!(matches!(
+        benchmark,
+        Command::Benchmark(BenchmarkCommand::Run {
+            conversation_id: Some(conversation_id),
+            options,
+        }) if conversation_id.as_str() == "conversation-id" && options.runs == 10 && options.json
+    ));
+}
+
+#[test]
+fn rejects_aggregate_development_lifecycle_commands() {
+    assert!(matches!(
+        command_from_args(["windie", "dev", "up"].map(String::from)),
+        Command::Invalid
+    ));
+    assert!(matches!(
+        command_from_args(["windie", "dev", "down"].map(String::from)),
+        Command::Invalid
+    ));
+    assert!(matches!(
+        command_from_args(["windie", "dev", "status"].map(String::from)),
+        Command::Invalid
+    ));
+    assert!(matches!(
+        command_from_args(["windie", "dev", "run"].map(String::from)),
+        Command::Invalid
+    ));
 }
 
 #[test]
@@ -982,15 +1056,23 @@ fn reads_status_command() {
 }
 
 #[test]
-fn rejects_developer_commands_from_public_cli() {
-    for args in [
-        vec!["windie", "bench"],
-        vec!["windie", "compare", "baseline"],
-        vec!["windie", "update", "baseline"],
-    ] {
-        let command = command_from_args(args.into_iter().map(String::from));
-        assert!(matches!(command, Command::Invalid));
-    }
+fn reads_benchmark_workflows_from_public_cli() {
+    let benchmark = command_from_args(["windie", "bench"].map(String::from));
+    let compare = command_from_args(["windie", "compare", "baseline"].map(String::from));
+    let update = command_from_args(["windie", "update", "baseline"].map(String::from));
+
+    assert!(matches!(
+        benchmark,
+        Command::Benchmark(BenchmarkCommand::Run { .. })
+    ));
+    assert!(matches!(
+        compare,
+        Command::Benchmark(BenchmarkCommand::CompareBaseline { .. })
+    ));
+    assert!(matches!(
+        update,
+        Command::Benchmark(BenchmarkCommand::UpdateBaseline { .. })
+    ));
 }
 
 #[test]

@@ -1,0 +1,30 @@
+{
+  "manifest_version": "0.4",
+  "name": "blender-mcp",
+  "display_name": "Blender MCP",
+  "version": "1.8.3",
+  "description": "Blender integration through the Model Context Protocol.",
+  "author": {
+    "name": "Siddharth Ahuja",
+    "url": "https://github.com/ahujasid/blender-mcp"
+  },
+  "server": {
+    "type": "uv",
+    "entry_point": "src/entrypoint.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${__dirname}",
+        "blender-mcp"
+      ]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}

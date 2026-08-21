@@ -11,7 +11,9 @@ use crate::llm::ModelName;
 use crate::session::SessionId;
 use crate::tool::{ProviderToolName, ToolProviderId, ToolSchema, ToolSchemaName};
 
+mod adapter;
 mod command;
+mod development;
 mod env;
 mod message;
 mod onboard;
@@ -22,10 +24,15 @@ mod tool_schema;
 #[cfg(test)]
 mod tests;
 
-pub use command::{Command, EnvCommand, InsertPart};
+pub use adapter::run;
+pub use command::{
+    BenchmarkCommand, Command, DevCommand, DevComponent, EnvCommand, InsertPart,
+    MarketplaceCommand, ReleaseCommand,
+};
 pub use onboard::TerminalOnboarding;
 pub use parser::read;
 
+use development::*;
 use env::*;
 use message::*;
 #[cfg(test)]

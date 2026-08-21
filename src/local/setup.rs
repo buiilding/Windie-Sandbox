@@ -8,11 +8,10 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
-
-use super::runtime;
 
 const ENV_FILE_NAME: &str = ".env";
 const BIFROST_DIR: &str = "bifrost";
@@ -20,10 +19,10 @@ const GATEWAY_LOG_FILE_NAME: &str = "windie-gateway.log";
 const GATEWAY_PID_FILE_NAME: &str = "bifrost.pid";
 const API_LOG_FILE_NAME: &str = "windie-api.log";
 const API_PID_FILE_NAME: &str = "windie-api.pid";
-const INSPECTOR_LOG_FILE_NAME: &str = "windie-inspector.log";
-const INSPECTOR_PID_FILE_NAME: &str = "windie-inspector.pid";
 const TRAY_LOG_FILE_NAME: &str = "windie-tray.log";
 const TRAY_PID_FILE_NAME: &str = "windie-tray.pid";
+const NOTIFIER_LOG_FILE_NAME: &str = "windie-notifier.log";
+const NOTIFIER_PID_FILE_NAME: &str = "windie-notifier.pid";
 const LLM_ENV_KEYS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -44,10 +43,6 @@ const LLM_ENV_KEYS: &[&str] = &[
     "AWS_SECRET_ACCESS_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
 ];
-const CUA_DRIVER_INSTALL_URL: &str =
-    "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh";
-const CUA_DRIVER_UNINSTALL_URL: &str =
-    "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/uninstall.sh";
 
 /// Returns the current user's home directory across supported operating
 /// systems. Unix environments conventionally expose `HOME`; native Windows
@@ -100,10 +95,10 @@ pub struct WindieLayout {
     pub gateway_pid_file: PathBuf,
     pub api_log_file: PathBuf,
     pub api_pid_file: PathBuf,
-    pub inspector_log_file: PathBuf,
-    pub inspector_pid_file: PathBuf,
     pub tray_log_file: PathBuf,
     pub tray_pid_file: PathBuf,
+    pub notifier_log_file: PathBuf,
+    pub notifier_pid_file: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +107,7 @@ pub struct UninstallPlan {
     pub windie_home: PathBuf,
     pub install_dir: PathBuf,
     pub binaries: Vec<PathBuf>,
+    pub owned_directories: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +115,7 @@ pub struct UninstallPlan {
 pub struct UninstallCleanup {
     pub removed_data: bool,
     pub removed_binaries: Vec<PathBuf>,
+    pub removed_directories: Vec<PathBuf>,
     pub deferred_binaries: Vec<PathBuf>,
     pub cleanup_scheduled: bool,
 }
@@ -145,32 +142,53 @@ pub fn env_file_path() -> Result<PathBuf> {
 }
 
 /// Returns the persistent log file for one managed component.
-pub fn component_log_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
+pub fn component_log_file_path(
+    component: crate::local::process::ManagedComponent,
+) -> Result<PathBuf> {
     let layout = ensure_windie_layout()?;
     Ok(match component {
-        crate::process::ManagedComponent::Gateway => layout.gateway_log_file,
-        crate::process::ManagedComponent::Api => layout.api_log_file,
-        crate::process::ManagedComponent::Inspector => layout.inspector_log_file,
-        crate::process::ManagedComponent::Tray => layout.tray_log_file,
+        crate::local::process::ManagedComponent::Gateway => layout.gateway_log_file,
+        crate::local::process::ManagedComponent::Api => layout.api_log_file,
+        crate::local::process::ManagedComponent::Tray => layout.tray_log_file,
+        crate::local::process::ManagedComponent::Notifier => layout.notifier_log_file,
     })
 }
 
 /// Returns the persistent PID file for one managed component.
-pub fn component_pid_file_path(component: crate::process::ManagedComponent) -> Result<PathBuf> {
+pub fn component_pid_file_path(
+    component: crate::local::process::ManagedComponent,
+) -> Result<PathBuf> {
     let layout = ensure_windie_layout()?;
     Ok(match component {
-        crate::process::ManagedComponent::Gateway => layout.gateway_pid_file,
-        crate::process::ManagedComponent::Api => layout.api_pid_file,
-        crate::process::ManagedComponent::Inspector => layout.inspector_pid_file,
-        crate::process::ManagedComponent::Tray => layout.tray_pid_file,
+        crate::local::process::ManagedComponent::Gateway => layout.gateway_pid_file,
+        crate::local::process::ManagedComponent::Api => layout.api_pid_file,
+        crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
+        crate::local::process::ManagedComponent::Notifier => layout.notifier_pid_file,
+    })
+}
+
+/// Returns a component PID path without creating the Windie home directory.
+///
+/// Read-only status checks use this path so observing an uninstalled runtime
+/// does not create local state as a side effect.
+pub(crate) fn existing_component_pid_file_path(
+    component: crate::local::process::ManagedComponent,
+) -> Result<PathBuf> {
+    let layout = windie_layout()?;
+    Ok(match component {
+        crate::local::process::ManagedComponent::Gateway => layout.gateway_pid_file,
+        crate::local::process::ManagedComponent::Api => layout.api_pid_file,
+        crate::local::process::ManagedComponent::Tray => layout.tray_pid_file,
+        crate::local::process::ManagedComponent::Notifier => layout.notifier_pid_file,
     })
 }
 
 /// Returns the exact Windie-owned paths that uninstall may remove.
 ///
-/// The data root is the only recursive target. Installed binaries are always
-/// individual files inside the configured install directory; the directory
-/// itself is never removed because it may contain unrelated user programs.
+/// The data root and named, release-owned macOS desktop bundles are the only
+/// recursive targets. Installed binaries remain individual files inside the
+/// configured install directory; the directory itself is never removed because
+/// it may contain unrelated user programs.
 pub fn uninstall_plan() -> Result<UninstallPlan> {
     let user_home = absolute_path(&user_home_dir()?)?;
     let windie_home = absolute_path(&windie_home_dir()?)?;
@@ -180,10 +198,11 @@ pub fn uninstall_plan() -> Result<UninstallPlan> {
     Ok(UninstallPlan {
         windie_home,
         install_dir: install_dir.clone(),
-        binaries: ["windie", "bifrost", "windie-inspector"]
+        binaries: ["windie", "bifrost"]
             .into_iter()
             .map(|name| install_dir.join(executable_name(name)))
             .collect(),
+        owned_directories: owned_install_directories(&install_dir),
     })
 }
 
@@ -214,6 +233,13 @@ pub fn remove_uninstall_plan(plan: &UninstallPlan) -> Result<UninstallCleanup> {
         }
         if let Some(removed) = remove_owned_file(path)? {
             removed_binaries.push(removed);
+        }
+    }
+
+    let mut removed_directories = Vec::new();
+    for path in &plan.owned_directories {
+        if let Some(removed) = remove_owned_directory(path)? {
+            removed_directories.push(removed);
         }
     }
 
@@ -251,6 +277,7 @@ pub fn remove_uninstall_plan(plan: &UninstallPlan) -> Result<UninstallCleanup> {
     Ok(UninstallCleanup {
         removed_data,
         removed_binaries,
+        removed_directories,
         deferred_binaries,
         cleanup_scheduled,
     })
@@ -334,59 +361,6 @@ pub fn unset_env_values(keys: &[String]) -> Result<PathBuf> {
     Ok(layout.env_file)
 }
 
-/// Removes exact provider-owned directories beneath Windie's data root.
-///
-/// Provider cleanup supplies relative paths only. Symlinks and non-directory
-/// targets are rejected so an unexpected filesystem entry cannot redirect a
-/// recursive deletion outside Windie's boundary.
-pub(crate) fn remove_windie_directories(paths: &[&str]) -> Result<()> {
-    let root = absolute_path(&windie_home_dir()?)?;
-    for relative in paths {
-        let relative_path = Path::new(relative);
-        if relative_path.is_absolute()
-            || relative_path
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            return Err(anyhow!(
-                "provider cleanup path must be relative and cannot contain '..': {relative}"
-            ));
-        }
-
-        let target = absolute_path(&root.join(relative_path))?;
-        if !target.starts_with(&root) {
-            return Err(anyhow!(
-                "provider cleanup path escapes Windie's data root: {relative}"
-            ));
-        }
-
-        let metadata = match fs::symlink_metadata(&target) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to inspect provider cleanup path: {}",
-                        target.display()
-                    )
-                });
-            }
-        };
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(anyhow!(
-                "refusing to remove provider cleanup path that is not a directory: {}",
-                target.display()
-            ));
-        }
-
-        fs::remove_dir_all(&target).with_context(|| {
-            format!("failed to remove provider directory: {}", target.display())
-        })?;
-    }
-
-    Ok(())
-}
-
 /// Installs or verifies one approved Windie runtime dependency.
 pub fn install_target(target: &str) -> Result<InstallReport> {
     ensure_windie_layout()?;
@@ -397,56 +371,6 @@ pub fn install_target(target: &str) -> Result<InstallReport> {
             message: "Bifrost is provided by the Windie-owned bundled binary".to_string(),
             status: InstallStatus::Detected,
         }),
-        "cua-driver" => install_cua_driver(),
-        "desktop-commander" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed Node.js runtime is ready for Desktop Commander"
-                    .to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
-        "blender-mcp" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed uv runtime is ready for Blender MCP".to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
-        "brightdata" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed Node.js runtime is ready for Bright Data MCP".to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
-        "basic-memory" => {
-            let status = runtime::ensure_provider_runtime(target)?;
-            Ok(InstallReport {
-                target: target.to_string(),
-                message: "Windie-managed uv runtime is ready for Basic Memory".to_string(),
-                status: if status {
-                    InstallStatus::Installed
-                } else {
-                    InstallStatus::Detected
-                },
-            })
-        }
         _ => Err(anyhow!("unknown install target: {target}")),
     }
 }
@@ -462,10 +386,10 @@ fn windie_layout() -> Result<WindieLayout> {
         gateway_pid_file: root.join(BIFROST_DIR).join(GATEWAY_PID_FILE_NAME),
         api_log_file: root.join(API_LOG_FILE_NAME),
         api_pid_file: root.join(API_PID_FILE_NAME),
-        inspector_log_file: root.join(INSPECTOR_LOG_FILE_NAME),
-        inspector_pid_file: root.join(INSPECTOR_PID_FILE_NAME),
         tray_log_file: root.join(TRAY_LOG_FILE_NAME),
         tray_pid_file: root.join(TRAY_PID_FILE_NAME),
+        notifier_log_file: root.join(NOTIFIER_LOG_FILE_NAME),
+        notifier_pid_file: root.join(NOTIFIER_PID_FILE_NAME),
         root,
     })
 }
@@ -580,13 +504,18 @@ fn validate_uninstall_paths(
 /// Validates both the safe roots and the exact binary list selected by Windie.
 fn validate_uninstall_plan(plan: &UninstallPlan, user_home: &Path) -> Result<()> {
     validate_uninstall_paths(user_home, &plan.windie_home, &plan.install_dir)?;
-    let expected = ["windie", "bifrost", "windie-inspector"]
+    let expected = ["windie", "bifrost"]
         .into_iter()
         .map(|name| plan.install_dir.join(executable_name(name)))
         .collect::<Vec<_>>();
     if plan.binaries != expected {
         return Err(anyhow!(
             "refusing to uninstall: plan contains paths outside Windie's owned binaries"
+        ));
+    }
+    if plan.owned_directories != owned_install_directories(&plan.install_dir) {
+        return Err(anyhow!(
+            "refusing to uninstall: plan contains paths outside Windie's owned directories"
         ));
     }
     Ok(())
@@ -617,6 +546,25 @@ fn remove_owned_file(path: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(path.to_path_buf()))
 }
 
+/// Removes one exact release-owned directory without following symlinks.
+fn remove_owned_directory(path: &Path) -> Result<Option<PathBuf>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(anyhow!(
+            "refusing to recursively remove non-directory Windie-owned path {}",
+            path.display()
+        ));
+    }
+    fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
 /// Refuses to recursively remove a symlink in place of Windie's data root.
 fn ensure_owned_directory(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
@@ -636,6 +584,23 @@ fn executable_name(name: &str) -> String {
         format!("{name}.exe")
     } else {
         name.to_string()
+    }
+}
+
+/// Returns the named release directories Windie is allowed to remove.
+fn owned_install_directories(install_dir: &Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            install_dir.join("Windie Notifier.app"),
+            install_dir.join("Windie Tray.app"),
+        ]
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = install_dir;
+        Vec::new()
     }
 }
 
@@ -674,177 +639,6 @@ fn powershell_single_quoted(value: &str) -> String {
 #[cfg(not(windows))]
 fn schedule_windows_cleanup(_plan: &UninstallPlan) -> Result<()> {
     Ok(())
-}
-
-/// Installs CUA Driver using its public upstream installer when needed.
-fn install_cua_driver() -> Result<InstallReport> {
-    #[cfg(target_os = "windows")]
-    {
-        if runtime::resolve_command("cua-driver").is_err() {
-            install_cua_driver_windows()?;
-        }
-        runtime::resolve_command("cua-driver")?;
-        return Ok(InstallReport {
-            target: "cua-driver".to_string(),
-            message: "installed or verified cua-driver with its official Windows installer"
-                .to_string(),
-            status: InstallStatus::Detected,
-        });
-    }
-
-    #[cfg(target_os = "macos")]
-    if runtime::resolve_command("cua-driver").is_ok() && runtime::cua_driver_app_available() {
-        return Ok(InstallReport {
-            target: "cua-driver".to_string(),
-            message: "cua-driver and its macOS application are already available".to_string(),
-            status: InstallStatus::Detected,
-        });
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    if command_exists("cua-driver") {
-        return Ok(InstallReport {
-            target: "cua-driver".to_string(),
-            message: "cua-driver is already available on PATH".to_string(),
-            status: InstallStatus::Detected,
-        });
-    }
-
-    require_command("curl")?;
-    require_command("bash")?;
-
-    let status = Command::new("bash")
-        .arg("-c")
-        .arg(format!("curl -fsSL {CUA_DRIVER_INSTALL_URL} | bash"))
-        .status()
-        .context("failed to start cua-driver installer")?;
-    if !status.success() {
-        return Err(anyhow!("cua-driver installer failed"));
-    }
-
-    runtime::resolve_command("cua-driver")
-        .context("cua-driver installer completed but cua-driver is not resolvable")?;
-
-    #[cfg(target_os = "macos")]
-    if !runtime::cua_driver_app_available() {
-        return Err(anyhow!(
-            "cua-driver installer completed but /Applications/CuaDriver.app is not installed"
-        ));
-    }
-
-    Ok(InstallReport {
-        target: "cua-driver".to_string(),
-        message: "installed cua-driver with the public trycua installer".to_string(),
-        status: InstallStatus::Installed,
-    })
-}
-
-/// Runs CUA Driver's official platform-specific uninstaller with purge mode.
-///
-/// The upstream scripts own process shutdown, permission revocation, app
-/// removal, and retained identity cleanup. Windie does not duplicate those
-/// platform-specific permission operations.
-pub(crate) fn uninstall_cua_driver() -> Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            "$ErrorActionPreference = 'Stop'; $env:CUA_DRIVER_RS_UNINSTALL_FORCE = '1'; $env:CUA_DRIVER_RS_UNINSTALL_PURGE = '1'; $path = Join-Path $env:TEMP 'windie-cua-uninstall.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{CUA_DRIVER_UNINSTALL_URL}' -OutFile $path; $code = 0; try {{ & $path; $code = if ($null -eq $LASTEXITCODE) {{ 0 }} else {{ $LASTEXITCODE }} }} finally {{ Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }}; exit $code"
-        );
-        let status = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &script,
-            ])
-            .status()
-            .context("failed to start cua-driver uninstaller")?;
-        if !status.success() {
-            return Err(anyhow!("cua-driver uninstaller failed"));
-        }
-        return Ok(());
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        require_command("curl")?;
-        require_command("bash")?;
-        let status = Command::new("bash")
-            .args([
-                "-c",
-                &format!(
-                    "curl -fsSL --proto '=https' --tlsv1.2 {CUA_DRIVER_UNINSTALL_URL} | bash -s -- --purge"
-                ),
-            ])
-            .status()
-            .context("failed to start cua-driver uninstaller")?;
-        if !status.success() {
-            return Err(anyhow!("cua-driver uninstaller failed"));
-        }
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn install_cua_driver_windows() -> Result<()> {
-    const INSTALL_URL: &str =
-        "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1";
-    let script = format!(
-        "$ErrorActionPreference = 'Stop'; $path = Join-Path $env:TEMP 'windie-cua-install.ps1'; Invoke-WebRequest -UseBasicParsing -Uri '{INSTALL_URL}' -OutFile $path; & $path; $code = $LASTEXITCODE; Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit $code"
-    );
-    let status = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status()
-        .context("failed to start the CUA Driver Windows installer")?;
-    if !status.success() {
-        return Err(anyhow!(
-            "CUA Driver Windows installer failed with status {status}"
-        ));
-    }
-    runtime::resolve_command("cua-driver")
-        .context("CUA Driver installer completed but cua-driver is not resolvable")?;
-    Ok(())
-}
-
-/// Requires one executable to be available on PATH.
-fn require_command(program: &str) -> Result<()> {
-    if command_exists(program) {
-        return Ok(());
-    }
-
-    Err(anyhow!(
-        "required command is not available on PATH: {program}"
-    ))
-}
-
-/// Returns whether one executable is available on PATH.
-fn command_exists(program: &str) -> bool {
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
-
-    env::split_paths(&paths).any(|path| {
-        if path.join(program).is_file() {
-            return true;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            return [".exe", ".cmd", ".bat"]
-                .iter()
-                .any(|suffix| path.join(format!("{program}{suffix}")).is_file());
-        }
-        #[cfg(not(target_os = "windows"))]
-        false
-    })
 }
 
 /// Validates a `.env` key that Windie is allowed to write.
@@ -936,7 +730,6 @@ fn write_env_lines(path: &Path, lines: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::ENVIRONMENT_LOCK;
 
     #[test]
     fn uninstall_rejects_home_root_and_overlapping_paths() {
@@ -966,7 +759,13 @@ mod tests {
         fs::write(&windie_binary, "owned").unwrap();
         fs::write(&unrelated_file, "preserve").unwrap();
 
-        let binaries = ["windie", "bifrost", "windie-inspector"]
+        let owned_directories = owned_install_directories(&install_dir);
+        for directory in &owned_directories {
+            fs::create_dir_all(directory).unwrap();
+            fs::write(directory.join("owned"), "owned").unwrap();
+        }
+
+        let binaries = ["windie", "bifrost"]
             .into_iter()
             .map(|name| install_dir.join(executable_name(name)))
             .collect();
@@ -974,46 +773,21 @@ mod tests {
             windie_home: windie_home.clone(),
             install_dir: install_dir.clone(),
             binaries,
+            owned_directories: owned_directories.clone(),
         };
         let cleanup = remove_uninstall_plan(&plan).unwrap();
 
         assert!(cleanup.removed_data);
         assert!(!windie_home.exists());
         assert!(!windie_binary.exists());
+        assert!(
+            owned_directories
+                .iter()
+                .all(|directory| !directory.exists())
+        );
+        assert_eq!(cleanup.removed_directories, owned_directories);
         assert!(unrelated_file.exists());
         assert!(install_dir.exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn provider_cleanup_removes_only_declared_directory() {
-        let _lock = ENVIRONMENT_LOCK.lock().unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "windie-provider-cleanup-test-{}",
-            std::process::id()
-        ));
-        let cache = root.join("mcp/brightdata");
-        let sibling = root.join("mcp/keep");
-        fs::create_dir_all(&cache).unwrap();
-        fs::create_dir_all(&sibling).unwrap();
-        fs::write(cache.join("package.json"), "owned").unwrap();
-        fs::write(sibling.join("notes.txt"), "preserve").unwrap();
-
-        let previous_home = std::env::var_os("WINDIE_HOME");
-        unsafe {
-            std::env::set_var("WINDIE_HOME", &root);
-        }
-        let result = remove_windie_directories(&["mcp/brightdata"]);
-        unsafe {
-            match previous_home {
-                Some(value) => std::env::set_var("WINDIE_HOME", value),
-                None => std::env::remove_var("WINDIE_HOME"),
-            }
-        }
-
-        result.unwrap();
-        assert!(!cache.exists());
-        assert!(sibling.join("notes.txt").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

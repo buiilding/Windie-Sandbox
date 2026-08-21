@@ -25,7 +25,9 @@ pub fn list_session_tool_approvals_with_registry(
             conversation_id,
             head_message_id,
             tools: registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
     )
 }
@@ -73,7 +75,7 @@ pub fn list_conversation_session_approvals_with_registry(
     Ok(approvals)
 }
 
-pub async fn approve_session_tool<O, E>(
+pub(in crate::operation) async fn approve_session_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
@@ -84,7 +86,7 @@ pub async fn approve_session_tool<O, E>(
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
@@ -93,24 +95,31 @@ where
     let result = match execution {
         PendingToolExecution::Finished(result) => result,
         PendingToolExecution::Execute(attached_tool) => {
-            execute_pending_tool_call(
+            execute_pending_tool_call_with_catalog(
                 store,
                 conversation_id,
                 &pending,
                 &attached_tool,
                 runtime.tools,
+                runtime.plugin_catalog,
             )
             .await?
         }
     };
-    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
-    events.tool_result_saved(&message_id);
+    let message_id = events.save_tool_result(
+        store,
+        conversation_id,
+        &pending.result_parent_message_id,
+        &result.tool_call_id,
+        &result.content,
+        &result.parts,
+    )?;
 
     continue_session_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
         .await
 }
 
-pub async fn deny_session_tool<O, E>(
+pub(in crate::operation) async fn deny_session_tool<O, E>(
     output: &O,
     events: &E,
     store: &mut Store,
@@ -121,13 +130,19 @@ pub async fn deny_session_tool<O, E>(
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let pending =
         load_pending_tool_call_at_head(store, conversation_id, head_message_id, tool_call_id)?;
     let result = deny_pending_tool_call(&pending);
-    let message_id = store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
-    events.tool_result_saved(&message_id);
+    let message_id = events.save_tool_result(
+        store,
+        conversation_id,
+        &pending.result_parent_message_id,
+        &result.tool_call_id,
+        &result.content,
+        &result.parts,
+    )?;
 
     continue_session_after_tool_result(output, events, store, conversation_id, &message_id, runtime)
         .await
@@ -143,7 +158,7 @@ async fn continue_session_after_tool_result<O, E>(
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     if !pending_approvals_at_head(
         store,
@@ -151,7 +166,9 @@ where
             conversation_id,
             head_message_id: Some(head_message_id),
             tools: runtime.tools,
+            plugin_catalog: runtime.plugin_catalog,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
     )?
     .is_empty()
@@ -168,6 +185,7 @@ where
         conversation_id,
         Some(head_message_id),
         runtime,
+        None,
     )
     .await
 }

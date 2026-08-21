@@ -33,6 +33,12 @@ pub(super) struct SessionHeadRequest {
     pub(super) head_message_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+/// Request body for changing one session's autonomous idle-wakeup setting.
+pub(super) struct SetKeepAwakeRequest {
+    pub(super) keep_awake: bool,
+}
+
 #[derive(Debug, Serialize)]
 /// Serializable run response.
 pub(super) struct SessionResponse {
@@ -44,6 +50,7 @@ pub(super) struct SessionResponse {
     pub(super) model: String,
     pub(super) reasoning: Option<ReasoningRequest>,
     pub(super) error: Option<String>,
+    pub(super) keep_awake: bool,
     pub(super) created_at: i64,
     pub(super) updated_at: i64,
     pub(super) queued: bool,
@@ -82,6 +89,7 @@ impl SessionResponse {
             model: session.model,
             reasoning: session.reasoning,
             error: session.error,
+            keep_awake: session.keep_awake,
             created_at: session.created_at,
             updated_at: session.updated_at,
             queued: false,
@@ -106,6 +114,19 @@ impl SessionResponse {
         response.latest_event_id = latest_event_id;
         response
     }
+}
+
+/// Persists whether one session should wake after the user has been idle.
+pub(super) async fn set_session_keep_awake(
+    State(state): State<ApiState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<SetKeepAwakeRequest>,
+) -> ApiResult<SessionResponse> {
+    let session = state
+        .session_manager
+        .set_keep_awake(&SessionId::new(session_id), request.keep_awake)?;
+    let store = open_store(&state)?;
+    Ok(Json(response_with_queue(&store, session)?))
 }
 
 pub(super) fn response_with_queue(store: &Store, session: Session) -> Result<SessionResponse> {
@@ -203,7 +224,7 @@ pub(super) async fn resolve_session_at_head(
         crate::session::SessionResolution::Existing(session) => {
             let store = open_store(&state)?;
             SessionResolutionResponse::ExistingSession {
-                session: Box::new(response_with_queue(&store, session)?),
+                session: Box::new(response_with_queue(&store, *session)?),
             }
         }
         crate::session::SessionResolution::NoSessionAtHead => {

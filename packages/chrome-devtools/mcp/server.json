@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ChromeDevTools/chrome-devtools-mcp",
+  "title": "Chrome DevTools",
+  "description": "Inspect, debug, and automate an explicitly selected Chrome browser session through MCP.",
+  "version": "1.6.0",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/chrome-devtools.mcpb",
+      "version": "1.6.0",
+      "fileSha256": "ae560b4a1cab5facaea8017314f52b74fb8563137f71baa378cc46e162766d43",
+      "runtimeHint": "node",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

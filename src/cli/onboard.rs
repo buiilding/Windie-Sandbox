@@ -128,7 +128,7 @@ impl OnboardingPrompter for TerminalOnboarding {
 
     fn read_mcp_secret(
         &mut self,
-        manifest: &crate::tool_provider::ProviderManifest,
+        manifest: &crate::tool::ProviderManifest,
         secret: &str,
     ) -> Result<String> {
         let description = manifest

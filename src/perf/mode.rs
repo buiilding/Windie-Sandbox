@@ -31,7 +31,7 @@ impl BenchmarkMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-/// Local benchmark category selected by `windie-dev bench` flags.
+/// Local benchmark category selected by `windie bench` flags.
 pub enum BenchmarkCategory {
     Persistence,
     Conversation,

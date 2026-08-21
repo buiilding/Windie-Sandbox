@@ -93,8 +93,8 @@ repository still records one exact commit. A commit technically only needs to
 be reachable from the vendor remote for CI to fetch it; Windie's release
 policy additionally requires release-relevant vendor changes to be reviewed
 and merged into the vendor repository's designated stable branch. The current
-release packaging workflow uses `vendor/bifrost` and
-`vendor/windie-inspector`; it does not package `vendor/windie-landing-2nd`.
+release packaging workflow uses `vendor/bifrost`; the hosted Inspector and
+landing page deploy independently and are not release assets.
 
 Review all resulting pins before continuing:
 
@@ -170,13 +170,12 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-The correct Clippy lint is `-D warnings` (plural). Also run the frontend and
-Inspector host checks when those components changed:
+The correct Clippy lint is `-D warnings` (plural). Also run the hosted
+Inspector frontend build when that component changed:
 
 ```bash
 npm ci --prefix vendor/windie-inspector/frontend --legacy-peer-deps
 npm run build --prefix vendor/windie-inspector/frontend
-cargo check --manifest-path vendor/windie-inspector/host/Cargo.toml
 ```
 
 Review the complete release diff, not only the version files:
@@ -188,8 +187,8 @@ git diff
 git diff --submodule=log
 ```
 
-The pull request checks also validate the frontend, Rust, Inspector host, and
-Windows build paths. A local macOS run does not replace the Windows CI job.
+The pull request checks also validate the hosted frontend, Rust, and Windows
+build paths. A local macOS run does not replace the Windows CI job.
 
 ## 6. Commit and open the release pull request
 

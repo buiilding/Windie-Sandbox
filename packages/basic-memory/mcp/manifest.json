@@ -1,0 +1,31 @@
+{
+  "manifest_version": "0.4",
+  "name": "basic-memory",
+  "display_name": "Basic Memory",
+  "version": "0.22.1",
+  "description": "Local-first Markdown memory and knowledge graph MCP server.",
+  "author": {
+    "name": "Basic Machines",
+    "url": "https://github.com/basicmachines-co/basic-memory"
+  },
+  "server": {
+    "type": "uv",
+    "entry_point": "src/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${__dirname}",
+        "basic-memory",
+        "mcp"
+      ]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  }
+}

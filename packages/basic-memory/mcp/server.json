@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.basicmachines-co/basic-memory",
+  "title": "Basic Memory",
+  "description": "Store and search Windie’s local user memory through Basic Memory.",
+  "version": "0.22.1",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/basic-memory.mcpb",
+      "version": "0.22.1",
+      "fileSha256": "fe70e084f25d670e789b5cee4223339fd50bc042b7ee58b3789ff24321578302",
+      "runtimeHint": "uv",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

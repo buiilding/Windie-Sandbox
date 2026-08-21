@@ -7,14 +7,13 @@ windie_home="${WINDIE_HOME:-$HOME/.windie}"
 gateway_url="${WINDIE_GATEWAY_URL:-http://127.0.0.1:${WINDIE_GATEWAY_PORT:-8080}}"
 gateway_url="${gateway_url%/}"
 api_address="${WINDIE_API_ADDRESS:-127.0.0.1:${WINDIE_API_PORT:-8787}}"
-inspector_address="${WINDIE_INSPECTOR_ADDRESS:-127.0.0.1:${WINDIE_INSPECTOR_PORT:-3000}}"
+hosted_app_url="https://app.windieos.com"
 
 # The detached lifecycle commands inherit these values. Keeping the resolved
 # addresses in the environment makes installer-started processes behave the
 # same as manually started processes.
 export WINDIE_GATEWAY_URL="$gateway_url"
 export WINDIE_API_ADDRESS="$api_address"
-export WINDIE_INSPECTOR_ADDRESS="$inspector_address"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -100,7 +99,7 @@ url="${WINDIE_ASSET_URL:-https://github.com/$repo/releases/latest/download/$asse
 curl -fsSL "$url" -o "$tmp_dir/$asset"
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
 
-for binary in windie bifrost windie-inspector; do
+for binary in windie bifrost; do
   if [ ! -f "$tmp_dir/$binary" ]; then
     echo "release asset did not contain $binary binary" >&2
     exit 1
@@ -109,11 +108,18 @@ done
 
 install -m 0755 "$tmp_dir/windie" "$install_dir/windie"
 install -m 0755 "$tmp_dir/bifrost" "$install_dir/bifrost"
-install -m 0755 "$tmp_dir/windie-inspector" "$install_dir/windie-inspector"
+if [ "$os" = "darwin" ]; then
+  notifier_bundle="$tmp_dir/Windie Notifier.app"
+  if [ ! -d "$notifier_bundle" ]; then
+    echo "release asset did not contain Windie Notifier.app" >&2
+    exit 1
+  fi
+  rm -rf "$install_dir/Windie Notifier.app"
+  mv "$notifier_bundle" "$install_dir/Windie Notifier.app"
+fi
 
 gateway_health_url="$gateway_url/health"
 api_health_url="http://$api_address/api/health"
-inspector_health_url="http://$inspector_address/"
 
 echo "Installing LLM gateway"
 if ! health_check "$gateway_health_url"; then
@@ -143,43 +149,28 @@ wait_for_health "$api_health_url" 75 "the Windie runtime" || {
 }
 echo "Started the runtime at http://$api_address"
 
-echo "Installing Windie Inspector UI"
-if ! health_check "$inspector_health_url"; then
-  progress_bar 5
-  if ! "$install_dir/windie" inspector start >/dev/null 2>&1; then
-    printf '\n'
-    echo "failed to start the Windie Inspector UI" >&2
-    echo "Inspector output: $windie_home/windie-inspector.log" >&2
-    exit 1
-  fi
-fi
-wait_for_health "$inspector_health_url" 30 "the Windie Inspector UI" || {
-  echo "Inspector output: $windie_home/windie-inspector.log" >&2
-  exit 1
-}
-echo "Started the UI at http://$inspector_address"
-
-ui_url="http://$inspector_address"
 case "$os" in
   darwin)
-    open "$ui_url" >/dev/null 2>&1 || true
-    nohup "$install_dir/windie" tray >/dev/null 2>&1 </dev/null &
+    open "$hosted_app_url" >/dev/null 2>&1 || true
+    "$install_dir/windie" tray start >/dev/null 2>&1
+    "$install_dir/windie" notifier start >/dev/null 2>&1
     echo "Click on the tray on your desktop to manage these processes."
     ;;
   linux)
     if command -v xdg-open >/dev/null 2>&1; then
-      xdg-open "$ui_url" >/dev/null 2>&1 || true
+      xdg-open "$hosted_app_url" >/dev/null 2>&1 || true
     fi
-    echo "Manage these processes with: $install_dir/windie gateway|api|inspector start|stop"
+    "$install_dir/windie" notifier start >/dev/null 2>&1
+    echo "Manage these processes with: $install_dir/windie gateway|api start|stop"
     ;;
 esac
 
 echo "windie installed at $install_dir/windie"
-echo "Windie tray available as: $install_dir/windie tray"
+echo "Windie tray available as: $install_dir/windie tray start|stop|output"
+echo "Windie notifications available as: $install_dir/windie notifier start|stop|output"
 echo "bundled Bifrost installed at $install_dir/bifrost"
-echo "Inspector installed at $install_dir/windie-inspector"
 echo "Windie home ready at $windie_home"
 echo "provider keys file: $windie_home/.env"
 echo "Bifrost: $gateway_url"
 echo "Windie API: http://$api_address"
-echo "Inspector: $ui_url"
+echo "Windie: $hosted_app_url"

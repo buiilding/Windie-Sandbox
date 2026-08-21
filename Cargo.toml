@@ -1,6 +1,6 @@
 [package]
 name = "windie"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -26,3 +26,9 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon = { version = "0.24.2", default-features = false }
 winit = "0.30"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-usernotifications = "0.3.1"
+
+[target.'cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))'.dependencies]
+notify-rust = "4.18.0"

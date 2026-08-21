@@ -353,8 +353,9 @@ impl Store {
         self.insert_message_unchecked(conversation_id, parent_message_id, role, content, metadata)
     }
 
-    /// Inserts one session-produced message.
-    pub fn insert_run_message(
+    /// Inserts one runtime message for isolated unit tests without a session.
+    #[cfg(test)]
+    pub(crate) fn insert_test_runtime_message(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: Option<&MessageId>,
@@ -364,7 +365,7 @@ impl Store {
     ) -> Result<MessageId> {
         if role == Role::Tool {
             return Err(error::invalid_request(
-                "role: tool messages must be created through insert_run_tool_result_message",
+                "role: tool messages require the test tool-result helper",
             ));
         }
 
@@ -404,8 +405,9 @@ impl Store {
         )
     }
 
-    /// Inserts one session-produced tool result.
-    pub fn insert_run_tool_result_message(
+    /// Inserts one runtime tool result for isolated unit tests without a session.
+    #[cfg(test)]
+    pub(crate) fn insert_test_runtime_tool_result(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: &MessageId,
@@ -431,9 +433,9 @@ impl Store {
         )
     }
 
-    /// Inserts a runtime-produced multipart tool result without changing UI
-    /// selection.
-    pub fn insert_run_tool_result_message_with_parts(
+    /// Inserts one multipart runtime tool result for isolated unit tests.
+    #[cfg(test)]
+    pub(crate) fn insert_test_runtime_tool_result_with_parts(
         &mut self,
         conversation_id: &ConversationId,
         parent_message_id: &MessageId,
@@ -489,34 +491,19 @@ impl Store {
             .transaction()
             .context("failed to start message save transaction")?;
 
-        transaction
-            .execute(
-                "
-                INSERT INTO messages (
-                    id,
-                    conversation_id,
-                    parent_message_id,
-                    role,
-                    content,
-                    metadata,
-                    created_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                ",
-                params![
-                    id.as_str(),
-                    conversation_id.as_str(),
-                    parent_message_id.map(MessageId::as_str),
-                    role.as_str(),
-                    content,
-                    metadata_json.as_deref(),
-                    now
-                ],
-            )
-            .context("failed to save message")?;
-
-        touch_conversation_in_transaction(&transaction, conversation_id, now)
-            .context("failed to update conversation timestamp")?;
+        insert_message_in_transaction(
+            &transaction,
+            MessageInsert {
+                id: &id,
+                conversation_id,
+                parent_message_id,
+                role,
+                content,
+                parts: &[],
+                metadata_json: metadata_json.as_deref(),
+                created_at: now,
+            },
+        )?;
         transaction
             .commit()
             .context("failed to commit message save")?;
@@ -540,7 +527,7 @@ impl Store {
     ) -> Result<MessageId> {
         if role == Role::Tool {
             return Err(error::invalid_request(
-                "role: tool messages must be created through insert_run_tool_result_message_with_parts",
+                "role: tool messages cannot use generic multipart insertion",
             ));
         }
 
@@ -585,36 +572,19 @@ impl Store {
             .transaction()
             .context("failed to start multipart message save transaction")?;
 
-        transaction
-            .execute(
-                "
-                INSERT INTO messages (
-                    id,
-                    conversation_id,
-                    parent_message_id,
-                    role,
-                    content,
-                    metadata,
-                    created_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                ",
-                params![
-                    id.as_str(),
-                    conversation_id.as_str(),
-                    parent_message_id.map(MessageId::as_str),
-                    role.as_str(),
-                    content,
-                    metadata_json.as_deref(),
-                    now
-                ],
-            )
-            .context("failed to save multipart message")?;
-
-        insert_unsaved_message_parts_in_transaction(&transaction, &id, parts, now)
-            .context("failed to save multipart message parts")?;
-        touch_conversation_in_transaction(&transaction, conversation_id, now)
-            .context("failed to update conversation timestamp")?;
+        insert_message_in_transaction(
+            &transaction,
+            MessageInsert {
+                id: &id,
+                conversation_id,
+                parent_message_id,
+                role,
+                content,
+                parts,
+                metadata_json: metadata_json.as_deref(),
+                created_at: now,
+            },
+        )?;
         transaction
             .commit()
             .context("failed to commit multipart message save")?;
@@ -1112,7 +1082,7 @@ impl Store {
     /// `role: tool` result in the same linear result chain. In both cases the
     /// owning assistant must have requested the provider tool-call ID being
     /// stored.
-    fn ensure_tool_result_parent_matches_call(
+    pub(super) fn ensure_tool_result_parent_matches_call(
         &self,
         conversation_id: &ConversationId,
         parent_message_id: &MessageId,
@@ -1463,6 +1433,67 @@ pub(super) fn insert_unsaved_message_parts_in_transaction(
             }
         }
     }
+
+    Ok(())
+}
+
+/// Prepared values for inserting one complete message in an existing transaction.
+///
+/// Session persistence uses this primitive so the message row, optional rich
+/// parts, conversation timestamp, session head, and replay event can share one
+/// commit boundary. Callers must validate the conversation, parent, role, and
+/// tool-call relationship before invoking it.
+pub(super) struct MessageInsert<'a> {
+    pub(super) id: &'a MessageId,
+    pub(super) conversation_id: &'a ConversationId,
+    pub(super) parent_message_id: Option<&'a MessageId>,
+    pub(super) role: Role,
+    pub(super) content: &'a str,
+    pub(super) parts: &'a [UnsavedMessagePart],
+    pub(super) metadata_json: Option<&'a str>,
+    pub(super) created_at: i64,
+}
+
+/// Writes a prepared message row, its optional parts, and conversation timestamp.
+pub(super) fn insert_message_in_transaction(
+    transaction: &Transaction<'_>,
+    message: MessageInsert<'_>,
+) -> Result<()> {
+    transaction
+        .execute(
+            "
+            INSERT INTO messages (
+                id,
+                conversation_id,
+                parent_message_id,
+                role,
+                content,
+                metadata,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+            params![
+                message.id.as_str(),
+                message.conversation_id.as_str(),
+                message.parent_message_id.map(MessageId::as_str),
+                message.role.as_str(),
+                message.content,
+                message.metadata_json,
+                message.created_at
+            ],
+        )
+        .context("failed to save message")?;
+
+    insert_unsaved_message_parts_in_transaction(
+        transaction,
+        message.id,
+        message.parts,
+        message.created_at,
+    )
+    .context("failed to save message parts")?;
+    touch_conversation_in_transaction(transaction, message.conversation_id, message.created_at)
+        .context("failed to update conversation timestamp")?;
 
     Ok(())
 }

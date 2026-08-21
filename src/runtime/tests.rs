@@ -2,22 +2,24 @@
 
 use anyhow::{Result, anyhow};
 use std::fs;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
-use crate::conversation::{Message, MessageMetadata, ToolCall, ToolCallId};
+use crate::conversation::{Message, MessageMetadata, Role, ToolCall, ToolCallId};
+use crate::error;
 use crate::llm::{
     AssistantResponse, FinishReason, LlmError, LlmErrorKind, LlmStreamEvent, PromptCacheRequest,
     ReasoningRequest,
 };
 use crate::mcp::McpCommand;
+use crate::runtime::context::ContextBuilder;
+use crate::tool::{ProviderInstallState, ToolProviderRegistry};
 use crate::tool::{
     ProviderToolName, ToolAnnotations, ToolApprovalMode, ToolExecutionResult, ToolPermission,
     ToolProviderId, ToolProviderKind, ToolProviderRef, ToolSchema, ToolSchemaName,
 };
-use crate::tool_provider::{ProviderInstallState, ToolProviderRegistry};
 
 const TEST_PROVIDER_ID: &str = "desktop-commander";
 const TEST_PROVIDER_PREFIX: &str = "desktop_commander";
@@ -25,6 +27,67 @@ const TEST_PROVIDER_DISPLAY_NAME: &str = "Desktop Commander";
 const TEST_PROVIDER_TOOL_NAME: &str = "read_file";
 const TEST_TOOL_SCHEMA_NAME: &str = "desktop_commander__read_file";
 const TEST_TOOL_RESULT: &str = "test-mcp-output";
+
+/// Minimal non-session persistence used only to isolate runtime unit tests.
+///
+/// Production code has no direct-saving implementation: API, CLI, and
+/// performance fixtures all persist through a claimed durable session.
+struct TestRuntimeMessagePersistence;
+
+impl RuntimeMessagePersistence for TestRuntimeMessagePersistence {
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        store.insert_test_runtime_message(
+            conversation_id,
+            parent_message_id,
+            Role::Assistant,
+            content,
+            metadata,
+        )
+    }
+
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        if parts.is_empty() {
+            store.insert_test_runtime_tool_result(
+                conversation_id,
+                parent_message_id,
+                tool_call_id,
+                content,
+            )
+        } else {
+            store.insert_test_runtime_tool_result_with_parts(
+                conversation_id,
+                parent_message_id,
+                tool_call_id,
+                content,
+                parts,
+            )
+        }
+    }
+}
+
+fn runtime_test_registry() -> ToolProviderRegistry {
+    ToolProviderRegistry::with_test_mcp_provider(
+        TEST_PROVIDER_ID,
+        TEST_PROVIDER_PREFIX,
+        TEST_PROVIDER_DISPLAY_NAME,
+        test_mcp_command(),
+    )
+}
 
 static TEMP_MCP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -92,21 +155,87 @@ impl RecordingRuntimeEvents {
     }
 }
 
-impl RuntimeEventSink for RecordingRuntimeEvents {
-    fn assistant_message_saved(&self, message_id: &MessageId) {
+impl RuntimeMessagePersistence for RecordingRuntimeEvents {
+    fn save_assistant_message(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: Option<&MessageId>,
+        content: &str,
+        metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        let message_id = TestRuntimeMessagePersistence.save_assistant_message(
+            store,
+            conversation_id,
+            parent_message_id,
+            content,
+            metadata,
+        )?;
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::AssistantMessageSaved(
                 message_id.clone(),
             ));
+        Ok(message_id)
     }
 
-    fn tool_result_saved(&self, message_id: &MessageId) {
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        let message_id = TestRuntimeMessagePersistence.save_tool_result(
+            store,
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+            content,
+            parts,
+        )?;
         self.events
             .lock()
             .unwrap()
             .push(RecordedRuntimeEvent::ToolResultSaved(message_id.clone()));
+        Ok(message_id)
+    }
+}
+
+struct FailingAssistantMessagePersistence;
+
+impl RuntimeMessagePersistence for FailingAssistantMessagePersistence {
+    fn save_assistant_message(
+        &self,
+        _store: &mut Store,
+        _conversation_id: &ConversationId,
+        _parent_message_id: Option<&MessageId>,
+        _content: &str,
+        _metadata: Option<&MessageMetadata>,
+    ) -> Result<MessageId> {
+        Err(anyhow!("assistant message persistence failed"))
+    }
+
+    fn save_tool_result(
+        &self,
+        store: &mut Store,
+        conversation_id: &ConversationId,
+        parent_message_id: &MessageId,
+        tool_call_id: &ToolCallId,
+        content: &str,
+        parts: &[UnsavedMessagePart],
+    ) -> Result<MessageId> {
+        TestRuntimeMessagePersistence.save_tool_result(
+            store,
+            conversation_id,
+            parent_message_id,
+            tool_call_id,
+            content,
+            parts,
+        )
     }
 }
 
@@ -335,65 +464,6 @@ struct ToolThenReplyLlm {
     second_turn_messages: Mutex<Vec<Message>>,
 }
 
-struct AttachThenReplyLlm {
-    calls: Mutex<usize>,
-    second_turn_tools: Mutex<Vec<ToolSchema>>,
-}
-
-impl AttachThenReplyLlm {
-    fn new() -> Self {
-        Self {
-            calls: Mutex::new(0),
-            second_turn_tools: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl RuntimeLlm for AttachThenReplyLlm {
-    async fn stream<F>(
-        &self,
-        _messages: &[Message],
-        tools: &[ToolSchema],
-        _reasoning: Option<&ReasoningRequest>,
-        _prompt_cache: Option<&PromptCacheRequest>,
-        mut handle_delta: F,
-    ) -> Result<AssistantResponse>
-    where
-        F: for<'a> FnMut(LlmStreamEvent<'a>) -> Result<()>,
-    {
-        let mut calls = self.calls.lock().unwrap();
-        *calls += 1;
-
-        if *calls == 1 {
-            assert!(
-                tools
-                    .iter()
-                    .any(|tool| tool.name.as_str() == "windie__attach_provider")
-            );
-            return Ok(AssistantResponse {
-                content: String::new(),
-                metadata: MessageMetadata {
-                    tool_calls: vec![ToolCall::function(
-                        "call_attach",
-                        "windie__attach_provider",
-                        r#"{"provider_id":"desktop-commander"}"#,
-                    )],
-                    ..Default::default()
-                },
-                finish_reason: Some(FinishReason::ToolCalls),
-            });
-        }
-
-        *self.second_turn_tools.lock().unwrap() = tools.to_vec();
-        handle_delta(LlmStreamEvent::AssistantDelta("done"))?;
-        Ok(AssistantResponse {
-            content: "done".to_string(),
-            metadata: MessageMetadata::default(),
-            finish_reason: Some(FinishReason::Stop),
-        })
-    }
-}
-
 impl ToolThenReplyLlm {
     fn new() -> Self {
         Self {
@@ -470,8 +540,8 @@ fn path(store: &Store, conversation_id: &ConversationId) -> Vec<Message> {
 }
 
 fn prepare_latest_head_turn(store: &mut Store, conversation_id: &ConversationId) -> Result<()> {
-    let registry = ToolProviderRegistry::new();
-    let events = NoopRuntimeEventSink;
+    let registry = runtime_test_registry();
+    let events = TestRuntimeMessagePersistence;
     let mut head_message_id = latest_head(store, conversation_id);
 
     prepare_head_turn(
@@ -489,7 +559,7 @@ fn pending_latest_head_approvals(
     store: &Store,
     conversation_id: &ConversationId,
 ) -> Result<Vec<crate::tool::ToolApprovalRequest>> {
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
     let head_message_id = latest_head(store, conversation_id);
 
     pending_approvals_at_head(
@@ -498,7 +568,9 @@ fn pending_latest_head_approvals(
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
     )
 }
@@ -508,7 +580,7 @@ fn validate_latest_head_availability(
     conversation_id: &ConversationId,
 ) -> Result<()> {
     let head_message_id = latest_head(store, conversation_id);
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
     pending_approvals_at_head(
         store,
@@ -516,7 +588,9 @@ fn validate_latest_head_availability(
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
     )?;
     let messages = match head_message_id.as_ref() {
@@ -536,6 +610,50 @@ fn validate_latest_head_availability(
     )))
 }
 
+#[tokio::test]
+async fn wakeup_prompt_is_ephemeral_model_context() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let registry = runtime_test_registry();
+    let llm = CapturingLlm::new();
+    let events = TestRuntimeMessagePersistence;
+
+    advance_until_blocked(
+        &NoopOutput,
+        &llm,
+        &mut store,
+        RuntimeInput {
+            conversation_id: &conversation_id,
+            head_message_id: Some(&user_id),
+            tools: &registry,
+            plugin_catalog: None,
+            model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: Some("wake up and choose useful work"),
+        },
+        &events,
+    )
+    .await
+    .unwrap();
+
+    let messages = llm.messages.lock().unwrap();
+    assert_eq!(messages.last().unwrap().role, Role::System);
+    assert_eq!(
+        messages.last().unwrap().content,
+        "wake up and choose useful work"
+    );
+    drop(messages);
+    assert!(
+        store
+            .load_message_tree(&conversation_id)
+            .unwrap()
+            .iter()
+            .all(|message| message.content != "wake up and choose useful work")
+    );
+}
+
 async fn run_latest_head_once<O, L>(
     output: &O,
     llm: &L,
@@ -546,8 +664,8 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    let registry = ToolProviderRegistry::new();
-    let events = NoopRuntimeEventSink;
+    let registry = runtime_test_registry();
+    let events = TestRuntimeMessagePersistence;
 
     run_latest_head_once_with_registry_and_events(
         output,
@@ -573,7 +691,7 @@ async fn run_latest_head_once_with_registry_and_events<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let head_message_id = latest_head(store, conversation_id);
 
@@ -585,7 +703,9 @@ where
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: registry,
+            plugin_catalog: None,
             model_request,
+            wakeup_prompt: None,
         },
         events,
     )
@@ -606,7 +726,7 @@ where
     O: RuntimeOutput,
     L: RuntimeLlm,
 {
-    let events = NoopRuntimeEventSink;
+    let events = TestRuntimeMessagePersistence;
 
     run_latest_head_until_blocked_with_events(
         output,
@@ -632,7 +752,7 @@ async fn run_latest_head_until_blocked_with_events<O, L, E>(
 where
     O: RuntimeOutput,
     L: RuntimeLlm,
-    E: RuntimeEventSink,
+    E: RuntimeMessagePersistence,
 {
     let head_message_id = latest_head(store, conversation_id);
     let outcome = advance_until_blocked(
@@ -643,7 +763,9 @@ where
             conversation_id,
             head_message_id: head_message_id.as_ref(),
             tools: registry,
+            plugin_catalog: None,
             model_request,
+            wakeup_prompt: None,
         },
         events,
     )
@@ -671,7 +793,7 @@ async fn approve_latest_head_tool_call(
     conversation_id: &ConversationId,
     tool_call_id: &ToolCallId,
 ) -> Result<ToolExecutionResult> {
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
     approve_latest_head_tool_call_with_registry(store, conversation_id, tool_call_id, &registry)
         .await
@@ -698,7 +820,7 @@ async fn approve_latest_head_tool_call_with_registry(
                 .await?
         }
     };
-    store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+    tool_execution::store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
 
     Ok(result)
 }
@@ -716,7 +838,7 @@ fn deny_latest_head_tool_call(
         tool_call_id,
     )?;
     let result = deny_pending_tool_call(&pending);
-    store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
+    tool_execution::store_pending_tool_result_at_head(store, conversation_id, &pending, &result)?;
 
     Ok(result)
 }
@@ -758,6 +880,36 @@ async fn run_head_saves_assistant_message() {
 }
 
 #[tokio::test]
+async fn run_head_returns_assistant_persistence_failure() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let registry = runtime_test_registry();
+    let events = FailingAssistantMessagePersistence;
+
+    let error = run_latest_head_once_with_registry_and_events(
+        &NoopOutput,
+        &ReplyLlm::new("must not persist"),
+        &mut store,
+        &conversation_id,
+        &registry,
+        &events,
+        RuntimeModelRequest::new(None, None),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("assistant message persistence failed")
+    );
+    assert_eq!(store.load_messages(&conversation_id).unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn run_head_retries_transient_provider_failure_before_persisting() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
@@ -794,8 +946,8 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
     let user_id = store
         .insert_message(&conversation_id, None, Role::User, "branch here", None)
         .unwrap();
-    let registry = ToolProviderRegistry::new();
-    let events = NoopRuntimeEventSink;
+    let registry = runtime_test_registry();
+    let events = TestRuntimeMessagePersistence;
 
     let first_outcome = advance_until_blocked(
         &NoopOutput,
@@ -805,7 +957,9 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
             conversation_id: &conversation_id,
             head_message_id: Some(&user_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
         &events,
     )
@@ -819,7 +973,9 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
             conversation_id: &conversation_id,
             head_message_id: Some(&user_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
         &events,
     )
@@ -884,8 +1040,8 @@ async fn run_head_uses_requested_head_path() {
         )
         .unwrap();
     let llm = CapturingLlm::new();
-    let events = NoopRuntimeEventSink;
-    let registry = ToolProviderRegistry::new();
+    let events = TestRuntimeMessagePersistence;
+    let registry = runtime_test_registry();
 
     advance_turn(
         &NoopOutput,
@@ -895,7 +1051,9 @@ async fn run_head_uses_requested_head_path() {
             conversation_id: &conversation_id,
             head_message_id: Some(&active_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
         &events,
     )
@@ -932,7 +1090,7 @@ async fn run_head_passes_tool_schemas_to_llm() {
 
     let mut expected_tools = vec![tool_schema];
     expected_tools.extend(
-        ToolProviderRegistry::new()
+        runtime_test_registry()
             .builtin_tools()
             .into_iter()
             .map(|tool| tool.attached_tool().schema()),
@@ -975,8 +1133,8 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
         .unwrap();
 
     let llm = CapturingLlm::new();
-    let events = NoopRuntimeEventSink;
-    let registry = ToolProviderRegistry::new();
+    let events = TestRuntimeMessagePersistence;
+    let registry = runtime_test_registry();
 
     // Run from branch head
     advance_turn(
@@ -987,7 +1145,9 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
             conversation_id: &conversation_id,
             head_message_id: Some(&branch_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
         &events,
     )
@@ -1018,7 +1178,9 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
             conversation_id: &conversation_id,
             head_message_id: Some(&sibling_id),
             tools: &registry,
+            plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
+            wakeup_prompt: None,
         },
         &events,
     )
@@ -1717,19 +1879,18 @@ async fn run_head_reports_llm_failure() {
 fn builtin_tools_are_always_model_visible_but_not_persisted() {
     let store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let registry = ToolProviderRegistry::new();
+    let registry = runtime_test_registry();
 
-    let context = build_model_context(&store, &conversation_id, None, &registry).unwrap();
+    let context =
+        ContextBuilder::build_model_context(&store, &conversation_id, None, &registry, None)
+            .unwrap();
     let names = context
         .tool_schemas
         .into_iter()
         .map(|tool| tool.name.as_str().to_string())
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        names,
-        vec!["windie__list_providers", "windie__attach_provider"]
-    );
+    assert_eq!(names, vec!["windie__read_skill", "windie__attach_mcp"]);
     assert!(
         store
             .load_tool_schemas(&conversation_id)
@@ -1738,138 +1899,142 @@ fn builtin_tools_are_always_model_visible_but_not_persisted() {
     );
 }
 
-#[tokio::test]
-async fn builtin_provider_tools_list_and_attach_through_existing_conversation_storage() {
+#[test]
+fn plugin_index_is_ephemeral_and_survives_conversation_system_prompt_changes() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    let registry = test_mcp_registry();
-    let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
-    store.install_provider(&provider_id).unwrap();
+    let registry = ToolProviderRegistry::new();
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(
+        std::env::temp_dir().join(format!("windie-plugin-index-test-{}", uuid::Uuid::new_v4())),
+    ));
+    let catalog =
+        crate::plugin::PluginCatalog::new(plugin_store, crate::plugin::bundled_index().unwrap());
+
     store
-        .save_provider_tool_catalog(&provider_id, &[test_tool_definition()])
+        .set_system_prompt(&conversation_id, "Use concise answers.")
         .unwrap();
     store
-        .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
+        .set_system_prompt(&conversation_id, "Use exact answers.")
         .unwrap();
 
-    let list_definition = registry
-        .builtin_tool(&ToolSchemaName::new("windie__list_providers"))
-        .unwrap();
-    let user_id = store
-        .insert_message(
-            &conversation_id,
-            None,
-            Role::User,
-            "attach a provider",
-            None,
-        )
-        .unwrap();
-    let list_pending = PendingToolCall {
-        result_parent_message_id: user_id.clone(),
-        tool_call: ToolCall::function("call_list", "windie__list_providers", "{}"),
-    };
-    let list_result = execute_pending_tool_call(
-        &mut store,
+    let context = ContextBuilder::build_model_context(
+        &store,
         &conversation_id,
-        &list_pending,
-        &list_definition.attached_tool(),
+        None,
         &registry,
+        Some(&catalog),
     )
-    .await
     .unwrap();
-    assert_eq!(
-        list_result.content,
-        "provider_id, description\ndesktop-commander, Test MCP provider."
+
+    assert_eq!(context.messages[0].role, Role::System);
+    assert!(context.messages[0].content.contains("Installed plugins:"));
+    assert!(context.messages[0].content.contains("Available plugins:"));
+    assert!(context.messages[0].content.contains("parallel-search"));
+    assert_eq!(context.messages[1].role, Role::System);
+    assert_eq!(context.messages[1].content, "Use exact answers.");
+    assert!(
+        context
+            .tool_schemas
+            .iter()
+            .all(|tool| !tool.name.as_str().starts_with("parallel_search__"))
+    );
+    assert!(
+        store
+            .load_tool_schemas(&conversation_id)
+            .unwrap()
+            .is_empty()
     );
 
-    let attach_definition = registry
-        .builtin_tool(&ToolSchemaName::new("windie__attach_provider"))
-        .unwrap();
-    let attach_pending = PendingToolCall {
-        result_parent_message_id: user_id,
-        tool_call: ToolCall::function(
-            "call_attach",
-            "windie__attach_provider",
-            r#"{"provider_id":"desktop-commander"}"#,
-        ),
-    };
-    let attach_result = execute_pending_tool_call(
-        &mut store,
+    store.set_system_prompt(&conversation_id, "").unwrap();
+    let context = ContextBuilder::build_model_context(
+        &store,
         &conversation_id,
-        &attach_pending,
-        &attach_definition.attached_tool(),
+        None,
         &registry,
+        Some(&catalog),
     )
-    .await
     .unwrap();
 
-    assert!(attach_result.success);
-    assert_eq!(attach_result.content, "provider attached");
-    assert_eq!(
-        store.load_tool_schemas(&conversation_id).unwrap()[0]
-            .name
-            .as_str(),
-        TEST_TOOL_SCHEMA_NAME
+    assert_eq!(context.messages.len(), 1);
+    assert_eq!(context.messages[0].role, Role::System);
+    assert!(
+        context.messages[0]
+            .content
+            .starts_with("Windie plugin index:")
     );
 }
 
 #[tokio::test]
-async fn runtime_attaches_provider_then_queries_with_provider_tools() {
+async fn plugin_attach_mcp_resolves_component_before_reusing_provider_attachment() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();
-    store
-        .set_tool_approval_mode(&conversation_id, ToolApprovalMode::AutoApproveAttached)
-        .unwrap();
-    let provider_id = ToolProviderId::new(TEST_PROVIDER_ID);
+    let plugin_root = std::env::temp_dir().join(format!(
+        "windie-plugin-attach-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let plugin_store = Arc::new(crate::plugin::PluginStore::new(&plugin_root));
+    let plugin = plugin_store.install_bundled("parallel-search").unwrap();
+    let registry = ToolProviderRegistry::new();
+    registry.register_plugin(&plugin).unwrap();
+
+    let provider_id = ToolProviderId::new("parallel-search");
+    let tool = crate::tool::ToolDefinition {
+        schema_name: ToolSchemaName::new("parallel_search__search"),
+        display_name: "Parallel Search search".to_string(),
+        description: "Search the web".to_string(),
+        parameters: serde_json::json!({"type":"object"}),
+        provider: ToolProviderRef::new(
+            provider_id.clone(),
+            ProviderToolName::new("search"),
+            ToolProviderKind::Mcp,
+        ),
+        permissions: Vec::new(),
+        annotations: ToolAnnotations::default(),
+    };
     store.install_provider(&provider_id).unwrap();
     store
-        .save_provider_tool_catalog(&provider_id, &[test_tool_definition()])
+        .save_provider_tool_catalog(&provider_id, &[tool])
         .unwrap();
     store
         .set_provider_state(&provider_id, ProviderInstallState::Enabled, None)
         .unwrap();
-    store
-        .insert_message(
-            &conversation_id,
-            None,
-            Role::User,
-            "attach desktop commander",
-            None,
-        )
-        .unwrap();
 
-    let registry = test_mcp_registry();
-    let llm = AttachThenReplyLlm::new();
-    let events = NoopRuntimeEventSink;
-    let head_message_id = latest_head(&store, &conversation_id);
-    let outcome = advance_until_blocked(
-        &NoopOutput,
-        &llm,
+    let catalog =
+        crate::plugin::PluginCatalog::new(plugin_store, crate::plugin::bundled_index().unwrap());
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "search", None)
+        .unwrap();
+    let definition = registry
+        .builtin_tool(&ToolSchemaName::new("windie__attach_mcp"))
+        .unwrap();
+    let pending = PendingToolCall {
+        result_parent_message_id: user_id,
+        tool_call: ToolCall::function(
+            "call_attach_mcp",
+            "windie__attach_mcp",
+            r#"{"plugin_id":"parallel-search","mcp_id":"parallel-search"}"#,
+        ),
+    };
+    let result = execute_pending_tool_call_with_catalog(
         &mut store,
-        RuntimeInput {
-            conversation_id: &conversation_id,
-            head_message_id: head_message_id.as_ref(),
-            tools: &registry,
-            model_request: RuntimeModelRequest::new(None, None),
-        },
-        &events,
+        &conversation_id,
+        &pending,
+        &definition.attached_tool(),
+        &registry,
+        Some(&catalog),
     )
     .await
     .unwrap();
 
-    assert!(matches!(outcome, RuntimeOutcome::Completed { .. }));
+    assert!(result.success);
     assert!(
-        path(&store, &conversation_id)
-            .iter()
-            .any(|message| message.role == Role::Tool && message.content == "provider attached")
-    );
-    assert!(
-        llm.second_turn_tools
-            .lock()
+        store
+            .load_tool_schemas(&conversation_id)
             .unwrap()
             .iter()
-            .any(|tool| tool.name.as_str() == TEST_TOOL_SCHEMA_NAME)
+            .any(|tool| tool.name.as_str() == "parallel_search__search")
     );
+    fs::remove_dir_all(plugin_root).unwrap();
 }
 
 fn insert_multi_tool_call_assistant(

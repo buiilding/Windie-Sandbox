@@ -1,0 +1,62 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "chrome-devtools",
+    "version": "1.6.0",
+    "publisher": "ChromeDevTools"
+  },
+  "presentation": {
+    "name": "Chrome DevTools",
+    "description": "Inspect, debug, and automate an explicitly selected Chrome browser session through MCP.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/ChromeDevTools/chrome-devtools-mcp"
+  },
+  "marketplace": { "publish": true },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "chrome-devtools",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "permissions": ["external_process", "computer_control", "network"],
+        "capabilities": ["browser", "chrome", "devtools", "debugging"],
+        "readiness_probe": "list_pages",
+        "local_artifact": "mcp/chrome-devtools.mcpb",
+        "setup": {
+          "isolated_home": true,
+          "environment": [
+            {
+              "name": "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS",
+              "value": {
+                "type": "literal",
+                "value": "true"
+              }
+            },
+            {
+              "name": "NPM_CONFIG_CACHE",
+              "value": {
+                "type": "windie_data_dir",
+                "path": "mcp/chrome-devtools/npm-cache"
+              }
+            },
+            {
+              "name": "WINDIE_CHROME_CONNECTION_MODE",
+              "value": {
+                "type": "literal",
+                "value": "managed"
+              }
+            },
+            {
+              "name": "WINDIE_CHROME_PROFILE_DIR",
+              "value": {
+                "type": "windie_data_dir",
+                "path": "mcp/chrome-devtools/profile"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

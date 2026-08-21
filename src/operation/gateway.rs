@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use super::*;
 
 use crate::local;
-use crate::process::{ManagedComponent, ProcessReport, ProcessState};
+use crate::local::process::{ManagedComponent, ProcessReport, ProcessState};
+use crate::plugin::PluginCatalog;
 
 pub(in crate::operation) const SYNTHETIC_INPUT_TOKEN_COUNT_MESSAGE: &str = ".";
 
@@ -254,8 +255,9 @@ pub(in crate::operation) fn conversation_prompt_cache_request(
 
 /// Builds the current model-facing input-token context for one conversation.
 ///
-/// This is a read-only preview operation. It builds the same flattened context
-/// and attached tool schema list used by query execution, but it does not run
+/// This is a read-only preview operation. It builds the exact messages and
+/// schemas used by query execution, including ephemeral plugin and built-in
+/// capabilities, but it does not run
 /// query preparation because that path can persist automatic tool results.
 /// Bifrost requires at least one Responses input item before it can count tool
 /// schema tokens, so a tool-only setup uses a tiny synthetic system message
@@ -264,9 +266,16 @@ pub fn conversation_input_token_context(
     store: &Store,
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
+    tools: &ToolProviderRegistry,
+    plugin_catalog: Option<&PluginCatalog>,
 ) -> Result<Option<InputTokenCountContext>> {
-    let model_context =
-        ContextBuilder::build_model_context(store, conversation_id, head_message_id)?;
+    let model_context = ContextBuilder::build_model_context(
+        store,
+        conversation_id,
+        head_message_id,
+        tools,
+        plugin_catalog,
+    )?;
     let mut model_messages = model_context.messages;
     let tool_schemas = model_context.tool_schemas;
     let source = if model_messages.is_empty() {

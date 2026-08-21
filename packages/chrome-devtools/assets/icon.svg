@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Chrome DevTools">
+  <path fill="#4285f4" d="M64 8a56 56 0 1 0 0 112A56 56 0 0 0 64 8Z"/>
+  <path fill="#34a853" d="M64 64h48.5A56 56 0 0 1 32 112l24-41.6A20 20 0 0 0 64 64Z"/>
+  <path fill="#fbbc04" d="M64 64a20 20 0 0 0-8 6.4L32 112a56 56 0 0 1-16-76.8L40 64h24Z"/>
+  <circle cx="64" cy="64" r="20" fill="#fff"/>
+  <circle cx="64" cy="64" r="12" fill="#4285f4"/>
+</svg>

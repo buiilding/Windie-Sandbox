@@ -1,0 +1,49 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "desktop-commander",
+    "version": "0.2.47",
+    "publisher": "wonderwhy-er"
+  },
+  "presentation": {
+    "name": "Desktop Commander",
+    "description": "Read, write, and manage files and local processes through Desktop Commander.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/wonderwhy-er/DesktopCommanderMCP"
+  },
+  "marketplace": { "publish": true },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "desktop-commander",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "permissions": ["external_process", "filesystem"],
+        "capabilities": ["files", "local", "processes"],
+        "local_artifact": "mcp/desktop-commander.mcpb",
+        "setup": {
+          "isolated_home": true,
+          "files": [
+            {
+              "path": ".claude-server-commander/config.json",
+              "content": {
+                "blockedCommands": [
+                  "mkfs", "format", "mount", "umount", "fdisk", "dd", "parted", "diskpart",
+                  "sudo", "su", "passwd", "adduser", "useradd", "usermod", "groupadd", "chsh",
+                  "visudo", "shutdown", "reboot", "halt", "poweroff", "init", "iptables", "firewall",
+                  "netsh", "sfc", "bcdedit", "reg", "net", "sc", "runas", "cipher", "takeown"
+                ],
+                "allowedDirectories": [],
+                "telemetryEnabled": false,
+                "fileWriteLineLimit": 50,
+                "fileReadLineLimit": 1000,
+                "pendingWelcomeOnboarding": false
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

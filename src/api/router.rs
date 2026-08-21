@@ -10,22 +10,21 @@ pub(super) fn router(state: ApiState) -> Router {
     Router::new().merge(api_router(state))
 }
 
-/// Builds the unauthenticated localhost `/api/*` route table.
+/// Builds the localhost `/api/*` route table.
 ///
-/// CORS stays scoped to the API so the standalone Inspector and browser clients
-/// served from webpack dev servers (ports 3000/5173) can call localhost.
+/// CORS stays scoped to the API so browser clients served from local developer
+/// servers (ports 3000/5173) or the hosted Inspector can call localhost. The
+/// hosted origin is deliberately exact: this
+/// authenticated runtime access must not grant every website access to a
+/// user's local Windie runtime.
 fn api_router(state: ApiState) -> Router {
-    let mut origins = vec![
+    let origins = vec![
         HeaderValue::from_static("http://localhost:3000"),
         HeaderValue::from_static("http://127.0.0.1:3000"),
         HeaderValue::from_static("http://localhost:5173"),
         HeaderValue::from_static("http://127.0.0.1:5173"),
+        HeaderValue::from_static("https://app.windieos.com"),
     ];
-    if let Ok(origin) =
-        HeaderValue::try_from(format!("http://{}", crate::config::inspector_address()))
-    {
-        origins.push(origin);
-    }
 
     let cors = CorsLayer::new()
         .allow_origin(origins)
@@ -36,11 +35,34 @@ fn api_router(state: ApiState) -> Router {
             Method::PATCH,
             Method::DELETE,
         ])
-        .allow_headers([CONTENT_TYPE]);
+        .allow_headers([CONTENT_TYPE, AUTHORIZATION]);
 
     Router::new()
         .route("/api/health", get(health))
         .route("/api/status", get(status))
+        .route(
+            "/api/runtime/access",
+            get(runtime_access_status)
+                .post(pair_runtime_access)
+                .delete(unpair_runtime_access),
+        )
+        .route("/api/events", get(global_events))
+        .route("/api/events/cursor", get(global_event_cursor))
+        .route("/api/dev/notifications", get(notifier_test_notifications))
+        .route(
+            "/api/dev/notifications/assistant-completed",
+            post(report_assistant_completed_for_notifier),
+        )
+        // Keep the initial manual probe URL working while clients migrate to
+        // the notifier-owned endpoint above.
+        .route(
+            "/api/dev/tray-notifications",
+            get(notifier_test_notifications),
+        )
+        .route(
+            "/api/dev/tray-notifications/assistant-completed",
+            post(report_assistant_completed_for_notifier),
+        )
         .route("/api/shutdown", post(shutdown))
         .route("/api/models", get(list_models))
         .route("/api/llm/providers", get(list_provider_catalog))
@@ -60,6 +82,12 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/model-parameters", get(model_parameters))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/{provider_id}", get(list_provider_tools))
+        .route("/api/plugins", get(list_plugins))
+        .route(
+            "/api/plugins/{plugin_id}",
+            get(get_plugin).delete(uninstall_plugin),
+        )
+        .route("/api/plugins/{plugin_id}/install", post(install_plugin))
         .route("/api/providers", get(list_providers))
         .route(
             "/api/providers/chrome-devtools/remote-debugging",
@@ -193,6 +221,10 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/sessions/{session_id}/events", get(session_events))
         .route("/api/sessions/{session_id}/stop", post(stop_run))
         .route(
+            "/api/sessions/{session_id}/keep-awake",
+            patch(set_session_keep_awake),
+        )
+        .route(
             "/api/sessions/{session_id}/approvals/{tool_call_id}/approve",
             post(approve_session_tool),
         )
@@ -205,6 +237,10 @@ fn api_router(state: ApiState) -> Router {
             post(count_input_tokens),
         )
         .layer(DefaultBodyLimit::max(API_JSON_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            authorize_runtime_request,
+        ))
         .layer(cors)
         .with_state(state)
 }

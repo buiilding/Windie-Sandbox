@@ -9,8 +9,16 @@ pub(super) struct ApiState {
     pub(super) base_url: String,
     pub(super) model: Option<String>,
     pub(super) store_path: Option<PathBuf>,
+    pub(super) marketplace_index_url: Option<String>,
+    pub(super) plugin_store: Arc<crate::plugin::PluginStore>,
+    pub(super) plugin_catalog: Arc<crate::plugin::PluginCatalog>,
     pub(super) tool_registry: Arc<ToolProviderRegistry>,
     pub(super) session_manager: Arc<SessionManager>,
+    /// Hosted-account identity verification and local runtime ownership policy.
+    pub(super) runtime_access: RuntimeAccessControl,
+    /// Volatile, development-only signals consumed by the native notifier test.
+    pub(super) notifier_test_notifications:
+        tokio::sync::broadcast::Sender<crate::api::dev::NotifierTestNotification>,
     /// Broadcasts a requested API shutdown to the server task.
     pub(super) shutdown_tx: tokio::sync::watch::Sender<bool>,
 }

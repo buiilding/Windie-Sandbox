@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.brightdata/brightdata-mcp",
+  "title": "Bright Data",
+  "description": "Search and access live web data through Bright Data MCP.",
+  "version": "2.11.1",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/brightdata.mcpb",
+      "version": "2.11.1",
+      "fileSha256": "c750819c6d77684de23cadd1c2eac6477f64057efaafefee7b6f522249790713",
+      "runtimeHint": "node",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

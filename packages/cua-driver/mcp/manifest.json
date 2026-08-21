@@ -1,0 +1,23 @@
+{
+  "manifest_version": "0.4",
+  "name": "cua-driver",
+  "display_name": "CUA Driver",
+  "version": "0.12.6",
+  "description": "CUA Driver computer control through the Model Context Protocol.",
+  "author": {
+    "name": "TryCua",
+    "url": "https://github.com/trycua/cua"
+  },
+  "server": {
+    "type": "binary",
+    "entry_point": "CuaDriver.app/Contents/MacOS/cua-driver",
+    "mcp_config": {
+      "command": "${__dirname}/CuaDriver.app/Contents/MacOS/cua-driver",
+      "args": ["mcp"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin"],
+    "runtimes": {}
+  }
+}

@@ -2,7 +2,7 @@
 //!
 //! Provider types describe the concrete executor behind a model-facing tool
 //! schema. They do not load provider catalogs or execute calls; that behavior
-//! belongs to `tool_provider`.
+//! belongs to the tool domain.
 
 use serde::{Deserialize, Serialize};
 

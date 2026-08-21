@@ -2,14 +2,15 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 21;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 25;
+const PREVIOUS_DATABASE_SCHEMA_VERSION: i32 = 24;
 
 impl Store {
     /// Creates or validates the current schema.
     ///
-    /// Windie refuses to open databases from any other schema version. This
-    /// keeps the current foundation clean while schema compatibility is not a
-    /// supported project goal.
+    /// The runtime-access table is an additive security migration from schema
+    /// version 24. Other unsupported historical versions still fail closed
+    /// rather than guessing how to transform durable runtime data.
     pub fn migrate(&self) -> Result<()> {
         let existing_version = self.database_schema_version()?;
         if existing_version > DATABASE_SCHEMA_VERSION {
@@ -17,7 +18,7 @@ impl Store {
                 "database schema version {existing_version} is newer than supported version {DATABASE_SCHEMA_VERSION}"
             ));
         }
-        if existing_version != 0 && existing_version < DATABASE_SCHEMA_VERSION {
+        if existing_version != 0 && existing_version < PREVIOUS_DATABASE_SCHEMA_VERSION {
             return Err(anyhow!(
                 "database schema version {existing_version} is older than supported version {DATABASE_SCHEMA_VERSION}; remove the old Windie database or recreate it"
             ));
@@ -84,6 +85,11 @@ impl Store {
                     model TEXT NOT NULL,
                     reasoning TEXT,
                     error TEXT,
+                    execution_owner TEXT,
+                    execution_claim_id TEXT,
+                    keep_awake INTEGER NOT NULL DEFAULT 0,
+                    last_user_activity_at INTEGER NOT NULL,
+                    last_idle_wakeup_completed_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
 
@@ -178,6 +184,12 @@ impl Store {
 
                     FOREIGN KEY (provider_id) REFERENCES installed_providers(provider_id)
                         ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS runtime_access (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    account_id TEXT NOT NULL,
+                    linked_at INTEGER NOT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
