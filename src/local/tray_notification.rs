@@ -282,7 +282,7 @@ fn show_notification(content: &str, session_id: Option<&crate::session::SessionI
         thread::Builder::new()
             .name("windie-notification-response".to_string())
             .spawn(move || {
-                if let Err(error) = response_handle.wait_for_response(|response: NotificationResponse| {
+                if let Err(error) = response_handle.wait_for_response(|response: &NotificationResponse| {
                     if response.is_default_action()
                         || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION)
                     {
@@ -322,7 +322,7 @@ fn show_notification(content: &str, session_id: Option<&crate::session::SessionI
         thread::Builder::new()
             .name("windie-notification-response".to_string())
             .spawn(move || {
-                if let Err(error) = response_handle.wait_for_response(|response: NotificationResponse| {
+                if let Err(error) = response_handle.wait_for_response(|response: &NotificationResponse| {
                     if response.is_default_action()
                         || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION)
                     {
