@@ -148,6 +148,7 @@ fn registry_executes_only_approved_mcp_provider_ids() {
     assert!(!registry.can_execute(&attached_tool));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn registry_recognizes_cua_driver_after_package_registration() {
     let root = std::env::temp_dir().join(format!(
@@ -174,6 +175,29 @@ fn registry_recognizes_cua_driver_after_package_registration() {
 
     assert!(registry.can_execute(&attached_tool));
     registry.unregister_plugin(&plugin).unwrap();
+    store.remove_plugin("cua-driver").unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn registry_rejects_cua_driver_outside_macos() {
+    let root = std::env::temp_dir().join(format!(
+        "windie-cua-driver-registry-platform-test-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let store = PluginStore::new(&root);
+    let plugin = store.install_bundled("cua-driver").unwrap();
+    let registry = ToolProviderRegistry::new();
+
+    let error = registry.register_plugin(&plugin).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not support the current platform")
+    );
+
     store.remove_plugin("cua-driver").unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }

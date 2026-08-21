@@ -13,6 +13,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 - Fixed cross-platform compilation for native notification callbacks and
   Windows cleanup commands.
+- Fixed platform-aware plugin tests so macOS-only packages are rejected on
+  unsupported systems during release validation.
 - Moved the Inspector out of installed releases. Packages and installers now
   contain and start only Windie, Bifrost, the tray, and the notifier; after the
   local API is healthy, installation opens the paired hosted Inspector at

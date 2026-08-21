@@ -344,6 +344,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn cua_driver_package_declares_native_mcpb_and_isolated_runtime() {
         let root = std::env::temp_dir().join(format!(
@@ -369,6 +370,28 @@ mod tests {
                 .ends_with("CuaDriver.app/Contents/MacOS/cua-driver")
         );
         assert_eq!(command.args, vec!["mcp"]);
+
+        store.remove_plugin("cua-driver").unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn cua_driver_package_is_rejected_outside_macos() {
+        let root = std::env::temp_dir().join(format!(
+            "windie-cua-driver-platform-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = PluginStore::new(&root);
+        let plugin = store.install_bundled("cua-driver").unwrap();
+
+        let error = crate::mcp::load_components(&plugin).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not support the current platform")
+        );
 
         store.remove_plugin("cua-driver").unwrap();
         fs::remove_dir_all(root).unwrap();
