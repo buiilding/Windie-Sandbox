@@ -283,12 +283,11 @@ fn show_notification(content: &str, session_id: Option<&crate::session::SessionI
             .name("windie-notification-response".to_string())
             .spawn(move || {
                 if let Err(error) = response_handle.wait_for_response(|response: &NotificationResponse| {
-                    if response.is_default_action()
-                        || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION)
+                    if (response.is_default_action()
+                        || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION))
+                        && let Err(error) = open_session_url(&session_url)
                     {
-                        if let Err(error) = open_session_url(&session_url) {
-                            eprintln!("windie notifier: failed to open completed session: {error:#}");
-                        }
+                        eprintln!("windie notifier: failed to open completed session: {error:#}");
                     }
                 }) {
                     eprintln!("windie notifier: notification interaction failed: {error}");
@@ -323,12 +322,11 @@ fn show_notification(content: &str, session_id: Option<&crate::session::SessionI
             .name("windie-notification-response".to_string())
             .spawn(move || {
                 if let Err(error) = response_handle.wait_for_response(|response: &NotificationResponse| {
-                    if response.is_default_action()
-                        || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION)
+                    if (response.is_default_action()
+                        || matches!(response, NotificationResponse::Action(action) if action == OPEN_SESSION_ACTION))
+                        && let Err(error) = open_session_url(&session_url)
                     {
-                        if let Err(error) = open_session_url(&session_url) {
-                            eprintln!("windie notifier: failed to open completed session: {error:#}");
-                        }
+                        eprintln!("windie notifier: failed to open completed session: {error:#}");
                     }
                 }) {
                     eprintln!("windie notifier: notification interaction failed: {error}");

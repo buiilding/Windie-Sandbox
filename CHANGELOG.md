@@ -11,8 +11,8 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [0.4.0] - 2026-08-20
 
-- Fixed cross-platform compilation for native notification callbacks and
-  Windows cleanup commands.
+- Fixed cross-platform native notification callbacks, cleanup commands, and
+  current Clippy checks.
 - Fixed platform-aware plugin tests so macOS-only packages are rejected on
   unsupported systems during release validation.
 - Moved the Inspector out of installed releases. Packages and installers now
