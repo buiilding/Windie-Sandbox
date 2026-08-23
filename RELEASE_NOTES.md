@@ -8,6 +8,12 @@ for GitHub release descriptions; the detailed engineering history is kept in
 
 - No unreleased changes yet.
 
+## [0.4.1] - 2026-08-23
+
+- Fixed desktop notifications for the hosted Windie app. Notifications now
+  continue working after you connect your computer, including when the local
+  Windie database has been recreated.
+
 ## [0.4.0] - 2026-08-20
 
 - Windie’s Chat UI now runs at app.windieos.com. Install Windie, sign in, and
@@ -96,7 +102,8 @@ tool providers.
 - Added the localhost API, local setup commands, the one-line installer, and
   release packaging.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.1
 [0.4.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.0
 [0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
 [0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1

@@ -174,6 +174,52 @@ async fn hosted_account_must_pair_before_using_the_local_runtime() {
     let _ = fs::remove_file(db_path);
 }
 
+#[tokio::test]
+async fn local_component_token_can_read_protected_notification_streams() {
+    let db_path = temp_database_path();
+    let auth = spawn_mock_hosted_auth().await;
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+    let app = test_app_with_urls_shutdown_and_access(
+        db_path.clone(),
+        "http://localhost:8080",
+        "http://localhost:8080/v1",
+        shutdown_tx,
+        RuntimeAccessControl::hosted_for_tests(auth.url),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .method(Method::GET)
+                .uri("/api/events/cursor?kind=completed")
+                .header(
+                    crate::config::LOCAL_COMPONENT_TOKEN_HEADER,
+                    "test-local-component-token",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let rejected = app
+        .oneshot(
+            HttpRequest::builder()
+                .method(Method::GET)
+                .uri("/api/events/cursor?kind=completed")
+                .header(crate::config::LOCAL_COMPONENT_TOKEN_HEADER, "wrong-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+    let _ = fs::remove_file(db_path);
+}
+
 #[test]
 fn aggregate_event_envelope_namespaces_session_events() {
     let db_path = temp_database_path();

@@ -95,6 +95,7 @@ const API_JSON_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 /// Sessions the local developer API server until the process is stopped.
 pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Result<()> {
     let output = TerminalOutput;
+    let local_component_token = local::api_component_token()?;
     let tool_registry = Arc::new(ToolProviderRegistry::with_persistent_mcp_sessions());
     let plugin_store = Arc::new(crate::plugin::PluginStore::default_store()?);
     for plugin in plugin_store.installed_plugins()? {
@@ -153,7 +154,7 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
         plugin_catalog,
         tool_registry,
         session_manager,
-        runtime_access: RuntimeAccessControl::hosted(),
+        runtime_access: RuntimeAccessControl::hosted(local_component_token),
         notifier_test_notifications,
         shutdown_tx: shutdown_tx.clone(),
     };

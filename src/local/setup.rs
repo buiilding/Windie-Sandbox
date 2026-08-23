@@ -7,11 +7,16 @@
 
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
+use uuid::Uuid;
 
 const ENV_FILE_NAME: &str = ".env";
 const BIFROST_DIR: &str = "bifrost";
@@ -23,6 +28,7 @@ const TRAY_LOG_FILE_NAME: &str = "windie-tray.log";
 const TRAY_PID_FILE_NAME: &str = "windie-tray.pid";
 const NOTIFIER_LOG_FILE_NAME: &str = "windie-notifier.log";
 const NOTIFIER_PID_FILE_NAME: &str = "windie-notifier.pid";
+const API_COMPONENT_TOKEN_FILE_NAME: &str = "api-component.token";
 const LLM_ENV_KEYS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -134,6 +140,77 @@ pub fn ensure_windie_layout() -> Result<WindieLayout> {
     }
 
     Ok(layout)
+}
+
+/// Returns the credential shared by the local API and presentation components.
+///
+/// The token is generated once under Windie's private data directory and is
+/// never exposed to the hosted Inspector. Local components send it only when
+/// reading the API's internal notification streams, which keeps those streams
+/// protected after the browser-facing API authorization boundary was added.
+pub fn api_component_token() -> Result<String> {
+    let layout = ensure_windie_layout()?;
+    let path = layout.root.join(API_COMPONENT_TOKEN_FILE_NAME);
+
+    loop {
+        match fs::read_to_string(&path) {
+            Ok(token) => {
+                let token = token.trim();
+                if token.is_empty() {
+                    return Err(anyhow!(
+                        "Windie local component token file {} is empty",
+                        path.display()
+                    ));
+                }
+                return Ok(token.to_string());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to read Windie local component token {}",
+                        path.display()
+                    )
+                });
+            }
+        }
+
+        let token = Uuid::new_v4().simple().to_string();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+
+        match options.open(&path) {
+            Ok(mut file) => {
+                file.write_all(token.as_bytes()).with_context(|| {
+                    format!(
+                        "failed to write Windie local component token {}",
+                        path.display()
+                    )
+                })?;
+                file.write_all(b"\n").with_context(|| {
+                    format!(
+                        "failed to finish Windie local component token {}",
+                        path.display()
+                    )
+                })?;
+                return Ok(token);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Another Windie component won the creation race. Read its
+                // token on the next loop iteration rather than replacing it.
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to create Windie local component token {}",
+                        path.display()
+                    )
+                });
+            }
+        }
+    }
 }
 
 /// Returns the only supported Windie provider-key environment file path.

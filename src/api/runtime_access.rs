@@ -28,6 +28,7 @@ pub(super) struct HostedAccountVerifier {
     http: reqwest::Client,
     auth_url: String,
     publishable_key: String,
+    local_component_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,7 +59,7 @@ pub(super) struct RuntimeAccessResponse {
 
 impl RuntimeAccessControl {
     /// Builds the policy used by the real localhost API process.
-    pub(super) fn hosted() -> Self {
+    pub(super) fn hosted(local_component_token: String) -> Self {
         Self::Hosted(HostedAccountVerifier {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -66,6 +67,7 @@ impl RuntimeAccessControl {
                 .expect("Windie hosted-account HTTP client should initialize"),
             auth_url: crate::config::auth_url(),
             publishable_key: crate::config::auth_publishable_key(),
+            local_component_token,
         })
     }
 
@@ -82,6 +84,7 @@ impl RuntimeAccessControl {
             http: reqwest::Client::new(),
             auth_url,
             publishable_key: "test-publishable-key".to_string(),
+            local_component_token: "test-local-component-token".to_string(),
         })
     }
 
@@ -99,6 +102,18 @@ impl RuntimeAccessControl {
 
     fn is_unrestricted(&self) -> bool {
         matches!(self, Self::UnrestrictedForIsolatedTests)
+    }
+
+    /// Returns whether a local presentation component supplied the private
+    /// credential for one of the internal notification streams.
+    fn authenticates_local_component(&self, headers: &HeaderMap) -> bool {
+        match self {
+            Self::Hosted(verifier) => headers
+                .get(crate::config::LOCAL_COMPONENT_TOKEN_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == verifier.local_component_token),
+            Self::UnrestrictedForIsolatedTests => true,
+        }
     }
 }
 
@@ -170,6 +185,14 @@ pub(super) async fn authorize_runtime_request(
         return next.run(request).await;
     }
 
+    if local_component_route(request.method(), request.uri().path())
+        && state
+            .runtime_access
+            .authenticates_local_component(request.headers())
+    {
+        return next.run(request).await;
+    }
+
     let account = match state.runtime_access.authenticate(request.headers()).await {
         Ok(account) => account,
         Err(failure) => return authentication_failure_response(failure),
@@ -209,6 +232,20 @@ fn public_runtime_route(method: &Method, path: &str) -> bool {
             | (&Method::GET, "/api/status")
             | (&Method::POST, "/api/shutdown")
             | (&Method::OPTIONS, _)
+    )
+}
+
+/// Internal event streams are available to the local notifier only after it
+/// proves possession of the user-local component credential. They remain
+/// protected from arbitrary loopback clients and do not require a hosted
+/// account token because the notifier is a peer process of this API server.
+fn local_component_route(method: &Method, path: &str) -> bool {
+    matches!(
+        (method, path),
+        (&Method::GET, "/api/events")
+            | (&Method::GET, "/api/events/cursor")
+            | (&Method::GET, "/api/dev/notifications")
+            | (&Method::GET, "/api/dev/tray-notifications")
     )
 }
 
