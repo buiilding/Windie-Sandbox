@@ -148,6 +148,7 @@ fn open_local_http_stream(
     connection: &str,
 ) -> Result<BufReader<TcpStream>> {
     let address = crate::config::api_address();
+    let component_token = crate::local::api_component_token()?;
     let socket = address
         .to_socket_addrs()?
         .next()
@@ -156,7 +157,8 @@ fn open_local_http_stream(
     stream.set_write_timeout(Some(CONNECT_TIMEOUT))?;
     stream.write_all(
         format!(
-            "GET {path} HTTP/1.1\r\nHost: {address}\r\nAccept: {accept}\r\nConnection: {connection}\r\n\r\n"
+            "GET {path} HTTP/1.1\r\nHost: {address}\r\nAccept: {accept}\r\nConnection: {connection}\r\n{}: {component_token}\r\n\r\n",
+            crate::config::LOCAL_COMPONENT_TOKEN_HEADER,
         )
         .as_bytes(),
     )?;
@@ -241,14 +243,30 @@ fn load_completion_cursor() -> Result<Option<i64>> {
 /// This snapshot-and-subscribe sequence means a completion inserted between
 /// the cursor request and the SSE connection is replayed rather than skipped.
 fn initialize_completion_cursor() -> Result<i64> {
-    match load_completion_cursor()? {
-        Some(cursor) => Ok(cursor),
-        None => {
-            let cursor = latest_completed_event_cursor()?;
-            save_completion_cursor(cursor)?;
-            Ok(cursor)
-        }
+    let stored_cursor = load_completion_cursor()?;
+    let latest_cursor = latest_completed_event_cursor()?;
+    let cursor = completion_cursor_for_current_store(stored_cursor, latest_cursor);
+
+    if stored_cursor != Some(cursor) {
+        save_completion_cursor(cursor)?;
     }
+
+    Ok(cursor)
+}
+
+/// Chooses a safe notification cursor for the database currently serving the
+/// local API.
+///
+/// The cursor file survives database resets, restores, and replacement during
+/// upgrades. A saved cursor beyond the current database's latest event cannot
+/// ever be reached by that database, so retaining it would suppress every
+/// future notification. In that case, start after the current latest event,
+/// just as a first-run notifier does. A saved cursor at or before the latest
+/// event remains valid and is retained so missed completions can be replayed.
+fn completion_cursor_for_current_store(stored_cursor: Option<i64>, latest_cursor: i64) -> i64 {
+    stored_cursor
+        .filter(|cursor| *cursor <= latest_cursor)
+        .unwrap_or(latest_cursor)
 }
 
 /// Reads the API's current durable completion cursor without consuming events.
@@ -341,6 +359,14 @@ mod tests {
 
         assert_eq!(empty.latest_event_id.unwrap_or(0), 0);
         assert_eq!(completed.latest_event_id.unwrap_or(0), 42);
+    }
+
+    #[test]
+    fn completion_cursor_resets_after_the_database_event_log_rewinds() {
+        assert_eq!(completion_cursor_for_current_store(Some(580), 128), 128);
+        assert_eq!(completion_cursor_for_current_store(Some(128), 128), 128);
+        assert_eq!(completion_cursor_for_current_store(Some(100), 128), 100);
+        assert_eq!(completion_cursor_for_current_store(None, 128), 128);
     }
 
     #[test]

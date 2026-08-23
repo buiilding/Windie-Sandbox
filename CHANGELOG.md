@@ -9,6 +9,16 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 - No unreleased changes yet.
 
+## [0.4.1] - 2026-08-23
+
+- Fixed installed desktop notifications after hosted API pairing. The local
+  notifier now uses a private per-installation component credential only for
+  its protected internal event streams, rather than requiring a browser
+  account token.
+- Made the notifier recover automatically when a local Windie database is
+  reset, restored, or replaced. It discards an event cursor that cannot exist
+  in the current database instead of permanently skipping future completions.
+
 ## [0.4.0] - 2026-08-20
 
 - Fixed cross-platform native notification callbacks, cleanup commands, and
@@ -394,7 +404,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.1
 [0.4.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.0
 [0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
 [0.3.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.1

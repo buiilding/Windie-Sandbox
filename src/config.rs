@@ -6,6 +6,10 @@
 
 use std::env;
 
+/// Header used by local Windie presentation components for protected internal
+/// event streams. It is never sent by the hosted Inspector.
+pub const LOCAL_COMPONENT_TOKEN_HEADER: &str = "x-windie-component-token";
+
 /// Windie's hosted account service. The URL and publishable key are public
 /// application configuration; they identify the Supabase project whose user
 /// sessions a local runtime will accept.
