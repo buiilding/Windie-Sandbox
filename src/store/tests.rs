@@ -3145,6 +3145,64 @@ fn atomically_saves_assistant_message_session_head_and_event() {
 }
 
 #[test]
+fn atomically_saves_wakeup_as_user_message_without_recording_user_activity() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let session_id = SessionId::new("atomic-wakeup-message");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    let claimed = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap();
+    let user_activity_before = claimed.session.last_user_activity_at;
+
+    let commit = store
+        .insert_session_runtime_message(
+            &session_id,
+            &claimed.claim,
+            &conversation_id,
+            SessionRuntimeMessage::Wakeup {
+                parent_message_id: Some(&user_id),
+                content: "Windie wakeup",
+            },
+        )
+        .unwrap();
+
+    let wakeup = store
+        .load_message(&conversation_id, &commit.message_id)
+        .unwrap();
+    assert_eq!(wakeup.role, Role::User);
+    assert_eq!(wakeup.content, "Windie wakeup");
+    let session = store.load_session(&session_id).unwrap();
+    assert_eq!(
+        session.current_head_message_id.as_ref(),
+        Some(&commit.message_id)
+    );
+    assert_eq!(session.last_user_activity_at, user_activity_before);
+    assert!(matches!(
+        commit.event,
+        Some(SessionEventRecord {
+            event: SessionEvent::WakeupMessageSaved { message_id },
+            ..
+        }) if message_id == wakeup.id.as_ref().unwrap().as_str()
+    ));
+}
+
+#[test]
 fn atomic_session_message_rolls_back_when_event_insert_fails() {
     let mut store = Store::open_memory().unwrap();
     let conversation_id = store.create_conversation("openai/test").unwrap();

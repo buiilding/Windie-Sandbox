@@ -7,7 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+- Changed scheduled and manual wakeups into durable, runtime-generated
+  user-role messages. Each wakeup now appears in the conversation tree and
+  becomes the parent of the assistant response, without falsely recording
+  autonomous work as human user activity.
 
 ## [0.4.2] - 2026-08-24
 

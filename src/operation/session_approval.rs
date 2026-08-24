@@ -27,7 +27,6 @@ pub fn list_session_tool_approvals_with_registry(
             tools: registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
     )
 }
@@ -168,7 +167,6 @@ where
             tools: runtime.tools,
             plugin_catalog: runtime.plugin_catalog,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
     )?
     .is_empty()
@@ -185,7 +183,6 @@ where
         conversation_id,
         Some(head_message_id),
         runtime,
-        None,
     )
     .await
 }

@@ -423,7 +423,7 @@ view.
    approval-waiting session.
 5. Reduce `assistant_delta`, `reasoning_delta`, and `tool_call_delta` events
    into a transient pending preview.
-6. On `input_started`, `assistant_message_saved`, or `tool_result_saved`, reload
+6. On `input_started`, `wakeup_message_saved`, `assistant_message_saved`, or `tool_result_saved`, reload
    the relevant conversation head and advance the session head.
 7. On `completed`, `failed`, `cancelled`, or `waiting_for_approval`, reconcile
    the durable session record, pending preview, and subscription.

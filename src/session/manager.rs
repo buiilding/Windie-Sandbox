@@ -24,7 +24,9 @@ use crate::operation::{self, MessageInputPart, RuntimeDependencies, SessionEvent
 use crate::output::RuntimeOutput;
 use crate::plugin::PluginCatalog;
 use crate::runtime::RuntimeMessagePersistence;
-use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
+use crate::runtime::wakeup::{
+    IDLE_WAKEUP_MESSAGE, MANUAL_WAKEUP_MESSAGE, ToolDecisionWakeup, Wakeup,
+};
 use crate::session::{
     IdleWakeupInterval, Session, SessionEvent, SessionEventRecord, SessionExecutionClaim,
     SessionExecutionOwner, SessionExecutionStart, SessionId, SessionQueryResult, SessionResolution,
@@ -212,10 +214,8 @@ impl SessionManager {
         store.set_session_idle_wakeup_schedule(session_id, keep_awake, interval)
     }
 
-    /// Starts one explicit user-requested wakeup without adding a user message.
-    ///
-    /// The durable claim records this request as user activity, so it cannot
-    /// race an autonomous wakeup and restarts the selected session's timer.
+    /// Starts one explicit user-requested wakeup from a durable,
+    /// runtime-generated user-role message.
     pub fn wake_session_now(&self, session_id: &SessionId) -> Result<Session> {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
@@ -225,11 +225,14 @@ impl SessionManager {
             SessionExecutionOwner::Api,
             SessionExecutionStart::ManualWakeup,
         )?;
-        drop(store);
 
-        let session = claimed.session.clone();
+        let (session, record) =
+            persist_wakeup_message(&mut store, &claimed, MANUAL_WAKEUP_MESSAGE)?;
+        let session_id = session.id.clone();
+        self.channel_for_session(&session_id).send(record).ok();
+        drop(store);
         self.spawn(
-            claimed.session.id,
+            session_id,
             claimed.claim,
             operation::SessionExecutionCommand::ManualWakeup,
         );
@@ -883,8 +886,8 @@ impl SessionManager {
         }
     }
 
-    /// Claims and starts one eligible autonomous session without adding a user
-    /// message to its conversation tree.
+    /// Claims and starts one eligible autonomous session from a durable,
+    /// runtime-generated user-role message.
     fn start_idle_wakeup(
         &self,
         session_id: &SessionId,
@@ -914,9 +917,12 @@ impl SessionManager {
             Ok(claimed) => claimed,
             Err(_) => return Ok(false),
         };
+        let (session, record) = persist_wakeup_message(&mut store, &claimed, IDLE_WAKEUP_MESSAGE)?;
+        let session_id = session.id.clone();
+        self.channel_for_session(&session_id).send(record).ok();
         drop(store);
         self.spawn(
-            claimed.session.id,
+            session_id,
             claimed.claim,
             operation::SessionExecutionCommand::IdleWakeup,
         );
@@ -1033,6 +1039,36 @@ impl SessionManager {
 
         Ok(())
     }
+}
+
+/// Saves a visible wakeup instruction under the claimed session head.
+///
+/// The store transaction verifies the execution claim and advances the head,
+/// so the ensuing assistant response necessarily becomes a child of this
+/// durable user-role wakeup message.
+fn persist_wakeup_message(
+    store: &mut Store,
+    claimed: &crate::session::ClaimedSession,
+    content: &str,
+) -> Result<(Session, SessionEventRecord)> {
+    let commit = store.insert_session_runtime_message(
+        &claimed.session.id,
+        &claimed.claim,
+        &claimed.session.conversation_id,
+        SessionRuntimeMessage::Wakeup {
+            parent_message_id: claimed.session.current_head_message_id.as_ref(),
+            content,
+        },
+    )?;
+    let session = store.load_session(&claimed.session.id)?;
+    debug_assert_eq!(
+        session.current_head_message_id.as_ref(),
+        Some(&commit.message_id)
+    );
+    let record = commit.event.ok_or_else(|| {
+        anyhow::anyhow!("wakeup session message commit did not create a replay event")
+    })?;
+    Ok((session, record))
 }
 
 struct SessionMessages {

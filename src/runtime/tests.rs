@@ -570,7 +570,6 @@ fn pending_latest_head_approvals(
             tools: &registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
     )
 }
@@ -590,7 +589,6 @@ fn validate_latest_head_availability(
             tools: &registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
     )?;
     let messages = match head_message_id.as_ref() {
@@ -608,50 +606,6 @@ fn validate_latest_head_availability(
         "tool call requires result before query: {}",
         tool_call.id
     )))
-}
-
-#[tokio::test]
-async fn wakeup_prompt_is_ephemeral_model_context() {
-    let mut store = Store::open_memory().unwrap();
-    let conversation_id = store.create_conversation("openai/test").unwrap();
-    let user_id = store
-        .insert_message(&conversation_id, None, Role::User, "hello", None)
-        .unwrap();
-    let registry = runtime_test_registry();
-    let llm = CapturingLlm::new();
-    let events = TestRuntimeMessagePersistence;
-
-    advance_until_blocked(
-        &NoopOutput,
-        &llm,
-        &mut store,
-        RuntimeInput {
-            conversation_id: &conversation_id,
-            head_message_id: Some(&user_id),
-            tools: &registry,
-            plugin_catalog: None,
-            model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: Some("wake up and choose useful work"),
-        },
-        &events,
-    )
-    .await
-    .unwrap();
-
-    let messages = llm.messages.lock().unwrap();
-    assert_eq!(messages.last().unwrap().role, Role::System);
-    assert_eq!(
-        messages.last().unwrap().content,
-        "wake up and choose useful work"
-    );
-    drop(messages);
-    assert!(
-        store
-            .load_message_tree(&conversation_id)
-            .unwrap()
-            .iter()
-            .all(|message| message.content != "wake up and choose useful work")
-    );
 }
 
 async fn run_latest_head_once<O, L>(
@@ -705,7 +659,6 @@ where
             tools: registry,
             plugin_catalog: None,
             model_request,
-            wakeup_prompt: None,
         },
         events,
     )
@@ -765,7 +718,6 @@ where
             tools: registry,
             plugin_catalog: None,
             model_request,
-            wakeup_prompt: None,
         },
         events,
     )
@@ -959,7 +911,6 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
             tools: &registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
         &events,
     )
@@ -975,7 +926,6 @@ async fn two_explicit_head_sessions_create_sibling_assistant_messages() {
             tools: &registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
         &events,
     )
@@ -1053,7 +1003,6 @@ async fn run_head_uses_requested_head_path() {
             tools: &registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
         &events,
     )
@@ -1147,7 +1096,6 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
             tools: &registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
         &events,
     )
@@ -1180,7 +1128,6 @@ async fn explicit_run_head_uses_tree_wide_prompt_and_tools() {
             tools: &registry,
             plugin_catalog: None,
             model_request: RuntimeModelRequest::new(None, None),
-            wakeup_prompt: None,
         },
         &events,
     )

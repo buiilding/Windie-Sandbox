@@ -399,11 +399,10 @@ where
                 &session.conversation_id,
                 session.current_head_message_id.as_ref(),
                 runtime,
-                None,
             )
             .await
         }
-        SessionExecutionCommand::IdleWakeup => {
+        SessionExecutionCommand::IdleWakeup | SessionExecutionCommand::ManualWakeup => {
             advance_session_until_blocked(
                 output,
                 messages,
@@ -411,19 +410,6 @@ where
                 &session.conversation_id,
                 session.current_head_message_id.as_ref(),
                 runtime,
-                Some(crate::runtime::wakeup::IDLE_WAKEUP_PROMPT),
-            )
-            .await
-        }
-        SessionExecutionCommand::ManualWakeup => {
-            advance_session_until_blocked(
-                output,
-                messages,
-                store,
-                &session.conversation_id,
-                session.current_head_message_id.as_ref(),
-                runtime,
-                Some(crate::runtime::wakeup::MANUAL_WAKEUP_PROMPT),
             )
             .await
         }
@@ -462,7 +448,6 @@ pub(in crate::operation) async fn advance_session_until_blocked<O, E>(
     conversation_id: &ConversationId,
     head_message_id: Option<&MessageId>,
     runtime: RuntimeDependencies<'_>,
-    wakeup_prompt: Option<&str>,
 ) -> Result<RuntimeOutcome>
 where
     O: RuntimeOutput,
@@ -486,7 +471,6 @@ where
             tools: runtime.tools,
             plugin_catalog: runtime.plugin_catalog,
             model_request: RuntimeModelRequest::new(reasoning.as_ref(), prompt_cache.as_ref()),
-            wakeup_prompt,
         },
         events,
     )

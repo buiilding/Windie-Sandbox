@@ -107,6 +107,51 @@ fn saved_sse_event_includes_authoritative_message_and_session_snapshots() {
     let _ = fs::remove_file(db_path);
 }
 
+#[test]
+fn wakeup_saved_sse_event_includes_the_user_message_snapshot() {
+    let db_path = temp_database_path();
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let message_id = store
+        .insert_message(&conversation_id, None, Role::User, "Windie wakeup", None)
+        .unwrap();
+    let session_id = SessionId::new("session-wakeup-sse-snapshot");
+    store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&message_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    store
+        .update_session_status(&session_id, SessionStatus::Running, None)
+        .unwrap();
+    let record = store
+        .append_session_event(
+            &session_id,
+            SessionEvent::WakeupMessageSaved {
+                message_id: message_id.as_str().to_string(),
+            },
+        )
+        .unwrap();
+
+    let body: serde_json::Value =
+        serde_json::from_str(&session_event_data(Some(db_path.as_path()), &record)).unwrap();
+
+    assert_eq!(body["type"], "wakeup_message_saved");
+    assert_eq!(body["message"]["id"], message_id.as_str());
+    assert_eq!(body["message"]["role"], "user");
+    assert_eq!(body["message"]["content"], "Windie wakeup");
+    assert_eq!(
+        body["session"]["current_head_message_id"],
+        message_id.as_str()
+    );
+
+    let _ = fs::remove_file(db_path);
+}
+
 #[tokio::test]
 async fn hosted_account_must_pair_before_using_the_local_runtime() {
     let db_path = temp_database_path();
@@ -1417,6 +1462,17 @@ async fn wake_session_now_route_starts_an_explicit_wakeup() {
     let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
     assert!(!session.keep_awake);
     assert!(session.last_idle_wakeup_completed_at.is_none());
+    let messages = Store::open_at(&db_path)
+        .unwrap()
+        .load_message_tree(&conversation_id)
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, Role::User);
+    assert_eq!(
+        messages[0].content,
+        crate::runtime::wakeup::MANUAL_WAKEUP_MESSAGE
+    );
+    assert_eq!(session.current_head_message_id, messages[0].id);
     let _ = fs::remove_file(db_path);
 }
 

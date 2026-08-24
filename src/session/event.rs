@@ -14,6 +14,7 @@ pub enum SessionEventKind {
     ReasoningDelta,
     ToolCallDelta,
     AssistantAttemptReset,
+    WakeupMessageSaved,
     AssistantMessageSaved,
     ToolResultSaved,
     WaitingForApproval,
@@ -32,6 +33,7 @@ impl SessionEventKind {
             Self::ReasoningDelta => "reasoning_delta",
             Self::ToolCallDelta => "tool_call_delta",
             Self::AssistantAttemptReset => "assistant_attempt_reset",
+            Self::WakeupMessageSaved => "wakeup_message_saved",
             Self::AssistantMessageSaved => "assistant_message_saved",
             Self::ToolResultSaved => "tool_result_saved",
             Self::WaitingForApproval => "waiting_for_approval",
@@ -67,6 +69,10 @@ pub enum SessionEvent {
         arguments_delta: Option<String>,
     },
     AssistantAttemptReset,
+    /// A runtime-generated user-role wakeup message was saved at the session head.
+    WakeupMessageSaved {
+        message_id: String,
+    },
     AssistantMessageSaved {
         message_id: String,
     },
@@ -94,6 +100,7 @@ impl SessionEvent {
             Self::ReasoningDelta { .. } => SessionEventKind::ReasoningDelta,
             Self::ToolCallDelta { .. } => SessionEventKind::ToolCallDelta,
             Self::AssistantAttemptReset => SessionEventKind::AssistantAttemptReset,
+            Self::WakeupMessageSaved { .. } => SessionEventKind::WakeupMessageSaved,
             Self::AssistantMessageSaved { .. } => SessionEventKind::AssistantMessageSaved,
             Self::ToolResultSaved { .. } => SessionEventKind::ToolResultSaved,
             Self::WaitingForApproval => SessionEventKind::WaitingForApproval,

@@ -7,7 +7,7 @@ Mental model:
 ### Conversation
 
 - conversation/id.rs: typed IDs; ConversationId, MessageId, ImageAssetId, and CompactionId.
-- conversation/message.rs: Core Message node, Message + Role. Roles are system, user, assistant, tool. System messages include the user-owned conversation system prompt and generated Windie runtime metadata; User is user input; Assistant is assistant response; Tool is the tool output corresponding to an assistant tool call.
+- conversation/message.rs: Core Message node, Message + Role. Roles are system, user, assistant, tool. System messages include the user-owned conversation system prompt and generated Windie runtime metadata; User is human input or an explicit runtime-generated wakeup instruction; Assistant is assistant response; Tool is the tool output corresponding to an assistant tool call.
 - conversation/assistant_metadata.rs: Assistant message metadata; tool calls, reasoning, audio, annotations, citations, token usage, and refusals. Also includes the tool-call ID that links a tool result to its assistant request.
 - conversation/mod.rs: Module boundary and re-exports for conversation types.
 - conversation/message_part.rs: Shared ordered text/image parts for persisted messages. User and `role: tool` messages can both carry these parts; message role and assistant-tool-call linkage remain separate.

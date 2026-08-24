@@ -521,6 +521,9 @@ impl TerminalOutput {
                 arguments_delta.as_deref().unwrap_or("")
             ),
             SessionEvent::AssistantAttemptReset => {}
+            SessionEvent::WakeupMessageSaved { message_id } => {
+                println!("wakeup message saved {message_id}");
+            }
             SessionEvent::AssistantMessageSaved { message_id } => {
                 println!("assistant message saved {message_id}");
             }
