@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- No unreleased changes yet.
+
+## [0.4.2] - 2026-08-24
+
 - Added persistent per-session idle-wakeup schedules with 15-minute,
   30-minute, one-hour, and two-hour cadences. The local API now returns the
   authoritative next wakeup time, and the Inspector shows a live countdown.
@@ -411,7 +415,8 @@ tool providers.
 - Added the Windie wordmark, Inspector and extension previews, and initial
   project documentation.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.2
 [0.4.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.1
 [0.4.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.0
 [0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2

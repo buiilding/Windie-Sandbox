@@ -8,6 +8,12 @@ for GitHub release descriptions; the detailed engineering history is kept in
 
 - No unreleased changes yet.
 
+## [0.4.2] - 2026-08-24
+
+- Added controls for choosing when an awake session checks back in.
+- Added a timer showing when the next wakeup will happen.
+- Added a Wake now action to start a session early.
+
 ## [0.4.1] - 2026-08-23
 
 - Fixed desktop notifications for the hosted Windie app. Notifications now
@@ -102,7 +108,8 @@ tool providers.
 - Added the localhost API, local setup commands, the one-line installer, and
   release packaging.
 
-[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/buiilding/Windie-Sandbox/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.2
 [0.4.1]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.1
 [0.4.0]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.4.0
 [0.3.2]: https://github.com/buiilding/Windie-Sandbox/releases/tag/v0.3.2
