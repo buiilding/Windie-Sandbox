@@ -6,7 +6,7 @@ use super::message::{
 };
 use super::*;
 
-use crate::session::{SessionExecutionStart, SessionInputId};
+use crate::session::{IdleWakeupInterval, SessionExecutionStart, SessionInputId};
 
 const GLOBAL_SESSION_EVENT_BATCH_SIZE: i64 = 256;
 
@@ -524,6 +524,7 @@ impl Store {
                     reasoning,
                     error,
                     keep_awake,
+                    idle_wakeup_interval,
                     last_user_activity_at,
                     last_idle_wakeup_completed_at,
                     created_at,
@@ -557,6 +558,7 @@ impl Store {
                     reasoning,
                     error,
                     keep_awake,
+                    idle_wakeup_interval,
                     last_user_activity_at,
                     last_idle_wakeup_completed_at,
                     created_at,
@@ -595,6 +597,7 @@ impl Store {
                     reasoning,
                     error,
                     keep_awake,
+                    idle_wakeup_interval,
                     last_user_activity_at,
                     last_idle_wakeup_completed_at,
                     created_at,
@@ -613,14 +616,15 @@ impl Store {
             .context("failed to decode conversation runtime sessions")
     }
 
-    /// Enables or pauses autonomous idle wakeups for one session.
+    /// Persists one session's autonomous wakeup state and cadence.
     ///
     /// Turning the setting on counts as user activity so a long-dormant
     /// session does not wake immediately after the user enables it.
-    pub fn set_session_keep_awake(
+    pub fn set_session_idle_wakeup_schedule(
         &mut self,
         session_id: &SessionId,
         keep_awake: bool,
+        interval: Option<IdleWakeupInterval>,
     ) -> Result<Session> {
         self.ensure_session_exists(session_id)?;
         let now = now_millis()?;
@@ -629,13 +633,19 @@ impl Store {
                 "
                 UPDATE sessions
                 SET keep_awake = ?1,
-                    last_user_activity_at = CASE WHEN ?1 THEN ?2 ELSE last_user_activity_at END,
-                    updated_at = ?2
-                WHERE id = ?3
+                    idle_wakeup_interval = COALESCE(?2, idle_wakeup_interval),
+                    last_user_activity_at = CASE WHEN ?1 THEN ?3 ELSE last_user_activity_at END,
+                    updated_at = ?3
+                WHERE id = ?4
                 ",
-                params![keep_awake, now, session_id.as_str()],
+                params![
+                    keep_awake,
+                    interval.map(IdleWakeupInterval::as_storage),
+                    now,
+                    session_id.as_str()
+                ],
             )
-            .context("failed to update session keep-awake setting")?;
+            .context("failed to update session idle-wakeup schedule")?;
         self.load_session(session_id)
     }
 
@@ -1038,6 +1048,8 @@ impl Store {
             expected_head,
             requires_idle_wakeup,
             idle_eligible_before,
+            expected_idle_interval,
+            records_user_activity,
             conflict_message,
         ) = match &start {
             SessionExecutionStart::Runnable => (
@@ -1046,6 +1058,8 @@ impl Store {
                 None,
                 false,
                 None,
+                None,
+                false,
                 "session is already running or waiting for approval",
             ),
             SessionExecutionStart::RunnableAtHead(expected_head) => (
@@ -1054,6 +1068,8 @@ impl Store {
                 expected_head.as_ref().map(MessageId::as_str),
                 false,
                 None,
+                None,
+                false,
                 "session changed while claiming execution; reload and retry",
             ),
             SessionExecutionStart::WaitingForApproval => (
@@ -1062,15 +1078,32 @@ impl Store {
                 None,
                 false,
                 None,
+                None,
+                false,
                 "session is no longer waiting for approval",
             ),
-            SessionExecutionStart::IdleWakeup { eligible_before } => (
+            SessionExecutionStart::IdleWakeup {
+                eligible_before,
+                interval,
+            } => (
                 false,
                 false,
                 None,
                 true,
                 Some(*eligible_before),
+                Some(interval.as_storage()),
+                false,
                 "session is not eligible for an idle wakeup",
+            ),
+            SessionExecutionStart::ManualWakeup => (
+                false,
+                false,
+                None,
+                false,
+                None,
+                None,
+                true,
+                "session is already running or waiting for approval",
             ),
         };
         let changed = self
@@ -1082,6 +1115,7 @@ impl Store {
                     error = NULL,
                     execution_owner = ?2,
                     execution_claim_id = ?3,
+                    last_user_activity_at = CASE WHEN ?12 THEN ?4 ELSE last_user_activity_at END,
                     updated_at = ?4
                 WHERE id = ?5
                   AND execution_owner IS NULL
@@ -1095,6 +1129,7 @@ impl Store {
                       ?10 = 0
                       OR (
                           keep_awake = 1
+                          AND idle_wakeup_interval = ?13
                           AND last_user_activity_at <= ?11
                           AND (
                               last_idle_wakeup_completed_at IS NULL
@@ -1115,6 +1150,8 @@ impl Store {
                     expected_head,
                     requires_idle_wakeup,
                     idle_eligible_before,
+                    records_user_activity,
+                    expected_idle_interval,
                 ],
             )
             .context("failed to claim runtime session execution")?;
@@ -1645,6 +1682,7 @@ fn sessions_at_head(
                 reasoning,
                 error,
                 keep_awake,
+                idle_wakeup_interval,
                 last_user_activity_at,
                 last_idle_wakeup_completed_at,
                 created_at,
@@ -1702,6 +1740,18 @@ fn session_from_row(row: &Row<'_>) -> rusqlite::Result<Session> {
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
         })?;
+    let interval_text = row.get::<_, String>(9)?;
+    let idle_wakeup_interval =
+        IdleWakeupInterval::from_storage(&interval_text).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                9,
+                Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unknown idle wakeup interval: {interval_text}"),
+                )),
+            )
+        })?;
 
     Ok(Session {
         id: SessionId::new(row.get::<_, String>(0)?),
@@ -1713,9 +1763,10 @@ fn session_from_row(row: &Row<'_>) -> rusqlite::Result<Session> {
         reasoning,
         error: row.get(7)?,
         keep_awake: row.get::<_, i64>(8)? != 0,
-        last_user_activity_at: row.get(9)?,
-        last_idle_wakeup_completed_at: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        idle_wakeup_interval,
+        last_user_activity_at: row.get(10)?,
+        last_idle_wakeup_completed_at: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
     })
 }

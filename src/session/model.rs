@@ -7,6 +7,54 @@ use crate::llm::ReasoningRequest;
 
 use super::{SessionExecutionClaimId, SessionId};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// User-selectable interval between autonomous idle wakeups.
+///
+/// This is a closed set instead of an arbitrary duration so the Inspector can
+/// communicate the cost and frequency of autonomous work clearly. The value
+/// is persisted with the session and is the source of truth for scheduling.
+pub enum IdleWakeupInterval {
+    FifteenMinutes,
+    #[default]
+    ThirtyMinutes,
+    OneHour,
+    TwoHours,
+}
+
+impl IdleWakeupInterval {
+    /// Returns the stable SQLite representation for this interval.
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::FifteenMinutes => "fifteen_minutes",
+            Self::ThirtyMinutes => "thirty_minutes",
+            Self::OneHour => "one_hour",
+            Self::TwoHours => "two_hours",
+        }
+    }
+
+    /// Decodes one persisted interval value.
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "fifteen_minutes" => Some(Self::FifteenMinutes),
+            "thirty_minutes" => Some(Self::ThirtyMinutes),
+            "one_hour" => Some(Self::OneHour),
+            "two_hours" => Some(Self::TwoHours),
+            _ => None,
+        }
+    }
+
+    /// Returns the duration used by the durable scheduler in milliseconds.
+    pub fn milliseconds(self) -> i64 {
+        match self {
+            Self::FifteenMinutes => 15 * 60 * 1_000,
+            Self::ThirtyMinutes => 30 * 60 * 1_000,
+            Self::OneHour => 60 * 60 * 1_000,
+            Self::TwoHours => 2 * 60 * 60 * 1_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// Durable lifecycle state for one session.
@@ -44,8 +92,15 @@ pub enum SessionExecutionStart {
     /// Resumes a session that is paused for an approval decision.
     WaitingForApproval,
     /// Starts one enabled session after its user-activity and wakeup cooldowns
-    /// have both elapsed.
-    IdleWakeup { eligible_before: i64 },
+    /// have both elapsed for the persisted interval that was observed by the
+    /// scheduler.
+    IdleWakeup {
+        eligible_before: i64,
+        interval: IdleWakeupInterval,
+    },
+    /// Starts one explicit user-requested wakeup and atomically records that
+    /// request as user activity, postponing the next autonomous wakeup.
+    ManualWakeup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,12 +195,29 @@ pub struct Session {
     pub error: Option<String>,
     /// Whether this session should autonomously wake after the user is idle.
     pub keep_awake: bool,
+    /// Durable cadence used when this session autonomously wakes.
+    pub idle_wakeup_interval: IdleWakeupInterval,
     /// Latest explicit user interaction with this session, in Unix milliseconds.
     pub last_user_activity_at: i64,
     /// Completion time of the most recent idle wakeup, in Unix milliseconds.
     pub last_idle_wakeup_completed_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+impl Session {
+    /// Returns the next autonomous wakeup time, if this session is enabled.
+    ///
+    /// The newer of explicit user activity and the most recently completed
+    /// autonomous wakeup is the cooldown boundary. This matches the scheduler
+    /// and keeps the Inspector's visible timer authoritative.
+    pub fn next_idle_wakeup_at(&self) -> Option<i64> {
+        self.keep_awake.then(|| {
+            self.last_user_activity_at
+                .max(self.last_idle_wakeup_completed_at.unwrap_or(i64::MIN))
+                .saturating_add(self.idle_wakeup_interval.milliseconds())
+        })
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -28,6 +28,8 @@ pub enum SessionExecutionCommand {
     Continue,
     /// Runs one autonomous turn after an enabled session has been idle long enough.
     IdleWakeup,
+    /// Runs one explicit user-requested wakeup without adding a user message.
+    ManualWakeup,
     ApproveTool(ToolCallId),
     DenyTool(ToolCallId),
 }
@@ -410,6 +412,18 @@ where
                 session.current_head_message_id.as_ref(),
                 runtime,
                 Some(crate::runtime::wakeup::IDLE_WAKEUP_PROMPT),
+            )
+            .await
+        }
+        SessionExecutionCommand::ManualWakeup => {
+            advance_session_until_blocked(
+                output,
+                messages,
+                store,
+                &session.conversation_id,
+                session.current_head_message_id.as_ref(),
+                runtime,
+                Some(crate::runtime::wakeup::MANUAL_WAKEUP_PROMPT),
             )
             .await
         }

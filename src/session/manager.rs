@@ -26,15 +26,14 @@ use crate::plugin::PluginCatalog;
 use crate::runtime::RuntimeMessagePersistence;
 use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
 use crate::session::{
-    Session, SessionEvent, SessionEventRecord, SessionExecutionClaim, SessionExecutionOwner,
-    SessionExecutionStart, SessionId, SessionQueryResult, SessionResolution, SessionStatus,
+    IdleWakeupInterval, Session, SessionEvent, SessionEventRecord, SessionExecutionClaim,
+    SessionExecutionOwner, SessionExecutionStart, SessionId, SessionQueryResult, SessionResolution,
+    SessionStatus,
 };
 use crate::store::{SessionRuntimeMessage, Store};
 use crate::tool::ToolProviderRegistry;
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
-/// Idle duration between explicit user activity or completed idle wakeups.
-pub const IDLE_WAKEUP_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const IDLE_WAKEUP_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Live subscription to events from one session.
@@ -200,12 +199,41 @@ impl SessionManager {
         )
     }
 
-    /// Persists whether this session should autonomously wake after inactivity.
-    pub fn set_keep_awake(&self, session_id: &SessionId, keep_awake: bool) -> Result<Session> {
+    /// Persists one session's enabled state and cadence for idle wakeups.
+    pub fn set_idle_wakeup_schedule(
+        &self,
+        session_id: &SessionId,
+        keep_awake: bool,
+        interval: Option<IdleWakeupInterval>,
+    ) -> Result<Session> {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
         let mut store = self.open_store()?;
-        store.set_session_keep_awake(session_id, keep_awake)
+        store.set_session_idle_wakeup_schedule(session_id, keep_awake, interval)
+    }
+
+    /// Starts one explicit user-requested wakeup without adding a user message.
+    ///
+    /// The durable claim records this request as user activity, so it cannot
+    /// race an autonomous wakeup and restarts the selected session's timer.
+    pub fn wake_session_now(&self, session_id: &SessionId) -> Result<Session> {
+        let gate = self.session_gate(session_id);
+        let _gate = gate.lock().expect("session gate poisoned");
+        let mut store = self.open_store()?;
+        let claimed = store.claim_session_execution(
+            session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::ManualWakeup,
+        )?;
+        drop(store);
+
+        let session = claimed.session.clone();
+        self.spawn(
+            claimed.session.id,
+            claimed.claim,
+            operation::SessionExecutionCommand::ManualWakeup,
+        );
+        Ok(session)
     }
 
     /// Starts every enabled session whose user-activity and wakeup cooldowns
@@ -221,24 +249,24 @@ impl SessionManager {
 
     /// Starts eligible idle wakeups using an explicit clock value for tests.
     pub fn start_due_idle_wakeups_at(&self, now: i64) -> Result<usize> {
-        let eligible_before = now - IDLE_WAKEUP_INTERVAL.as_millis() as i64;
         let store = self.open_store()?;
         let sessions = store
             .list_sessions()?
             .into_iter()
-            .filter(|session| {
-                session.keep_awake
-                    && session.last_user_activity_at <= eligible_before
-                    && session
-                        .last_idle_wakeup_completed_at
-                        .is_none_or(|completed_at| completed_at <= eligible_before)
+            .filter_map(|session| {
+                let next_wakeup_at = session.next_idle_wakeup_at()?;
+                (next_wakeup_at <= now).then_some((
+                    session.id,
+                    now - session.idle_wakeup_interval.milliseconds(),
+                    session.idle_wakeup_interval,
+                ))
             })
             .collect::<Vec<_>>();
         drop(store);
 
         let mut started = 0;
-        for session in sessions {
-            if self.start_idle_wakeup(&session.id, eligible_before)? {
+        for (session_id, eligible_before, interval) in sessions {
+            if self.start_idle_wakeup(&session_id, eligible_before, interval)? {
                 started += 1;
             }
         }
@@ -857,7 +885,12 @@ impl SessionManager {
 
     /// Claims and starts one eligible autonomous session without adding a user
     /// message to its conversation tree.
-    fn start_idle_wakeup(&self, session_id: &SessionId, eligible_before: i64) -> Result<bool> {
+    fn start_idle_wakeup(
+        &self,
+        session_id: &SessionId,
+        eligible_before: i64,
+        interval: IdleWakeupInterval,
+    ) -> Result<bool> {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
         if self
@@ -873,7 +906,10 @@ impl SessionManager {
         let claimed = match store.claim_session_execution(
             session_id,
             SessionExecutionOwner::Api,
-            SessionExecutionStart::IdleWakeup { eligible_before },
+            SessionExecutionStart::IdleWakeup {
+                eligible_before,
+                interval,
+            },
         ) {
             Ok(claimed) => claimed,
             Err(_) => return Ok(false),

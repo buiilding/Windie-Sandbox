@@ -13,6 +13,11 @@ use crate::session::SessionId;
 /// model turn. It is not stored as user input in the conversation tree.
 pub const IDLE_WAKEUP_PROMPT: &str = "You have been woken because the user has been inactive for a while. Review the current context and use this time as you judge most useful. You may take any available action. If there is nothing useful to do, say so briefly.";
 
+/// Runtime message injected for an explicit user-requested wakeup. It has the
+/// same execution boundary as an idle wakeup, but accurately preserves the
+/// reason for the run rather than claiming that the user was inactive.
+pub const MANUAL_WAKEUP_PROMPT: &str = "The user explicitly asked you to wake now. Review the current context and use this time as you judge most useful. You may take any available action. If there is nothing useful to do, say so briefly.";
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Reason Windie should resume runtime activity on a durable session.

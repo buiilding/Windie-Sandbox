@@ -7,7 +7,14 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+- Added persistent per-session idle-wakeup schedules with 15-minute,
+  30-minute, one-hour, and two-hour cadences. The local API now returns the
+  authoritative next wakeup time, and the Inspector shows a live countdown.
+- Added an explicit Inspector **Wake now** action. It enters the same durable
+  session executor without creating a user message, records user activity to
+  reset the autonomous timer, and uses a distinct runtime wakeup context.
+- Migrated existing local databases to store each session's selected
+  idle-wakeup interval, retaining the previous 30-minute behavior by default.
 
 ## [0.4.1] - 2026-08-23
 

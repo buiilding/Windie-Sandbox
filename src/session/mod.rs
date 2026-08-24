@@ -16,6 +16,6 @@ pub use event::{SessionEvent, SessionEventKind, SessionEventRecord};
 pub use id::{SessionExecutionClaimId, SessionId, SessionInputId};
 pub use manager::{SessionManager, SessionSubscription};
 pub use model::{
-    ClaimedSession, Session, SessionExecutionClaim, SessionExecutionOwner, SessionExecutionStart,
-    SessionQueryResult, SessionResolution, SessionStatus,
+    ClaimedSession, IdleWakeupInterval, Session, SessionExecutionClaim, SessionExecutionOwner,
+    SessionExecutionStart, SessionQueryResult, SessionResolution, SessionStatus,
 };

@@ -1359,7 +1359,10 @@ async fn session_keep_awake_route_persists_the_setting() {
         app.oneshot(authed_request(
             Method::PATCH,
             &format!("/api/sessions/{session_id}/keep-awake"),
-            Some(json!({"keep_awake": true})),
+            Some(json!({
+                "keep_awake": true,
+                "idle_wakeup_interval": "one_hour"
+            })),
         ))
         .await
         .unwrap(),
@@ -1367,6 +1370,8 @@ async fn session_keep_awake_route_persists_the_setting() {
     .await;
 
     assert_eq!(response["keep_awake"], true);
+    assert_eq!(response["idle_wakeup_interval"], "one_hour");
+    assert!(response["next_idle_wakeup_at"].as_i64().is_some());
     assert!(
         Store::open_at(&db_path)
             .unwrap()
@@ -1374,6 +1379,44 @@ async fn session_keep_awake_route_persists_the_setting() {
             .unwrap()
             .keep_awake
     );
+    assert_eq!(
+        Store::open_at(&db_path)
+            .unwrap()
+            .load_session(&session_id)
+            .unwrap()
+            .idle_wakeup_interval,
+        crate::session::IdleWakeupInterval::OneHour
+    );
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn wake_session_now_route_starts_an_explicit_wakeup() {
+    let db_path = temp_database_path();
+    let app = test_app_with_gateway(db_path.clone(), "http://127.0.0.1:1");
+    let mut store = Store::open_at(&db_path).unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("manual-wakeup-api-session");
+    store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+    drop(store);
+
+    let response = response_json(
+        app.oneshot(authed_request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/wakeup"),
+            Some(json!({})),
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+
+    assert_eq!(response["status"], "running");
+    let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
+    assert!(!session.keep_awake);
+    assert!(session.last_idle_wakeup_completed_at.is_none());
     let _ = fs::remove_file(db_path);
 }
 

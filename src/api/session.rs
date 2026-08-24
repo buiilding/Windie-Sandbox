@@ -1,6 +1,7 @@
 //! Session lifecycle and event API route handlers.
 
 use super::*;
+use crate::session::IdleWakeupInterval;
 
 #[derive(Debug, Deserialize)]
 /// Request body for creating a selectable session branch.
@@ -37,6 +38,8 @@ pub(super) struct SessionHeadRequest {
 /// Request body for changing one session's autonomous idle-wakeup setting.
 pub(super) struct SetKeepAwakeRequest {
     pub(super) keep_awake: bool,
+    #[serde(default)]
+    pub(super) idle_wakeup_interval: Option<IdleWakeupInterval>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +54,8 @@ pub(super) struct SessionResponse {
     pub(super) reasoning: Option<ReasoningRequest>,
     pub(super) error: Option<String>,
     pub(super) keep_awake: bool,
+    pub(super) idle_wakeup_interval: IdleWakeupInterval,
+    pub(super) next_idle_wakeup_at: Option<i64>,
     pub(super) created_at: i64,
     pub(super) updated_at: i64,
     pub(super) queued: bool,
@@ -72,6 +77,7 @@ impl SessionResponse {
         queue_depth: usize,
         node_count: usize,
     ) -> Self {
+        let next_idle_wakeup_at = session.next_idle_wakeup_at();
         let deletion_allowed = !matches!(
             session.status,
             SessionStatus::Running | SessionStatus::WaitingForApproval
@@ -90,6 +96,8 @@ impl SessionResponse {
             reasoning: session.reasoning,
             error: session.error,
             keep_awake: session.keep_awake,
+            idle_wakeup_interval: session.idle_wakeup_interval,
+            next_idle_wakeup_at,
             created_at: session.created_at,
             updated_at: session.updated_at,
             queued: false,
@@ -122,9 +130,23 @@ pub(super) async fn set_session_keep_awake(
     Path(session_id): Path<String>,
     Json(request): Json<SetKeepAwakeRequest>,
 ) -> ApiResult<SessionResponse> {
+    let session = state.session_manager.set_idle_wakeup_schedule(
+        &SessionId::new(session_id),
+        request.keep_awake,
+        request.idle_wakeup_interval,
+    )?;
+    let store = open_store(&state)?;
+    Ok(Json(response_with_queue(&store, session)?))
+}
+
+/// Explicitly starts one user-requested wakeup without creating a user message.
+pub(super) async fn wake_session_now(
+    State(state): State<ApiState>,
+    Path(session_id): Path<String>,
+) -> ApiResult<SessionResponse> {
     let session = state
         .session_manager
-        .set_keep_awake(&SessionId::new(session_id), request.keep_awake)?;
+        .wake_session_now(&SessionId::new(session_id))?;
     let store = open_store(&state)?;
     Ok(Json(response_with_queue(&store, session)?))
 }

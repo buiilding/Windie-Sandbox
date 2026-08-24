@@ -5,8 +5,8 @@ use crate::conversation::{
     MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
 };
 use crate::session::{
-    SessionEvent, SessionEventKind, SessionExecutionOwner, SessionExecutionStart, SessionId,
-    SessionResolution, SessionStatus,
+    IdleWakeupInterval, SessionEvent, SessionEventKind, SessionExecutionOwner,
+    SessionExecutionStart, SessionId, SessionResolution, SessionStatus,
 };
 use crate::tool::ProviderInstallState;
 use crate::tool::ToolProviderId;
@@ -219,8 +219,22 @@ fn keep_awake_session_claim_requires_idle_cooldowns_and_records_completion() {
         .create_session(&session_id, &conversation_id, None, "openai/test", None)
         .unwrap();
 
-    let enabled = store.set_session_keep_awake(&session_id, true).unwrap();
+    let enabled = store
+        .set_session_idle_wakeup_schedule(
+            &session_id,
+            true,
+            Some(IdleWakeupInterval::FifteenMinutes),
+        )
+        .unwrap();
     assert!(enabled.keep_awake);
+    assert_eq!(
+        enabled.idle_wakeup_interval,
+        IdleWakeupInterval::FifteenMinutes
+    );
+    assert_eq!(
+        enabled.next_idle_wakeup_at(),
+        Some(enabled.last_user_activity_at + IdleWakeupInterval::FifteenMinutes.milliseconds())
+    );
     assert!(
         store
             .claim_session_execution(
@@ -228,6 +242,7 @@ fn keep_awake_session_claim_requires_idle_cooldowns_and_records_completion() {
                 SessionExecutionOwner::Api,
                 SessionExecutionStart::IdleWakeup {
                     eligible_before: enabled.last_user_activity_at - 1,
+                    interval: IdleWakeupInterval::FifteenMinutes,
                 },
             )
             .is_err()
@@ -239,6 +254,7 @@ fn keep_awake_session_claim_requires_idle_cooldowns_and_records_completion() {
             SessionExecutionOwner::Api,
             SessionExecutionStart::IdleWakeup {
                 eligible_before: enabled.last_user_activity_at,
+                interval: IdleWakeupInterval::FifteenMinutes,
             },
         )
         .unwrap();
@@ -255,6 +271,22 @@ fn keep_awake_session_claim_requires_idle_cooldowns_and_records_completion() {
 
     let completed = store.load_session(&session_id).unwrap();
     let completion = completed.last_idle_wakeup_completed_at.unwrap();
+    assert_eq!(
+        completed.next_idle_wakeup_at(),
+        Some(completion + IdleWakeupInterval::FifteenMinutes.milliseconds())
+    );
+    assert!(
+        store
+            .claim_session_execution(
+                &session_id,
+                SessionExecutionOwner::Api,
+                SessionExecutionStart::IdleWakeup {
+                    eligible_before: completion,
+                    interval: IdleWakeupInterval::ThirtyMinutes,
+                },
+            )
+            .is_err()
+    );
     assert!(
         store
             .claim_session_execution(
@@ -262,10 +294,32 @@ fn keep_awake_session_claim_requires_idle_cooldowns_and_records_completion() {
                 SessionExecutionOwner::Api,
                 SessionExecutionStart::IdleWakeup {
                     eligible_before: completion - 1,
+                    interval: IdleWakeupInterval::FifteenMinutes,
                 },
             )
             .is_err()
     );
+}
+
+#[test]
+fn manual_wakeup_claim_records_user_activity_without_requiring_keep_awake() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let session_id = SessionId::new("manual-wakeup-session");
+    let created = store
+        .create_session(&session_id, &conversation_id, None, "openai/test", None)
+        .unwrap();
+
+    let claimed = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::ManualWakeup,
+        )
+        .unwrap();
+    assert_eq!(claimed.session.status, SessionStatus::Running);
+    assert!(claimed.session.last_user_activity_at >= created.last_user_activity_at);
+    assert!(!claimed.session.keep_awake);
 }
 
 #[test]
@@ -316,11 +370,32 @@ fn rejects_older_database_schema_version() {
 }
 
 #[test]
-fn migrates_previous_schema_to_add_runtime_access() {
+fn migrates_previous_schema_to_add_idle_wakeup_interval() {
     let store = Store::open_memory().unwrap();
     store
         .connection
-        .execute("DROP TABLE runtime_access", [])
+        .execute_batch(
+            "
+            DROP TABLE sessions;
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                start_head_message_id TEXT,
+                current_head_message_id TEXT,
+                status TEXT NOT NULL,
+                model TEXT NOT NULL,
+                reasoning TEXT,
+                error TEXT,
+                execution_owner TEXT,
+                execution_claim_id TEXT,
+                keep_awake INTEGER NOT NULL DEFAULT 0,
+                last_user_activity_at INTEGER NOT NULL,
+                last_idle_wakeup_completed_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            ",
+        )
         .unwrap();
     store
         .connection
@@ -329,12 +404,16 @@ fn migrates_previous_schema_to_add_runtime_access() {
 
     store.migrate().unwrap();
 
-    assert!(store.runtime_access().unwrap().is_none());
     let version: i32 = store
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
     assert_eq!(version, DATABASE_SCHEMA_VERSION);
+    assert!(
+        store
+            .table_column_exists("sessions", "idle_wakeup_interval")
+            .unwrap()
+    );
 }
 
 #[test]
