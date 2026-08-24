@@ -93,7 +93,9 @@ Paths below are relative to `vendor/windie-inspector/frontend/`.
   attachments, model picker, reasoning picker, send, continue, and stop
   controls.
 - `src/components/windie/SessionsChip.jsx`: session picker and status display;
-  shows active branch, queue depth, approval state, and session deletion.
+  shows active branch, queue depth, approval state, session deletion, the
+  persistent wakeup interval, live next-wakeup countdown, and explicit
+  **Wake now** action.
 - `src/components/windie/InspectorPanel.jsx`: inspector overlay for context
 - `src/components/windie/InspectorPanel.jsx`: inspector overlay for context
   preview, system prompt, conversation settings, tool access mode, tool
@@ -172,8 +174,9 @@ wrappers. They contain no Windie runtime or persistence rules:
   and composes `useSessionRuntime`.
 - `src/hooks/useSessionRuntime.js`: session lifecycle adapter; asks the backend
   to resolve/create conversation-head branches, selects returned sessions,
-  sends/continues/stops queries, subscribes to SSE, reduces live events,
-  handles cursors, commits saved messages, and handles approvals.
+  sends/continues/stops queries and explicit wakeups, persists wake schedules,
+  subscribes to SSE, reduces live events, handles cursors, commits saved
+  messages, and handles approvals.
 - `src/hooks/usePluginCatalog.js`: loads marketplace plugin listings and owns
   outer plugin install/uninstall requests.
 - `src/hooks/useSessionRuntime.test.js`: tests session-head projection helpers

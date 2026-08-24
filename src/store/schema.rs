@@ -2,15 +2,15 @@
 
 use super::*;
 
-pub(super) const DATABASE_SCHEMA_VERSION: i32 = 25;
-const PREVIOUS_DATABASE_SCHEMA_VERSION: i32 = 24;
+pub(super) const DATABASE_SCHEMA_VERSION: i32 = 26;
+const PREVIOUS_DATABASE_SCHEMA_VERSION: i32 = 25;
 
 impl Store {
     /// Creates or validates the current schema.
     ///
-    /// The runtime-access table is an additive security migration from schema
-    /// version 24. Other unsupported historical versions still fail closed
-    /// rather than guessing how to transform durable runtime data.
+    /// The per-session idle-wakeup interval is an additive migration from
+    /// schema version 25. Other unsupported historical versions still fail
+    /// closed rather than guessing how to transform durable runtime data.
     pub fn migrate(&self) -> Result<()> {
         let existing_version = self.database_schema_version()?;
         if existing_version > DATABASE_SCHEMA_VERSION {
@@ -27,6 +27,16 @@ impl Store {
             return Err(anyhow!(
                 "existing unversioned Windie database is not supported; remove the old Windie database or recreate it"
             ));
+        }
+
+        if existing_version == PREVIOUS_DATABASE_SCHEMA_VERSION
+            && !self.table_column_exists("sessions", "idle_wakeup_interval")?
+        {
+            self.connection
+                .execute_batch(
+                    "ALTER TABLE sessions ADD COLUMN idle_wakeup_interval TEXT NOT NULL DEFAULT 'thirty_minutes';",
+                )
+                .context("failed to add the session idle-wakeup interval")?;
         }
 
         self.connection
@@ -88,6 +98,7 @@ impl Store {
                     execution_owner TEXT,
                     execution_claim_id TEXT,
                     keep_awake INTEGER NOT NULL DEFAULT 0,
+                    idle_wakeup_interval TEXT NOT NULL DEFAULT 'thirty_minutes',
                     last_user_activity_at INTEGER NOT NULL,
                     last_idle_wakeup_completed_at INTEGER,
                     created_at INTEGER NOT NULL,
@@ -252,5 +263,22 @@ impl Store {
             .is_some();
 
         Ok(exists)
+    }
+
+    /// Returns whether a known SQLite table has one named column.
+    ///
+    /// The check keeps migration tests and recovery from interrupted local
+    /// migrations idempotent: a version marker may lag an already-applied
+    /// additive column, but the column must never be added twice.
+    pub(super) fn table_column_exists(&self, table_name: &str, column_name: &str) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2",
+                params![table_name, column_name],
+                |_| Ok(()),
+            )
+            .optional()
+            .context("failed to inspect SQLite table columns")
+            .map(|row| row.is_some())
     }
 }
