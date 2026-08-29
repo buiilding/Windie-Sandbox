@@ -7,7 +7,7 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+- Added source-verified architecture references for conversation trees, sessions, runtime turns, tool execution, plugins, MCPs, and local processes.
 
 ## [0.4.2] - 2026-08-24
 

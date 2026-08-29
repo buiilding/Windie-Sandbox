@@ -28,7 +28,9 @@ derived view of that structure.
 
 This gives Windie the following properties:
 
-- Forking adds a new branch without copying the complete history.
+- Adding a new branch inside a conversation does not copy its shared history.
+  Forking into a new conversation deliberately copies the selected path with
+  new message IDs.
 - Shared ancestors have one identity and one persisted copy.
 - Branches can be explored without overwriting another branch.
 - Message edits, truncation, deletion, and tool-group mutations operate on
