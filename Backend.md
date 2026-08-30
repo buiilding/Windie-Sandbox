@@ -164,7 +164,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - session/: session domain types and live session supervision.
 - session/mod.rs: Public boundary and re-exports for session folder.
-- session/event.rs: event types for observable session activity. Records events from a running session/agent loop such as streamed assistant text, tool calls, approvals, completion, failure, cancellation, and queued/started inputs.
+- session/event.rs: event types for observable session activity. Records events from a running session/agent loop such as durable wakeup-message saves, streamed assistant text, tool calls, approvals, completion, failure, cancellation, and queued/started inputs.
 - session/id.rs: SessionId identifies a durable session; SessionInputId identifies one queued input inside that session; SessionExecutionClaimId is the unique fencing token for one execution attempt.
 - session/control.rs: explicit session controls such as cancellation, separate from wakeups that resume runtime work.
 - session/manager.rs: manages live background session tasks, approvals, cancellation, and publishes session events. It also owns durable per-session idle-wakeup scheduling and explicit user-requested wakeups.
@@ -216,7 +216,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
   assistant response, saves it, and continues through automatic tool calls
   until completion or approval is needed.
 - runtime/tool_execution.rs: handles tool calls. identifies pending calls, enforeces tool policy, executes approved provider or built-in tools, enforces tool-call order, and save tool results
-- runtime/wakeup.rs: typed wakeup contexts for autonomous idle runs and explicit user-requested runs, plus session-targeted tool approval decisions.
+- runtime/wakeup.rs: typed wakeup prompts for durable idle and explicit wakeup transcript messages, plus session-targeted tool approval decisions.
 - runtime/tests.rs:
 - main.rs: front desk for the windie binary.
 - llm/gateway.rs: manages the local Bifrost LLM gateway lifecycle and health checks.

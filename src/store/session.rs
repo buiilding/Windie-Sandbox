@@ -28,6 +28,13 @@ pub(crate) enum SessionRuntimeMessage<'a> {
         content: &'a str,
         parts: &'a [UnsavedMessagePart],
     },
+    /// A runtime-generated task request represented with the model-facing
+    /// user role and durable wakeup provenance.
+    Wakeup {
+        parent_message_id: Option<&'a MessageId>,
+        content: &'a str,
+        wakeup: &'a crate::conversation::WakeupMetadata,
+    },
     Assistant {
         parent_message_id: Option<&'a MessageId>,
         content: &'a str,
@@ -58,6 +65,17 @@ struct SessionMessageInsert<'a> {
     content: &'a str,
     parts: &'a [UnsavedMessagePart],
     metadata: Option<&'a MessageMetadata>,
+    user_activity: bool,
+    event: SessionMessageEvent,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Optional durable session event emitted with a runtime message commit.
+enum SessionMessageEvent {
+    None,
+    WakeupMessageSaved,
+    AssistantMessageSaved,
+    ToolResultSaved,
 }
 
 impl Store {
@@ -844,7 +862,31 @@ impl Store {
                 content,
                 parts,
                 metadata: None,
+                user_activity: true,
+                event: SessionMessageEvent::None,
             }),
+            SessionRuntimeMessage::Wakeup {
+                parent_message_id,
+                content,
+                wakeup,
+            } => {
+                let metadata = MessageMetadata {
+                    wakeup: Some(wakeup.clone()),
+                    ..Default::default()
+                };
+                self.insert_session_message(SessionMessageInsert {
+                    session_id,
+                    claim,
+                    conversation_id,
+                    parent_message_id,
+                    role: Role::User,
+                    content,
+                    parts: &[],
+                    metadata: Some(&metadata),
+                    user_activity: false,
+                    event: SessionMessageEvent::WakeupMessageSaved,
+                })
+            }
             SessionRuntimeMessage::Assistant {
                 parent_message_id,
                 content,
@@ -858,6 +900,8 @@ impl Store {
                 content,
                 parts: &[],
                 metadata,
+                user_activity: false,
+                event: SessionMessageEvent::AssistantMessageSaved,
             }),
             SessionRuntimeMessage::ToolResult {
                 parent_message_id,
@@ -883,6 +927,8 @@ impl Store {
                     content,
                     parts,
                     metadata: Some(&metadata),
+                    user_activity: false,
+                    event: SessionMessageEvent::ToolResultSaved,
                 })
             }
         }
@@ -908,20 +954,19 @@ impl Store {
         let message_id = MessageId::new(Uuid::new_v4().to_string());
         let metadata_json = encode_message_metadata(message.metadata)?;
         let now = now_millis()?;
-        let user_activity = matches!(message.role, Role::User);
-        let event = match message.role {
-            Role::User => None,
-            Role::Assistant => Some(SessionEvent::AssistantMessageSaved {
+        let event = match message.event {
+            SessionMessageEvent::None => None,
+            SessionMessageEvent::WakeupMessageSaved => Some(SessionEvent::WakeupMessageSaved {
                 message_id: message_id.as_str().to_string(),
             }),
-            Role::Tool => Some(SessionEvent::ToolResultSaved {
-                message_id: message_id.as_str().to_string(),
-            }),
-            _ => {
-                return Err(error::invalid_request(
-                    "session runtime persistence only accepts user, assistant, or tool messages",
-                ));
+            SessionMessageEvent::AssistantMessageSaved => {
+                Some(SessionEvent::AssistantMessageSaved {
+                    message_id: message_id.as_str().to_string(),
+                })
             }
+            SessionMessageEvent::ToolResultSaved => Some(SessionEvent::ToolResultSaved {
+                message_id: message_id.as_str().to_string(),
+            }),
         };
 
         let transaction = self
@@ -1007,7 +1052,7 @@ impl Store {
                 params![
                     message_id.as_str(),
                     now,
-                    user_activity,
+                    message.user_activity,
                     message.session_id.as_str()
                 ],
             )

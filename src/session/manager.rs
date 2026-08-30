@@ -32,6 +32,10 @@ use crate::session::{
 };
 use crate::store::{SessionRuntimeMessage, Store};
 use crate::tool::ToolProviderRegistry;
+use crate::{
+    conversation::{WakeupKind, WakeupMetadata},
+    runtime::wakeup::{IDLE_WAKEUP_PROMPT, MANUAL_WAKEUP_PROMPT},
+};
 
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
 const IDLE_WAKEUP_POLL_INTERVAL: Duration = Duration::from_secs(60);
@@ -212,10 +216,10 @@ impl SessionManager {
         store.set_session_idle_wakeup_schedule(session_id, keep_awake, interval)
     }
 
-    /// Starts one explicit user-requested wakeup without adding a user message.
-    ///
-    /// The durable claim records this request as user activity, so it cannot
-    /// race an autonomous wakeup and restarts the selected session's timer.
+    /// Starts one explicit user-requested wakeup after appending the durable
+    /// request that caused it. The durable claim records the click as user
+    /// activity, so it cannot race an autonomous wakeup and restarts the
+    /// selected session's timer.
     pub fn wake_session_now(&self, session_id: &SessionId) -> Result<Session> {
         let gate = self.session_gate(session_id);
         let _gate = gate.lock().expect("session gate poisoned");
@@ -225,9 +229,16 @@ impl SessionManager {
             SessionExecutionOwner::Api,
             SessionExecutionStart::ManualWakeup,
         )?;
+        self.append_wakeup_message(
+            &mut store,
+            &claimed.session,
+            &claimed.claim,
+            WakeupKind::Manual,
+            MANUAL_WAKEUP_PROMPT,
+        )?;
+        let session = store.load_session(session_id)?;
         drop(store);
 
-        let session = claimed.session.clone();
         self.spawn(
             claimed.session.id,
             claimed.claim,
@@ -883,8 +894,9 @@ impl SessionManager {
         }
     }
 
-    /// Claims and starts one eligible autonomous session without adding a user
-    /// message to its conversation tree.
+    /// Claims one eligible autonomous session, appends its durable wakeup
+    /// request, and starts the normal session executor from that transcript
+    /// head.
     fn start_idle_wakeup(
         &self,
         session_id: &SessionId,
@@ -914,6 +926,13 @@ impl SessionManager {
             Ok(claimed) => claimed,
             Err(_) => return Ok(false),
         };
+        self.append_wakeup_message(
+            &mut store,
+            &claimed.session,
+            &claimed.claim,
+            WakeupKind::Idle,
+            IDLE_WAKEUP_PROMPT,
+        )?;
         drop(store);
         self.spawn(
             claimed.session.id,
@@ -921,6 +940,37 @@ impl SessionManager {
             operation::SessionExecutionCommand::IdleWakeup,
         );
         Ok(true)
+    }
+
+    /// Appends one system-generated wakeup task under the claimed session
+    /// head and publishes the durable saved-message event to current clients.
+    ///
+    /// The session's exclusive claim fences this write, so a stale scheduler
+    /// cannot attach an automatic task to a head advanced by another runner.
+    fn append_wakeup_message(
+        &self,
+        store: &mut Store,
+        session: &Session,
+        claim: &SessionExecutionClaim,
+        kind: WakeupKind,
+        content: &str,
+    ) -> Result<()> {
+        let wakeup = WakeupMetadata { kind };
+        let commit = store.insert_session_runtime_message(
+            &session.id,
+            claim,
+            &session.conversation_id,
+            SessionRuntimeMessage::Wakeup {
+                parent_message_id: session.current_head_message_id.as_ref(),
+                content,
+                wakeup: &wakeup,
+            },
+        )?;
+        let record = commit.event.ok_or_else(|| {
+            anyhow::anyhow!("wakeup session message commit did not create an event")
+        })?;
+        self.channel_for_session(&session.id).send(record).ok();
+        Ok(())
     }
 
     /// Returns the process-local gate for one session.

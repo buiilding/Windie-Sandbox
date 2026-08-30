@@ -11,6 +11,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
   fixed local-LAN defaults, manual approval boundaries, and generated
   marketplace support.
 
+- Made idle and explicit wakeups durable transcript messages. Windie now
+  appends a clearly marked, system-generated user-role wakeup request before
+  running the normal session executor, rather than injecting an invisible
+  system prompt into only one model request.
 - Added source-verified architecture references for conversation trees, sessions, runtime turns, tool execution, plugins, MCPs, and local processes.
 
 ## [0.4.2] - 2026-08-24

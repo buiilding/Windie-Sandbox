@@ -87,8 +87,10 @@ Paths below are relative to `vendor/windie-inspector/frontend/`.
   grouping, live execution indicator, inline approval placement, streaming
   preview placement, and scroll behavior.
 - `src/components/windie/MessageRow.jsx`: role-specific message rendering,
-  Markdown, image assets, reasoning, tool metadata, usage, refusal and
-  annotation lanes, editing, copying, and message tree actions.
+  including a distinct label for system-generated wakeup messages that use the
+  model-facing user role; Markdown, image assets, reasoning, tool metadata,
+  usage, refusal and annotation lanes, editing, copying, and message tree
+  actions.
 - `src/components/windie/Composer.jsx`: text composer, pasted/file image
   attachments, model picker, reasoning picker, send, continue, and stop
   controls.
@@ -200,8 +202,8 @@ wrappers. They contain no Windie runtime or persistence rules:
 - `src/lib/sessionTarget.js`: contains presentation helpers for reading the
   currently selected session head; it does not decide session ownership.
 - `src/lib/windieMappers.js`: maps API summaries, inspection reports, messages,
-  assistant metadata, sessions, tools, providers, and installations into
-  frontend shapes.
+  message provenance metadata, sessions, tools, providers, and installations
+  into frontend shapes.
 - `src/lib/treeProjection.js`: converts persisted message trees into a visual
   tree by grouping assistant tool-call/tool-result subtrees into synthetic
   expandable execution nodes.

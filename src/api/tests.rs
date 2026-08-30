@@ -12,8 +12,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 use tower::ServiceExt;
 
-use crate::conversation::{MessageMetadata, MessagePart, Role, ToolCall};
+use crate::conversation::{MessageMetadata, MessagePart, Role, ToolCall, WakeupKind};
 use crate::mcp::McpCommand;
+use crate::runtime::wakeup::MANUAL_WAKEUP_PROMPT;
 use crate::session::{SessionEvent, SessionId, SessionStatus};
 use crate::tool::ProviderInstallState;
 use crate::tool::{ToolAnnotations, ToolPermission, ToolProviderKind, ToolProviderRef};
@@ -1417,6 +1418,17 @@ async fn wake_session_now_route_starts_an_explicit_wakeup() {
     let session = wait_for_session_status(&db_path, &session_id, SessionStatus::Failed).await;
     assert!(!session.keep_awake);
     assert!(session.last_idle_wakeup_completed_at.is_none());
+    let message_id = session.current_head_message_id.unwrap();
+    let message = Store::open_at(&db_path)
+        .unwrap()
+        .load_message(&conversation_id, &message_id)
+        .unwrap();
+    assert_eq!(message.role, Role::User);
+    assert_eq!(message.content, MANUAL_WAKEUP_PROMPT);
+    assert_eq!(
+        message.metadata.unwrap().wakeup.unwrap().kind,
+        WakeupKind::Manual
+    );
     let _ = fs::remove_file(db_path);
 }
 

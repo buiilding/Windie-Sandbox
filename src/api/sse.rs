@@ -151,6 +151,7 @@ impl SessionEventMessage {
 fn event_message_id(event: &SessionEvent) -> Option<&str> {
     match event {
         SessionEvent::InputStarted { message_id, .. }
+        | SessionEvent::WakeupMessageSaved { message_id }
         | SessionEvent::AssistantMessageSaved { message_id }
         | SessionEvent::ToolResultSaved { message_id } => Some(message_id),
         SessionEvent::Completed { message_id } => message_id.as_deref(),
@@ -163,6 +164,7 @@ fn includes_session_snapshot(event: &SessionEvent) -> bool {
         event,
         SessionEvent::InputQueued { .. }
             | SessionEvent::InputStarted { .. }
+            | SessionEvent::WakeupMessageSaved { .. }
             | SessionEvent::AssistantMessageSaved { .. }
             | SessionEvent::ToolResultSaved { .. }
             | SessionEvent::WaitingForApproval
