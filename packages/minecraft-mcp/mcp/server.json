@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.yuniko-software/minecraft-mcp-server",
+  "title": "Minecraft MCP",
+  "description": "Control a bot in a locally hosted Minecraft Java world through MCP.",
+  "version": "2.0.4",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/minecraft-mcp.mcpb",
+      "version": "2.0.4",
+      "fileSha256": "6093e473815a07bbbc584c2c6229c41b660b3cf15d6f8681020a2c26a14b0c5d",
+      "runtimeHint": "node",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

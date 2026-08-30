@@ -1,0 +1,29 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "minecraft-mcp",
+    "version": "2.0.4",
+    "publisher": "Yuniko Software"
+  },
+  "presentation": {
+    "name": "Minecraft MCP",
+    "description": "Control a bot in a locally hosted Minecraft Java world through MCP.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/yuniko-software/minecraft-mcp-server"
+  },
+  "marketplace": { "publish": true },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "minecraft-mcp",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "permissions": ["external_process", "network"],
+        "capabilities": ["minecraft", "game_control", "local_network"],
+        "local_artifact": "mcp/minecraft-mcp.mcpb",
+        "setup": { "isolated_home": true }
+      }
+    }
+  ]
+}
