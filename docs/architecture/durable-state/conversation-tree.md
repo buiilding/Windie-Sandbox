@@ -1,5 +1,9 @@
 # Conversation tree
 
+This is the overview of the conversation data model. For the concrete
+selected-head loading API and performance trade-offs, see
+[Conversation trees and selected-head paths](conversation-tree-paths.md).
+
 ## Purpose
 
 A conversation is Windie's durable history of messages. It is stored as a
@@ -122,5 +126,5 @@ selected head still has one unambiguous chain of ancestors.
   compilation.
 - `src/operation/inspection.rs` — read-only tree, selected-path, and
   root-to-leaf inspection views.
-- [`docs/conversation-tree-and-paths.md`](../conversation-tree-and-paths.md)
+- [Conversation trees and selected-head paths](conversation-tree-paths.md)
   — deeper explanation of path loading and its performance trade-offs.

@@ -1,8 +1,8 @@
-# Runtime turn
+# Runtime loop
 
 ## Purpose
 
-A runtime turn is one execution cycle for a session. It takes the current
+A runtime loop is one execution cycle for a session. It takes the current
 conversation branch forward from an input or wakeup until the assistant can
 finish, needs approval, fails, or is cancelled.
 

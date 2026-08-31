@@ -1,5 +1,8 @@
 # Conversation trees and selected-head paths
 
+This is the implementation and performance deep dive for the
+[Conversation tree](conversation-tree.md) overview.
+
 Windie stores each conversation as one shared message tree. A model request
 does not send the whole tree to the model. It selects a message head and
 resolves the root-to-head path that becomes the conversation history for that

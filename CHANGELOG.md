@@ -7,6 +7,12 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Organized architecture documentation into durable state, execution, model
+  access, extensions, interfaces, and local components, with group overviews
+  and templates for detailed references. Added plugin publishing, hosted
+  Inspector, and desktop notification guides plus decisions documenting API
+  authority and independent local components.
+
 - Added a pinned Minecraft MCP plugin package with a bundled Node runtime,
   fixed local-LAN defaults, manual approval boundaries, and generated
   marketplace support.

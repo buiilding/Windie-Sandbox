@@ -1,4 +1,8 @@
-# Session lifecycle
+# Sessions
+
+This is the overview of sessions and their lifecycle. Future deeper references
+about state transitions, recovery, or execution events belong beside this file
+in this folder.
 
 ## Purpose
 

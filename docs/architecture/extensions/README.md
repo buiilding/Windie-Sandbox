@@ -1,4 +1,14 @@
-# Plugin and MCP
+# Extensions
+
+This overview explains how plugins, MCP components, skills, app connectors,
+and the marketplace fit together. Detailed pages cover each extension type and
+its lifecycle.
+
+- [Plugins](plugins.md)
+- [MCP](mcp.md) and [MCP lifecycle](mcp-lifecycle.md)
+- [Skills](skills.md)
+- [App connectors](app-connectors.md)
+- [Marketplace](marketplace.md)
 
 ## Purpose
 
