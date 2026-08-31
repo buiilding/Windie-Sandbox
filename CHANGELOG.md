@@ -13,6 +13,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
   Inspector, and desktop notification guides plus decisions documenting API
   authority and independent local components.
 
+- Removed superseded standalone MCP, provider-onboarding, and code-owned MCP
+  migration references after consolidating current documentation under the
+  architecture and guide hierarchy.
+
 - Added a pinned Minecraft MCP plugin package with a bundled Node runtime,
   fixed local-LAN defaults, manual approval boundaries, and generated
   marketplace support.

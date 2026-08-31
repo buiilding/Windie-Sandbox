@@ -101,4 +101,3 @@ digests must match the generated archives.
 - `src/plugin/store.rs` and `src/plugin/installer.rs`: verified installation.
 - `src/mcp/loader.rs`: turns installed MCP package components into transports.
 - `src/dev.rs`: marketplace build, local serving, and publication.
-- `docs/skills/migrate-code-owned-mcps.md`: detailed migration reference.
