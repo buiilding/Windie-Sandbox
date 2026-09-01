@@ -12,9 +12,9 @@ Install these tools before building Windie:
 | --- | --- | --- |
 | Git | Current | Clone the repository and its submodules. |
 | Visual Studio Build Tools 2022 | Desktop development with C++ workload and Windows SDK | Rust's MSVC toolchain and native dependencies. |
-| Rust | Stable, including `rustfmt` and `clippy` | Windie's application and CLI. |
+| Rust | 1.98.0, including `rustfmt` and `clippy` | Windie's application and CLI. The repository records this in `rust-toolchain.toml`. |
 | Go | 1.26.5 or newer | Bifrost gateway. CI uses Go 1.26.5. |
-| Node.js | 22.12.0 | Inspector and Bifrost UI. This matches `vendor/bifrost/.nvmrc`. |
+| Node.js | 22.23.2 | Inspector. This exact version is recorded in `vendor/windie-inspector/frontend/.nvmrc`. Bifrost's UI records 22.12.0 in its own `.nvmrc`. |
 | MinGW-w64 GCC | POSIX/UCRT x64 | Enables Go CGO support for Bifrost's SQLite driver. |
 
 Install Visual Studio Build Tools from [Visual Studio downloads](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022). In the installer, select **Desktop development with C++**, including the Windows SDK.
@@ -28,24 +28,23 @@ winget install --id GoLang.Go --exact --source winget
 winget install --id BrechtSanders.WinLibs.POSIX.UCRT --exact --source winget
 ```
 
-Install Node.js 22.12.0 using the [Windows x64 installer](https://nodejs.org/dist/v22.12.0/node-v22.12.0-x64.msi). If multiple Node versions are required on the machine, use a Windows Node version manager and select `22.12.0` for this repository.
+Install Node.js 22.23.2 using the [Windows x64 installer](https://nodejs.org/dist/v22.23.2/node-v22.23.2-x64.msi). If you use a Windows Node version manager, select the version recorded in the relevant submodule's `.nvmrc` before installing or building its frontend dependencies.
 
 Open a fresh PowerShell window, then initialize Rust and verify the toolchain:
 
 ```powershell
-rustup toolchain install stable
-rustup default stable
-rustup component add rustfmt clippy
+rustup toolchain install 1.98.0 --component rustfmt --component clippy
 
 git --version
-cargo --version
+rustc +1.98.0 --version
+cargo +1.98.0 --version
 go version
 node --version
 npm --version
 gcc --version
 ```
 
-`node --version` should report `v22.12.0`. `gcc --version` must work before starting the gateway; installing Go alone is not sufficient because Bifrost uses CGO-backed SQLite.
+The Rust commands should report Rust 1.98.0, and `node --version` should report `v22.23.2`. `gcc --version` must work before starting the gateway; installing Go alone is not sufficient because Bifrost uses CGO-backed SQLite.
 
 ## Clone and bootstrap
 
@@ -69,6 +68,7 @@ Windie's gateway builds Bifrost with Go, but a fresh checkout does not yet inclu
 
 ```powershell
 Push-Location vendor\bifrost\ui
+# If using a Node version manager, select the version in vendor\bifrost\.nvmrc.
 npm ci
 npm exec vite build
 npx tsc --noEmit
