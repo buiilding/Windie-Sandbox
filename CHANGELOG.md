@@ -30,6 +30,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
   migration references after consolidating current documentation under the
   architecture and guide hierarchy.
 
+- Added an Awesome Mineflayer MCP plugin package with a pinned upstream Node
+  runtime, explicit bot connection flow, isolated persistent configuration,
+  and raw packet tools disabled by default.
+
 - Added a pinned Minecraft MCP plugin package with a bundled Node runtime,
   fixed local-LAN defaults, manual approval boundaries, and generated
   marketplace support.

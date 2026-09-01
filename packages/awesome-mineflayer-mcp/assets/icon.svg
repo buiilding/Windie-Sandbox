@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Awesome Mineflayer MCP">
+  <rect width="64" height="64" rx="12" fill="#234b31"/>
+  <path d="M16 23 32 14l16 9v18L32 50 16 41V23Z" fill="#8fcf6b"/>
+  <path d="m32 14 16 9-16 10-16-10 16-9Z" fill="#c8ee91"/>
+  <path d="M32 33v17l16-9V23L32 33Z" fill="#5b9b57"/>
+  <path d="M16 23v18l16 9V33L16 23Z" fill="#73b867"/>
+  <circle cx="25" cy="31" r="2.5" fill="#1d3022"/>
+  <circle cx="39" cy="31" r="2.5" fill="#1d3022"/>
+</svg>

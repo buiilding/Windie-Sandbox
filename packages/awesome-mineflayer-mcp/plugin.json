@@ -1,0 +1,47 @@
+{
+  "manifest_version": 1,
+  "plugin": {
+    "id": "awesome-mineflayer-mcp",
+    "version": "1.3.2",
+    "publisher": "Ryker Geesaman"
+  },
+  "presentation": {
+    "name": "Awesome Mineflayer MCP",
+    "description": "Control a Mineflayer bot through MCP with movement, mining, crafting, combat, inventory, and world tools.",
+    "readme": "README.md",
+    "icon": "assets/icon.svg",
+    "repository_url": "https://github.com/G0Osey99/awesome-mineflayer-mcp"
+  },
+  "marketplace": { "publish": true },
+  "components": [
+    {
+      "type": "mcp",
+      "id": "awesome-mineflayer-mcp",
+      "manifest": "mcp/server.json",
+      "windie": {
+        "permissions": ["external_process", "network"],
+        "capabilities": ["minecraft", "game_control", "bot_automation", "local_network"],
+        "local_artifact": "mcp/awesome-mineflayer-mcp.mcpb",
+        "setup": {
+          "isolated_home": true,
+          "environment": [
+            {
+              "name": "AWESOME_MINEFLAYER_MCP_HOME",
+              "value": {
+                "type": "windie_data_dir",
+                "path": "mcp/awesome-mineflayer-mcp"
+              }
+            },
+            {
+              "name": "MCP_ENABLE_RAW",
+              "value": {
+                "type": "literal",
+                "value": "false"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
