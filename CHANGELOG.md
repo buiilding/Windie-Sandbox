@@ -11,8 +11,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
   normal Windie development no longer requires building Bifrost's separate
   dashboard. Reorganized source-development documentation around one shared
   workflow, added a documentation index and contributor guide, removed stale
-  guide scaffolds, and added CI validation for local documentation links with
-  the Inspector submodule initialized for its pinned Node.js version.
+  guide scaffolds, and added portable CI validation for local documentation
+  links with the Inspector submodule initialized for its pinned Node.js
+  version.
 
 - Updated the Inspector provider panel to refresh the available model catalog
   after provider key changes.

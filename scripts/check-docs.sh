@@ -30,19 +30,19 @@ for version in "$rust_version" "$go_version" "$node_version"; do
     exit 1
   fi
   for guide in "${required_files[@]:3}"; do
-    if ! rg -Fq "$version" "$project_root/$guide"; then
+    if ! grep -Fq "$version" "$project_root/$guide"; then
       echo "$guide does not mention required toolchain version $version" >&2
       exit 1
     fi
   done
 done
 
-if rg -n '\]\(#\)' "$project_root/README.md" "$project_root/docs"; then
+if grep -RInE '\]\(#\)' "$project_root/README.md" "$project_root/docs"; then
   echo "documentation contains a placeholder Markdown link" >&2
   exit 1
 fi
 
-if rg -n '<!--' "$project_root/docs/guides"; then
+if grep -RInF '<!--' "$project_root/docs/guides"; then
   echo "guides must not contain unfinished template comments" >&2
   exit 1
 fi
