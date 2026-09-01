@@ -262,7 +262,7 @@ pub(crate) fn existing_component_pid_file_path(
 
 /// Returns the exact Windie-owned paths that uninstall may remove.
 ///
-/// The data root and named, release-owned macOS desktop bundles are the only
+/// The data root and named release-owned presentation directories are the only
 /// recursive targets. Installed binaries remain individual files inside the
 /// configured install directory; the directory itself is never removed because
 /// it may contain unrelated user programs.
@@ -669,6 +669,7 @@ fn owned_install_directories(install_dir: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         vec![
+            install_dir.join("inspector"),
             install_dir.join("Windie Notifier.app"),
             install_dir.join("Windie Tray.app"),
         ]
@@ -676,8 +677,7 @@ fn owned_install_directories(install_dir: &Path) -> Vec<PathBuf> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = install_dir;
-        Vec::new()
+        vec![install_dir.join("inspector")]
     }
 }
 

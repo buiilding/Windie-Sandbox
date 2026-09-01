@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::conversation::{
-    MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart,
+    MessagePart, TokenUsage, ToolCall, UnsavedImagePart, UnsavedMessagePart, WakeupKind,
+    WakeupMetadata,
 };
 use crate::session::{
     IdleWakeupInterval, SessionEvent, SessionEventKind, SessionExecutionOwner,
@@ -3142,6 +3143,64 @@ fn atomically_saves_assistant_message_session_head_and_event() {
     let events = store.load_session_events_after(&session_id, None).unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].id, record.id);
+}
+
+#[test]
+fn atomically_saves_wakeup_message_with_provenance_without_user_activity() {
+    let mut store = Store::open_memory().unwrap();
+    let conversation_id = store.create_conversation("openai/test").unwrap();
+    let user_id = store
+        .insert_message(&conversation_id, None, Role::User, "hello", None)
+        .unwrap();
+    let session_id = SessionId::new("atomic-wakeup-message");
+    let session = store
+        .create_session(
+            &session_id,
+            &conversation_id,
+            Some(&user_id),
+            "openai/test",
+            None,
+        )
+        .unwrap();
+    let claim = store
+        .claim_session_execution(
+            &session_id,
+            SessionExecutionOwner::Api,
+            SessionExecutionStart::Runnable,
+        )
+        .unwrap()
+        .claim;
+    let wakeup = WakeupMetadata {
+        kind: WakeupKind::Idle,
+    };
+
+    let commit = store
+        .insert_session_runtime_message(
+            &session_id,
+            &claim,
+            &conversation_id,
+            SessionRuntimeMessage::Wakeup {
+                parent_message_id: Some(&user_id),
+                content: "automatic idle wakeup",
+                wakeup: &wakeup,
+            },
+        )
+        .unwrap();
+    let message_id = commit.message_id;
+    let record = commit.event.unwrap();
+    let message = store.load_message(&conversation_id, &message_id).unwrap();
+    let updated = store.load_session(&session_id).unwrap();
+
+    assert_eq!(message.role, Role::User);
+    assert_eq!(message.content, "automatic idle wakeup");
+    assert_eq!(message.metadata.unwrap().wakeup, Some(wakeup));
+    assert_eq!(updated.current_head_message_id.as_ref(), Some(&message_id));
+    assert_eq!(updated.last_user_activity_at, session.last_user_activity_at);
+    assert!(matches!(
+        record.event,
+        SessionEvent::WakeupMessageSaved { message_id: ref saved_id }
+            if saved_id == message_id.as_str()
+    ));
 }
 
 #[test]

@@ -293,6 +293,85 @@ mod tests {
     }
 
     #[test]
+    fn minecraft_package_declares_pinned_node_mcpb_with_upstream_defaults() {
+        let root = std::env::temp_dir().join(format!(
+            "windie-minecraft-package-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = PluginStore::new(&root);
+        let plugin = store.install_bundled("minecraft-mcp").unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(
+            components[0].manifest.name,
+            "io.github.yuniko-software/minecraft-mcp-server"
+        );
+        assert_eq!(components[0].manifest.version, "2.0.4");
+        assert_eq!(
+            components[0].windie.capabilities,
+            vec!["minecraft", "game_control", "local_network"]
+        );
+        assert!(components[0].windie.setup.isolated_home);
+
+        let crate::mcp::McpTransport::PackagedStdio { ref command, .. } = components[0].transport
+        else {
+            panic!("Minecraft MCP should use a packaged stdio transport");
+        };
+        assert_eq!(command.program, "node");
+        assert_eq!(command.args.len(), 1);
+        assert!(command.args[0].ends_with("dist/main.js"));
+
+        store.remove_plugin("minecraft-mcp").unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn awesome_mineflayer_package_declares_pinned_node_mcpb_with_safe_defaults() {
+        let root = std::env::temp_dir().join(format!(
+            "windie-awesome-mineflayer-package-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = PluginStore::new(&root);
+        let plugin = store.install_bundled("awesome-mineflayer-mcp").unwrap();
+        let components = crate::mcp::load_components(&plugin).unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(
+            components[0].manifest.name,
+            "io.github.G0Osey99/awesome-mineflayer-mcp"
+        );
+        assert_eq!(components[0].manifest.version, "1.3.2");
+        assert_eq!(
+            components[0].windie.capabilities,
+            vec![
+                "minecraft",
+                "game_control",
+                "bot_automation",
+                "local_network"
+            ]
+        );
+        assert!(components[0].windie.setup.isolated_home);
+
+        let crate::mcp::McpTransport::PackagedStdio { ref command, .. } = components[0].transport
+        else {
+            panic!("Awesome Mineflayer MCP should use a packaged stdio transport");
+        };
+        assert_eq!(command.program, "node");
+        assert_eq!(command.args.len(), 1);
+        assert!(command.args[0].ends_with("dist/index.js"));
+        assert!(
+            command
+                .env
+                .iter()
+                .any(|(name, value)| { name == "MCP_ENABLE_RAW" && value == "false" })
+        );
+
+        store.remove_plugin("awesome-mineflayer-mcp").unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn brightdata_package_declares_node_mcpb_and_deferred_api_key_delivery() {
         let root = std::env::temp_dir().join(format!(
             "windie-brightdata-package-test-{}-{}",

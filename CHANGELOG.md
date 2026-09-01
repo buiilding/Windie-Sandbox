@@ -7,7 +7,65 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+- Made `windie dev run gateway` prepare Bifrost's ignored Go-embed input, so
+  normal Windie development no longer requires building Bifrost's separate
+  dashboard. Reorganized source-development documentation around one shared
+  workflow, added a documentation index and contributor guide, removed stale
+  guide scaffolds, and added portable CI validation for local documentation
+  links with the Inspector submodule initialized for its pinned Node.js
+  version.
+
+- Updated the Inspector provider panel to refresh the available model catalog
+  after provider key changes.
+
+- Added a Linux development guide covering native build dependencies, pinned
+  toolchains, Bifrost's generated UI, desktop boundaries, ports, and
+  Linux-specific troubleshooting.
+
+- Aligned the root, shared, macOS, and Windows development guides with the
+  pinned toolchain files and local-default Inspector workflow, and clarified
+  the engineering-ownership instructions for future Windie work.
+
+- Repaired the Inspector submodule reference on the development branch so a
+  recursive clone resolves a published Inspector commit and retains local
+  Inspector access.
+
+- Documented the durable session-event model: its separate SQLite activity
+  log, database-wide replay cursor, event payloads, transactional invariants,
+  and SSE delivery flow.
+
+- Added packaged and development local Inspector access. `windie inspector
+  open` now opens a locally served frontend through a one-time, API-issued
+  browser credential without a hosted sign-in, while `app.windieos.com` keeps
+  its existing Supabase sign-in and explicit runtime-pairing flow.
+
+- Pinned the Rust, Go, and Inspector Node.js development toolchains in
+  machine-readable version files and made check and release workflows install
+  their toolchains from those declarations.
+
+- Organized architecture documentation into durable state, execution, model
+  access, extensions, interfaces, and local components, with group overviews
+  and templates for detailed references. Added plugin publishing, hosted
+  Inspector, and desktop notification guides plus decisions documenting API
+  authority and independent local components.
+
+- Removed superseded standalone MCP, provider-onboarding, and code-owned MCP
+  migration references after consolidating current documentation under the
+  architecture and guide hierarchy.
+
+- Added an Awesome Mineflayer MCP plugin package with a pinned upstream Node
+  runtime, explicit bot connection flow, isolated persistent configuration,
+  and raw packet tools disabled by default.
+
+- Added a pinned Minecraft MCP plugin package with a bundled Node runtime,
+  fixed local-LAN defaults, manual approval boundaries, and generated
+  marketplace support.
+
+- Made idle and explicit wakeups durable transcript messages. Windie now
+  appends a clearly marked, system-generated user-role wakeup request before
+  running the normal session executor, rather than injecting an invisible
+  system prompt into only one model request.
+- Added source-verified architecture references for conversation trees, sessions, runtime turns, tool execution, plugins, MCPs, and local processes.
 
 ## [0.4.2] - 2026-08-24
 

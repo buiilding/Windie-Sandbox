@@ -25,7 +25,6 @@ $apiAddress = if ($env:WINDIE_API_ADDRESS) {
 } else {
     "127.0.0.1:8787"
 }
-$hostedAppUrl = "https://app.windieos.com"
 $env:WINDIE_GATEWAY_URL = $gatewayUrl
 $env:WINDIE_API_ADDRESS = $apiAddress
 
@@ -72,6 +71,13 @@ try {
         }
         Copy-Item -LiteralPath $source -Destination (Join-Path $installDir $name) -Force
     }
+    $inspectorSource = Join-Path $tempDir "inspector"
+    if (-not (Test-Path -LiteralPath (Join-Path $inspectorSource "index.html") -PathType Leaf)) {
+        throw "Release asset did not contain the local Inspector."
+    }
+    $inspectorDestination = Join-Path $installDir "inspector"
+    Remove-Item -LiteralPath $inspectorDestination -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $inspectorSource -Destination $inspectorDestination -Recurse
 }
 finally {
     if (Test-Path -LiteralPath $tempDir) {
@@ -208,10 +214,10 @@ catch {
 }
 Write-Host "Started the runtime at http://$apiAddress"
 
-Start-Process $hostedAppUrl
+Invoke-WindieLifecycle @("inspector", "open") "inspector" 15
 Start-Process -FilePath $windie -ArgumentList @("tray", "start") -WindowStyle Hidden
 Start-Process -FilePath $windie -ArgumentList @("notifier", "start") -WindowStyle Hidden
-Write-Host "Opened Windie at $hostedAppUrl"
+Write-Host "Opened the local Windie Inspector"
 Write-Host "Click on the tray on your desktop to manage these processes."
 
 Write-Output "windie installed at $(Join-Path $installDir 'windie.exe')"
@@ -222,4 +228,4 @@ Write-Output "Windie home ready at $windieHome"
 Write-Output "provider keys file: $envFile"
 Write-Output "Bifrost: $gatewayUrl"
 Write-Output "Windie API: http://$apiAddress"
-Write-Output "Windie: $hostedAppUrl"
+Write-Output "Local Inspector: $windie inspector open"

@@ -31,90 +31,19 @@ On Windows PowerShell:
 irm https://windieos.com/install.ps1 | iex
 ```
 
-## Repository development workflow
+## Develop Windie
 
-The public `windie` binary is the only CLI.
+Windie development runs the Bifrost gateway, Windie API, and Inspector as
+independent foreground processes. The complete source-development workflow,
+including platform setup, verification, ports, troubleshooting, and optional
+desktop components, lives in the [development guide](docs/guides/development/README.md).
 
-From the repository root, run:
+Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md). It defines the
+issue, branch, changelog, verification, and pull-request workflow.
 
-```bash
-cargo run --bin windie -- dev run gateway
-cargo run --bin windie -- dev run api
-cargo run --bin windie -- dev run inspector
-cargo run --bin windie -- dev run tray
-cargo run --bin windie -- dev run notifier
-```
-
-Each command runs exactly one foreground development component. Start the
-components you need in separate terminals; Windie intentionally has no
-aggregate development runner.
-
-### Notification probe
-
-After restarting the development API and notifier, send the development-only
-completion probe from a third terminal:
-
-```bash
-curl -i -X POST http://127.0.0.1:8787/api/dev/notifications/assistant-completed
-```
-
-The response includes `notifier_receivers: 1` when the notifier is connected, then
-the notifier shows a native `Windie — Assistant finished` notification. This probe does
-not create a conversation, session, or durable runtime event.
-
-For normal runtime work, the notifier listens only for durable final
-`session.completed` events. It shows a whitespace-normalized preview of the
-actual final assistant text (up to 240 characters), never a tool call or tool
-result; the cursor is stored locally so a reconnect does not repeat
-notifications already shown.
-
-Installed macOS releases run notifications from `Windie Notifier.app`, so clicking a
-completed-response notification opens the exact hosted Inspector session at
-`https://app.windieos.com/sessions/<session-id>`. A checkout's `cargo run ...
-dev run notifier` remains intentionally unbundled: it can show the development
-notification but cannot receive an operating-system notification click callback.
-
-For any normal CLI command during development, use the same pattern:
-
-```bash
-cargo run --bin windie -- status
-cargo run --bin windie -- bench
-```
-
-For release packaging:
-
-```bash
-cargo run --bin windie -- release build
-cargo run --bin windie -- release install
-cargo run --bin windie -- release verify
-source ./scripts/activate_windie
-windie status
-```
-
-For marketplace publishing, mark a package with `"marketplace": { "publish": true }`
-in its `plugin.json`. Its `presentation.repository_url` may optionally name the
-canonical `https://github.com/<owner>/<repository>` source project. Then run:
-
-```bash
-cargo run --bin windie -- marketplace build
-cargo run --bin windie -- marketplace publish
-```
-
-The build discovers opted-in packages, creates the local test catalog at
-`target/local-marketplace`, and generates its `index.json`. Publishing creates
-immutable `.tar.gz` assets in an automatically named GitHub Release, then deploys only the
-catalog, manifests, README files, and icons to Vercel. It requires authenticated
-`gh` and `vercel` CLIs and does not modify the checked-in `marketplace/index.json`
-fixture.
-
-In development, React uses HMR when `windie dev run inspector` starts it. The
-Rust API and Bifrost gateway are built by their individual `windie dev run`
-commands; rerun the relevant command after backend source changes. Production
-deploys the Inspector to `app.windieos.com`; it is not embedded in the local
-Windie release.
-Installations in separate
-worktrees can run together by assigning distinct
-`WINDIE_GATEWAY_PORT` and `WINDIE_API_PORT` values.
+For narrower operational workflows, use the [documentation index](docs/README.md):
+desktop notifications, Inspector access, plugin packages, architecture, and
+release guidance each have their own owner document.
 
 ---
 
@@ -238,9 +167,9 @@ Configure any provider with a simple API key — or run fully local with Ollama,
 curl -sL https://windieos.com/install | sh
 ```
 
-- [Documentation](#)
-- [Registry](#)
-- [GitHub](#)
+- [Documentation](docs/README.md)
+- [Registry](https://marketplace.windieos.com)
+- [GitHub](https://github.com/buiilding/Windie-Sandbox)
 
 ---
 

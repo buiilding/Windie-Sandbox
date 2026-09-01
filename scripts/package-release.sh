@@ -17,6 +17,7 @@
 #   windie            CLI + API server
 #   Windie Notifier.app  macOS-native notification host (macOS releases only)
 #   bifrost           owned Bifrost gateway binary (sibling of `windie`)
+#   inspector/        static local Inspector frontend served by the API
 #   release-manifest.txt  target/version metadata for installer diagnostics
 
 set -euo pipefail
@@ -30,6 +31,7 @@ BIFROST_DIR="$REPO_ROOT/vendor/bifrost"
 BIFROST_HTTP_DIR="$BIFROST_DIR/transports/bifrost-http"
 BIFROST_BIN="$BIFROST_DIR/tmp/bifrost-http"
 BIFROST_VERSION="stable"
+INSPECTOR_DIR="$REPO_ROOT/vendor/windie-inspector/frontend"
 VERSION="${GITHUB_REF_NAME:-dev}"
 
 case "$RUST_TARGET" in
@@ -109,12 +111,23 @@ else
 fi
 [ -f "$BIFROST_BIN" ] || { echo "bifrost binary not found at $BIFROST_BIN" >&2; exit 1; }
 
-# --- 3. Assemble the tarball --------------------------------------------------
+# --- 3. Build the local Inspector -------------------------------------------
+echo "==> building Inspector"
+npm ci --legacy-peer-deps --prefix "$INSPECTOR_DIR"
+npm run build --prefix "$INSPECTOR_DIR"
+[ -f "$INSPECTOR_DIR/build/index.html" ] || {
+  echo "Inspector build did not produce $INSPECTOR_DIR/build/index.html" >&2
+  exit 1
+}
+
+# --- 4. Assemble the tarball --------------------------------------------------
 echo "==> assembling tarball"
 install -m 0755 "$WINDIE_BIN" "$STAGING_DIR/windie"
 install -m 0755 "$BIFROST_BIN" "$STAGING_DIR/bifrost"
+mkdir -p "$STAGING_DIR/inspector"
+cp -R "$INSPECTOR_DIR/build/." "$STAGING_DIR/inspector/"
 NOTIFIER_BUNDLE_NAME="Windie Notifier.app"
-RELEASE_CONTENTS="windie,bifrost"
+RELEASE_CONTENTS="windie,bifrost,inspector"
 if [ "$RELEASE_OS" = "macos" ]; then
   notifier_bundle="$STAGING_DIR/$NOTIFIER_BUNDLE_NAME"
   mkdir -p "$notifier_bundle/Contents/MacOS"
@@ -156,9 +169,9 @@ EOF
 mkdir -p "$DIST_DIR"
 TARBALL="$DIST_DIR/windie-$ASSET_LABEL.tar.gz"
 if [ "$RELEASE_OS" = "macos" ]; then
-  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost "$NOTIFIER_BUNDLE_NAME" release-manifest.txt
+  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost inspector "$NOTIFIER_BUNDLE_NAME" release-manifest.txt
 else
-  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost release-manifest.txt
+  tar -czf "$TARBALL" -C "$STAGING_DIR" windie bifrost inspector release-manifest.txt
 fi
 sha256sum "$TARBALL" > "$TARBALL.sha256"
 

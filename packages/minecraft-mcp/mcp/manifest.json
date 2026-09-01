@@ -1,0 +1,25 @@
+{
+  "manifest_version": "0.4",
+  "name": "minecraft-mcp-server",
+  "display_name": "Minecraft MCP",
+  "version": "2.0.4",
+  "description": "Control a bot in a locally hosted Minecraft Java world through MCP.",
+  "author": {
+    "name": "Yuniko Software",
+    "url": "https://github.com/yuniko-software/minecraft-mcp-server"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/main.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/main.js"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20.10.0"
+    }
+  }
+}

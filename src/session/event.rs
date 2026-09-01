@@ -10,6 +10,7 @@ use super::SessionId;
 pub enum SessionEventKind {
     InputQueued,
     InputStarted,
+    WakeupMessageSaved,
     AssistantDelta,
     ReasoningDelta,
     ToolCallDelta,
@@ -28,6 +29,7 @@ impl SessionEventKind {
         match self {
             Self::InputQueued => "input_queued",
             Self::InputStarted => "input_started",
+            Self::WakeupMessageSaved => "wakeup_message_saved",
             Self::AssistantDelta => "assistant_delta",
             Self::ReasoningDelta => "reasoning_delta",
             Self::ToolCallDelta => "tool_call_delta",
@@ -52,6 +54,10 @@ pub enum SessionEvent {
     },
     InputStarted {
         input_id: String,
+        message_id: String,
+    },
+    /// A runtime-created, user-role wakeup message was durably appended.
+    WakeupMessageSaved {
         message_id: String,
     },
     AssistantDelta {
@@ -90,6 +96,7 @@ impl SessionEvent {
         match self {
             Self::InputQueued { .. } => SessionEventKind::InputQueued,
             Self::InputStarted { .. } => SessionEventKind::InputStarted,
+            Self::WakeupMessageSaved { .. } => SessionEventKind::WakeupMessageSaved,
             Self::AssistantDelta { .. } => SessionEventKind::AssistantDelta,
             Self::ReasoningDelta { .. } => SessionEventKind::ReasoningDelta,
             Self::ToolCallDelta { .. } => SessionEventKind::ToolCallDelta,

@@ -5,7 +5,14 @@
 //! that account. Neither the hosted site nor Supabase receives access to the
 //! local SQLite data, provider keys, or tools.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use super::*;
+
+const LOCAL_LAUNCH_CODE_TTL: Duration = Duration::from_secs(60);
+const LOCAL_AUTHORIZATION_SCHEME: &str = "WindieLocal ";
 
 /// Identity already verified by Windie's hosted account service.
 #[derive(Debug, Clone)]
@@ -16,8 +23,12 @@ pub(super) struct AuthenticatedAccount {
 /// Authentication and authorization policy attached to one API server.
 #[derive(Clone)]
 pub(super) enum RuntimeAccessControl {
-    /// Production policy: authenticate every browser request with Supabase.
-    Hosted(HostedAccountVerifier),
+    /// Production policy: accept either a paired hosted account or a local
+    /// Inspector session minted by this API process.
+    HostedAndLocal {
+        hosted: HostedAccountVerifier,
+        local: LocalInspectorVerifier,
+    },
     /// Isolated benchmark and route-test policy. It must never be used by the
     /// process that binds the user's loopback API.
     UnrestrictedForIsolatedTests,
@@ -28,7 +39,18 @@ pub(super) struct HostedAccountVerifier {
     http: reqwest::Client,
     auth_url: String,
     publishable_key: String,
+}
+
+#[derive(Clone)]
+pub(super) struct LocalInspectorVerifier {
     local_component_token: String,
+    state: Arc<Mutex<LocalInspectorState>>,
+}
+
+#[derive(Default)]
+struct LocalInspectorState {
+    launch_codes: HashMap<String, Instant>,
+    session_tokens: HashSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +63,21 @@ enum AuthenticationFailure {
     MissingBearerToken,
     InvalidBearerToken,
     AccountServiceUnavailable,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct LocalAccessExchangeRequest {
+    code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct LocalAccessLaunchResponse {
+    code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct LocalAccessExchangeResponse {
+    access_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,20 +96,22 @@ pub(super) struct RuntimeAccessResponse {
 
 impl RuntimeAccessControl {
     /// Builds the policy used by the real localhost API process.
-    pub(super) fn hosted(local_component_token: String) -> Self {
-        Self::Hosted(HostedAccountVerifier {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("Windie hosted-account HTTP client should initialize"),
-            auth_url: crate::config::auth_url(),
-            publishable_key: crate::config::auth_publishable_key(),
-            local_component_token,
-        })
+    pub(super) fn hosted_and_local(local_component_token: String) -> Self {
+        Self::HostedAndLocal {
+            hosted: HostedAccountVerifier {
+                http: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()
+                    .expect("Windie hosted-account HTTP client should initialize"),
+                auth_url: crate::config::auth_url(),
+                publishable_key: crate::config::auth_publishable_key(),
+            },
+            local: LocalInspectorVerifier::new(local_component_token),
+        }
     }
 
     /// Keeps benchmark and route fixtures independent from a live account
-    /// service. Production `serve` always selects [`Self::hosted`].
+    /// service. Production `serve` always selects [`Self::hosted_and_local`].
     pub(super) fn unrestricted_for_isolated_tests() -> Self {
         Self::UnrestrictedForIsolatedTests
     }
@@ -80,12 +119,14 @@ impl RuntimeAccessControl {
     #[cfg(test)]
     /// Points the production policy at a local mock Auth server for route tests.
     pub(super) fn hosted_for_tests(auth_url: String) -> Self {
-        Self::Hosted(HostedAccountVerifier {
-            http: reqwest::Client::new(),
-            auth_url,
-            publishable_key: "test-publishable-key".to_string(),
-            local_component_token: "test-local-component-token".to_string(),
-        })
+        Self::HostedAndLocal {
+            hosted: HostedAccountVerifier {
+                http: reqwest::Client::new(),
+                auth_url,
+                publishable_key: "test-publishable-key".to_string(),
+            },
+            local: LocalInspectorVerifier::new("test-local-component-token".to_string()),
+        }
     }
 
     async fn authenticate(
@@ -93,7 +134,7 @@ impl RuntimeAccessControl {
         headers: &HeaderMap,
     ) -> std::result::Result<AuthenticatedAccount, AuthenticationFailure> {
         match self {
-            Self::Hosted(verifier) => verifier.authenticate(headers).await,
+            Self::HostedAndLocal { hosted, .. } => hosted.authenticate(headers).await,
             Self::UnrestrictedForIsolatedTests => Ok(AuthenticatedAccount {
                 subject: "isolated-test-account".to_string(),
             }),
@@ -108,12 +149,84 @@ impl RuntimeAccessControl {
     /// credential for one of the internal notification streams.
     fn authenticates_local_component(&self, headers: &HeaderMap) -> bool {
         match self {
-            Self::Hosted(verifier) => headers
-                .get(crate::config::LOCAL_COMPONENT_TOKEN_HEADER)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value == verifier.local_component_token),
+            Self::HostedAndLocal { local, .. } => local.authenticates_component(headers),
             Self::UnrestrictedForIsolatedTests => true,
         }
+    }
+
+    /// Returns whether this API process issued the volatile browser token.
+    fn authenticates_local_inspector(&self, headers: &HeaderMap) -> bool {
+        match self {
+            Self::HostedAndLocal { local, .. } => local.authenticates_session(headers),
+            Self::UnrestrictedForIsolatedTests => true,
+        }
+    }
+
+    /// Issues a one-time code after middleware verifies the local component.
+    fn issue_local_launch_code(&self) -> Option<String> {
+        match self {
+            Self::HostedAndLocal { local, .. } => Some(local.issue_launch_code()),
+            Self::UnrestrictedForIsolatedTests => None,
+        }
+    }
+
+    /// Consumes one launch code and replaces it with a volatile browser token.
+    fn exchange_local_launch_code(&self, code: &str) -> Option<String> {
+        match self {
+            Self::HostedAndLocal { local, .. } => local.exchange_launch_code(code),
+            Self::UnrestrictedForIsolatedTests => None,
+        }
+    }
+}
+
+impl LocalInspectorVerifier {
+    fn new(local_component_token: String) -> Self {
+        Self {
+            local_component_token,
+            state: Arc::new(Mutex::new(LocalInspectorState::default())),
+        }
+    }
+
+    fn authenticates_component(&self, headers: &HeaderMap) -> bool {
+        headers
+            .get(crate::config::LOCAL_COMPONENT_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value == self.local_component_token)
+    }
+
+    fn issue_launch_code(&self) -> String {
+        let code = uuid::Uuid::new_v4().simple().to_string();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        state
+            .launch_codes
+            .retain(|_, issued_at| now.duration_since(*issued_at) < LOCAL_LAUNCH_CODE_TTL);
+        state.launch_codes.insert(code.clone(), now);
+        code
+    }
+
+    fn exchange_launch_code(&self, code: &str) -> Option<String> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let issued_at = state.launch_codes.remove(code)?;
+        if issued_at.elapsed() >= LOCAL_LAUNCH_CODE_TTL {
+            return None;
+        }
+
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        state.session_tokens.insert(token.clone());
+        Some(token)
+    }
+
+    fn authenticates_session(&self, headers: &HeaderMap) -> bool {
+        let Some(token) = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix(LOCAL_AUTHORIZATION_SCHEME))
+        else {
+            return false;
+        };
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.session_tokens.contains(token)
     }
 }
 
@@ -168,8 +281,9 @@ impl HostedAccountVerifier {
 /// Protects local runtime routes after CORS handles browser preflight.
 ///
 /// Health and shutdown retain their loopback-only lifecycle role. Everything
-/// that reveals, changes, or executes runtime state requires a verified hosted
-/// account and a matching local pairing.
+/// that reveals, changes, or executes runtime state requires either a verified
+/// hosted account with a matching pairing or a local Inspector token minted by
+/// this API process.
 pub(super) async fn authorize_runtime_request(
     State(state): State<ApiState>,
     mut request: Request,
@@ -190,6 +304,19 @@ pub(super) async fn authorize_runtime_request(
             .runtime_access
             .authenticates_local_component(request.headers())
     {
+        return next.run(request).await;
+    }
+
+    if state
+        .runtime_access
+        .authenticates_local_inspector(request.headers())
+    {
+        if runtime_pairing_route(request.method(), request.uri().path()) {
+            return access_response(
+                StatusCode::FORBIDDEN,
+                "Local Inspector sessions do not manage hosted account pairing.",
+            );
+        }
         return next.run(request).await;
     }
 
@@ -231,6 +358,7 @@ fn public_runtime_route(method: &Method, path: &str) -> bool {
         (&Method::GET, "/api/health")
             | (&Method::GET, "/api/status")
             | (&Method::POST, "/api/shutdown")
+            | (&Method::POST, "/api/runtime/local-access/exchange")
             | (&Method::OPTIONS, _)
     )
 }
@@ -246,7 +374,40 @@ fn local_component_route(method: &Method, path: &str) -> bool {
             | (&Method::GET, "/api/events/cursor")
             | (&Method::GET, "/api/dev/notifications")
             | (&Method::GET, "/api/dev/tray-notifications")
+            | (&Method::POST, "/api/runtime/local-access/launch")
     )
+}
+
+/// Mints a short-lived launch code for a trusted local Windie component.
+/// Middleware verifies the private component credential before entering this
+/// handler, so the response never exposes that long-lived credential.
+pub(super) async fn issue_local_access_launch(State(state): State<ApiState>) -> Response {
+    let Some(code) = state.runtime_access.issue_local_launch_code() else {
+        return access_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Local Inspector launch is unavailable under the isolated test policy.",
+        );
+    };
+    Json(LocalAccessLaunchResponse { code }).into_response()
+}
+
+/// Exchanges a one-time fragment code for the volatile token used by browser
+/// API and SSE requests. Invalid, expired, and consumed codes deliberately
+/// produce the same response.
+pub(super) async fn exchange_local_access_launch(
+    State(state): State<ApiState>,
+    Json(request): Json<LocalAccessExchangeRequest>,
+) -> Response {
+    let Some(access_token) = state
+        .runtime_access
+        .exchange_local_launch_code(request.code.trim())
+    else {
+        return access_response(
+            StatusCode::UNAUTHORIZED,
+            "This local Inspector launch link is invalid or expired. Run `windie inspector open` again.",
+        );
+    };
+    Json(LocalAccessExchangeResponse { access_token }).into_response()
 }
 
 fn runtime_pairing_route(method: &Method, path: &str) -> bool {

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Minecraft MCP">
+  <rect width="64" height="64" rx="12" fill="#1d3b24"/>
+  <path fill="#4f8a3c" d="M8 13h48v19H8z"/>
+  <path fill="#875d39" d="M8 32h48v20H8z"/>
+  <path fill="#ad7b4b" d="M14 36h10v6H14zm17 7h12v6H31zm12-9h7v7h-7zm-28 12h10v6H15z"/>
+  <path fill="#8fcf5c" d="M8 13h48v7H8z"/>
+  <path fill="#d8f0a8" d="M23 23h7v7h-7zm12 2h7v7h-7z"/>
+</svg>

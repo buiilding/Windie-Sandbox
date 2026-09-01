@@ -507,6 +507,9 @@ impl TerminalOutput {
                 input_id,
                 message_id,
             } => println!("input started {input_id} as message {message_id}"),
+            SessionEvent::WakeupMessageSaved { message_id } => {
+                println!("wakeup message saved {message_id}");
+            }
             SessionEvent::AssistantDelta { text } => print!("{text}"),
             SessionEvent::ReasoningDelta { text } => print!("{text}"),
             SessionEvent::ToolCallDelta {

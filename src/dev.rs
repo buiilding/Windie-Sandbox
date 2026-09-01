@@ -33,6 +33,7 @@ use crate::plugin::{
 };
 
 const DEV_GATEWAY_START_TIMEOUT: Duration = Duration::from_secs(180);
+const DEV_INSPECTOR_START_TIMEOUT: Duration = Duration::from_secs(180);
 const LOCAL_MARKETPLACE_PORT: u16 = 8788;
 
 /// Runs the selected development workflow through the public CLI.
@@ -86,16 +87,31 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             stop_child(&mut gateway).await;
             result
         }
-        DevComponent::Api
-        | DevComponent::Inspector
-        | DevComponent::Tray
-        | DevComponent::Notifier => {
+        DevComponent::Inspector => {
+            let mut inspector = spawn_component("inspector").await?;
+            if let Err(error) = wait_for_inspector(&mut inspector).await {
+                stop_child(&mut inspector).await;
+                return Err(error);
+            }
+            if let Err(error) = crate::inspector::open_at("http://localhost:3000").await {
+                stop_child(&mut inspector).await;
+                return Err(error.context(
+                    "the Inspector is ready, but local access could not be created; start the API first",
+                ));
+            }
+            println!("windie: development inspector is running; press Ctrl-C to stop");
+            let result = supervise_one(&mut inspector).await;
+            stop_child(&mut inspector).await;
+            result
+        }
+        DevComponent::Api | DevComponent::Tray | DevComponent::Notifier => {
             let component = match component {
                 DevComponent::Api => "api",
-                DevComponent::Inspector => "inspector",
                 DevComponent::Tray => "tray",
                 DevComponent::Notifier => "notifier",
-                DevComponent::Gateway => unreachable!("gateway is handled above"),
+                DevComponent::Gateway | DevComponent::Inspector => {
+                    unreachable!("gateway and Inspector are handled above")
+                }
             };
             let mut child = spawn_component(component).await?;
             println!("windie: development {component} is running; press Ctrl-C to stop");
@@ -104,6 +120,29 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             result
         }
     }
+}
+
+/// Waits for the React development server before minting and opening a local
+/// Inspector session. This preserves hot reload while keeping browser access
+/// behind the same API-issued credential as packaged releases.
+async fn wait_for_inspector(child: &mut Child) -> Result<()> {
+    const INSPECTOR_URL: &str = "http://localhost:3000";
+    for _ in 0..(DEV_INSPECTOR_START_TIMEOUT.as_millis() / 200) {
+        if health(INSPECTOR_URL).await == "running" {
+            return Ok(());
+        }
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to poll Inspector development process")?
+        {
+            bail!("Inspector development process exited with {status}");
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+    bail!(
+        "Inspector did not become healthy within {} seconds",
+        DEV_INSPECTOR_START_TIMEOUT.as_secs()
+    )
 }
 
 /// One generated marketplace output, separated into a catalog site and archive assets.
@@ -569,6 +608,7 @@ async fn spawn_gateway() -> Result<Child> {
     if !transport_root.join("main.go").is_file() {
         bail!("Bifrost source is missing at {}", transport_root.display());
     }
+    prepare_bifrost_embed_directory(&transport_root)?;
     prepare_bifrost_workspace(&bifrost_root).await?;
 
     let app_dir = crate::local::windie_home_dir()?.join("bifrost/data");
@@ -611,6 +651,40 @@ async fn spawn_gateway() -> Result<Child> {
     command
         .spawn()
         .context("failed to start the Bifrost process")
+}
+
+/// Ensures Bifrost's Go embed pattern has one development-only input.
+///
+/// Bifrost embeds every file below `transports/bifrost-http/ui` at compile
+/// time, but that generated dashboard is not needed when Windie develops
+/// against its own Inspector. The upstream Bifrost development target creates
+/// an ignored placeholder for this case. Windie does the same before building
+/// the gateway, without replacing a dashboard a developer has already built.
+fn prepare_bifrost_embed_directory(transport_root: &Path) -> Result<()> {
+    let ui_root = transport_root.join("ui");
+    if ui_root.exists() && !ui_root.is_dir() {
+        bail!(
+            "Bifrost UI embed path must be a directory: {}",
+            ui_root.display()
+        );
+    }
+    fs::create_dir_all(&ui_root).with_context(|| {
+        format!(
+            "failed to create Bifrost UI embed directory {}",
+            ui_root.display()
+        )
+    })?;
+
+    let placeholder = ui_root.join(".tmp");
+    if !placeholder.exists() {
+        fs::write(&placeholder, b"").with_context(|| {
+            format!(
+                "failed to create Bifrost development embed placeholder {}",
+                placeholder.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Waits for the directly launched Bifrost process to become healthy.
@@ -1052,4 +1126,31 @@ fn repository_root() -> Result<PathBuf> {
 
 fn npm_command() -> &'static str {
     if cfg!(windows) { "npm.cmd" } else { "npm" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_preparation_creates_an_embed_placeholder() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let transport_root = env::temp_dir().join(format!(
+            "windie-dev-bifrost-embed-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&transport_root).expect("temporary transport root should be created");
+
+        prepare_bifrost_embed_directory(&transport_root)
+            .expect("gateway preparation should create the embed placeholder");
+
+        assert!(
+            transport_root.join("ui/.tmp").is_file(),
+            "the Go embed pattern needs a development-only file"
+        );
+        fs::remove_dir_all(&transport_root).expect("temporary transport root should be removed");
+    }
 }

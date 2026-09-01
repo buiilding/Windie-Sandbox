@@ -46,6 +46,14 @@ fn api_router(state: ApiState) -> Router {
                 .post(pair_runtime_access)
                 .delete(unpair_runtime_access),
         )
+        .route(
+            "/api/runtime/local-access/launch",
+            post(issue_local_access_launch),
+        )
+        .route(
+            "/api/runtime/local-access/exchange",
+            post(exchange_local_access_launch),
+        )
         .route("/api/events", get(global_events))
         .route("/api/events/cursor", get(global_event_cursor))
         .route("/api/dev/notifications", get(notifier_test_notifications))

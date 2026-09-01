@@ -40,7 +40,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - store/conversation.rs: creates, lists, deletes conversations and stores conversation-level settings like model, reasoning effort, tool approval mode.
 - store/message.rs: stores the whole conversation tree. Load paths, insert messages, store messages, including text and image parts, replaces, removes, truncates messages, and forks to another conversation at current message head.
 - store/runtime_access.rs: persists the one hosted account explicitly authorized to use this local runtime and prevents another account from replacing it.
-- docs/conversation-tree-and-paths.md: explains why the shared message tree is canonical and why model context resolves a selected root-to-head path instead of storing duplicated linear paths.
+- docs/architecture/durable-state/conversation-tree-paths.md: explains why the shared message tree is canonical and why model context resolves a selected root-to-head path instead of storing duplicated linear paths.
 - store/schema.rs: database shape, schema version checks, table creation, indexes, and unsupported database version rejection.
 - store/session.rs: stores sessions and queued inputs, updates current heads/status, resolves session branches at conversation heads, atomically resolves-or-creates branches, and stores/replays session events.
 - store/system_prompt.rs: stores one user-owned conversation-wide system prompt, shared by every branch/head. It never stores generated runtime metadata such as the plugin index.
@@ -72,8 +72,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/router.rs: maps HTTP URLs to API handlers and applies shared request rules.
 - api/state.rs: shared API server state passed into route handlers.
 - api/error.rs: turns internal Windie errors into HTTP JSON errors.
-- api/runtime_access.rs: validates hosted Supabase account sessions and requires the one explicitly paired account before access to local runtime state.
-- api/router.rs: local runtime routes remain loopback-bound and require hosted-account authorization; health and shutdown stay available for local lifecycle checks.
+- api/runtime_access.rs: validates hosted Supabase account sessions and pairing, while also issuing and verifying volatile local Inspector credentials.
+- api/router.rs: local runtime routes remain loopback-bound and require either hosted paired-account authorization or a local Inspector token; health and shutdown stay available for local lifecycle checks.
 - api/sse.rs: serializes replayed and live session events for HTTP streaming, hydrating state-changing events with session and message snapshots plus the canonical final assistant text on aggregate completion events.
 - api/event.rs: exposes the database-wide durable session-event cursor and
   aggregate SSE feed for clients that need to observe durable activity across
@@ -131,7 +131,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/tray.rs: macOS/Windows tray presentation component that polls local component health and requests explicit single-component lifecycle operations.
 - local/notifier.rs: independent notification process that starts durable completion and development-probe observers without owning a tray or runtime service.
 - local/session_event_observer.rs: reconnecting aggregate session-completion SSE observer that persists the last displayed cursor and forwards a preview of only canonical final durable assistant responses to the notifier.
-- local/tray_notification.rs: native notification presenter plus the development-only notification SSE probe. Platform click actions open the durable session's hosted Inspector URL; the probe never touches durable session state.
+- local/tray_notification.rs: native notification presenter plus the development-only notification SSE probe. Current platform click actions open the durable session's hosted Inspector URL; the probe never touches durable session state.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers
@@ -164,7 +164,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 
 - session/: session domain types and live session supervision.
 - session/mod.rs: Public boundary and re-exports for session folder.
-- session/event.rs: event types for observable session activity. Records events from a running session/agent loop such as streamed assistant text, tool calls, approvals, completion, failure, cancellation, and queued/started inputs.
+- session/event.rs: event types for observable session activity. Records events from a running session/agent loop such as durable wakeup-message saves, streamed assistant text, tool calls, approvals, completion, failure, cancellation, and queued/started inputs.
 - session/id.rs: SessionId identifies a durable session; SessionInputId identifies one queued input inside that session; SessionExecutionClaimId is the unique fencing token for one execution attempt.
 - session/control.rs: explicit session controls such as cancellation, separate from wakeups that resume runtime work.
 - session/manager.rs: manages live background session tasks, approvals, cancellation, and publishes session events. It also owns durable per-session idle-wakeup scheduling and explicit user-requested wakeups.
@@ -216,7 +216,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
   assistant response, saves it, and continues through automatic tool calls
   until completion or approval is needed.
 - runtime/tool_execution.rs: handles tool calls. identifies pending calls, enforeces tool policy, executes approved provider or built-in tools, enforces tool-call order, and save tool results
-- runtime/wakeup.rs: typed wakeup contexts for autonomous idle runs and explicit user-requested runs, plus session-targeted tool approval decisions.
+- runtime/wakeup.rs: typed wakeup prompts for durable idle and explicit wakeup transcript messages, plus session-targeted tool approval decisions.
 - runtime/tests.rs:
 - main.rs: front desk for the windie binary.
 - llm/gateway.rs: manages the local Bifrost LLM gateway lifecycle and health checks.

@@ -177,6 +177,28 @@ pub struct TokenUsage {
     pub raw: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Durable reason a runtime-created transcript message woke a session.
+///
+/// The message still uses the provider-facing `user` role so it enters the
+/// normal conversation path. This type keeps the durable audit trail honest:
+/// Windie, rather than a person, created the message.
+pub enum WakeupKind {
+    Idle,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Provenance attached to one runtime-created wakeup message.
+///
+/// Wakeup provenance is message metadata rather than a new role because the
+/// model must receive the wakeup as an ordinary task request while Inspector
+/// and durable storage must be able to distinguish it from human input.
+pub struct WakeupMetadata {
+    pub kind: WakeupKind,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 /// Metadata stored on messages outside normal visible text.
 ///
@@ -185,6 +207,9 @@ pub struct TokenUsage {
 /// `tool_call_id` is used by `role: tool` messages to link a tool result back
 /// to the assistant tool call that requested it.
 pub struct MessageMetadata {
+    /// Explains why Windie, rather than the user, created this message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wakeup: Option<WakeupMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<ToolCallId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -206,7 +231,8 @@ pub struct MessageMetadata {
 impl MessageMetadata {
     /// Returns whether the message has any metadata lane populated.
     pub fn is_empty(&self) -> bool {
-        self.tool_call_id.is_none()
+        self.wakeup.is_none()
+            && self.tool_call_id.is_none()
             && self.tool_calls.is_empty()
             && self.refusal.is_none()
             && self.reasoning.is_none()

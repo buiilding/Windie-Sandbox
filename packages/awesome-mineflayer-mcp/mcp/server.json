@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.G0Osey99/awesome-mineflayer-mcp",
+  "title": "Awesome Mineflayer MCP",
+  "description": "Control a Mineflayer Minecraft bot with movement, mining, crafting, combat, inventory, and world tools.",
+  "version": "1.3.2",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://marketplace.windieos.com/packages/awesome-mineflayer-mcp.mcpb",
+      "version": "1.3.2",
+      "fileSha256": "a9c2c40867852fa3918d745c27c01ed764e712bf8c29fcc8c0e6ec06d6f0e751",
+      "runtimeHint": "node",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

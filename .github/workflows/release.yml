@@ -28,19 +28,24 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Bifrost submodule
-        run: git submodule update --init --depth 1 vendor/bifrost
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout release submodules
+        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          target: ${{ matrix.target }}
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.5"
+          go-version-file: .go-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vendor/windie-inspector/frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:
           path: vendor/bifrost/tmp
-          key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
+          key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go-${{ hashFiles('.go-version') }}-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
       - name: Package release
         env:
           WINDIE_REUSE_BIFROST: "1"
@@ -60,19 +65,24 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Bifrost submodule
-        run: git submodule update --init --depth 1 vendor/bifrost
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout release submodules
+        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          target: ${{ matrix.target }}
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.5"
+          go-version-file: .go-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vendor/windie-inspector/frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:
           path: vendor/bifrost/tmp
-          key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go1.26.5-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
+          key: bifrost-v2-${{ runner.os }}-${{ matrix.target }}-go-${{ hashFiles('.go-version') }}-${{ hashFiles('vendor/bifrost/**', '!vendor/bifrost/.git', '!vendor/bifrost/.git/**', '!vendor/bifrost/tmp/**', '!vendor/bifrost/ui/node_modules/**', '!vendor/bifrost/ui/dist/**', '!vendor/bifrost/go.work', '!vendor/bifrost/go.work.sum') }}
       - name: Package Windows release
         shell: pwsh
         env:

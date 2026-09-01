@@ -34,6 +34,7 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
         [command, action] if command == "api" && action == "stop" => Command::ApiStop,
         [command, action] if command == "api" && action == "output" => Command::ApiOutput,
         [command, action] if command == "api" && action == "run" => Command::ApiRun,
+        [command, action] if command == "inspector" && action == "open" => Command::InspectorOpen,
         [arg] if arg == "onboard" => Command::Onboard,
         [arg] if arg == "uninstall" => Command::Uninstall {
             yes: false,

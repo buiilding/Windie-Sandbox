@@ -6,7 +6,9 @@ for GitHub release descriptions; the detailed engineering history is kept in
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+- Improved source-development setup and documentation. The development gateway
+  now prepares its own Bifrost build input, and contributors have one
+  cross-platform setup guide and clearer contribution checks.
 
 ## [0.4.2] - 2026-08-24
 
