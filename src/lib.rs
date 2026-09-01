@@ -13,6 +13,7 @@ pub mod conversation;
 pub mod dev;
 pub mod error;
 pub mod input;
+pub mod inspector;
 pub mod llm;
 pub mod local;
 pub mod managed_runtime;

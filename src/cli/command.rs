@@ -26,6 +26,8 @@ pub enum Command {
     ApiRun,
     /// Run the terminal-only first-run onboarding wizard.
     Onboard,
+    /// Open the packaged local Inspector without hosted account sign-in.
+    InspectorOpen,
     /// Attach one provider tool to a conversation.
     AttachTool {
         conversation_id: ConversationId,

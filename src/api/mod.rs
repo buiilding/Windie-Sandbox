@@ -28,6 +28,7 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::conversation::{ConversationId, ImageAssetId, MessageId, Role, ToolCallId};
 use crate::error::{self as windie_error, WindieErrorKind};
@@ -154,7 +155,7 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
         plugin_catalog,
         tool_registry,
         session_manager,
-        runtime_access: RuntimeAccessControl::hosted(local_component_token),
+        runtime_access: RuntimeAccessControl::hosted_and_local(local_component_token),
         notifier_test_notifications,
         shutdown_tx: shutdown_tx.clone(),
     };
@@ -172,7 +173,15 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
     write_process_pid_file(&api_pid_file)?;
 
     output.api_started(&address);
-    let server_result = axum::serve(listener, router(state))
+    let app = match crate::inspector::installed_assets_directory() {
+        Some(assets) => {
+            let index = assets.join("index.html");
+            router(state)
+                .fallback_service(ServeDir::new(assets).not_found_service(ServeFile::new(index)))
+        }
+        None => router(state),
+    };
+    let server_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_rx))
         .await
         .context("api server failed");

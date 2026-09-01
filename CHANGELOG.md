@@ -7,6 +7,11 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added packaged and development local Inspector access. `windie inspector
+  open` now opens a locally served frontend through a one-time, API-issued
+  browser credential without a hosted sign-in, while `app.windieos.com` keeps
+  its existing Supabase sign-in and explicit runtime-pairing flow.
+
 - Pinned the Rust, Go, and Inspector Node.js development toolchains in
   machine-readable version files and made check and release workflows install
   their toolchains from those declarations.

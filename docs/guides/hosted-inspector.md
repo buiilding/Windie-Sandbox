@@ -1,17 +1,43 @@
-# Hosted Inspector
+# Inspector access
 
 ## Purpose
 
-`https://app.windieos.com` serves the Windie Inspector: a hosted browser client
-for a Windie runtime running on the same computer. It is not a hosted runtime
-or a proxy to a remote API.
+Windie has two Inspector entry points for the same local runtime:
 
-When the page runs in a user's browser, it talks directly to the local API at
-`http://127.0.0.1:8787` by default. The browser makes that loopback connection;
-`app.windieos.com` never receives the conversation, tool call, or provider
-request as a runtime relay.
+- `windie inspector open` opens the packaged frontend served from the local
+  API. It needs no hosted account.
+- `https://app.windieos.com` serves the hosted frontend. It remains available
+  for a user who wants the web deployment and signs in with a Windie account.
 
-## Connection flow
+Neither is a hosted runtime or a proxy to a remote API. Both browser clients
+talk directly to the local API at `http://127.0.0.1:8787` by default. The
+browser makes that loopback connection; `app.windieos.com` never receives the
+conversation, tool call, or provider request as a runtime relay.
+
+## Local connection flow
+
+```text
+windie inspector open
+             │
+             v
+CLI proves possession of Windie's private component credential to the API
+             │
+             v
+API returns one one-time, 60-second launch code
+             │
+             v
+browser receives it only in a URL fragment and exchanges it once
+             │
+             v
+browser uses an API-restart-scoped local token for requests and SSE
+```
+
+The long-lived component credential is never exposed to the browser. Closing
+the tab drops its `sessionStorage` token; restarting the API invalidates all
+local browser tokens. An arbitrary page on loopback cannot create one because
+only a Windie peer process can mint the one-time code.
+
+## Hosted connection flow
 
 ```text
 browser loads app.windieos.com
@@ -29,11 +55,10 @@ local API validates the account and explicit local-runtime pairing
 Inspector reads snapshots, sends actions, and subscribes to session SSE
 ```
 
-The API allows CORS requests from the exact hosted Inspector origin and the
-local development origins. It accepts the Inspector's bearer token only for a
-loopback API URL, then checks that the account has been explicitly paired with
-that local runtime. A different account cannot silently take over a paired
-runtime.
+The API allows CORS requests from the exact hosted Inspector origin and local
+development origins. It accepts a hosted bearer token only for a loopback API
+URL, then checks that the account has been explicitly paired with that local
+runtime. A different account cannot silently take over a paired runtime.
 
 ## Runtime boundary
 
@@ -54,14 +79,18 @@ asks the local API for that durable session before selecting its conversation.
 
 `windie dev run inspector` starts a local frontend development server. It is a
 developer convenience, not the runtime, and uses a local origin that the API
-also permits through CORS. API URL overrides are available through
-`window.__WINDIE_API_URL__` or `REACT_APP_WINDIE_API_URL`; production defaults
-to the loopback API address.
+also permits through CORS. Once the development server is healthy, Windie opens
+it with the same local one-time-code exchange as a packaged Inspector. API URL
+overrides are available through `window.__WINDIE_API_URL__` or
+`REACT_APP_WINDIE_API_URL`; production defaults to the loopback API address.
 
 ## Related code
 
 - `src/api/router.rs`: allowed browser origins and API routes.
-- `src/api/runtime_access.rs`: hosted-account validation and local pairing.
+- `src/api/runtime_access.rs`: hosted-account validation, local launch-code
+  exchange, and pairing middleware.
+- `src/inspector.rs`: local launch-code request, OS browser opening, and
+  packaged-asset discovery.
 - `src/config.rs`: loopback API default.
 - `vendor/windie-inspector/frontend/src/lib/windieApi.js`: browser HTTP and
   authorization boundary.

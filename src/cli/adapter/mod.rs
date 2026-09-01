@@ -27,6 +27,7 @@ pub async fn run(command: Command) -> Result<()> {
             system::output_component(crate::local::process::ManagedComponent::Api)
         }
         Command::ApiRun => system::run_api().await,
+        Command::InspectorOpen => system::open_inspector().await,
         Command::Onboard => system::onboard().await,
         Command::Help => system::print_help(),
         Command::Invalid => system::invalid_usage(),

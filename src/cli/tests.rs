@@ -70,6 +70,13 @@ fn reads_api_output_command() {
 }
 
 #[test]
+fn reads_inspector_open_command() {
+    let command = command_from_args(["windie", "inspector", "open"].map(String::from));
+
+    assert!(matches!(command, Command::InspectorOpen));
+}
+
+#[test]
 fn reads_tray_lifecycle_commands_and_rejects_the_bare_command() {
     let start = command_from_args(["windie", "tray", "start"].map(String::from));
     let stop = command_from_args(["windie", "tray", "stop"].map(String::from));

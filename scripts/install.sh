@@ -7,7 +7,6 @@ windie_home="${WINDIE_HOME:-$HOME/.windie}"
 gateway_url="${WINDIE_GATEWAY_URL:-http://127.0.0.1:${WINDIE_GATEWAY_PORT:-8080}}"
 gateway_url="${gateway_url%/}"
 api_address="${WINDIE_API_ADDRESS:-127.0.0.1:${WINDIE_API_PORT:-8787}}"
-hosted_app_url="https://app.windieos.com"
 
 # The detached lifecycle commands inherit these values. Keeping the resolved
 # addresses in the environment makes installer-started processes behave the
@@ -105,9 +104,15 @@ for binary in windie bifrost; do
     exit 1
   fi
 done
+if [ ! -f "$tmp_dir/inspector/index.html" ]; then
+  echo "release asset did not contain the local Inspector" >&2
+  exit 1
+fi
 
 install -m 0755 "$tmp_dir/windie" "$install_dir/windie"
 install -m 0755 "$tmp_dir/bifrost" "$install_dir/bifrost"
+rm -rf "$install_dir/inspector"
+mv "$tmp_dir/inspector" "$install_dir/inspector"
 if [ "$os" = "darwin" ]; then
   notifier_bundle="$tmp_dir/Windie Notifier.app"
   if [ ! -d "$notifier_bundle" ]; then
@@ -151,15 +156,13 @@ echo "Started the runtime at http://$api_address"
 
 case "$os" in
   darwin)
-    open "$hosted_app_url" >/dev/null 2>&1 || true
+    "$install_dir/windie" inspector open >/dev/null 2>&1 || true
     "$install_dir/windie" tray start >/dev/null 2>&1
     "$install_dir/windie" notifier start >/dev/null 2>&1
     echo "Click on the tray on your desktop to manage these processes."
     ;;
   linux)
-    if command -v xdg-open >/dev/null 2>&1; then
-      xdg-open "$hosted_app_url" >/dev/null 2>&1 || true
-    fi
+    "$install_dir/windie" inspector open >/dev/null 2>&1 || true
     "$install_dir/windie" notifier start >/dev/null 2>&1
     echo "Manage these processes with: $install_dir/windie gateway|api start|stop"
     ;;
@@ -173,4 +176,4 @@ echo "Windie home ready at $windie_home"
 echo "provider keys file: $windie_home/.env"
 echo "Bifrost: $gateway_url"
 echo "Windie API: http://$api_address"
-echo "Windie: $hosted_app_url"
+echo "Local Inspector: $install_dir/windie inspector open"

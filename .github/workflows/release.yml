@@ -28,14 +28,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Bifrost submodule
-        run: git submodule update --init --depth 1 vendor/bifrost
+      - name: Checkout release submodules
+        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: .go-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vendor/windie-inspector/frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:
@@ -60,14 +65,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Bifrost submodule
-        run: git submodule update --init --depth 1 vendor/bifrost
+      - name: Checkout release submodules
+        run: git submodule update --init --depth 1 vendor/bifrost vendor/windie-inspector
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: .go-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vendor/windie-inspector/frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - name: Restore Bifrost build
         uses: actions/cache@v4
         with:

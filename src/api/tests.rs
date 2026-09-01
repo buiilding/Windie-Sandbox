@@ -221,6 +221,91 @@ async fn local_component_token_can_read_protected_notification_streams() {
     let _ = fs::remove_file(db_path);
 }
 
+#[tokio::test]
+async fn local_inspector_launch_code_is_one_time_and_bypasses_hosted_pairing() {
+    let db_path = temp_database_path();
+    let auth = spawn_mock_hosted_auth().await;
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+    let app = test_app_with_urls_shutdown_and_access(
+        db_path.clone(),
+        "http://localhost:8080",
+        "http://localhost:8080/v1",
+        shutdown_tx,
+        RuntimeAccessControl::hosted_for_tests(auth.url),
+    );
+
+    let launch = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .method(Method::POST)
+                .uri("/api/runtime/local-access/launch")
+                .header(
+                    crate::config::LOCAL_COMPONENT_TOKEN_HEADER,
+                    "test-local-component-token",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(launch.status(), StatusCode::OK);
+    let code = response_json_body(launch).await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let exchange_body = Some(json!({ "code": code }));
+    let exchange = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            "/api/runtime/local-access/exchange",
+            exchange_body.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(exchange.status(), StatusCode::OK);
+    let local_token = response_json_body(exchange).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let consumed = app
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            "/api/runtime/local-access/exchange",
+            exchange_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(consumed.status(), StatusCode::UNAUTHORIZED);
+
+    let runtime = app
+        .clone()
+        .oneshot(local_inspector_request(
+            Method::GET,
+            "/api/conversations",
+            &local_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(runtime.status(), StatusCode::OK);
+
+    let hosted_pairing = app
+        .oneshot(local_inspector_request(
+            Method::GET,
+            "/api/runtime/access",
+            &local_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(hosted_pairing.status(), StatusCode::FORBIDDEN);
+
+    let _ = fs::remove_file(db_path);
+}
+
 #[test]
 fn aggregate_event_envelope_namespaces_session_events() {
     let db_path = temp_database_path();
@@ -2079,6 +2164,15 @@ fn hosted_request(method: Method, uri: &str, account: &str) -> HttpRequest<Body>
         .method(method)
         .uri(uri)
         .header(AUTHORIZATION, format!("Bearer {account}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn local_inspector_request(method: Method, uri: &str, token: &str) -> HttpRequest<Body> {
+    HttpRequest::builder()
+        .method(method)
+        .uri(uri)
+        .header(AUTHORIZATION, format!("WindieLocal {token}"))
         .body(Body::empty())
         .unwrap()
 }

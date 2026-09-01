@@ -69,6 +69,7 @@ pub(crate) fn help_lines() -> Vec<String> {
         "  windie api start",
         "  windie api stop",
         "  windie api output",
+        "  windie inspector open",
         "  windie tray start",
         "  windie tray stop",
         "  windie tray output",

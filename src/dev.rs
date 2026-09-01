@@ -33,6 +33,7 @@ use crate::plugin::{
 };
 
 const DEV_GATEWAY_START_TIMEOUT: Duration = Duration::from_secs(180);
+const DEV_INSPECTOR_START_TIMEOUT: Duration = Duration::from_secs(180);
 const LOCAL_MARKETPLACE_PORT: u16 = 8788;
 
 /// Runs the selected development workflow through the public CLI.
@@ -86,16 +87,31 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             stop_child(&mut gateway).await;
             result
         }
-        DevComponent::Api
-        | DevComponent::Inspector
-        | DevComponent::Tray
-        | DevComponent::Notifier => {
+        DevComponent::Inspector => {
+            let mut inspector = spawn_component("inspector").await?;
+            if let Err(error) = wait_for_inspector(&mut inspector).await {
+                stop_child(&mut inspector).await;
+                return Err(error);
+            }
+            if let Err(error) = crate::inspector::open_at("http://localhost:3000").await {
+                stop_child(&mut inspector).await;
+                return Err(error.context(
+                    "the Inspector is ready, but local access could not be created; start the API first",
+                ));
+            }
+            println!("windie: development inspector is running; press Ctrl-C to stop");
+            let result = supervise_one(&mut inspector).await;
+            stop_child(&mut inspector).await;
+            result
+        }
+        DevComponent::Api | DevComponent::Tray | DevComponent::Notifier => {
             let component = match component {
                 DevComponent::Api => "api",
-                DevComponent::Inspector => "inspector",
                 DevComponent::Tray => "tray",
                 DevComponent::Notifier => "notifier",
-                DevComponent::Gateway => unreachable!("gateway is handled above"),
+                DevComponent::Gateway | DevComponent::Inspector => {
+                    unreachable!("gateway and Inspector are handled above")
+                }
             };
             let mut child = spawn_component(component).await?;
             println!("windie: development {component} is running; press Ctrl-C to stop");
@@ -104,6 +120,29 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             result
         }
     }
+}
+
+/// Waits for the React development server before minting and opening a local
+/// Inspector session. This preserves hot reload while keeping browser access
+/// behind the same API-issued credential as packaged releases.
+async fn wait_for_inspector(child: &mut Child) -> Result<()> {
+    const INSPECTOR_URL: &str = "http://localhost:3000";
+    for _ in 0..(DEV_INSPECTOR_START_TIMEOUT.as_millis() / 200) {
+        if health(INSPECTOR_URL).await == "running" {
+            return Ok(());
+        }
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to poll Inspector development process")?
+        {
+            bail!("Inspector development process exited with {status}");
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+    bail!(
+        "Inspector did not become healthy within {} seconds",
+        DEV_INSPECTOR_START_TIMEOUT.as_secs()
+    )
 }
 
 /// One generated marketplace output, separated into a catalog site and archive assets.

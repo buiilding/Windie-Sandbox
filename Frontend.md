@@ -19,8 +19,10 @@ renders them.
 - `src/pages/Windie.jsx`: composes the inspector layout: top bar, conversation
   tree sidebar, chat panel, and optional inspector overlay. It also owns the
   first-run provider onboarding check and the persisted tree-panel toggle.
-- `src/components/auth/AuthGate.jsx`: restores the hosted Google/Supabase
-  account session and exposes its short-lived token to the loopback transport.
+- `src/components/auth/AuthGate.jsx`: selects loopback local capability access
+  or the hosted Google/Supabase account path.
+- `src/components/auth/LocalAccessGate.jsx`: exchanges a one-time local launch
+  code for a tab-scoped local API credential before mounting the Inspector.
 - `src/components/auth/RuntimeAccessGate.jsx`: reads local pairing status and
   requires the signed-in user to explicitly connect their account before the
   runtime client mounts.
@@ -188,7 +190,8 @@ wrappers. They contain no Windie runtime or persistence rules:
 
 ### API, event, and data-shape libraries
 
-- `src/lib/windieApi.js`: localhost HTTP boundary for Windie API requests;
+- `src/lib/windieApi.js`: localhost HTTP boundary for hosted bearer and local
+  capability API requests;
   covers health/status, conversations, images, models, model parameters,
   sessions, approvals, marketplace plugins, providers, and conversation
   settings. Gateway process lifecycle remains a CLI concern.
