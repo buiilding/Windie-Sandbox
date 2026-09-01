@@ -41,7 +41,7 @@ Clang, the macOS SDK, and the native linker used by Rust and Go builds.
 
 See [Apple's command-line tools documentation][apple-command-line-tools].
 
-## 2. Install stable Rust
+## 2. Install Rust 1.98.0
 
 Install Rust through Rustup, the installer recommended by the Rust project:
 
@@ -50,19 +50,23 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
 Choose the default installation when prompted. Close and reopen Terminal so
-the updated command path is loaded, then install the same components used by
-Windie's continuous-integration checks:
+the updated command path is loaded, then install the exact compiler and
+components recorded in Windie's `rust-toolchain.toml`:
 
 ```bash
-rustup toolchain install stable
-rustup default stable
-rustup component add rustfmt clippy
+rustup toolchain install 1.98.0 --component rustfmt --component clippy
+```
+
+Do not change your global Rust default for Windie. Once you clone the
+repository, Rustup reads `rust-toolchain.toml` automatically whenever Cargo or
+Rustc runs inside that checkout. Verify it after cloning:
+
+```bash
 rustc --version
 cargo --version
 ```
 
-Windie uses Rust edition 2024 and does not yet pin a repository-specific
-compiler, so the current stable toolchain is the source of truth.
+Both commands should report Rust 1.98.0.
 
 See [the official Rust installation guide][rust-install].
 
@@ -80,18 +84,27 @@ The output should report Go 1.26.5 and either `darwin/arm64` or
 `darwin/amd64`. The Bifrost modules require Go 1.26.4 or newer; using the exact
 continuous-integration version avoids local-versus-release differences.
 
-## 4. Install Node.js 22
+## 4. Install Node.js 22.23.2
 
-Windie's frontend checks run on Node.js 22. Install a Node.js 22 macOS package
-from [the official Node.js 22 downloads page][node-22-downloads]. Open a new
-Terminal and verify both Node.js and npm:
+Windie's Inspector uses Node.js 22.23.2, recorded in its `.nvmrc` and
+`package.json`. Install that exact macOS package from [the official Node.js 22
+downloads page][node-22-downloads]. Open a new Terminal and verify both Node.js
+and npm:
 
 ```bash
 node --version
 npm --version
 ```
 
-The Node.js version should begin with `v22.`.
+The Node.js version should be `v22.23.2`. If you use `nvm`, run the following
+from the Windie checkout before installing frontend dependencies:
+
+```bash
+(
+  cd vendor/windie-inspector/frontend
+  nvm use
+)
+```
 
 ## 5. Continue with shared setup
 

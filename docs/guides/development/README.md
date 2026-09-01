@@ -13,10 +13,22 @@ then return here to clone, build, run, and verify the repository.
 Every platform needs:
 
 - Git and a native C toolchain.
-- Stable Rust with `rustfmt` and Clippy.
-- Go 1.26.5. Bifrost requires Go 1.26.4 or newer, and Windie's release
-  workflow uses 1.26.5.
-- Node.js 22 with npm, matching the Inspector continuous-integration job.
+- Rust 1.98.0 with `rustfmt` and Clippy.
+- Go 1.26.5.
+- Node.js 22.23.2 with npm.
+
+The repository records these versions in files that tools and CI can read:
+
+| Tool | Source of truth | What uses it |
+| --- | --- | --- |
+| Rust | [`rust-toolchain.toml`](../../../rust-toolchain.toml) | Rustup and Cargo select it automatically inside the checkout. |
+| Go | [`.go-version`](../../../.go-version) | Release CI installs this version. Install the same version locally. |
+| Node.js | [`vendor/windie-inspector/frontend/.nvmrc`](../../../vendor/windie-inspector/frontend/.nvmrc) | `nvm use` and frontend/release CI. |
+
+The Inspector's `package.json` also declares Node.js 22.23.2 as its supported
+runtime. Do not substitute a floating “latest,” “stable,” or merely-major
+version; update these declarations deliberately when Windie has been verified
+with new toolchains.
 
 Windie development uses those toolchains across three source boundaries:
 
@@ -69,6 +81,15 @@ cd ../../..
 Use `npm ci`, not `npm install`, for initial setup. The `--legacy-peer-deps`
 flag matches the repository's frontend continuous-integration job.
 
+If you use `nvm`, select the pinned frontend Node version before installing:
+
+```bash
+(
+  cd vendor/windie-inspector/frontend
+  nvm use
+)
+```
+
 The locally served Inspector does not need a hosted account or a
 `frontend/.env.local` file. Windie creates a short-lived local browser session
 when it opens the Inspector. The hosted deployment at `app.windieos.com` is a
@@ -77,7 +98,8 @@ environment.
 
 ## 3. Verify the checkout before starting services
 
-Run the core pull-request checks:
+Run the core pull-request checks. Cargo automatically selects Rust 1.98.0 from
+the repository's `rust-toolchain.toml`:
 
 ```bash
 cargo fmt --check
@@ -244,8 +266,8 @@ git submodule update --init vendor/bifrost
 
 ### Bifrost reports an unsupported Go version
 
-Run `go version`. The checkout currently requires Go 1.26.4 or newer and the
-release workflow uses Go 1.26.5.
+Run `go version`. Windie expects the exact version in `.go-version` (currently
+Go 1.26.5).
 
 ### Inspector reports missing packages
 

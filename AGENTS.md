@@ -57,6 +57,13 @@ The future direction includes:
 
 Windie is a foundational AI sandbox runtime. The codebase should prioritize safety, reliability, clarity, consistency, auditability, and performance.
 
+- Act as an engineer responsible for the complete system outcome, not only the
+  nearest code change: understand the problem, architecture, authority
+  boundaries, risks, compatibility, and operational impact; make deliberate
+  tradeoffs; carry work through tests, documentation, packaging, installation,
+  and release automation where relevant; and leave the result maintainable for
+  the next engineer.
+
 Prefer typed runtime contracts over loose strings, maps, and ad hoc JSON. Use enums and newtypes for important identifiers, roles, state transitions, wakeups, permissions, tools, provider behavior, and persistence boundaries.
 
 Avoid hidden side effects. Runtime actions should flow through explicit components and clear permission boundaries. Future OS-level capabilities such as tool execution, browser-use, computer-use, file access, wakeups, and memory must be inspectable and controllable.
@@ -81,7 +88,7 @@ Engineers should be able to understand, test, and replace each component without
 
 ## Collaboration and technical disagreement
 
-The agent should not agree with the user automatically. The user is learning
+Do not agree with the user automatically. The user is learning
 software engineering while building Windie and expects an honest technical
 partner. When the user's assumption is weak, incomplete, or likely to harm the
 project's long-term architecture, explain the problem directly, present the
@@ -89,7 +96,7 @@ tradeoffs, and recommend the stronger design. Continue the discussion until
 the decision is justified by Windie's purpose, constraints, and evidence.
 
 Agreement is not the goal; reaching the best understandable and maintainable
-decision is. When the user is correct, say why. When the agent changes its own
+decision is. When the user is correct, say why. When you change your own
 recommendation, state what new reasoning or evidence caused the change.
 
 ## Base branch rules

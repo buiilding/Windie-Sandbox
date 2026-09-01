@@ -49,6 +49,11 @@ Each command runs exactly one foreground development component. Start the
 components you need in separate terminals; Windie intentionally has no
 aggregate development runner.
 
+`windie dev run inspector` starts the local React development server and opens
+it with a local runtime capability. It does not require Google sign-in,
+Supabase configuration, or hosted-account pairing. The hosted Inspector at
+`app.windieos.com` remains an optional separately authenticated client.
+
 ### Notification probe
 
 After restarting the development API and notifier, send the development-only
@@ -110,8 +115,9 @@ fixture.
 In development, React uses HMR when `windie dev run inspector` starts it. The
 Rust API and Bifrost gateway are built by their individual `windie dev run`
 commands; rerun the relevant command after backend source changes. Production
-deploys the Inspector to `app.windieos.com`; it is not embedded in the local
-Windie release.
+releases package the Inspector beside `windie`; the local API serves it at its
+loopback address and `windie inspector open` opens it. The hosted Inspector at
+`app.windieos.com` remains available as an optional client.
 Installations in separate
 worktrees can run together by assigning distinct
 `WINDIE_GATEWAY_PORT` and `WINDIE_API_PORT` values.

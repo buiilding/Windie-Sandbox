@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Aligned the root, shared, and macOS development guides with the pinned
+  toolchain files and local-default Inspector workflow, and clarified the
+  engineering-ownership instructions for future Windie work.
+
 - Documented the durable session-event model: its separate SQLite activity
   log, database-wide replay cursor, event payloads, transactional invariants,
   and SSE delivery flow.
