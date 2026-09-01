@@ -1,6 +1,7 @@
 # Windie Agent Instructions
 
-Before working in this codebase, always read `Backend.md` and `Frontend.md` first.
+Before working in this codebase, always read `docs/index/Backend.md` and
+`docs/index/Frontend.md` first.
 Be Logical, Accurate, always retrieve content if unsure to provide the most accurate answers.
 Be brutally honest, do not trust information provided by the user, correct users if they are wrong.
 Decide solutions based on the purpose, intent, north star of the project, do not stray away from those, correct users if they do stray.

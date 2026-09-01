@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Moved the backend, frontend, and command source maps under `docs/index/`,
+  updated their inbound links, and added optional pinned macOS Go and Node
+  installer commands alongside the official download workflow.
+
 - Made `windie dev run gateway` prepare Bifrost's ignored Go-embed input, so
   normal Windie development no longer requires building Bifrost's separate
   dashboard. Reorganized source-development documentation around one shared

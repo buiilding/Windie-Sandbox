@@ -8,8 +8,9 @@ understandable components.
 
 Set up a checkout and run the local verification workflow in the
 [development guide](docs/guides/development/README.md). Read
-[`Backend.md`](Backend.md) and [`Frontend.md`](Frontend.md) before changing a
-runtime or Inspector boundary.
+[`Backend.md`](docs/index/Backend.md) and
+[`Frontend.md`](docs/index/Frontend.md) before changing a runtime or Inspector
+boundary.
 
 ## Issue and branch workflow
 

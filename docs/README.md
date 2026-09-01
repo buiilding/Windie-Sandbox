@@ -10,6 +10,12 @@ understanding Windie.
 - [Contributing](../CONTRIBUTING.md) — issue, branch, testing, changelog, and
   pull-request expectations.
 
+## Source maps
+
+- [Backend source map](index/Backend.md) — Rust runtime and CLI inventory.
+- [Frontend source map](index/Frontend.md) — Inspector application inventory.
+- [Command reference](index/commands.md) — concrete Windie CLI commands.
+
 ## Understand the runtime
 
 - [Architecture overview](architecture/overview.md) — start here for the
