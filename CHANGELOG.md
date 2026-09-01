@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Pinned the Rust, Go, and Inspector Node.js development toolchains in
+  machine-readable version files and made check and release workflows install
+  their toolchains from those declarations.
+
 - Organized architecture documentation into durable state, execution, model
   access, extensions, interfaces, and local components, with group overviews
   and templates for detailed references. Added plugin publishing, hosted

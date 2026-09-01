@@ -21,9 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo fmt --check
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
@@ -40,7 +38,7 @@ jobs:
         run: git submodule update --init --depth 1 vendor/windie-inspector
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: vendor/windie-inspector/frontend/.nvmrc
           cache: npm
           cache-dependency-path: vendor/windie-inspector/frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
@@ -49,10 +47,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt
-          targets: x86_64-pc-windows-msvc
+          target: x86_64-pc-windows-msvc
       - run: cargo fmt --check
       - run: cargo check --target x86_64-pc-windows-msvc
       - run: cargo test --target x86_64-pc-windows-msvc
