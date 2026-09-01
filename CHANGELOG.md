@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Added a Linux development guide covering native build dependencies, pinned
+  toolchains, Bifrost's generated UI, desktop boundaries, ports, and
+  Linux-specific troubleshooting.
+
 - Aligned the root, shared, macOS, and Windows development guides with the
   pinned toolchain files and local-default Inspector workflow, and clarified
   the engineering-ownership instructions for future Windie work.
