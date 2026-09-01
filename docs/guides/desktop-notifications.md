@@ -50,6 +50,17 @@ The API also provides a development-only notification probe. It is volatile and
 is not evidence that a session completed; production delivery always follows
 the durable completion-event stream.
 
+After starting the development API and notifier, send the probe from another
+terminal:
+
+```bash
+curl -i -X POST http://127.0.0.1:8787/api/dev/notifications/assistant-completed
+```
+
+The response reports `notifier_receivers: 1` when the notifier is connected,
+then the notifier shows a native `Windie — Assistant finished` notification.
+The probe does not create a conversation, session, or durable runtime event.
+
 ## Notification action
 
 Production completion notifications identify the session they came from. A

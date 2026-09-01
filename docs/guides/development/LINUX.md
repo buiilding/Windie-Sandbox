@@ -1,36 +1,28 @@
 # Linux development
 
 This guide prepares a Linux machine for Windie source development. It installs
-the native prerequisites and bootstraps a source checkout; then the shared
-[development workflow](README.md) verifies the checkout and runs the gateway,
-API, and Inspector.
+the native prerequisites; the shared [development workflow](README.md) then
+clones, verifies, and runs Windie.
 
 ## Supported Linux environments
 
-Windie's release workflow produces native GNU/Linux archives for x86_64 and
-ARM64 (`aarch64`) hosts. The Bifrost gateway is a native Go build that uses
-CGO, so it needs a working compiler on the Linux machine; it is not a
-cross-compilation workflow.
-
-Check the machine architecture before choosing Go and Node downloads:
+Windie releases native GNU/Linux archives for x86_64 and ARM64 (`aarch64`).
+Bifrost is a native Go build using CGO, so the development machine needs a
+working compiler; this is not a cross-compilation workflow.
 
 ```bash
 uname -m
 ```
 
-Common output is `x86_64` for 64-bit Intel/AMD systems or `aarch64` for
-64-bit ARM systems. Use a graphical desktop session for the local Inspector
-and desktop notifications. Headless Linux can run the gateway and API, but
-the normal Inspector command asks `xdg-open` to launch a browser.
+Use a graphical desktop session for the local Inspector and desktop
+notifications. Headless Linux can run the gateway and API, but cannot normally
+open the Inspector through `xdg-open`.
 
 ## 1. Install system build prerequisites
 
 Install Git, Curl, certificate roots, a C/C++ compiler, `pkg-config`, OpenSSL
-headers, and `xdg-open`. Rust's default HTTP/TLS dependency requires the
-OpenSSL development package, and Bifrost's SQLite dependency is built through
-CGO.
-
-Choose the commands for the Linux distribution:
+headers, and `xdg-open`. Rust's HTTP/TLS dependency uses the OpenSSL development
+package; Bifrost's SQLite dependency is built through CGO.
 
 ### Debian or Ubuntu
 
@@ -61,66 +53,47 @@ xdg-open --help
 
 ## 2. Install Rust 1.98.0
 
-Install Rust through Rustup, then install the exact compiler and components
-recorded in Windie's `rust-toolchain.toml`:
+Install Rust through Rustup:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
-# Close and reopen the shell before running this command.
+Open a new shell, then install the compiler and components in
+`rust-toolchain.toml`:
+
+```bash
 rustup toolchain install 1.98.0 --component rustfmt --component clippy
 ```
 
-Do not change the global Rust default for Windie. After cloning the repository,
-Cargo automatically selects the version in `rust-toolchain.toml`. Verify it
-from the repository root:
+Cargo selects the repository version after cloning. Verify it from the
+checkout:
 
 ```bash
 rustc --version
 cargo --version
 ```
 
-Both commands should report Rust 1.98.0.
-
-See the [Rust installation guide][rust-install].
+See [the Rust installation guide][rust-install].
 
 ## 3. Install Go 1.26.5
 
-Install Go 1.26.5 from the [official Go downloads page][go-downloads], using
-the archive for the machine architecture. Ensure its `bin` directory is on
-`PATH`, open a new shell, and verify it:
+Install Go 1.26.5, the version in Windie's
+[`.go-version`](../../../.go-version), from the [official Go downloads
+page][go-downloads], using the archive for the machine architecture. Ensure its
+`bin` directory is on `PATH`, open a new shell, and verify it:
 
 ```bash
 go version
 ```
 
-The output should report Go 1.26.5 and `linux/amd64` or `linux/arm64`.
-Bifrost requires Go 1.26.4 or newer; using the release workflow's exact
-version avoids local-versus-release differences.
+The result should report Go 1.26.5 and `linux/amd64` or `linux/arm64`.
 
-## 4. Clone Windie and its submodules
+## 4. Install Node.js 22.23.2
 
-Clone the repository with all submodules. If it was cloned without
-`--recurse-submodules`, initialize the submodules before continuing.
-
-```bash
-git clone --recurse-submodules https://github.com/buiilding/Windie-Sandbox.git
-cd Windie-Sandbox
-
-# Only needed for an existing non-recursive clone.
-git submodule update --init --recursive
-```
-
-## 5. Install the Inspector and Bifrost Node versions
-
-The Inspector records Node.js 22.23.2 in
-`vendor/windie-inspector/frontend/.nvmrc`. Bifrost's UI records Node.js
-22.12.0 in `vendor/bifrost/.nvmrc`. Use a version manager such as
-[nvm][nvm] so both version files remain the source of truth rather than
-choosing a floating system-wide Node release.
-
-After cloning the repository, install and select each version in its own
-submodule before installing that submodule's dependencies:
+After cloning Windie, use Node.js 22.23.2, the Inspector version recorded in
+`vendor/windie-inspector/frontend/.nvmrc`. A version manager such as [nvm][nvm]
+makes this repeatable:
 
 ```bash
 (
@@ -128,61 +101,23 @@ submodule before installing that submodule's dependencies:
   nvm install
   nvm use
   node --version
-  npm ci --legacy-peer-deps
-)
-
-(
-  cd vendor/bifrost
-  nvm install
-  nvm use
-  node --version
 )
 ```
 
-The first `node --version` should be `v22.23.2`; the second should be
-`v22.12.0`. If you do not use a version manager, install those exact Node
-releases from the [Node.js 22 archive][node-22-downloads] and select the
-appropriate one before working in each submodule.
-
-## 6. Generate Bifrost's embedded UI
-
-The Bifrost HTTP transport embeds generated UI files. A clean source checkout
-does not include them, so build the UI once before the first
-`windie dev run gateway`; repeat this after Bifrost UI dependencies change.
-
-```bash
-(
-  cd vendor/bifrost/ui
-  nvm use
-  npm ci
-  npm run build
-)
-```
-
-The build copies its output to
-`vendor/bifrost/transports/bifrost-http/ui`, which the Go gateway embeds. Do
-not hand-copy generated files or commit them merely to make a local gateway
-build succeed.
+The shared guide installs the Inspector's dependencies. Windie's development
+gateway supplies Bifrost's ignored Go-embed placeholder itself, so normal
+Windie development does not need Bifrost's separate dashboard Node version.
 
 ## Continue with the shared workflow
 
-The machine is ready when the toolchain checks and Bifrost UI build succeed.
-Continue with the shared [verification and development workflow](README.md#3-verify-the-checkout-before-starting-services).
+The machine is ready when the toolchain checks above succeed. Continue with
+the shared [development workflow](README.md#2-clone-windie-and-its-submodules).
 
 ## Linux desktop behavior
 
-Run the three core components from the shared guide in separate terminals:
-
-```bash
-cargo run --bin windie -- dev run gateway
-cargo run --bin windie -- dev run api
-cargo run --bin windie -- dev run inspector
-```
-
-The Inspector is a local React development server. After it is healthy,
-Windie asks `xdg-open` to open `http://localhost:3000` with a one-time local
-access code. It needs the API to be running first and a browser handler in the
-active desktop session.
+The shared guide starts the three core components in separate terminals. The
+Inspector needs an active desktop session because Windie asks `xdg-open` to
+open it with a one-time local access code.
 
 The Linux notifier is optional and uses the active Freedesktop notification
 service over the user's D-Bus session:
@@ -191,8 +126,8 @@ service over the user's D-Bus session:
 cargo run --bin windie -- dev run notifier
 ```
 
-Run it only from a graphical login that has a notification daemon. The
-notifier observes the API; it does not own or start the API or gateway.
+Run it only from a graphical login with a notification daemon. The notifier
+observes the API; it does not own or start the API or gateway.
 
 Do not run `cargo run --bin windie -- dev run tray` on Linux. Windie's tray is
 currently supported on macOS and Windows only; the Linux command reports that
@@ -200,14 +135,13 @@ limitation and exits.
 
 ## Linux port diagnostics
 
-The default local ports are gateway `8080`, API `8787`, and Inspector `3000`.
 Inspect listeners before starting another checkout:
 
 ```bash
 ss -ltnp '( sport = :8080 or sport = :8787 or sport = :3000 )'
 ```
 
-If necessary, use distinct runtime ports in every terminal for that checkout:
+Use distinct runtime ports in every terminal for that checkout when needed:
 
 ```bash
 export WINDIE_GATEWAY_PORT=18080
@@ -225,19 +159,14 @@ REACT_APP_WINDIE_API_URL=http://127.0.0.1:18787 \
 
 ### OpenSSL or `pkg-config` build failure
 
-Install the distribution's OpenSSL development and `pkg-config` packages from
-[Install system build prerequisites](#1-install-system-build-prerequisites),
-then open a new shell and confirm `pkg-config --modversion openssl` succeeds.
+Install the distribution's OpenSSL development and `pkg-config` packages, then
+confirm `pkg-config --modversion openssl` succeeds.
 
 ### `go-sqlite3 requires cgo to work` or `CGO_ENABLED=0`
 
 Install the distribution's compiler toolchain, confirm `cc --version` works,
 then run `go env CGO_ENABLED`. It should report `1`. Setting `CGO_ENABLED=1`
-does not help without a functioning compiler.
-
-### `pattern all:ui: no matching files found`
-
-Build Bifrost's UI as described in [Generate Bifrost's embedded UI](#6-generate-bifrosts-embedded-ui), then start the gateway again.
+does not help without a working compiler.
 
 ### Inspector does not open a browser
 
@@ -251,18 +180,14 @@ The notifier needs the user's graphical-session D-Bus and a running desktop
 notification service. Do not use it for a headless server; the gateway and API
 remain independent of notifications.
 
-Repository, API, Inspector, and Bifrost failures that are not Linux-specific
-belong in the [shared troubleshooting section](README.md#common-troubleshooting).
+## Related material
 
-## Related repository files
-
-- [`rust-toolchain.toml`](../../../rust-toolchain.toml), [`.go-version`](../../../.go-version), and the two `.nvmrc` files record the toolchain versions.
+- [`rust-toolchain.toml`](../../../rust-toolchain.toml), [`.go-version`](../../../.go-version), and the Inspector `.nvmrc` record toolchain versions.
 - [`src/dev.rs`](../../../src/dev.rs) builds the local Bifrost workspace and starts one foreground component at a time.
 - [`src/local/tray.rs`](../../../src/local/tray.rs) defines the Linux tray limitation.
 - [`src/local/tray_notification.rs`](../../../src/local/tray_notification.rs) delivers Linux notifications through the desktop service.
-- [`scripts/package-release.sh`](../../../scripts/package-release.sh) shows the native Linux release targets and Bifrost UI build order.
+- [`scripts/package-release.sh`](../../../scripts/package-release.sh) owns the full Bifrost-dashboard build for release packaging.
 
 [go-downloads]: https://go.dev/dl/
-[node-22-downloads]: https://nodejs.org/en/download/archive/v22
 [nvm]: https://github.com/nvm-sh/nvm
 [rust-install]: https://rust-lang.org/tools/install/

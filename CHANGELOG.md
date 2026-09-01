@@ -7,6 +7,12 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Made `windie dev run gateway` prepare Bifrost's ignored Go-embed input, so
+  normal Windie development no longer requires building Bifrost's separate
+  dashboard. Reorganized source-development documentation around one shared
+  workflow, added a documentation index and contributor guide, removed stale
+  guide scaffolds, and added CI validation for local documentation links.
+
 - Updated the Inspector provider panel to refresh the available model catalog
   after provider key changes.
 

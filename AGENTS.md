@@ -102,11 +102,9 @@ recommendation, state what new reasoning or evidence caused the change.
 ## Base branch rules
 
 * The local `main` and `windie-2` branches must always be kept up to date with the remote `main` branch.
-* Use `main` or `windie-2` for local development and commits only.
 * Never push `main` or `windie-2` directly.
-* All changes and commits must first be made on `main` or `windie-2`.
-* Before pushing any work, create a new branch from the local committed state.
-* Give the new branch a clear and relevant name, then push that branch.
+* Start each change from an up-to-date `main` or `windie-2` branch, then create a clear and relevant feature branch before editing or committing. Use the `codex/` prefix by default.
+* Make feature changes and commits on that branch, then push the feature branch for review.
 * Every commit must add or update a meaningful entry in `CHANGELOG.md` describing the user-facing, runtime, documentation, or developer-facing changes included in that commit.
 
 ## Issue and pull request rules
