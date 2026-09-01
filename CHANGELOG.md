@@ -7,6 +7,9 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Updated the Inspector provider panel to refresh the available model catalog
+  after provider key changes.
+
 - Added a Linux development guide covering native build dependencies, pinned
   toolchains, Bifrost's generated UI, desktop boundaries, ports, and
   Linux-specific troubleshooting.
