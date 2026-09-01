@@ -7,6 +7,10 @@ are maintained separately in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ## [Unreleased]
 
+- Documented the durable session-event model: its separate SQLite activity
+  log, database-wide replay cursor, event payloads, transactional invariants,
+  and SSE delivery flow.
+
 - Added packaged and development local Inspector access. `windie inspector
   open` now opens a locally served frontend through a one-time, API-issued
   browser credential without a hosted sign-in, while `app.windieos.com` keeps
