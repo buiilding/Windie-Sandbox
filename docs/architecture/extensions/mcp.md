@@ -52,16 +52,31 @@ permission boundaries still apply.
    waits for the bounded response, normalizes the output, saves the tool
    result, and continues the turn.
 
+## Lifecycle
+
+Before an MCP can run, Windie checks the provider's platform and required
+secrets, installs any declared runtime, prepares the package, applies its
+configuration, and discovers its tools. A successful setup records the
+provider as `enabled`; a failed setup records it as `broken` with an error.
+Health checks repeat tool discovery and any readiness probe, while repair runs
+the setup phases again.
+
+When an approved tool is first called in the API process, Windie starts or
+connects to the provider and keeps the live session in a provider-keyed pool.
+Conversations using the same provider reuse that session instead of starting a
+separate process for each conversation. The API removes sessions after five
+minutes without use or after a provider error. CLI invocations use short-lived
+sessions because each CLI command is a separate process.
+
+Uninstall stops the provider session before removing its runtime and store
+record. Local stdio children are terminated by Windie, while hosted HTTP
+sessions receive a best-effort session deletion request.
+
 ## Important invariants
 
 - Only attached schemas for enabled, healthy providers are exposed to a
   conversation and eligible for execution. MCP schemas are not automatically
   added just because a plugin is installed.
-- In the API process, conversations using the same provider reuse one
-  provider-keyed MCP session instead of starting a separate process for each
-  conversation. The session is stopped after five minutes without use. CLI
-  invocations use a short-lived execution path because each invocation is a
-  separate process.
 - Windie bounds MCP requests: protocol operations such as initialization and
   `tools/list` use a 30-second default timeout, while `tools/call` uses a
   five-minute default timeout. Hosted MCP manifests may declare their own
