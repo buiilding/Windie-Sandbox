@@ -1,28 +1,27 @@
 # Interfaces
 
 This overview explains how clients communicate with Windie. Detailed pages
-cover the [HTTP API](api.md), [Server-Sent Events](server-sent-events.md),
-[CLI](cli.md), and [Inspector](inspector.md).
+cover the [HTTP API](api.md), including its Server-Sent Events (SSE) streams,
+the [CLI](cli.md), and the [Inspector](inspector.md).
 
 ## Purpose
 
-The Windie API is the local runtime boundary. The Inspector is the hosted
-browser client that lets a paired user inspect that runtime and request
-actions. The CLI is another client of shared runtime operations, while SSE is
-the streaming boundary used to replay and follow session activity. Keeping
-these responsibilities separate lets API-owned session work continue when the
-browser tab closes, reloads, or disconnects.
+Windie has two client interfaces and one streaming transport. The API is the
+local runtime boundary, the Inspector is the browser client, and the CLI is
+the terminal client. Server-Sent Events (SSE) is the streaming boundary used
+to replay and follow durable session activity.
+
+Keeping these responsibilities separate lets the API own runtime work while
+the Inspector and CLI remain clients of shared operations and persisted state.
 
 ```text
-Hosted Inspector in the browser
-              │ HTTP and SSE
-              v
-Local Windie API on the user's computer
-              │
-              ├── SQLite conversations, sessions, and events
-              ├── SessionManager and runtime turns
-              ├── tool approval and tool execution
-              └── Bifrost gateway for model requests
+Inspector (browser) ── HTTP requests ──┐
+Inspector (browser) <── SSE events ────┤
+                                      v
+CLI (terminal) ─── shared operations ──> Windie runtime
+                                      │
+                                      ├── SQLite state and durable events
+                                      └── Bifrost model requests
 ```
 
 ## Interface roles
@@ -34,52 +33,41 @@ Local Windie API on the user's computer
 - The **Inspector** is the hosted visual client for inspecting state and
   sending user actions to a paired local API.
 
-## API owns
-
-The API owns authoritative runtime work:
-
-- resolving or creating the session for a requested conversation head;
-- starting and supervising in-process session work, wakeups, approval, and
-  cancellation;
-- compiling model context and routing model requests through Bifrost;
-- saving messages, session state, and durable execution events in SQLite; and
-- replaying and streaming session updates over Server-Sent Events (SSE).
-
-The API is loopback-bound. Its normal client is the paired hosted Inspector,
-and the API checks that client access before serving runtime data.
-
-## Inspector owns
-
-The Inspector owns browser presentation and interaction:
-
-- selecting conversations, branches, and views;
-- rendering the tree, selected-path transcript, execution progress, and
-  approval controls;
-- sending explicit user actions to the API; and
-- keeping short-lived browser state such as in-progress visual updates.
-
-The Inspector does not read SQLite, contact Bifrost directly, execute tools,
-or decide what the model sees. It receives the API's resolved session rather
-than deriving one from its cached session list.
-
 ## Main flow
 
-1. The Inspector asks the API to query or continue a conversation at a chosen
-   message head.
-2. The API resolves the durable branch session in SQLite. It returns an
-   existing matching session, creates one if no session matches, or rejects an
-   ambiguous or stale request.
-3. The API's session manager runs the work. The runtime persists its progress
-   and emits durable events as assistant messages, tool results, approvals, or
-   lifecycle state change.
-4. The Inspector receives replayed and live SSE events, then refreshes its
-   presentation from authoritative snapshots when necessary.
+1. The Inspector sends an HTTP request, or the CLI invokes a terminal adapter,
+   with an explicit conversation, message head, or session target.
+2. The API route or CLI adapter delegates to the shared operation layer. The
+   API resolves the durable branch session in SQLite; a CLI session claims the
+   same execution model with the CLI owner.
+3. The runtime builds context, routes model requests through Bifrost, applies
+   tool approval, executes allowed tools, and persists messages, session state,
+   and durable events.
+4. The API returns an HTTP response and emits durable session events. The
+   Inspector or another SSE consumer replays events after its cursor and then
+   follows new events as they arrive.
 
 Closing the Inspector does not stop a running session. Conversely, an API
 restart cannot continue an interrupted provider or tool request automatically:
 the API records that attempt as failed to avoid duplicating external work.
 
-## Related references
+## Interface boundaries
+
+- The **API** owns authoritative runtime work: session resolution and
+  supervision, context construction, tool policy and execution, persistence,
+  and the HTTP/SSE transport. It is loopback-bound and checks client access
+  before serving protected runtime data.
+- **SSE** owns transport for replaying and following durable session events. It
+  does not replace SQLite or become the source of conversation truth.
+- The **CLI** owns argument parsing, terminal adapters, and output formatting.
+  It calls the same shared operations and persistence rules as the API; output
+  formatting does not make runtime decisions.
+- The **Inspector** owns browser routes, conversation-tree presentation,
+  controls, and short-lived streaming state. It does not read SQLite, contact
+  Bifrost directly, execute tools, or infer session ownership from cached
+  browser state.
+
+## References
 
 - [Sessions](../storage/sessions.md) — branch resolution, execution
   claims, and recovery.

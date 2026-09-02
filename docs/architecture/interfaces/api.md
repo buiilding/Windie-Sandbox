@@ -46,6 +46,35 @@ directly.
    use the `error` and `causes` fields so clients can display the root failure
    while retaining the full error chain.
 
+## Server-Sent Events
+
+SSE is the streaming form of the HTTP API. The client opens an HTTP connection,
+and the API keeps it open while sending durable session events as they become
+available. The Inspector uses the session stream for live execution updates;
+the notifier uses the aggregate stream to observe completed sessions.
+
+The API exposes these event streams:
+
+- `/api/sessions/{session_id}/events?after=<event_id>` replays and then follows
+  events for one session.
+- `/api/events?after=<event_id>&kind=<event_kind>` replays and then follows
+  events across all sessions, optionally filtered by event kind.
+- `/api/events/cursor?kind=<event_kind>` returns the latest aggregate cursor
+  for a first-time consumer.
+
+The stream uses the standard SSE `id`, `event`, and `data` fields. The event ID
+is the durable `session_events` row ID. Session events are sent as JSON with
+the event ID, session ID, creation time, and typed payload. State-changing
+events can include fresh session and message snapshots so a client can update
+its presentation without recreating runtime state from the event alone.
+
+When a client supplies `after`, the API first replays later rows from SQLite
+in ascending ID order. The session stream then follows live events from the
+session manager. The aggregate stream polls SQLite so it also observes events
+written by another Windie process, such as a CLI-owned session. Clients keep
+the greatest accepted event ID and reconnect with that cursor after a
+disconnect; duplicate or older IDs are ignored by the client.
+
 ## Authorization
 
 The API is loopback-bound, but being able to reach its port is not sufficient
@@ -193,5 +222,7 @@ session ID.
 - [`src/api/sse.rs`](../../../src/api/sse.rs) and
   [`src/api/event.rs`](../../../src/api/event.rs) — serialize session and
   aggregate event streams.
+- [`vendor/windie-inspector/frontend/src/lib/sessionStream.js`](../../../vendor/windie-inspector/frontend/src/lib/sessionStream.js) — parses streamed SSE frames in the Inspector.
+- [`vendor/windie-inspector/frontend/src/hooks/useSessionTransport.js`](../../../vendor/windie-inspector/frontend/src/hooks/useSessionTransport.js) — manages Inspector subscriptions and replay cursors.
 - [`src/operation/`](../../../src/operation/) — shared workflows called by
   both API and CLI adapters.

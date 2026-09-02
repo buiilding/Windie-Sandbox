@@ -1,15 +1,39 @@
 # Extensions
 
 Extensions let Windie add capabilities without hard-coding every integration
-into the runtime.
+into the runtime. They are distributed as plugins, and each plugin can contain
+one or more capability components.
 
-## How the parts fit together
+```text
+marketplace or bundled package
+              │
+              v
+           plugin
+       ┌──────┼──────┐
+       v      v      v
+      MCP   skill   app connector
+       │      │      │
+       v      v      v
+ executable  text   metadata
+   tools   instructions  (current implementation)
+```
+
+## Purpose
+
+Windie is the runtime, while extensions provide capabilities that can be
+installed and used by that runtime. This keeps the core runtime focused and
+gives developers a package boundary for adding MCP tools, reusable skill
+instructions, and future app connectors.
+
+## Extension roles
 
 - **Plugin** — the installable package boundary. A plugin can contain one or
   more MCPs, skills, app connectors, or any combination of them.
 - **MCP** — the protocol and provider boundary for executable tools.
 - **Skill** — reusable text instructions that an LLM can follow.
-- **App connector** — a component for integrating an external application.
+- **App connector** — a component for describing an external application. The
+  current implementation validates and indexes its metadata but does not yet
+  connect to the application.
 - **Marketplace** — the catalog and distribution source for published plugins.
 
 ## Main flow
@@ -24,7 +48,19 @@ into the runtime.
 Every extension remains subject to Windie's component state, permission
 boundaries, and tool-approval policy.
 
-## Detailed pages
+## Extension boundaries
+
+- Plugins package and describe components; they do not execute tools or decide
+  whether a tool call is allowed.
+- MCP providers own executable tool transport and discovery. The runtime still
+  controls attachment, approval, and execution boundaries.
+- Skills provide text instructions and do not create tools or execute scripts.
+- App connectors currently provide metadata only; they do not establish an
+  external connection or provide executable schemas.
+- The marketplace distributes plugin releases but does not run installed
+  components or own their local state.
+
+## References
 
 - [Plugins](plugins.md)
 - [MCP](mcp.md)

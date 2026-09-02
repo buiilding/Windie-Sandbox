@@ -14,7 +14,8 @@ open the group that owns the concept you want to understand.
   provider configuration.
 - [Extensions](extensions/) — plugins, MCP components, skills, app connectors,
   and the marketplace.
-- [Interfaces](interfaces/) — the HTTP API, SSE, CLI, and Inspector.
+- [Interfaces](interfaces/) — the HTTP API and its SSE streams, CLI, and
+  Inspector.
 - [Components](components/) — the API, gateway, tray, and notifier
   as independently managed processes.
 
