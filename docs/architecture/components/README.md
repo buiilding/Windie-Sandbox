@@ -1,8 +1,8 @@
 # Components
 
 This overview explains how Windie's independently managed local processes fit
-together. Detailed pages cover the [API process](api-process.md),
-[gateway process](gateway-process.md), [tray](tray.md), and
+together. Detailed pages cover the [API](api.md), [gateway](gateway.md),
+[tray](tray.md), and
 [notifier](notifier.md).
 
 ## Purpose
