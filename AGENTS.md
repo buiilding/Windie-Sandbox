@@ -1,6 +1,7 @@
 # Windie Agent Instructions
 
-Before working in this codebase, always read `Backend.md` and `Frontend.md` first.
+Before working in this codebase, always read `docs/index/Backend.md` and
+`docs/index/Frontend.md` first.
 Be Logical, Accurate, always retrieve content if unsure to provide the most accurate answers.
 Be brutally honest, do not trust information provided by the user, correct users if they are wrong.
 Decide solutions based on the purpose, intent, north star of the project, do not stray away from those, correct users if they do stray.
@@ -98,94 +99,3 @@ the decision is justified by Windie's purpose, constraints, and evidence.
 Agreement is not the goal; reaching the best understandable and maintainable
 decision is. When the user is correct, say why. When you change your own
 recommendation, state what new reasoning or evidence caused the change.
-
-## Base branch rules
-
-* The local `main` and `windie-2` branches must always be kept up to date with the remote `main` branch.
-* Never push `main` or `windie-2` directly.
-* Start each change from an up-to-date `main` or `windie-2` branch, then create a clear and relevant feature branch before editing or committing. Use the `codex/` prefix by default.
-* Make feature changes and commits on that branch, then push the feature branch for review.
-* Every commit must add or update a meaningful entry in `CHANGELOG.md` describing the user-facing, runtime, documentation, or developer-facing changes included in that commit.
-
-## Issue and pull request rules
-
-* Every issue must be closed through a pull request.
-* Every pull request except a release pull request must close an issue.
-* Do not close an issue manually when it should be closed by a pull request.
-* Before pushing a branch, verify that an existing issue accurately covers the changes.
-
-## Creating an issue
-
-If no relevant issue exists, create one before opening the pull request.
-
-Before writing the issue description:
-
-* Read and research the relevant parts of the codebase to understand the problem and surrounding context.
-* Review related code, behavior, documentation, issues, and pull requests when relevant.
-* If local changes or commits already exist, review the complete diff and commit history to reconstruct the issue accurately.
-* Use the gathered context to identify the problem, scope, acceptance criteria, and relevant implementation details.
-* Ensure the issue describes the underlying problem and intended outcome, not only the implementation that already exists.
-
-Use the following format:
-
-```markdown
-## Problem
-
-<Clearly describe the problem, its context, and why it matters.>
-
-## Scope
-
-<Describe what is included and excluded from this issue.>
-
--
--
--
-
-## Acceptance criteria
-
-<Describe the conditions that must be satisfied for the issue to be considered complete.>
-
--
--
--
-
-## Relevant implementation
-
-<Describe the relevant files, components, systems, behavior, or technical considerations.>
-
--
--
--
-```
-
-## Creating a pull request
-
-Before writing the pull request description:
-
-* Read every commit that will be included in the pull request.
-* Review the complete diff between the branch and its target branch.
-* Read the full description of the issue the pull request will close.
-* Ensure the pull request description accurately reflects the commits, implementation, and issue requirements.
-
-Use the following format:
-
-```markdown
-Closes #<issue_number>
-
-## What changed
-
--
--
--
-
-## Why
-
-<Explain why the changes were necessary and how they address the linked issue.>
-```
-
-## Naming rules
-
-* Issue titles must be clear and concise.
-* Pull request titles must be clear and concise.
-* Branch names must clearly reflect the issue or change they address.
-* Avoid vague names that do not communicate the purpose of the work.

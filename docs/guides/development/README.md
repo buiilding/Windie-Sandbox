@@ -248,8 +248,9 @@ uninitialized submodule, missing toolchain, port conflict, or API URL mismatch.
 ## Related material
 
 - [Documentation index](../../README.md)
-- [`Backend.md`](../../../Backend.md) and [`Frontend.md`](../../../Frontend.md)
-  map the runtime and Inspector source.
+- [`Backend.md`](../../index/Backend.md) and
+  [`Frontend.md`](../../index/Frontend.md) map the runtime and Inspector
+  source.
 - [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) defines the contribution and
   pull-request workflow.
 - [`src/dev.rs`](../../../src/dev.rs) owns foreground development commands.

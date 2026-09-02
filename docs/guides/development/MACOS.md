@@ -65,7 +65,21 @@ See [the Rust installation guide][rust-install].
 
 Install Go 1.26.5, the version in Windie's
 [`.go-version`](../../../.go-version), from the [official Go downloads
-page][go-downloads]. Open a new Terminal and verify it:
+page][go-downloads]. Download and run the package that matches the Mac's
+architecture.
+
+### Optional: install Go with one command
+
+If you prefer a terminal-only setup, this command detects Apple Silicon or
+Intel, downloads the same official package to a temporary directory, asks for
+the macOS administrator password, installs it, and exposes Go in the current
+Terminal:
+
+```bash
+go_arch="$(uname -m)"; [ "$go_arch" = "arm64" ] || [ "$go_arch" = "x86_64" ] || { echo "unsupported Mac architecture: $go_arch" >&2; exit 1; }; [ "$go_arch" = "x86_64" ] && go_arch="amd64"; go_temp_dir="$(mktemp -d)" && trap 'rm -rf "$go_temp_dir"' EXIT && curl -fsSL "https://go.dev/dl/go1.26.5.darwin-${go_arch}.pkg" -o "$go_temp_dir/go.pkg" && sudo installer -pkg "$go_temp_dir/go.pkg" -target / && export PATH="/usr/local/go/bin:$PATH"
+```
+
+Open a new Terminal and verify it:
 
 ```bash
 go version
@@ -76,8 +90,21 @@ The result should report Go 1.26.5 and either `darwin/arm64` or `darwin/amd64`.
 ## 4. Install Node.js 22.23.2
 
 Install Node.js 22.23.2, the version recorded in the Inspector's `.nvmrc`,
-using the [Node.js 22 downloads page][node-22-downloads]. Open a new Terminal
-and verify Node.js and npm:
+using the [Node.js 22 downloads page][node-22-downloads]. Download and run
+the macOS package.
+
+### Optional: install Node.js with one command
+
+If you prefer a terminal-only setup, this command downloads Node's official
+macOS package (for both Apple Silicon and Intel) to a temporary directory,
+asks for the macOS administrator password, installs it, and exposes Node's
+normal installation directory in the current Terminal:
+
+```bash
+node_temp_dir="$(mktemp -d)" && trap 'rm -rf "$node_temp_dir"' EXIT && curl -fsSL "https://nodejs.org/dist/v22.23.2/node-v22.23.2.pkg" -o "$node_temp_dir/node.pkg" && sudo installer -pkg "$node_temp_dir/node.pkg" -target / && export PATH="/usr/local/bin:$PATH"
+```
+
+Open a new Terminal and verify Node.js and npm:
 
 ```bash
 node --version
