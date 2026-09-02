@@ -81,11 +81,11 @@ the API records that attempt as failed to avoid duplicating external work.
 
 ## Related references
 
-- [Sessions](../durable-state/sessions.md) — branch resolution, execution
+- [Sessions](../storage/sessions.md) — branch resolution, execution
   claims, and recovery.
 - [Runtime loop](../execution/runtime-loop.md) — the work the API runs for a
   session.
-- [Local components](../local-components/) — API, Bifrost, tray, and notifier
+- [Components](../components/) — API, Bifrost, tray, and notifier
   lifecycle.
 - [Backend-owned session resolution](../../decisions/0001-backend-owned-session-resolution.md)
   — the decision behind API-owned session resolution.

@@ -1,4 +1,4 @@
-# Durable state
+# Storage
 
 Durable state is the part of Windie that survives a client disconnect or local
 process restart. SQLite stores the conversation tree, session records, queued

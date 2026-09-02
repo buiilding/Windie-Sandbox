@@ -6,16 +6,16 @@ open the group that owns the concept you want to understand.
 
 ## Architecture groups
 
-- [Durable state](durable-state/) — conversation trees, sessions, SQLite,
+- [Storage](storage/) — conversation trees, sessions, SQLite,
   execution claims, and durable events.
 - [Execution](execution/) — wakeups, context compilation, runtime turns, tool
   execution, and approval.
-- [Model access](model-access/) — Bifrost, model requests, discovery, and
+- [LLM](llm/) — Bifrost, model requests, discovery, and
   provider configuration.
 - [Extensions](extensions/) — plugins, MCP components, skills, app connectors,
   and the marketplace.
 - [Interfaces](interfaces/) — the HTTP API, SSE, CLI, and Inspector.
-- [Local components](local-components/) — the API, gateway, tray, and notifier
+- [Components](components/) — the API, gateway, tray, and notifier
   as independently managed processes.
 
 Each group's `README.md` is its overview. The other files in that folder cover

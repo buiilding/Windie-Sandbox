@@ -139,8 +139,8 @@ Node.js `22.23.2`.
 ## 8. Related code and documentation
 
 - [Shared development workflow](README.md)
-- [`Backend.md`](../../index/Backend.md), the Rust runtime source map
-- [`Frontend.md`](../../index/Frontend.md), the Inspector source map
+- [`BACKEND.md`](../../index/BACKEND.md), the Rust runtime source map
+- [`FRONTEND.md`](../../index/FRONTEND.md), the Inspector source map
 - [Architecture overview](../../architecture/overview.md)
 
 [apple-cli]: https://developer.apple.com/documentation/xcode/installing-the-command-line-tools

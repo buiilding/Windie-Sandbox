@@ -125,9 +125,6 @@ cargo run --bin windie -- dev run tray
 cargo run --bin windie -- dev run notifier
 ```
 
-See the [desktop notifications guide](../desktop-notifications.md) for the
-notifier flow and development probe.
-
 ## 11. Default process ports
 
 | Process | Default address |
@@ -176,9 +173,9 @@ environment variable that does not match the other terminals.
 
 - [macOS development](MACOS.md), [Windows development](WINDOWS.md), and
   [Linux development](LINUX.md) contain platform-specific setup and diagnostics.
-- [`Backend.md`](../../index/Backend.md) maps the Rust runtime source.
-- [`Frontend.md`](../../index/Frontend.md) maps the Inspector source.
-- [Local components](../../architecture/local-components/README.md) explains
+- [`BACKEND.md`](../../index/BACKEND.md) maps the Rust runtime source.
+- [`FRONTEND.md`](../../index/FRONTEND.md) maps the Inspector source.
+- [Components](../../architecture/components/README.md) explains
   the API, gateway, tray, and notifier boundaries.
 - [Architecture overview](../../architecture/overview.md) explains Windie's
   runtime design.

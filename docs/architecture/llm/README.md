@@ -1,4 +1,4 @@
-# Model access
+# LLM
 
 Windie uses one OpenAI-compatible request boundary for model inference. It
 sends model requests to the local Bifrost gateway, which handles communication

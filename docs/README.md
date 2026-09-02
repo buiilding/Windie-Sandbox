@@ -12,9 +12,9 @@ understanding Windie.
 
 ## Source maps
 
-- [Backend source map](index/Backend.md) — Rust runtime and CLI inventory.
-- [Frontend source map](index/Frontend.md) — Inspector application inventory.
-- [Command reference](index/commands.md) — concrete Windie CLI commands.
+- [Backend source map](index/BACKEND.md) — Rust runtime and CLI inventory.
+- [Frontend source map](index/FRONTEND.md) — Inspector application inventory.
+- [CLI reference](index/CLI.md) — concrete Windie CLI commands.
 
 ## Understand the runtime
 
@@ -28,10 +28,6 @@ understanding Windie.
 
 ## Use and operate Windie
 
-- [Inspector access](guides/hosted-inspector.md) — local and hosted Inspector
-  browser boundaries.
-- [Desktop notifications](guides/desktop-notifications.md) — notifier behavior
-  and development testing.
-- [Plugin packages](guides/plugin-packages.md) — package creation, local
-  marketplace testing, and publication.
+- The [CLI reference](index/CLI.md) documents Inspector access and
+  local component commands.
 - [Release process](../RELEASING.md) — release verification and packaging.

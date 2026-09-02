@@ -10,7 +10,7 @@
 
 ## Does not own
 
-<!-- Distinguish process management from model-access architecture and Windie state. -->
+<!-- Distinguish process management from LLM architecture and Windie state. -->
 
 ## Main flow
 
