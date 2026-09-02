@@ -52,17 +52,19 @@ git submodule update --init --recursive
 Run the remaining commands from the repository root unless a step says
 otherwise.
 
-## 3. Install Inspector dependencies
+## 3. Prepare the Inspector
 
-Use the Node.js version recorded by the Inspector, then install its locked
-dependency graph:
+The first `windie dev run inspector` automatically checks the Node.js version
+recorded by the Inspector and installs its locked dependency graph when needed:
 
 ```bash
-npm ci --legacy-peer-deps --prefix vendor/windie-inspector/frontend
+cargo run --bin windie -- dev run inspector
 ```
 
-Ensure `node --version` matches the Inspector's `.nvmrc` before running this
-command. The `--legacy-peer-deps` flag matches CI.
+The development command uses `npm ci --legacy-peer-deps` in
+`vendor/windie-inspector/frontend`. Repeated starts reuse the existing
+installation until `package.json`, `package-lock.json`, or `.nvmrc` changes.
+The `--legacy-peer-deps` flag matches CI.
 
 Windie's development gateway does not require Bifrost's dashboard or its
 separate frontend toolchain. Before compiling Bifrost, `windie dev run gateway`
@@ -228,11 +230,9 @@ Run `go version`. Install the exact version in `.go-version`.
 
 ### Inspector reports missing packages
 
-Recreate its locked installation:
-
-```bash
-npm ci --legacy-peer-deps --prefix vendor/windie-inspector/frontend
-```
+Stop the Inspector and run `windie dev run inspector` again. The development
+command recreates its locked dependency installation when the recorded
+dependency fingerprint is missing or stale.
 
 ### Inspector loads but cannot reach Windie
 

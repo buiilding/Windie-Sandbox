@@ -35,6 +35,7 @@ use crate::plugin::{
 const DEV_GATEWAY_START_TIMEOUT: Duration = Duration::from_secs(180);
 const DEV_INSPECTOR_START_TIMEOUT: Duration = Duration::from_secs(180);
 const LOCAL_MARKETPLACE_PORT: u16 = 8788;
+const INSPECTOR_DEPENDENCY_MARKER: &str = "node_modules/.windie-dependencies.lock";
 
 /// Runs the selected development workflow through the public CLI.
 pub async fn run_dev(command: DevCommand) -> Result<()> {
@@ -769,11 +770,11 @@ async fn run_go(directory: &Path, args: &[&str]) -> Result<()> {
 async fn spawn_component(component: &str) -> Result<Child> {
     let root = repository_root()?;
     let mut command = if component == "inspector" {
+        let frontend_root = root.join("vendor/windie-inspector/frontend");
+        prepare_inspector_dependencies(&frontend_root).await?;
+
         let mut command = Command::new(npm_command());
-        command
-            .arg("start")
-            .arg("--prefix")
-            .arg(root.join("vendor/windie-inspector/frontend"));
+        command.arg("start").current_dir(&frontend_root);
         command.env("BROWSER", "none");
         command
     } else if component == "api" {
@@ -803,6 +804,108 @@ async fn spawn_component(component: &str) -> Result<Child> {
     command
         .spawn()
         .with_context(|| format!("failed to start development {component}"))
+}
+
+/// Ensures the Inspector's locked npm dependencies match the checked-out
+/// manifest before starting its development server.
+///
+/// The marker lives under ignored 'node_modules/', so a fresh checkout or a
+/// changed manifest naturally triggers 'npm ci', while repeated starts reuse
+/// the existing installation. 'npm ci' remains the source of truth for the
+/// actual dependency graph; the marker only avoids repeating that work.
+async fn prepare_inspector_dependencies(frontend_root: &Path) -> Result<()> {
+    let package_json = frontend_root.join("package.json");
+    let package_lock = frontend_root.join("package-lock.json");
+    let node_version_file = frontend_root.join(".nvmrc");
+
+    for path in [&package_json, &package_lock, &node_version_file] {
+        if !path.is_file() {
+            bail!("Inspector dependency file is missing: {}", path.display());
+        }
+    }
+
+    let expected_node_version = fs::read_to_string(&node_version_file)
+        .with_context(|| format!("failed to read {}", node_version_file.display()))?;
+    let expected_node_version = expected_node_version.trim();
+    if expected_node_version.is_empty() {
+        bail!("Inspector .nvmrc is empty: {}", node_version_file.display());
+    }
+    verify_node_version(expected_node_version, frontend_root).await?;
+
+    let dependency_fingerprint =
+        inspector_dependency_fingerprint(&package_json, &package_lock, expected_node_version)?;
+    let marker = frontend_root.join(INSPECTOR_DEPENDENCY_MARKER);
+    if fs::read_to_string(&marker).ok().as_deref() == Some(dependency_fingerprint.as_str()) {
+        return Ok(());
+    }
+
+    println!("windie: installing Inspector dependencies");
+    let status = Command::new(npm_command())
+        .args(["ci", "--legacy-peer-deps"])
+        .current_dir(frontend_root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .context("failed to run npm while installing Inspector dependencies")?;
+    if !status.success() {
+        bail!("Inspector dependency installation exited with {status}");
+    }
+
+    fs::write(&marker, dependency_fingerprint)
+        .with_context(|| format!("failed to write {}", marker.display()))?;
+    Ok(())
+}
+
+/// Verifies that the active Node.js runtime matches the Inspector's pinned
+/// version before npm installs dependencies or starts the development server.
+async fn verify_node_version(expected: &str, frontend_root: &Path) -> Result<()> {
+    let output = Command::new("node")
+        .arg("--version")
+        .current_dir(frontend_root)
+        .output()
+        .await
+        .context(
+            "failed to run node; install the Node.js version recorded in the Inspector's .nvmrc",
+        )?;
+    if !output.status.success() {
+        bail!("node --version exited with {}", output.status);
+    }
+
+    let actual = String::from_utf8_lossy(&output.stdout);
+    if normalize_node_version(&actual) != normalize_node_version(expected) {
+        bail!(
+            "Inspector requires Node.js {}, but the active runtime is {}; select the version from {}",
+            expected.trim(),
+            actual.trim(),
+            frontend_root.join(".nvmrc").display()
+        );
+    }
+    Ok(())
+}
+
+fn normalize_node_version(version: &str) -> &str {
+    version.trim().trim_start_matches('v')
+}
+
+/// Hashes the files that define the Inspector dependency installation.
+fn inspector_dependency_fingerprint(
+    package_json: &Path,
+    package_lock: &Path,
+    node_version: &str,
+) -> Result<String> {
+    let package_json = fs::read(package_json)
+        .with_context(|| format!("failed to read {}", package_json.display()))?;
+    let package_lock = fs::read(package_lock)
+        .with_context(|| format!("failed to read {}", package_lock.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(node_version.trim().as_bytes());
+    hasher.update([0]);
+    hasher.update(package_json);
+    hasher.update([0]);
+    hasher.update(package_lock);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Builds the current Windie API executable and returns its debug path.
@@ -1152,5 +1255,11 @@ mod tests {
             "the Go embed pattern needs a development-only file"
         );
         fs::remove_dir_all(&transport_root).expect("temporary transport root should be removed");
+    }
+
+    #[test]
+    fn normalizes_node_versions_for_comparison() {
+        assert_eq!(normalize_node_version("v22.23.2\n"), "22.23.2");
+        assert_eq!(normalize_node_version("22.23.2"), "22.23.2");
     }
 }

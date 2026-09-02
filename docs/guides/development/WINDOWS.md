@@ -33,7 +33,7 @@ winget install --id BrechtSanders.WinLibs.POSIX.UCRT --exact --source winget
 
 Install Node.js 22.23.2, the Inspector version in its `.nvmrc`, using the
 matching [Windows x64 installer][node-22-downloads]. If you use a Windows Node
-version manager, select that version before installing Inspector dependencies.
+version manager, select that version before running the Inspector.
 
 Initialize Rust and verify the toolchain:
 
@@ -97,7 +97,9 @@ this error.
 
 ### `craco` is not recognized, or npm reports a peer-dependency resolution error
 
-Reinstall the Inspector's locked dependencies from the repository root:
+Stop the Inspector and run `windie dev run inspector` again. The development
+command reinstalls its locked dependencies when the recorded dependency
+fingerprint is missing or stale. To force a clean reinstall manually, run:
 
 ```powershell
 npm ci --legacy-peer-deps --prefix vendor\windie-inspector\frontend
