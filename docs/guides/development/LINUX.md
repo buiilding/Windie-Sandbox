@@ -111,7 +111,7 @@ Windie development does not need Bifrost's separate dashboard Node version.
 ## Continue with the shared workflow
 
 The machine is ready when the toolchain checks above succeed. Continue with
-the shared [development workflow](README.md#2-clone-windie-and-its-submodules).
+the shared [development workflow](README.md#2-clone-windie).
 
 ## Linux desktop behavior
 

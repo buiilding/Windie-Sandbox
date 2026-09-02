@@ -1,115 +1,145 @@
-# Windows development
+# Windows prerequisites
 
-This guide prepares a clean 64-bit Windows machine for Windie source
-development. Once the prerequisites are ready, follow the shared
-[development workflow](README.md).
+This guide installs the native prerequisites required for Windie development
+on 64-bit Windows. Complete these steps before continuing with the shared
+development workflow.
 
-Open a new PowerShell window after installing a tool so that its `PATH` changes
-are available.
+Open a new PowerShell window after installing a tool so that its `PATH`
+changes are loaded.
 
-## Prerequisites
+## 1. Install Windows build tools
 
-| Tool | Required version | Why it is needed |
-| --- | --- | --- |
-| Git | Current | Clone Windie and its submodules. |
-| Visual Studio Build Tools 2022 | Desktop development with C++ workload and Windows SDK | Rust's MSVC toolchain and native dependencies. |
-| Rust | 1.98.0, plus `rustfmt` and `clippy` | Windie's CLI and local runtime. |
-| Go | 1.26.5 | Bifrost gateway. |
-| Node.js | 22.23.2 | Windie Inspector. |
-| MinGW-w64 GCC | POSIX/UCRT x64 | Bifrost's CGO-backed SQLite driver. |
+Install [Visual Studio Build Tools 2022][visual-studio]. In the installer,
+select **Desktop development with C++**, including the Windows SDK.
 
-Install Visual Studio Build Tools from [Visual Studio downloads][visual-studio].
-In the installer, select **Desktop development with C++**, including the
-Windows SDK.
-
-Install the remaining system tools with WinGet:
+Windie's Bifrost gateway also requires a POSIX/UCRT GCC toolchain for its
+CGO-backed SQLite dependency. Install Git and WinLibs with WinGet:
 
 ```powershell
 winget install --id Git.Git --exact --source winget
-winget install --id Rustlang.Rustup --exact --source winget
-winget install --id GoLang.Go --exact --source winget
 winget install --id BrechtSanders.WinLibs.POSIX.UCRT --exact --source winget
 ```
 
-Install Node.js 22.23.2, the Inspector version in its `.nvmrc`, using the
-matching [Windows x64 installer][node-22-downloads]. If you use a Windows Node
-version manager, select that version before running the Inspector.
-
-Initialize Rust and verify the toolchain:
+Verify the native tools:
 
 ```powershell
-rustup toolchain install 1.98.0 --component rustfmt --component clippy
-
 git --version
-rustc +1.98.0 --version
-cargo +1.98.0 --version
-go version
-node --version
-npm --version
 gcc --version
 ```
 
-The Rust commands should report the version in `rust-toolchain.toml`, and
-`node --version` should match the Inspector's `.nvmrc`. `gcc --version` must
-work before starting the gateway because Bifrost uses CGO-backed SQLite.
+## 2. Install Rust 1.98.0
 
-## Continue with the shared workflow
-
-The machine is ready when the toolchain checks succeed. Continue with the
-[shared development workflow](README.md#2-clone-windie-and-its-submodules).
-
-## Windows port diagnostics
-
-The shared workflow uses gateway port `8080`, API port `8787`, and Inspector
-port `3000`. Check which process owns a port with:
+Install Rustup with WinGet:
 
 ```powershell
-Get-NetTCPConnection -State Listen -LocalPort 8080,8787,3000 -ErrorAction SilentlyContinue |
-  Select-Object LocalAddress, LocalPort, OwningProcess
+winget install --id Rustlang.Rustup --exact --source winget
 ```
 
-For an occupied port, inspect the displayed process ID with
-`Get-Process -Id <pid>`. Do not terminate a process unless you know it is a
-stale local Windie process.
-
-Set port overrides in every PowerShell window that starts a Windie component:
+Open a new PowerShell window, then install the version and components required
+by Windie:
 
 ```powershell
-$env:WINDIE_GATEWAY_PORT = "18080"
-$env:WINDIE_API_PORT = "18787"
-$env:REACT_APP_WINDIE_API_URL = "http://127.0.0.1:18787"
+rustup toolchain install 1.98.0 --component rustfmt --component clippy
 ```
 
-## Windows troubleshooting
+Verify Rust:
+
+```powershell
+rustc +1.98.0 --version
+cargo +1.98.0 --version
+```
+
+The Rust compiler should report version `1.98.0`.
+
+## 3. Install Go 1.26.5
+
+Install Go `1.26.5` with WinGet:
+
+```powershell
+winget install --id GoLang.Go --exact --source winget
+```
+
+Alternatively, install the matching Windows package from the [official Go
+downloads page][go-downloads].
+
+Verify Go:
+
+```powershell
+go version
+```
+
+The result should report Go `1.26.5`.
+
+## 4. Install Node.js 22.23.2
+
+Install Node.js `22.23.2` from the [Node.js 22 downloads page][node-downloads].
+Choose the Windows x64 installer and follow its installation steps.
+
+Verify Node.js and npm:
+
+```powershell
+node --version
+npm --version
+```
+
+Node.js should report version `22.23.2`.
+
+## 5. Final check
+
+Run the complete check from a new PowerShell window:
+
+```powershell
+git --version
+gcc --version
+rustc +1.98.0 --version
+cargo +1.98.0 --version
+go version
+go env CGO_ENABLED
+node --version
+npm --version
+```
+
+Confirm that the required commands are available, Rust, Go, and Node.js report
+the required versions, and `go env CGO_ENABLED` reports `1`. Fix any failed
+check before continuing.
+
+## 6. Continue setup
+
+After the final check succeeds, continue with the [shared development
+workflow](README.md#2-clone-windie).
+
+## 7. Common troubleshooting
 
 ### `failed to run Go workspace command: program not found`
 
-Go is not installed or the PowerShell window predates its installation. Install
-Go, close PowerShell completely, open a new window, and confirm `go version`
-succeeds.
+Open a new PowerShell window after installing Go and run `go version` again.
+The earlier window may not contain the installation's updated `PATH`.
 
 ### `go-sqlite3 requires cgo to work` or `CGO_ENABLED=0`
 
-Install the WinLibs POSIX/UCRT package, open a new PowerShell window, and
-confirm `gcc --version` works. Then check `go env CGO_ENABLED`; it should
-report `1`. Setting `CGO_ENABLED=1` without a working GCC compiler does not fix
-this error.
+Install the WinLibs POSIX/UCRT package, then confirm that `gcc --version`
+works and `go env CGO_ENABLED` reports `1`. Setting `CGO_ENABLED=1` without a
+working GCC compiler does not fix this error.
 
-### `craco` is not recognized, or npm reports a peer-dependency resolution error
+### The Inspector cannot start or reach the API
 
-Stop the Inspector and run `windie dev run inspector` again. The development
-command reinstalls its locked dependencies when the recorded dependency
-fingerprint is missing or stale. To force a clean reinstall manually, run:
+Confirm that the API is running and that the Inspector command is being run
+from the repository root. If the frontend dependencies are unavailable,
+restart the Inspector command from a new PowerShell window.
 
-```powershell
-npm ci --legacy-peer-deps --prefix vendor\windie-inspector\frontend
-```
+### The gateway starts but model requests fail
 
-### The gateway starts but models fail to load
+The gateway may be healthy while the provider credential, selected model, or
+provider configuration is invalid. Recheck the provider setup in the
+Inspector and verify the model name.
 
-The gateway is running, but the configured provider credential or selected
-model is invalid. Configure a valid provider in Windie and verify its API key;
-this is separate from the local Rust, Go, and Node setup.
+## 8. Related code and documentation
 
-[node-22-downloads]: https://nodejs.org/en/download/archive/v22
+- [Shared development workflow](README.md)
+- [`Backend.md`](../../index/Backend.md), the Rust runtime source map
+- [`Frontend.md`](../../index/Frontend.md), the Inspector source map
+- [Architecture overview](../../architecture/overview.md)
+
+[go-downloads]: https://go.dev/dl/
+[node-downloads]: https://nodejs.org/en/download/archive/v22
 [visual-studio]: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
