@@ -28,5 +28,5 @@ conversation truth.
 - [Sessions](sessions.md)
 - [Session lifecycle](session-lifecycle.md)
 - [Execution claims](execution-claims.md)
-- [SQLite storage](sqlite-storage.md)
+- [SQLite storage](sqlite.md)
 - [Durable events](durable-events.md)
