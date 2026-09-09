@@ -173,8 +173,8 @@ environment variable that does not match the other terminals.
 
 - [macOS development](MACOS.md), [Windows development](WINDOWS.md), and
   [Linux development](LINUX.md) contain platform-specific setup and diagnostics.
-- [`BACKEND.md`](../../index/BACKEND.md) maps the Rust runtime source.
-- [`FRONTEND.md`](../../index/FRONTEND.md) maps the Inspector source.
+- [`Backend.md`](../../index/Backend.md) maps the Rust runtime source.
+- [`Frontend.md`](../../index/Frontend.md) maps the Inspector source.
 - [Components](../../architecture/components/README.md) explains
   the API, gateway, tray, and notifier boundaries.
 - [Architecture overview](../../architecture/overview.md) explains Windie's

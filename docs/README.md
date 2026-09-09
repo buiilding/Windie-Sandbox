@@ -12,8 +12,8 @@ understanding Windie.
 
 ## Source maps
 
-- [Backend source map](index/BACKEND.md) — Rust runtime and CLI inventory.
-- [Frontend source map](index/FRONTEND.md) — Inspector application inventory.
+- [Backend source map](index/Backend.md) — Rust runtime and CLI inventory.
+- [Frontend source map](index/Frontend.md) — Inspector application inventory.
 - [CLI reference](index/CLI.md) — concrete Windie CLI commands.
 
 ## Understand the runtime
