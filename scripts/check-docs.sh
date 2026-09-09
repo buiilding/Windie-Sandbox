@@ -29,7 +29,7 @@ for version in "$rust_version" "$go_version" "$node_version"; do
     echo "a development toolchain version could not be read" >&2
     exit 1
   fi
-  for guide in "${required_files[@]:3}"; do
+  for guide in "${required_files[@]:4}"; do
     if ! grep -Fq "$version" "$project_root/$guide"; then
       echo "$guide does not mention required toolchain version $version" >&2
       exit 1

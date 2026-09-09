@@ -1,20 +1,14 @@
-# macOS development
+# macOS prerequisites
 
-This guide installs Windie's native prerequisites on a new Mac. After the
-toolchains are ready, continue with the shared [development workflow](README.md).
+This guide installs the native prerequisites required for Windie development
+on macOS. Complete these steps before continuing with the shared development
+workflow.
 
-## Supported Mac hardware
+## 1. Install command-line tools
 
-Windie builds native releases for Apple Silicon (`arm64`) and Intel (`x86_64`)
-Macs. Check the current architecture when selecting Go and Node.js downloads:
-
-```bash
-uname -m
-```
-
-Rustup selects the native Rust target automatically.
-
-## 1. Install Apple's command-line tools
+The command-line tools provide the compiler, linker, SDK, and Git needed by
+the source builds. See [Apple's command-line tools documentation][apple-cli]
+for more information.
 
 Open Terminal and run:
 
@@ -22,8 +16,7 @@ Open Terminal and run:
 xcode-select --install
 ```
 
-Accept the installation dialog, then verify Git, Clang, and the active developer
-directory:
+Verify Installation:
 
 ```bash
 xcode-select -p
@@ -31,144 +24,126 @@ clang --version
 git --version
 ```
 
-The full Xcode application is not required. The command-line tools provide the
-macOS SDK and linker required by Rust and Go builds.
+## 2. Install Rust
 
-See [Apple's command-line tools documentation][apple-command-line-tools].
-
-## 2. Install Rust 1.98.0
-
-Install Rust through Rustup:
+Install Rust version 1.98.0 through [Rustup][rustup]:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Open a new Terminal, then install the compiler and components recorded in
-Windie's `rust-toolchain.toml`:
+Restart the terminal then run:
 
 ```bash
 rustup toolchain install 1.98.0 --component rustfmt --component clippy
 ```
 
-Do not change your global Rust default for Windie. After cloning, Cargo selects
-the repository version automatically. Verify it from the checkout:
+Verify Installation:
 
 ```bash
 rustc --version
 cargo --version
 ```
 
-See [the Rust installation guide][rust-install].
+The Rust compiler should report version `1.98.0`.
 
-## 3. Install Go 1.26.5
+## 3. Install Go
 
-Install Go 1.26.5, the version in Windie's
-[`.go-version`](../../../.go-version), from the [official Go downloads
-page][go-downloads]. Download and run the package that matches the Mac's
-architecture.
+Install Go `1.26.5` from the [official Go downloads page][go-downloads].
+Choose the macOS installer that matches your Mac, then follow the installer
+steps.
 
 ### Optional: install Go with one command
-
-If you prefer a terminal-only setup, this command detects Apple Silicon or
-Intel, downloads the same official package to a temporary directory, asks for
-the macOS administrator password, installs it, and exposes Go in the current
-Terminal:
 
 ```bash
 go_arch="$(uname -m)"; [ "$go_arch" = "arm64" ] || [ "$go_arch" = "x86_64" ] || { echo "unsupported Mac architecture: $go_arch" >&2; exit 1; }; [ "$go_arch" = "x86_64" ] && go_arch="amd64"; go_temp_dir="$(mktemp -d)" && trap 'rm -rf "$go_temp_dir"' EXIT && curl -fsSL "https://go.dev/dl/go1.26.5.darwin-${go_arch}.pkg" -o "$go_temp_dir/go.pkg" && sudo installer -pkg "$go_temp_dir/go.pkg" -target / && export PATH="/usr/local/go/bin:$PATH"
 ```
 
-Open a new Terminal and verify it:
+The command detects Apple Silicon or Intel, downloads the matching official
+package, and asks for the macOS administrator password.
+
+Verify Installation:
 
 ```bash
 go version
 ```
 
-The result should report Go 1.26.5 and either `darwin/arm64` or `darwin/amd64`.
+The output should report Go `1.26.5`.
 
-## 4. Install Node.js 22.23.2
+## 4. Install Node.js
 
-Install Node.js 22.23.2, the version recorded in the Inspector's `.nvmrc`,
-using the [Node.js 22 downloads page][node-22-downloads]. Download and run
-the macOS package.
+Install Node.js `22.23.2` from the [Node.js 22 downloads page][node-downloads].
+Download and run the installer.
 
 ### Optional: install Node.js with one command
-
-If you prefer a terminal-only setup, this command downloads Node's official
-macOS package (for both Apple Silicon and Intel) to a temporary directory,
-asks for the macOS administrator password, installs it, and exposes Node's
-normal installation directory in the current Terminal:
 
 ```bash
 node_temp_dir="$(mktemp -d)" && trap 'rm -rf "$node_temp_dir"' EXIT && curl -fsSL "https://nodejs.org/dist/v22.23.2/node-v22.23.2.pkg" -o "$node_temp_dir/node.pkg" && sudo installer -pkg "$node_temp_dir/node.pkg" -target / && export PATH="/usr/local/bin:$PATH"
 ```
 
-Open a new Terminal and verify Node.js and npm:
+The command downloads the official macOS package and asks for the macOS
+administrator password.
+
+Verify Installation:
 
 ```bash
 node --version
 npm --version
 ```
 
-If you use `nvm`, select that version after cloning. The shared guide installs
-the Inspector's dependencies.
+Node.js should report version `22.23.2`.
 
-## 5. Continue with the shared workflow
+## 5. Final check
 
-The Mac is ready when the toolchain checks above succeed. Continue with the
-[shared development workflow](README.md#2-clone-windie-and-its-submodules).
-
-## macOS desktop behavior
-
-The shared guide explains how to start the optional tray and notifier. macOS
-may request notification permission when the notifier first presents a
-notification. The unbundled development notifier can display notifications,
-but notification click handling requires the packaged `Windie Notifier.app`.
-
-## macOS port diagnostics
-
-Check for an existing listener when a component cannot bind its address:
+Run the complete check from a new Terminal:
 
 ```bash
-lsof -nP -iTCP:8080 -sTCP:LISTEN
-lsof -nP -iTCP:8787 -sTCP:LISTEN
-lsof -nP -iTCP:3000 -sTCP:LISTEN
+xcode-select -p
+clang --version
+git --version
+rustc --version
+cargo --version
+go version
+node --version
+npm --version
 ```
 
-Separate checkouts can use distinct runtime ports:
+Confirm that the required commands are available and that Rust, Go, and
+Node.js report the versions listed above. Fix any failed check before
+continuing.
 
-```bash
-export WINDIE_GATEWAY_PORT=18080
-export WINDIE_API_PORT=18787
-```
+## 6. Continue setup
 
-Every Terminal running that checkout must receive the same values. Start the
-Inspector with its matching API address:
+After the final check succeeds, continue with the [shared development
+workflow](README.md#2-clone-windie).
 
-```bash
-REACT_APP_WINDIE_API_URL=http://127.0.0.1:18787 \
-  cargo run --bin windie -- dev run inspector
-```
-
-## macOS troubleshooting
+## 7. Common troubleshooting
 
 ### `xcrun: error: invalid active developer path`
 
-Run `xcode-select --install`, finish the installer, and open a new Terminal.
-If the tools are already installed, inspect `xcode-select -p` before changing
+Run `xcode-select --install`, complete the installer, and repeat the final
+check. If the tools are already installed, run `xcode-select -p` to inspect
 the selected developer directory.
 
 ### `cargo`, `go`, or `node` is not found
 
-Open a new Terminal after installing the tool, then repeat the corresponding
-version check. Do not continue until the command is available in a normal new
-shell.
+Open a new Terminal after installing the tool and run its verification command
+again. A new shell loads the installation's PATH changes.
 
-Repository, submodule, Inspector, API, and Bifrost failures belong in the
-[shared troubleshooting section](README.md#common-troubleshooting).
+### A tool reports the wrong version
 
-[apple-command-line-tools]: https://developer.apple.com/documentation/xcode/installing-the-command-line-tools
+Install the required version from the source linked in the relevant section.
+Do not continue until the final check reports Rust `1.98.0`, Go `1.26.5`, and
+Node.js `22.23.2`.
+
+## 8. Related code and documentation
+
+- [Shared development workflow](README.md)
+- [`Backend.md`](../../index/Backend.md), the Rust runtime source map
+- [`Frontend.md`](../../index/Frontend.md), the Inspector source map
+- [Architecture overview](../../architecture/overview.md)
+
+[apple-cli]: https://developer.apple.com/documentation/xcode/installing-the-command-line-tools
 [go-downloads]: https://go.dev/dl/
-[node-22-downloads]: https://nodejs.org/en/download/archive/v22
-[rust-install]: https://rust-lang.org/tools/install/
+[node-downloads]: https://nodejs.org/en/download/archive/v22
+[rustup]: https://rustup.rs/

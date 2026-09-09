@@ -1,4 +1,4 @@
-# Windie Commands
+# Windie CLI
 
 This file is the concrete CLI command reference. Keep primitive operations here
 instead of in `AGENTS.md`.

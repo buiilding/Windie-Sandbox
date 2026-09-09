@@ -51,9 +51,9 @@ control of whether a requested tool runs.
 
 ## Read next
 
-- [Durable state](durable-state/)
+- [Storage](storage/)
 - [Execution](execution/)
-- [Model access](model-access/)
+- [LLM](llm/)
 - [Extensions](extensions/)
 - [Interfaces](interfaces/)
-- [Local components](local-components/)
+- [Components](components/)

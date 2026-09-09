@@ -1,137 +1,91 @@
-# Develop Windie from source
+# Build Windie from source
 
-This is the one workflow for a fresh Windie checkout: install your platform's
-native prerequisites, clone the recursive repository, verify it, then run the
-gateway, API, and Inspector as separate foreground processes.
+Building Windie from source lets you make direct changes to Windie and test
+those changes locally. This guide explains the shared workflow after the
+platform-specific prerequisites are installed.
 
 ## 1. Install platform prerequisites
 
-Choose the guide for your development machine, complete its native-toolchain
-steps, then return here:
+Based on your operating system, complete the appropriate guide before
+continuing:
 
 - [macOS](MACOS.md)
 - [Windows](WINDOWS.md)
 - [Linux](LINUX.md)
 
-Every platform needs Git, a native C toolchain, Rust, Go, and Node.js with npm.
-The repository records the exact versions that local development and CI use:
+## 2. Clone Windie
 
-| Tool | Current version | Source of truth | Responsibility |
-| --- | --- | --- | --- |
-| Rust | 1.98.0 | [`rust-toolchain.toml`](../../../rust-toolchain.toml) | Builds Windie's CLI and local runtime. |
-| Go | 1.26.5 | [`.go-version`](../../../.go-version) | Builds the checked-out Bifrost gateway. |
-| Node.js | 22.23.2 | [`vendor/windie-inspector/frontend/.nvmrc`](../../../vendor/windie-inspector/frontend/.nvmrc) | Builds and serves the Windie Inspector. |
-
-Do not replace these with a floating “latest” version. Update the declarations
-only after Windie and its CI have been verified with the new toolchain.
-
-## 2. Clone Windie and its submodules
-
-Choose a source-checkout directory, then clone recursively:
+This repository contains Windie's Rust source code. The UI, LLM gateway, and
+other source components are checked out as Git submodules under `vendor/`.
+Clone recursively so all of the source needed for development is available:
 
 ```bash
 git clone --recurse-submodules https://github.com/buiilding/Windie-Sandbox.git
 cd Windie-Sandbox
 ```
 
-Windie develops against checked-out source under `vendor/`, especially Bifrost
-and the Inspector. Confirm every submodule is initialized:
+Confirm every submodule is initialized:
 
 ```bash
 git submodule status --recursive
 ```
 
-A leading `-` means a submodule is uninitialized. A leading `+` means its
-checkout differs from the commit recorded by Windie. Repair a non-recursive
-clone with:
+## 3. Terminal 1: The LLM gateway
 
-```bash
-git submodule update --init --recursive
-```
+The gateway is Bifrost, the local service Windie uses to communicate with LLM
+providers. Windie sends it the selected model context, model, reasoning mode,
+and tool schemas. Bifrost routes the request to the configured provider and
+streams typed output back, such as reasoning, normal response text, and tool
+calls. It also provides model and token-counting operations used by Windie.
 
-Run the remaining commands from the repository root unless a step says
-otherwise.
-
-## 3. Install Inspector dependencies
-
-Use the Node.js version recorded by the Inspector, then install its locked
-dependency graph:
-
-```bash
-npm ci --legacy-peer-deps --prefix vendor/windie-inspector/frontend
-```
-
-Ensure `node --version` matches the Inspector's `.nvmrc` before running this
-command. The `--legacy-peer-deps` flag matches CI.
-
-Windie's development gateway does not require Bifrost's dashboard or its
-separate frontend toolchain. Before compiling Bifrost, `windie dev run gateway`
-creates an ignored embed placeholder when necessary. Release packaging builds
-the full Bifrost dashboard separately.
-
-The local Inspector does not need a hosted account or `frontend/.env.local`.
-Windie opens it through a short-lived local browser session; the hosted
-Inspector at `app.windieos.com` is a separate deployment.
-
-## 4. Verify the checkout
-
-Run the checks required before a pull request:
-
-```bash
-scripts/check-release-notes.sh
-scripts/check-docs.sh
-cargo fmt --check
-cargo test
-cargo clippy --all-targets -- -D warnings
-npm run build --prefix vendor/windie-inspector/frontend
-```
-
-The first Rust and frontend build can take several minutes. These checks do not
-need model-provider credentials or existing local runtime state.
-
-## 5. Run the core development components
-
-Open three terminals at the repository root. Each command owns one foreground
-process; Windie deliberately has no aggregate development runner.
-
-### Terminal 1: Bifrost gateway
+Start it in the first terminal:
 
 ```bash
 cargo run --bin windie -- dev run gateway
 ```
 
-This command prepares Bifrost's local Go workspace, creates its development
-embed placeholder if needed, builds the checked-out gateway source, starts it
-on loopback port `8080`, and waits for health.
+Leave this terminal running. Press `Control-C` to stop.
 
-### Terminal 2: Windie API
+## 4. Terminal 2: The Windie API server
+
+The API server is Windie's main local runtime process. It receives requests
+from the Inspector, owns conversations and durable sessions, resolves the
+selected conversation head, builds model context, applies tool-approval rules,
+executes approved tools, and stores runtime state in SQLite. It sends model
+requests to the gateway and streams durable session events back to clients.
+
+Start it in a second terminal:
 
 ```bash
 cargo run --bin windie -- dev run api
 ```
 
-The API owns runtime execution and durable local state at
-`http://127.0.0.1:8787` by default. Wait for:
+Leave this terminal running. Press `Control-C` to stop.
 
-```text
-windie api listening on http://127.0.0.1:8787
-```
+## 5. Terminal 3: The Windie Inspector
 
-### Terminal 3: Inspector
+The Inspector is Windie's browser-based user interface. It displays runtime
+state and sends user actions to the local API. It does not read SQLite, call
+the gateway directly, execute tools, or decide what the model sees. In
+development, it runs as a React development server with hot reload.
+
+Start it in a third terminal:
 
 ```bash
 cargo run --bin windie -- dev run inspector
 ```
 
-The Inspector is a React development server with hot reload. Once it is ready,
-Windie opens [http://localhost:3000][local-inspector] with a one-time local
-launch code. The browser talks to the API on port `8787`; the API talks to
-Bifrost on port `8080`.
+Leave this terminal running. Press `Control-C` to stop.
 
-## 6. Verify the running system
+## 6. Open the local Inspector
 
-From a fourth terminal, check both health endpoints and the typed component
-status:
+The development Inspector uses port `3000` by default:
+
+[Open the local Inspector](http://localhost:3000)
+
+## 7. Final Check
+
+Check the gateway, API, and Windie component status:
 
 ```bash
 curl -fsS http://127.0.0.1:8080/health
@@ -139,120 +93,93 @@ curl -fsS http://127.0.0.1:8787/api/health
 cargo run --bin windie -- status
 ```
 
-The status command reports the gateway and API. The Inspector is a development
-web client, not a managed runtime process.
+## 8. Configure a model provider
 
-## 7. Configure a model provider
+In the Inspector, open the model-provider section and configure a provider with
+its API key.
 
-Keep the gateway running, then launch onboarding:
+After configuring a provider, select one of its models in the Inspector and
+send a test message. A successful response confirms that the API can reach the
+gateway and that the gateway can reach the selected provider.
 
-```bash
-cargo run --bin windie -- onboard
-```
+## 9. Configure plugins
 
-Choose an LLM provider and enter its API key at the hidden prompt. Press Enter
-at the extension prompt to skip optional MCP extensions. Do not commit provider
-keys; Windie stores only approved local configuration.
+Plugins are Windie's extension and distribution unit. A plugin can provide MCP
+components and other presentation or capability metadata. An enabled MCP
+component can expose tools that a model may use on the operating system, subject
+to Windie's approval and permission rules.
 
-Confirm that Bifrost exposes a model:
+In the Inspector, open the **Plugins** section, choose a plugin, and follow its
+installation and setup instructions.
 
-```bash
-cargo run --bin windie -- models
-```
+## 10. Optional operating-system components
 
-Supported providers can also be configured through the Inspector.
-
-## Optional desktop components
-
-The tray and notifier are independent optional processes on supported
-platforms:
+The tray presents local component status and start/stop controls. It is
+currently supported on macOS and Windows. The notifier observes completed
+session events and presents native desktop notifications; it does not run
+models, execute tools, or modify sessions. Linux requires an active graphical
+notification service for the notifier.
 
 ```bash
 cargo run --bin windie -- dev run tray
 cargo run --bin windie -- dev run notifier
 ```
 
-Run each selected component in its own terminal. Platform-specific desktop
-behavior belongs in the platform guide; notification behavior belongs in the
-[desktop notifications guide](../desktop-notifications.md).
+## 11. Default process ports
 
-## Stopping development
-
-Press `Control-C` in each component terminal. Stopping one component does not
-stop the others.
-
-Development uses Windie's normal user-local data directory. It contains SQLite
-state, Bifrost data, component credentials, logs, and Windie's private
-environment file. Do not delete it merely to stop development.
-
-| Platform | Default data directory |
+| Process | Default address |
 | --- | --- |
-| macOS and Linux | `~/.windie` |
-| Windows | `%USERPROFILE%\.windie` |
-
-## Ports and parallel checkouts
-
-| Component | Address |
-| --- | --- |
-| Bifrost gateway | `http://127.0.0.1:8080` |
-| Windie API | `http://127.0.0.1:8787` |
+| LLM gateway | `http://127.0.0.1:8080` |
+| API server | `http://127.0.0.1:8787` |
 | Inspector | `http://localhost:3000` |
 
-Do not start a development component over another local Windie copy using the
-same port. Separate checkouts can set `WINDIE_GATEWAY_PORT` and
-`WINDIE_API_PORT` to distinct values. Every terminal for that checkout must
-receive the same values.
+## 12. Common troubleshooting
 
-When the API port changes, start the Inspector with its matching API URL:
+### A submodule is missing
 
-```bash
-REACT_APP_WINDIE_API_URL=http://127.0.0.1:18787 \
-  cargo run --bin windie -- dev run inspector
-```
-
-The platform guides provide native shell syntax and port-diagnostic commands.
-
-## Common troubleshooting
-
-### `Bifrost source is missing`
-
-Initialize the Bifrost submodule:
+Run:
 
 ```bash
-git submodule update --init vendor/bifrost
+git submodule update --init --recursive
 ```
 
-### Bifrost reports an unsupported Go version
+Then retry the component command.
 
-Run `go version`. Install the exact version in `.go-version`.
+### A port is already in use
 
-### Inspector reports missing packages
+Use the port-diagnostic command in your platform guide to identify the
+process. Stop only a stale Windie process, or assign distinct ports as
+described above.
 
-Recreate its locked installation:
+### The Inspector cannot reach the API
 
-```bash
-npm ci --legacy-peer-deps --prefix vendor/windie-inspector/frontend
-```
+Confirm that the API health request succeeds and that the Inspector's API URL
+matches the API port. Start the API before starting the Inspector, then restart
+the Inspector so it can create a new local browser session.
 
-### Inspector loads but cannot reach Windie
+### The gateway starts but model requests fail
 
-Confirm the API health request succeeds and the Inspector API URL matches the
-API port. Restart `dev run inspector` so Windie can mint a new one-time launch
-code. The local Inspector still requires an API-issued browser token.
+The gateway may be healthy while the provider credential, selected model, or
+provider configuration is invalid. Recheck the provider setup in the Inspector
+and verify the model name.
 
 ### A component exits immediately
 
-Read that component's foreground-terminal error first. Common causes are an
-uninitialized submodule, missing toolchain, port conflict, or API URL mismatch.
+Read the error in that component's terminal. The usual causes are an
+uninitialized submodule, a missing platform toolchain, an occupied port, or an
+environment variable that does not match the other terminals.
 
-## Related material
+## 13. Related code and documentation
 
-- [Documentation index](../../README.md)
-- [`Backend.md`](../../index/Backend.md) and
-  [`Frontend.md`](../../index/Frontend.md) map the runtime and Inspector
-  source.
-- [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) defines the contribution and
+- [macOS development](MACOS.md), [Windows development](WINDOWS.md), and
+  [Linux development](LINUX.md) contain platform-specific setup and diagnostics.
+- [`Backend.md`](../../index/Backend.md) maps the Rust runtime source.
+- [`Frontend.md`](../../index/Frontend.md) maps the Inspector source.
+- [Components](../../architecture/components/README.md) explains
+  the API, gateway, tray, and notifier boundaries.
+- [Architecture overview](../../architecture/overview.md) explains Windie's
+  runtime design.
+- [`src/dev.rs`](../../../src/dev.rs) implements the foreground development
+  commands.
+- [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) explains the contribution and
   pull-request workflow.
-- [`src/dev.rs`](../../../src/dev.rs) owns foreground development commands.
-
-[local-inspector]: http://localhost:3000
