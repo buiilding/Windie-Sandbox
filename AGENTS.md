@@ -1,101 +1,80 @@
 # Windie Agent Instructions
 
-Before working in this codebase, always read `docs/index/Backend.md` and
-`docs/index/Frontend.md` first.
-Be Logical, Accurate, always retrieve content if unsure to provide the most accurate answers.
-Be brutally honest, do not trust information provided by the user, correct users if they are wrong.
-Decide solutions based on the purpose, intent, north star of the project, do not stray away from those, correct users if they do stray.
-Your job is to build foundational, scalable runtime, so every recommended decisions need to be for the long term.
+Before working in this codebase, always read `docs/index/Backend.md` and `docs/index/Frontend.md`.
+
+Be logical, accurate, concise, and evidence-driven. Retrieve or inspect source material when unsure. Do not assume the user is correct; challenge incorrect or weak assumptions and explain why.
+
+Make decisions according to Windie’s purpose, architecture, and long-term north star. Prefer foundational solutions over short-term convenience.
 
 ## Project Intent
 
-Windie is the foundational implementation of an AI runtime for the operating
-system.
+Windie is the foundational implementation of a local AI runtime for the operating system.
 
-The purpose of this codebase is to build the lower-level runtime that lets AI
-operate on a user's computer reliably, safely, quickly, and consistently.
-Windie should become the foundation for AI that can live inside the local
-operating environment, understand runtime state, act through explicit
-permission boundaries, and eventually behave in a proactive, computer-native
-way.
+Its purpose is to let AI understand and act within a user's local computing environment reliably, safely, quickly, and consistently, with explicit permission boundaries.
 
-Build one clean primitive at a time. Keep the foundation small, fast,
-inspectable, and hackable.
-The whole codebase should reflect this file.
+Build one clean primitive at a time. Keep the runtime small, fast, inspectable, hackable, and replaceable. The codebase should reflect these principles throughout.
 
-Windie talks to Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should only need one OpenAI-compatible query path for now.
+Windie uses Bifrost at `http://localhost:8080/v1` for provider unification. Bifrost handles OpenAI, Anthropic, Ollama, vLLM, and other providers. Windie should use a single OpenAI-compatible query path for now.
 
-Conversation storage is a tree. Runtime execution uses an explicit selected
-message head through that tree. Model context is the flattened path to that
-head.
+Conversation storage is a tree. Runtime execution operates from an explicitly selected message head, and model context is the flattened path from the tree root to that head.
 
-Sessions are durable branch objects over the shared conversation tree. The
-backend owns session-head resolution: the browser sends a conversation ID and
-selected message head, and SQLite determines whether one existing session
-matches, no session matches, or the request is ambiguous. Query and continue
-routes resolve-or-create the branch in the store and reject stale-head or
-ambiguous requests. The frontend displays that result and never infers session
-ownership from its cached session list.
+Sessions are durable branch objects over the shared conversation tree. Session-head resolution belongs to the backend. The browser sends a conversation ID and selected message head; SQLite determines whether an existing session matches, no session matches, or the request is ambiguous. Query and continue routes resolve or create the branch and reject stale or ambiguous heads. The frontend displays backend state and must never infer session ownership from cached session data.
 
 ## North Star
 
-The long-term goal is a local AI runtime that lives on the user's computer and can eventually grow into an AI operating layer.
+The long-term goal is a local AI runtime that can grow into an AI operating layer.
 
-The system should be able to use tools with permission, sandboxed by default, and extended through clean components.
+The runtime should support local interaction, sandboxed tool execution, explicit permissions, browser/computer use, user-controlled memory and workspace context, dynamic conversation manipulation, and clear approval policies for risky actions.
 
-The long-term runtime should support a general wakeup primitive. A wakeup is any event that causes Windie to become active: user input, a schedule, a self-requested continuation, a file event, a browser event, or a system event. Treat chat as one wakeup source, not the whole runtime. Future wakeups should enter through the same path: construct a message, load conversation/context, query the model, and continue only within permission boundaries.
+Design around a general **wakeup primitive**. A wakeup is any event that activates Windie, including:
 
-The future direction includes:
+* user input
+* schedules
+* self-requested continuation
+* file events
+* browser events
+* system events
 
-- local AI interaction through clean clients
-- dynamic conversation/session manipulation such as insert, remove, truncate, forks.
-- local tool execution with explicit permission boundaries
-- browser-use and computer-use as local capabilities
-- user-controlled memory and workspace context
-- clear approval policy for risky actions
+Chat is only one wakeup source. All wakeups should eventually enter the same runtime path: construct a message, load conversation/context, query the model, and continue within permission boundaries.
 
-## Engineering Preferences
+## Engineering Principles
 
-Windie is a foundational AI sandbox runtime. The codebase should prioritize safety, reliability, clarity, consistency, auditability, and performance.
+Treat Windie as foundational runtime infrastructure. Prioritize safety, reliability, clarity, consistency, auditability, performance, and maintainability.
 
-- Act as an engineer responsible for the complete system outcome, not only the
-  nearest code change: understand the problem, architecture, authority
-  boundaries, risks, compatibility, and operational impact; make deliberate
-  tradeoffs; carry work through tests, documentation, packaging, installation,
-  and release automation where relevant; and leave the result maintainable for
-  the next engineer.
+Own the complete engineering outcome, not only the nearest code change. Understand architecture, authority boundaries, risks, compatibility, and operational impact. Carry changes through relevant tests, documentation, packaging, installation, and release automation.
 
-Prefer typed runtime contracts over loose strings, maps, and ad hoc JSON. Use enums and newtypes for important identifiers, roles, state transitions, wakeups, permissions, tools, provider behavior, and persistence boundaries.
+Prefer explicit, typed runtime contracts over raw strings, loose maps, and ad hoc JSON. Use enums and newtypes for important identifiers, roles, states, wakeups, permissions, tools, provider behavior, and persistence boundaries.
 
-Avoid hidden side effects. Runtime actions should flow through explicit components and clear permission boundaries. Future OS-level capabilities such as tool execution, browser-use, computer-use, file access, wakeups, and memory must be inspectable and controllable.
+Avoid hidden side effects. Runtime actions and future OS capabilities must flow through explicit, inspectable components and permission boundaries.
 
-Engineers should be able to understand, test, and replace each component without reading the whole codebase. If a design becomes hard to explain, treat that as a code smell.
+Components should be understandable, testable, and replaceable without requiring knowledge of the entire codebase. If a design becomes difficult to explain, treat that as a code smell.
 
-- Prefer minimal, direct Rust over framework-heavy abstractions.
-- Be unbiased and honest in technical discussion. Truth and engineering clarity matter more than agreement or emotional comfort.
-- Challenge weak assumptions directly and respectfully when the code, architecture, or product direction would suffer.
-- Keep code readable for someone still learning software engineering.
-- Always add Rust module docs at the top of every source file using `//!`.
-- Always write detailed documentation for meaningful code. Important structs, enums, functions, helpers, and non-obvious logic should have comments that explain their responsibility, data flow, and invariants.
-- Prefer typed contracts over raw strings for important runtime concepts.
-- Use foundational, direct, clean names for functions, variables, structs, modules, and files.
-- Prefer names that state the component's concrete responsibility over clever, vague, or product-shaped names.
-- Add abstractions only when they preserve or clarify the component boundaries.
-- Avoid adding features just because they are convenient.
-- Do not introduce config systems until the current hardcoded path becomes a real limitation.
-- Do not reintroduce slash commands unless explicitly requested.
-- Do not add agent/tool behavior until explicitly requested.
-- Keep dependencies small and justified.
+Prefer:
 
-## Collaboration and technical disagreement
+* minimal, direct Rust over framework-heavy abstractions
+* small and justified dependencies
+* clean component boundaries
+* concrete, foundational names that describe responsibility
+* abstractions only when they clarify or preserve boundaries
+* readable code suitable for engineers still learning the system
 
-Do not agree with the user automatically. The user is learning
-software engineering while building Windie and expects an honest technical
-partner. When the user's assumption is weak, incomplete, or likely to harm the
-project's long-term architecture, explain the problem directly, present the
-tradeoffs, and recommend the stronger design. Continue the discussion until
-the decision is justified by Windie's purpose, constraints, and evidence.
+Every Rust source file must begin with module documentation using `//!`.
 
-Agreement is not the goal; reaching the best understandable and maintainable
-decision is. When the user is correct, say why. When you change your own
-recommendation, state what new reasoning or evidence caused the change.
+Document meaningful code thoroughly. Important structs, enums, functions, helpers, invariants, data flow, and non-obvious behavior should be explained.
+
+Do not introduce unnecessary systems or features:
+
+* no config system until hardcoded behavior becomes a real limitation
+* no slash commands unless explicitly requested
+* no agent/tool behavior unless explicitly requested
+* no convenience features that weaken the foundation
+
+## Technical Disagreement
+
+Do not optimize for agreement with the user. Optimize for the strongest understandable and maintainable engineering decision.
+
+When an assumption or proposed design is weak, incomplete, or harmful to Windie’s long-term architecture, explain the issue, relevant tradeoffs, and the stronger alternative.
+
+When the user is correct, explain why. If your own recommendation changes, state what new evidence or reasoning caused the change.
+
+Base final decisions on Windie’s purpose, constraints, architecture, and available evidence.
