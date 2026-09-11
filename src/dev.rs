@@ -89,7 +89,7 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             result
         }
         DevComponent::Inspector => {
-            let mut inspector = spawn_component("inspector").await?;
+            let mut inspector = spawn_component(DevComponent::Inspector).await?;
             if let Err(error) = wait_for_inspector(&mut inspector).await {
                 stop_child(&mut inspector).await;
                 return Err(error);
@@ -106,16 +106,9 @@ async fn dev_run(component: DevComponent) -> Result<()> {
             result
         }
         DevComponent::Api | DevComponent::Tray | DevComponent::Notifier => {
-            let component = match component {
-                DevComponent::Api => "api",
-                DevComponent::Tray => "tray",
-                DevComponent::Notifier => "notifier",
-                DevComponent::Gateway | DevComponent::Inspector => {
-                    unreachable!("gateway and Inspector are handled above")
-                }
-            };
+            let component_name = development_component_name(component);
             let mut child = spawn_component(component).await?;
-            println!("windie: development {component} is running; press Ctrl-C to stop");
+            println!("windie: development {component_name} is running; press Ctrl-C to stop");
             let result = supervise_one(&mut child).await;
             stop_child(&mut child).await;
             result
@@ -766,44 +759,64 @@ async fn run_go(directory: &Path, args: &[&str]) -> Result<()> {
     }
 }
 
-/// Builds and starts one foreground development component.
-async fn spawn_component(component: &str) -> Result<Child> {
+/// Returns the stable CLI name for one typed development component.
+fn development_component_name(component: DevComponent) -> &'static str {
+    match component {
+        DevComponent::Gateway => "gateway",
+        DevComponent::Api => "api",
+        DevComponent::Inspector => "inspector",
+        DevComponent::Tray => "tray",
+        DevComponent::Notifier => "notifier",
+    }
+}
+
+/// Selects the directory inherited by one foreground development process.
+///
+/// Most components execute the repository binary from the checkout root. The
+/// Inspector is an npm application and must inherit its frontend directory so
+/// npm can resolve that directory's `package.json` and dependency tree.
+fn development_component_working_directory(root: &Path, component: DevComponent) -> PathBuf {
+    match component {
+        DevComponent::Inspector => root.join("vendor/windie-inspector/frontend"),
+        DevComponent::Gateway | DevComponent::Api | DevComponent::Tray | DevComponent::Notifier => {
+            root.to_path_buf()
+        }
+    }
+}
+
+/// Builds and starts one typed foreground development component.
+async fn spawn_component(component: DevComponent) -> Result<Child> {
     let root = repository_root()?;
-    let mut command = if component == "inspector" {
-        let frontend_root = root.join("vendor/windie-inspector/frontend");
-        prepare_inspector_dependencies(&frontend_root).await?;
+    let component_name = development_component_name(component);
+    let working_directory = development_component_working_directory(&root, component);
+    let mut command = if component == DevComponent::Inspector {
+        let frontend_root = &working_directory;
+        prepare_inspector_dependencies(frontend_root).await?;
 
         let mut command = Command::new(npm_command());
-        command.arg("start").current_dir(&frontend_root);
+        command.arg("start");
         command.env("BROWSER", "none");
         command
-    } else if component == "api" {
+    } else if matches!(
+        component,
+        DevComponent::Api | DevComponent::Tray | DevComponent::Notifier
+    ) {
         let executable = build_windie_binary(&root).await?;
         let mut command = Command::new(executable);
-        command.args(["api", "run"]);
-        command
-    } else if component == "tray" {
-        let executable = build_windie_binary(&root).await?;
-        let mut command = Command::new(executable);
-        command.args(["tray", "run"]);
-        command
-    } else if component == "notifier" {
-        let executable = build_windie_binary(&root).await?;
-        let mut command = Command::new(executable);
-        command.args(["notifier", "run"]);
+        command.args([component_name, "run"]);
         command
     } else {
-        bail!("unknown development component {component}");
+        bail!("the gateway uses its dedicated development launcher");
     };
 
     command
-        .current_dir(root)
+        .current_dir(working_directory)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     command
         .spawn()
-        .with_context(|| format!("failed to start development {component}"))
+        .with_context(|| format!("failed to start development {component_name}"))
 }
 
 /// Ensures the Inspector's locked npm dependencies match the checked-out
@@ -1261,5 +1274,26 @@ mod tests {
     fn normalizes_node_versions_for_comparison() {
         assert_eq!(normalize_node_version("v22.23.2\n"), "22.23.2");
         assert_eq!(normalize_node_version("22.23.2"), "22.23.2");
+    }
+
+    #[test]
+    fn development_components_use_their_own_working_directories() {
+        let root = Path::new("/tmp/windie-repository");
+
+        assert_eq!(
+            development_component_working_directory(root, DevComponent::Inspector),
+            root.join("vendor/windie-inspector/frontend")
+        );
+        for component in [
+            DevComponent::Gateway,
+            DevComponent::Api,
+            DevComponent::Tray,
+            DevComponent::Notifier,
+        ] {
+            assert_eq!(
+                development_component_working_directory(root, component),
+                root
+            );
+        }
     }
 }

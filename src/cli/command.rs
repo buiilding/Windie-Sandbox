@@ -194,6 +194,7 @@ pub enum DevCommand {
 }
 
 /// Foreground repository component selected by `windie dev run`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevComponent {
     Gateway,
     Api,
