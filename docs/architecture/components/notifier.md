@@ -17,9 +17,9 @@ shows a short preview of the final assistant response.
   message projection from the API.
 - Creating a notification preview by normalizing the response text and
   limiting it to 240 characters.
-- Building the current session link,
-  `https://app.windieos.com/sessions/<session_id>`, so a notification click can
-  open that session in the hosted Inspector.
+- Building the current session link under the configured loopback API origin,
+  so a notification click opens that session in the packaged local Inspector
+  instead of the anonymous public demo.
 - Persisting a completion-event cursor in
   `~/.windie/notifier-completed-event.cursor` so reconnects can resume from the
   last displayed completion.
@@ -61,8 +61,8 @@ shows a short preview of the final assistant response.
   process crash between those operations can present one notification again.
 - The development notification signal is volatile and has no replay cursor;
   it can be missed when no notifier is connected.
-- The current session action opens the hosted Inspector URL. The notifier does
-  not construct a local Inspector URL.
+- The current session action opens the packaged local Inspector URL. It never
+  redirects a local completion into the anonymous public demo.
 
 ## Related code
 

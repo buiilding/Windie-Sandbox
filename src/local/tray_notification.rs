@@ -3,7 +3,7 @@
 //! This component presents completed-assistant notifications and owns only the
 //! development notification probe. Production notifications name a durable
 //! session and, when the macOS notifier is running from its app bundle, can open
-//! that session's canonical hosted Inspector URL. The probe reconnects to the
+//! that session's local Inspector URL. The probe reconnects to the
 //! local API's volatile test SSE stream. Neither path changes session state.
 
 use anyhow::{Context, Result, anyhow};
@@ -17,9 +17,6 @@ use std::time::Duration;
 use std::sync::OnceLock;
 
 const RECONNECT_DELAY: Duration = Duration::from_millis(250);
-
-/// Hosted Inspector origin used by native session-notification actions.
-const INSPECTOR_ORIGIN: &str = "https://app.windieos.com";
 
 /// Stable identifier for an explicit notification action on every platform.
 const OPEN_SESSION_ACTION: &str = "windie.open-session";
@@ -229,13 +226,14 @@ fn show_apple_script_notification(content: &str) -> Result<()> {
     }
 }
 
-/// Builds the hosted Inspector URL for one durable session.
+/// Builds the local Inspector URL for one durable session.
 ///
 /// Session IDs are generated UUIDs today, but percent-encoding the path
 /// segment keeps this boundary safe if their representation evolves.
 fn session_url(session_id: &crate::session::SessionId) -> String {
     format!(
-        "{INSPECTOR_ORIGIN}/sessions/{}",
+        "{}/sessions/{}",
+        crate::config::api_url().trim_end_matches('/'),
         percent_encode_path_segment(session_id.as_str())
     )
 }
@@ -300,7 +298,7 @@ fn show_notification(content: &str, session_id: Option<&crate::session::SessionI
 
 /// Delivers a Freedesktop notification through the active desktop notification
 /// service. A session-bearing notification keeps an interaction listener so a
-/// body click or explicit action opens the hosted Inspector session.
+/// body click or explicit action opens the local Inspector session.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn show_notification(content: &str, session_id: Option<&crate::session::SessionId>) -> Result<()> {
     use notify_rust::{Notification, NotificationResponse};
@@ -337,7 +335,7 @@ fn show_notification(content: &str, session_id: Option<&crate::session::SessionI
     Ok(())
 }
 
-/// Opens a known hosted Inspector URL through the Windows shell association.
+/// Opens a known local Inspector URL through the Windows shell association.
 #[cfg(target_os = "windows")]
 fn open_session_url(url: &str) -> Result<()> {
     let status = std::process::Command::new("explorer.exe")
@@ -351,7 +349,7 @@ fn open_session_url(url: &str) -> Result<()> {
     }
 }
 
-/// Opens a known hosted Inspector URL through the desktop's URL handler.
+/// Opens a known local Inspector URL through the desktop's URL handler.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_session_url(url: &str) -> Result<()> {
     let status = std::process::Command::new("xdg-open")
@@ -392,7 +390,7 @@ mod tests {
 
         assert_eq!(
             super::session_url(&session),
-            "https://app.windieos.com/sessions/session%20%2F%20with%20spaces"
+            "http://127.0.0.1:8787/sessions/session%20%2F%20with%20spaces"
         );
     }
 }

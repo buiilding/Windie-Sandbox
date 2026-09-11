@@ -145,6 +145,12 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
             .await;
     });
     let (notifier_test_notifications, _) = tokio::sync::broadcast::channel(16);
+    let runtime_access = if crate::config::unsafe_public_demo() {
+        output.unsafe_public_demo_enabled();
+        RuntimeAccessControl::unsafe_public_demo()
+    } else {
+        RuntimeAccessControl::hosted_and_local(local_component_token)
+    };
     let state = ApiState {
         gateway_url: gateway_url.to_string(),
         base_url: base_url.to_string(),
@@ -155,7 +161,7 @@ pub async fn serve(address: SocketAddr, gateway_url: &str, base_url: &str) -> Re
         plugin_catalog,
         tool_registry,
         session_manager,
-        runtime_access: RuntimeAccessControl::hosted_and_local(local_component_token),
+        runtime_access,
         notifier_test_notifications,
         shutdown_tx: shutdown_tx.clone(),
     };

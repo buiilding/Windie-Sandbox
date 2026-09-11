@@ -176,6 +176,32 @@ async fn hosted_account_must_pair_before_using_the_local_runtime() {
 }
 
 #[tokio::test]
+async fn unsafe_public_demo_accepts_requests_without_identity_or_pairing() {
+    let db_path = temp_database_path();
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+    let app = test_app_with_urls_shutdown_and_access(
+        db_path.clone(),
+        "http://localhost:8080",
+        "http://localhost:8080/v1",
+        shutdown_tx,
+        RuntimeAccessControl::unsafe_public_demo(),
+    );
+
+    let response = app
+        .oneshot(authed_request(Method::GET, "/api/conversations", None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response_json_body(response).await["conversations"],
+        json!([])
+    );
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn local_component_token_can_read_protected_notification_streams() {
     let db_path = temp_database_path();
     let auth = spawn_mock_hosted_auth().await;

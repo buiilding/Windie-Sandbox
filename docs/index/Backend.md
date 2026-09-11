@@ -72,8 +72,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - api/router.rs: maps HTTP URLs to API handlers and applies shared request rules.
 - api/state.rs: shared API server state passed into route handlers.
 - api/error.rs: turns internal Windie errors into HTTP JSON errors.
-- api/runtime_access.rs: validates hosted Supabase account sessions and pairing, while also issuing and verifying volatile local Inspector credentials.
-- api/router.rs: local runtime routes remain loopback-bound and require either hosted paired-account authorization or a local Inspector token; health and shutdown stay available for local lifecycle checks.
+- api/runtime_access.rs: validates hosted Supabase account sessions and pairing, issues and verifies volatile local Inspector credentials, and owns the explicit anonymous public-demo policy.
+- api/router.rs: local runtime routes normally require either hosted paired-account authorization or a local Inspector token; `WINDIE_UNSAFE_PUBLIC_DEMO=1` deliberately bypasses authorization for every route while the listener remains loopback-bound behind the demo tunnel.
 - api/sse.rs: serializes replayed and live session events for HTTP streaming, hydrating state-changing events with session and message snapshots plus the canonical final assistant text on aggregate completion events.
 - api/event.rs: exposes the database-wide durable session-event cursor and
   aggregate SSE feed for clients that need to observe durable activity across
@@ -131,7 +131,7 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - local/tray.rs: macOS/Windows tray presentation component that polls local component health and requests explicit single-component lifecycle operations.
 - local/notifier.rs: independent notification process that starts durable completion and development-probe observers without owning a tray or runtime service.
 - local/session_event_observer.rs: reconnecting aggregate session-completion SSE observer that persists the last displayed cursor and forwards a preview of only canonical final durable assistant responses to the notifier.
-- local/tray_notification.rs: native notification presenter plus the development-only notification SSE probe. Current platform click actions open the durable session's hosted Inspector URL; the probe never touches durable session state.
+- local/tray_notification.rs: native notification presenter plus the development-only notification SSE probe. Current platform click actions open the durable session in the packaged local Inspector; the probe never touches durable session state.
 - cli/tests.rs: test cli command parsing and validation
 
 ## Tools and providers

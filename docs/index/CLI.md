@@ -78,6 +78,11 @@ require the access token from the signed-in hosted Inspector and a local
 runtime pairing approved by that account. Health and graceful shutdown retain
 their loopback-only lifecycle role.
 
+For the disposable anonymous demo only, set
+`WINDIE_UNSAFE_PUBLIC_DEMO=1` before starting the API. This bypasses
+authentication and pairing for every route while leaving the listener address
+unchanged. The API prints a warning when this mode is active.
+
 ```text
 windie api stop
 ```
@@ -674,10 +679,13 @@ Print the persistent Bifrost process log.
 
 ## Hosted Inspector
 
-The installed runtime opens [app.windieos.com](https://app.windieos.com) after
-the local API is healthy. Sign in, then approve pairing this computer once.
-The browser sends the signed-in session only to this computer's loopback API;
-the Inspector is not installed or run as a local server.
+Navigating directly to [app.windieos.com](https://app.windieos.com) opens the
+anonymous public demo, which connects to `https://api-demo.windieos.com` and
+does not pair with the browser computer's local runtime.
+
+`windie inspector open` instead opens the packaged Inspector served by the
+loopback API and exchanges its one-time local capability. This keeps ordinary
+local installations independent from the public demo.
 
 ## Benchmarks
 
