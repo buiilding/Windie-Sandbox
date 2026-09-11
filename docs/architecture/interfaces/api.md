@@ -78,7 +78,7 @@ disconnect; duplicate or older IDs are ignored by the client.
 ## Authorization
 
 The API is loopback-bound, but being able to reach its port is not sufficient
-for protected runtime access.
+for protected runtime access under the normal policy.
 
 - `GET /api/health`, `GET /api/status`, `POST /api/shutdown`, and
   `POST /api/runtime/local-access/exchange` are public lifecycle routes.
@@ -88,6 +88,11 @@ for protected runtime access.
   API process or a validated hosted account token whose account is paired with
   this local runtime.
 - A local Inspector session cannot manage hosted-account pairing.
+
+The disposable public demo is an explicit exception. Starting the API with
+`WINDIE_UNSAFE_PUBLIC_DEMO=1` accepts every request without authentication or
+pairing. It does not restrict routes or capabilities. The mode prints a startup
+warning and must not be enabled for an ordinary local Windie installation.
 
 ## API routes
 
@@ -203,7 +208,7 @@ session ID.
 - The API route table is the client contract; runtime authority remains in the
   shared store and operation layers.
 - Protected runtime routes require authorization. Loopback network access alone
-  is not sufficient.
+  is not sufficient unless the explicit unsafe public-demo mode is enabled.
 - Session resolution is backend-owned. Clients send the conversation and
   selected head, and the API returns the authoritative branch result.
 - SSE event IDs are durable cursors. Clients can replay events after a

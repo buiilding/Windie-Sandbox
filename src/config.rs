@@ -32,9 +32,17 @@ pub fn api_address() -> String {
         .unwrap_or_else(|| format!("127.0.0.1:{}", env_or_default("WINDIE_API_PORT", "8787")))
 }
 
-/// Returns the HTTP URL used by the hosted Inspector to reach the local API.
+/// Returns the HTTP URL used by local components and the packaged Inspector.
 pub fn api_url() -> String {
     format!("http://{}", api_address())
+}
+
+/// Returns whether the API should accept anonymous requests for the public demo.
+///
+/// This deliberately unsafe mode is opt-in so ordinary local installations
+/// retain hosted-account and local-capability authorization.
+pub fn unsafe_public_demo() -> bool {
+    non_empty_env("WINDIE_UNSAFE_PUBLIC_DEMO").is_some_and(|value| value == "1")
 }
 
 /// Returns the marketplace index used by the production API.

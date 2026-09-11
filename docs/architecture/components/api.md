@@ -53,6 +53,9 @@ stored in SQLite and can outlive a browser tab or one API process lifetime.
 
 - The API is bound to the local machine. Its HTTP access and authorization
   rules are defined by the [HTTP API contract](../interfaces/api.md).
+- `WINDIE_UNSAFE_PUBLIC_DEMO=1` deliberately replaces normal authorization
+  with anonymous access for the disposable hosted demo; the listener can
+  remain on loopback behind an outbound tunnel.
 - The API is the authority for session ownership and conversation-head
   resolution. The Inspector does not infer either from cached browser state.
 - The API owns durable runtime state; the Inspector owns presentation state.

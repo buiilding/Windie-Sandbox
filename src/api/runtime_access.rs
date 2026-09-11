@@ -1,9 +1,8 @@
-//! Hosted-account authorization for the localhost Windie API.
+//! Runtime-access policies for the localhost Windie API and public demo.
 //!
-//! A hosted Inspector session proves who is asking. A durable single-owner row
-//! then proves that this particular local runtime was explicitly paired with
-//! that account. Neither the hosted site nor Supabase receives access to the
-//! local SQLite data, provider keys, or tools.
+//! Normal access requires either a local capability or a hosted Inspector
+//! account paired through a durable single-owner row. The explicit unsafe demo
+//! policy bypasses those checks for a disposable remotely reachable runtime.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -29,6 +28,9 @@ pub(super) enum RuntimeAccessControl {
         hosted: HostedAccountVerifier,
         local: LocalInspectorVerifier,
     },
+    /// Explicit opt-in policy for the disposable public Windie demo. Every
+    /// request is accepted without a credential or durable account pairing.
+    UnsafePublicDemo,
     /// Isolated benchmark and route-test policy. It must never be used by the
     /// process that binds the user's loopback API.
     UnrestrictedForIsolatedTests,
@@ -110,8 +112,14 @@ impl RuntimeAccessControl {
         }
     }
 
+    /// Builds the deliberately unauthenticated policy selected by the public
+    /// demo environment flag.
+    pub(super) fn unsafe_public_demo() -> Self {
+        Self::UnsafePublicDemo
+    }
+
     /// Keeps benchmark and route fixtures independent from a live account
-    /// service. Production `serve` always selects [`Self::hosted_and_local`].
+    /// service. The real server never selects this test-only variant.
     pub(super) fn unrestricted_for_isolated_tests() -> Self {
         Self::UnrestrictedForIsolatedTests
     }
@@ -135,6 +143,9 @@ impl RuntimeAccessControl {
     ) -> std::result::Result<AuthenticatedAccount, AuthenticationFailure> {
         match self {
             Self::HostedAndLocal { hosted, .. } => hosted.authenticate(headers).await,
+            Self::UnsafePublicDemo => Ok(AuthenticatedAccount {
+                subject: "unsafe-public-demo".to_string(),
+            }),
             Self::UnrestrictedForIsolatedTests => Ok(AuthenticatedAccount {
                 subject: "isolated-test-account".to_string(),
             }),
@@ -142,7 +153,10 @@ impl RuntimeAccessControl {
     }
 
     fn is_unrestricted(&self) -> bool {
-        matches!(self, Self::UnrestrictedForIsolatedTests)
+        matches!(
+            self,
+            Self::UnsafePublicDemo | Self::UnrestrictedForIsolatedTests
+        )
     }
 
     /// Returns whether a local presentation component supplied the private
@@ -150,6 +164,7 @@ impl RuntimeAccessControl {
     fn authenticates_local_component(&self, headers: &HeaderMap) -> bool {
         match self {
             Self::HostedAndLocal { local, .. } => local.authenticates_component(headers),
+            Self::UnsafePublicDemo => true,
             Self::UnrestrictedForIsolatedTests => true,
         }
     }
@@ -158,6 +173,7 @@ impl RuntimeAccessControl {
     fn authenticates_local_inspector(&self, headers: &HeaderMap) -> bool {
         match self {
             Self::HostedAndLocal { local, .. } => local.authenticates_session(headers),
+            Self::UnsafePublicDemo => true,
             Self::UnrestrictedForIsolatedTests => true,
         }
     }
@@ -166,6 +182,7 @@ impl RuntimeAccessControl {
     fn issue_local_launch_code(&self) -> Option<String> {
         match self {
             Self::HostedAndLocal { local, .. } => Some(local.issue_launch_code()),
+            Self::UnsafePublicDemo => None,
             Self::UnrestrictedForIsolatedTests => None,
         }
     }
@@ -174,6 +191,7 @@ impl RuntimeAccessControl {
     fn exchange_local_launch_code(&self, code: &str) -> Option<String> {
         match self {
             Self::HostedAndLocal { local, .. } => local.exchange_launch_code(code),
+            Self::UnsafePublicDemo => None,
             Self::UnrestrictedForIsolatedTests => None,
         }
     }
@@ -278,12 +296,11 @@ impl HostedAccountVerifier {
     }
 }
 
-/// Protects local runtime routes after CORS handles browser preflight.
+/// Applies the configured runtime-access policy after browser preflight.
 ///
-/// Health and shutdown retain their loopback-only lifecycle role. Everything
-/// that reveals, changes, or executes runtime state requires either a verified
-/// hosted account with a matching pairing or a local Inspector token minted by
-/// this API process.
+/// Under the normal policy, everything that reveals, changes, or executes
+/// runtime state requires either a verified paired account or a local token.
+/// The explicit unsafe demo policy accepts every request.
 pub(super) async fn authorize_runtime_request(
     State(state): State<ApiState>,
     mut request: Request,
@@ -291,7 +308,10 @@ pub(super) async fn authorize_runtime_request(
 ) -> Response {
     if state.runtime_access.is_unrestricted() {
         request.extensions_mut().insert(AuthenticatedAccount {
-            subject: "isolated-test-account".to_string(),
+            subject: match &state.runtime_access {
+                RuntimeAccessControl::UnsafePublicDemo => "unsafe-public-demo".to_string(),
+                _ => "isolated-test-account".to_string(),
+            },
         });
         return next.run(request).await;
     }
