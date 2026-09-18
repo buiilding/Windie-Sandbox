@@ -1,5 +1,34 @@
 # Frontend mental model
 
+## Official hosted transcript client
+
+The official UI lives in `vendor/windie-UI-official/`. It uses the existing
+hosted `/v1` API, not the local Inspector's `/api` routes. Its reconciliation
+reference is nevertheless the local Inspector: query bootstrap, canonical
+message upserts, transient session previews, and durable replay cursors.
+
+- `app/page.tsx`: visual shell and URL navigation. `/` is New Chat; `/c/<id>`
+  loads only that conversation and hides its transcript/composer until ready.
+- `app/hosted/use-hosted-windie.ts`: React lifecycle and external-store binding.
+- `app/hosted/conversation-client.ts`: route-generation guards, account-list
+  synchronization, backend-owned session resolution, query bootstrap, and
+  ordered session reconciliation. No database, model, or tool execution here.
+- `app/hosted/transcript-state.ts`: pure canonical-message/preview projection;
+  stable assistant row keys preserve identity from stream to saved response.
+- `lib/hosted-api.ts`, `lib/hosted-types.ts`: authenticated hosted HTTP contract.
+- `lib/sse.ts`: authenticated SSE framing and sequential asynchronous delivery.
+  The coordinator advances replay cursors only after applying each event.
+- `lib/hosted-auth.ts`: Google/Supabase login and token lifecycle. Account
+  changes remount the client; token refresh reconnects without resetting it.
+- `app/hosted/conversation-client.test.ts`, `lib/sse.test.ts`: asynchronous
+  navigation, query, save/replay, account-invalidation, and transport regressions.
+
+The existing hosted session envelope supplies saved-message IDs, whereas local
+SSE includes message snapshots. The official adapter hydrates missing messages
+in order, then upserts them; it does not use detached full-view reloads.
+
+## Local Inspector
+
 The frontend is the browser-based Windie Inspector at `vendor/windie-inspector/frontend/`.
 
 It is a thin client for the Windie localhost API. The backend owns durable
