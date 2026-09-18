@@ -6,7 +6,9 @@ use super::message::{
 };
 use super::*;
 
-use crate::session::{IdleWakeupInterval, SessionExecutionStart, SessionInputId};
+use crate::session::{
+    IdleWakeupInterval, SessionExecutionStart, SessionInputId, resolve_sessions_at_head,
+};
 
 const GLOBAL_SESSION_EVENT_BATCH_SIZE: i64 = 256;
 
@@ -374,7 +376,7 @@ impl Store {
             self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
         }
 
-        Ok(session_resolution_from_matches(sessions_at_head(
+        Ok(resolve_sessions_at_head(sessions_at_head(
             &self.connection,
             conversation_id,
             head_message_id,
@@ -1754,16 +1756,6 @@ fn sessions_at_head(
         .context("failed to resolve sessions at conversation head")?
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("failed to decode session head resolution")
-}
-
-fn session_resolution_from_matches(sessions: Vec<Session>) -> SessionResolution {
-    match sessions.len() {
-        0 => SessionResolution::NoSessionAtHead,
-        1 => {
-            SessionResolution::Existing(Box::new(sessions.into_iter().next().expect("one session")))
-        }
-        _ => SessionResolution::Ambiguous(sessions),
-    }
 }
 
 fn session_from_row(row: &Row<'_>) -> rusqlite::Result<Session> {

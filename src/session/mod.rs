@@ -10,6 +10,7 @@ mod event;
 mod id;
 mod manager;
 mod model;
+mod policy;
 
 pub use control::{SessionCancellation, SessionControl};
 pub use event::{SessionEvent, SessionEventKind, SessionEventRecord};
@@ -19,3 +20,5 @@ pub use model::{
     ClaimedSession, IdleWakeupInterval, Session, SessionExecutionClaim, SessionExecutionOwner,
     SessionExecutionStart, SessionQueryResult, SessionResolution, SessionStatus,
 };
+
+pub(crate) use policy::{can_start, resolve_sessions_at_head};

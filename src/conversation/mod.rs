@@ -9,6 +9,7 @@ pub mod assistant_metadata;
 pub mod id;
 pub mod message;
 pub mod message_part;
+pub(crate) mod tree;
 
 pub use assistant_metadata::{
     MessageMetadata, TokenUsage, ToolCall, ToolCallId, WakeupKind, WakeupMetadata,
@@ -16,3 +17,4 @@ pub use assistant_metadata::{
 pub use id::{CompactionId, ConversationId, ImageAssetId, MessageId};
 pub use message::{Message, Role};
 pub use message_part::{ImagePart, MessagePart, UnsavedImagePart, UnsavedMessagePart};
+pub(crate) use tree::{ConversationTree, ConversationTreeError, ConversationTreeNode};

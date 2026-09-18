@@ -64,6 +64,29 @@ impl Store {
     pub fn load_message_tree(&self, conversation_id: &ConversationId) -> Result<Vec<Message>> {
         self.load_messages(conversation_id)
     }
+
+    /// Loads the persisted graph into the shared, storage-independent tree
+    /// policy representation. SQLite still owns row loading and transactions;
+    /// the conversation module owns parent-link validation and tree planning.
+    fn conversation_tree(&self, conversation_id: &ConversationId) -> Result<ConversationTree> {
+        let nodes = self
+            .load_message_rows(conversation_id)?
+            .into_iter()
+            .map(|message| {
+                let id = message
+                    .id
+                    .ok_or_else(|| anyhow!("stored message is missing an identifier"))?;
+                Ok(ConversationTreeNode {
+                    id: id.as_str().to_string(),
+                    parent_message_id: message
+                        .parent_message_id
+                        .map(|parent_message_id| parent_message_id.as_str().to_string()),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ConversationTree::new(nodes)
+            .map_err(|error| anyhow!("stored conversation tree is invalid: {error}"))
+    }
     /// Loads the root-to-message path for one message inside a conversation.
     pub fn load_path_to_message(
         &self,
@@ -771,14 +794,22 @@ impl Store {
             ),
         };
 
-        let promoted_child_ids = self
-            .direct_child_ids_for_removed_messages(conversation_id, &deleted_message_ids)
-            .context("failed to load promoted message children")?;
+        let plan = self
+            .conversation_tree(conversation_id)?
+            .plan_splice_delete(
+                splice_parent_message_id.as_ref().map(MessageId::as_str),
+                deleted_message_ids.into_iter().collect(),
+            )
+            .context("failed to plan shared splice delete")?;
 
         Ok(MessageSpliceDelete {
-            deleted_message_ids,
-            splice_parent_message_id,
-            promoted_child_ids,
+            deleted_message_ids: plan.deleted_message_ids.into_iter().collect(),
+            splice_parent_message_id: plan.splice_parent_message_id.map(MessageId::new),
+            promoted_child_ids: plan
+                .promoted_child_ids
+                .into_iter()
+                .map(MessageId::new)
+                .collect(),
         })
     }
 
@@ -793,8 +824,12 @@ impl Store {
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
         let descendant_ids = self
-            .descendant_message_ids(conversation_id, message_id, false)
-            .context("failed to load message descendants")?;
+            .conversation_tree(conversation_id)?
+            .plan_truncate_after(message_id.as_str())
+            .context("failed to plan shared conversation truncation")?
+            .deleted_message_ids
+            .into_iter()
+            .collect::<HashSet<_>>();
         self.ensure_message_mutation_allowed(conversation_id, &descendant_ids)?;
 
         let now = now_millis()?;
@@ -807,27 +842,20 @@ impl Store {
             .context("failed to delete compactions after conversation truncate")?;
         repair_sessions_after_deleted_messages(&transaction, conversation_id, &descendant_ids, now)
             .context("failed to detach runtime sessions after conversation truncate")?;
-        transaction
-            .execute(
-                "
-                WITH RECURSIVE subtree(id) AS (
-                    SELECT messages.id
-                    FROM messages
-                    WHERE messages.conversation_id = ?1
-                      AND messages.parent_message_id = ?2
-                    UNION ALL
-                    SELECT messages.id
-                    FROM messages
-                    JOIN subtree ON messages.parent_message_id = subtree.id
-                    WHERE messages.conversation_id = ?1
-                )
-                DELETE FROM messages
-                WHERE conversation_id = ?1
-                  AND id IN (SELECT id FROM subtree)
-                ",
-                params![conversation_id.as_str(), message_id.as_str()],
-            )
-            .context("failed to prune conversation descendants")?;
+        if !descendant_ids.is_empty() {
+            let placeholders = std::iter::repeat_n("?", descendant_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "DELETE FROM messages WHERE conversation_id = ? AND id IN ({placeholders})"
+            );
+            let mut delete_params = Vec::with_capacity(descendant_ids.len() + 1);
+            delete_params.push(conversation_id.as_str().to_string());
+            delete_params.extend(descendant_ids.iter().cloned());
+            transaction
+                .execute(&sql, params_from_iter(delete_params))
+                .context("failed to prune conversation descendants")?;
+        }
         delete_orphan_image_assets_in_transaction(&transaction)
             .context("failed to delete orphan image assets")?;
         touch_conversation_in_transaction(&transaction, conversation_id, now)
@@ -852,9 +880,51 @@ impl Store {
         self.ensure_conversation_exists(conversation_id)?;
         self.ensure_message_belongs_to_conversation(conversation_id, message_id)?;
 
-        let source_messages = self
-            .load_path_to_message(conversation_id, message_id)
+        let source_tree_messages = self
+            .load_message_tree(conversation_id)
             .context("failed to load messages for conversation fork")?;
+        let source_tree_nodes = source_tree_messages
+            .iter()
+            .map(|message| {
+                let id = message
+                    .id
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("stored message is missing an identifier"))?;
+                Ok(ConversationTreeNode {
+                    id: id.as_str().to_string(),
+                    parent_message_id: message
+                        .parent_message_id
+                        .as_ref()
+                        .map(|parent_message_id| parent_message_id.as_str().to_string()),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let source_tree = ConversationTree::new(source_tree_nodes)
+            .map_err(|error| anyhow!("stored conversation tree is invalid: {error}"))?;
+        let source_path_ids = source_tree
+            .selected_path(message_id.as_str())
+            .context("failed to resolve shared selected path for conversation fork")?;
+        let source_messages_by_id = source_tree_messages
+            .into_iter()
+            .map(|message| {
+                let message_id = message
+                    .id
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("stored message is missing id"))?
+                    .as_str()
+                    .to_string();
+                Ok((message_id, message))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        let source_messages = source_path_ids
+            .iter()
+            .map(|message_id| {
+                source_messages_by_id
+                    .get(message_id)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("selected path references missing stored message"))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let source_system_prompt = self.system_prompt(conversation_id)?;
         let source_attached_tools = self.load_attached_tools(conversation_id)?;
         let source_model = self.conversation_model(conversation_id)?;

@@ -68,15 +68,17 @@ pub enum SessionStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Durable kind of client currently executing a session.
+/// Durable kind of worker currently executing a session.
 ///
 /// This is intentionally separate from a session's lifecycle status. The
 /// status says what the session is doing; the owner kind lets restart recovery
-/// distinguish an interrupted API task from a CLI process that is still
-/// running independently.
+/// distinguish an interrupted local API task, CLI process, or hosted server
+/// worker.
 pub enum SessionExecutionOwner {
     Api,
     Cli,
+    /// The authenticated multi-account hosted server process.
+    HostedServer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +138,7 @@ impl SessionExecutionOwner {
         match self {
             Self::Api => "api",
             Self::Cli => "cli",
+            Self::HostedServer => "hosted_server",
         }
     }
 
@@ -144,6 +147,7 @@ impl SessionExecutionOwner {
         match value {
             "api" => Some(Self::Api),
             "cli" => Some(Self::Cli),
+            "hosted_server" => Some(Self::HostedServer),
             _ => None,
         }
     }

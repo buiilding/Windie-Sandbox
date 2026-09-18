@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
+async-stream = "0.3"
 axum = "0.8"
 base64 = "0.22"
 futures-util = "0.3"
@@ -14,7 +15,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }
 tar = "0.4"
+thiserror = "2"
 flate2 = "1"
 xz2 = { version = "0.1", features = ["static"] }
 zip = "2"

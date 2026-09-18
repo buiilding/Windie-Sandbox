@@ -40,8 +40,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::conversation::{
-    CompactionId, ConversationId, ImageAssetId, ImagePart, Message, MessageId, MessageMetadata,
-    MessagePart, Role, ToolCallId, UnsavedMessagePart,
+    CompactionId, ConversationId, ConversationTree, ConversationTreeNode, ImageAssetId, ImagePart,
+    Message, MessageId, MessageMetadata, MessagePart, Role, ToolCallId, UnsavedMessagePart,
 };
 use crate::error;
 use crate::llm::ReasoningRequest;

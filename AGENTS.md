@@ -41,6 +41,16 @@ Chat is only one wakeup source. All wakeups should eventually enter the same run
 
 Treat Windie as foundational runtime infrastructure. Prioritize safety, reliability, clarity, consistency, auditability, performance, and maintainability.
 
+## Verification and Browser Use
+
+Prefer terminal-based inspection, testing, deployment, and verification whenever
+the terminal can prove the required behavior.
+
+Do not use browser automation for UI testing or UI verification unless the user
+explicitly asks to use the browser. When browser interaction is needed but was
+not explicitly requested, tell the user the exact manual action and observable
+result needed to complete the check instead.
+
 Own the complete engineering outcome, not only the nearest code change. Understand architecture, authority boundaries, risks, compatibility, and operational impact. Carry changes through relevant tests, documentation, packaging, installation, and release automation.
 
 Prefer explicit, typed runtime contracts over raw strings, loose maps, and ad hoc JSON. Use enums and newtypes for important identifiers, roles, states, wakeups, permissions, tools, provider behavior, and persistence boundaries.

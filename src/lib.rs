@@ -12,6 +12,7 @@ pub mod config;
 pub mod conversation;
 pub mod dev;
 pub mod error;
+pub mod hosted;
 pub mod input;
 pub mod inspector;
 pub mod llm;

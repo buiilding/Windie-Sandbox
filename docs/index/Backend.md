@@ -11,6 +11,9 @@ Mental model:
 - conversation/assistant_metadata.rs: Assistant message metadata; tool calls, reasoning, audio, annotations, citations, token usage, and refusals. Also includes the tool-call ID that links a tool result to its assistant request.
 - conversation/mod.rs: Module boundary and re-exports for conversation types.
 - conversation/message_part.rs: Shared ordered text/image parts for persisted messages. User and `role: tool` messages can both carry these parts; message role and assistant-tool-call linkage remain separate.
+- conversation/tree.rs: Storage-independent canonical parent-tree validation,
+  selected-head path resolution, splice-delete planning, and truncation
+  planning shared by SQLite and hosted PostgreSQL persistence.
 
 ### Input
 
@@ -52,6 +55,11 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - operation/: shared workflow layer between clients and core systems.
 - operation/mod.rs: Public boundary and re-exports for operation folder.
 - operation/conversation.rs: conversation workflows.
+- hosted/conversation.rs: hosted HTTP-facing conversation adapter; it accepts
+  account-scoped hosted commands without duplicating canonical tree policy.
+- hosted/runtime.rs: hosted session worker. It uses the shared `session/`
+  types, PostgreSQL claims, private Bifrost, durable event writes, FIFO inputs,
+  and scheduled wakeups; it never executes local MCP or computer tools.
 - operation/gateway.rs: gateway/model metadata/input-token workflows. Its token preview compiles the exact same model payload as execution without mutating a conversation.
 - operation/input.rs: message input part and image loading workflows.
 - operation/inspection.rs: Read-only inspection snapshots for a conversation/head, including the durable tree, path, and attached schemas plus the separate final model-context projection and exact ephemeral model schemas, prompt, and compaction.
@@ -169,6 +177,8 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - session/control.rs: explicit session controls such as cancellation, separate from wakeups that resume runtime work.
 - session/manager.rs: manages live background session tasks, approvals, cancellation, and publishes session events. It also owns durable per-session idle-wakeup scheduling and explicit user-requested wakeups.
 - session/model.rs: durable session record, lifecycle status, execution-owner kind, unique execution claim, and typed idle-wakeup cadence. Exists so a session can outlive any one client and can be inspected, resumed, approved, or replayed later.
+- session/policy.rs: storage-independent session-head resolution and execution
+  eligibility rules shared by the SQLite and PostgreSQL adapters.
 
 ## Performance
 

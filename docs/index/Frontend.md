@@ -14,14 +14,17 @@ renders them.
 ## Application entry point
 
 - `src/index.js`: mounts the React application into the browser document.
-- `src/App.js`: creates the application shell, public-demo, hosted-account, and
-  local-runtime access gates, `WindieProvider`, browser routes, and the global
-  toast surface.
+- `src/App.js`: selects the limited hosted-conversation client for the hosted
+  production build; otherwise it creates the existing application shell,
+  access gates, `WindieProvider`, browser routes, and toast surface.
 - `src/pages/Windie.jsx`: composes the inspector layout: top bar, conversation
   tree sidebar, chat panel, and optional inspector overlay. It also owns the
   first-run provider onboarding check and the persisted tree-panel toggle.
 - `src/components/auth/AuthGate.jsx`: selects loopback local capability access,
   anonymous public-demo access, or the hosted Google/Supabase account path.
+- `src/components/hosted/HostedConversationClient.jsx`: deliberately limited
+  Phase 6 client for account-owned hosted conversations and durable event
+  replay; it does not expose model execution, tools, or local-device access.
 - `src/components/auth/LocalAccessGate.jsx`: exchanges a one-time local launch
   code for a tab-scoped local API credential before mounting the Inspector.
 - `src/components/auth/RuntimeAccessGate.jsx`: reads local pairing status and
@@ -191,8 +194,9 @@ wrappers. They contain no Windie runtime or persistence rules:
 
 ### API, event, and data-shape libraries
 
-- `src/lib/windieEndpoint.js`: selects the exact public-demo API for
-  `app.windieos.com` and preserves the loopback default for local origins.
+- `src/lib/windieEndpoint.js`: selects the hosted API for the explicit hosted
+  production build, the demo API for the demo build, and preserves the
+  loopback default for local origins.
 - `src/lib/windieEndpoint.test.js`: tests production-host selection, local
   fallback, and explicit overrides for non-production origins.
 - `src/lib/windieApi.js`: HTTP boundary for anonymous demo, hosted bearer, and
@@ -389,15 +393,17 @@ treated as durable history.
 
 ## Transport and mapping boundaries
 
-- `lib/windieApi.js`: the only general HTTP client. It resolves the API base
+- `lib/windieApi.js`: the general HTTP client. It resolves the API base
   URL, parses JSON errors, and exposes typed-ish frontend operations for
   conversations, backend-owned session-head resolution/query/continue,
   sessions, models, tools, providers, gateway state, approvals, image assets,
-  and local-runtime pairing. It sends the Supabase access token only to a
-  loopback API URL.
-- `lib/windieEndpoint.js`: the single endpoint-selection boundary. The exact
-  production demo hostname resolves to `https://api-demo.windieos.com`; other
-  origins retain runtime/build overrides and the loopback default.
+  and local-runtime pairing. In the hosted build, it sends the Supabase access
+  token only to the configured hosted API origin; in the local build, it sends
+  the local capability credential only to loopback.
+- `lib/windieEndpoint.js`: the single endpoint-selection boundary. The hosted
+  build at `app.windieos.com` resolves to its configured hosted API; the demo
+  build retains `https://api-demo.windieos.com`; local origins retain the
+  loopback default.
 - `lib/sessionStream.js`: the SSE client for one session's event stream. It
   parses SSE framing and JSON payloads, but does not decide how events affect
   application state.
@@ -413,15 +419,12 @@ treated as durable history.
 - `lib/treeLayout.js`: computes positions and edges for the visual tree. It is
   a layout calculation, not a conversation operation.
 
-The production `app.windieos.com` Inspector is the anonymous public demo. It
-skips Google/Supabase sign-in and runtime pairing, then calls
-`https://api-demo.windieos.com` without a browser credential. Local and other
-hosted origins retain their existing capability or account gates. The local
-API default remains `http://127.0.0.1:8787`, and
-`REACT_APP_WINDIE_API_URL` can override endpoint selection during a frontend
-build for other origins. The exact production demo hostname always selects its
-demo API. Production uses this hosted client; releases do not include a
-standalone Inspector server.
+The current `app.windieos.com` build is a deliberately small authenticated
+hosted-conversation client. It uses Google/Supabase sign-in and sends the
+resulting Bearer token only to the configured hosted API origin. It is a Phase
+6 proof surface, not the full Inspector, and therefore has no model execution,
+tools, session control, or local-runtime access. The local API default remains
+`http://127.0.0.1:8787`; local and demo behavior remain separate builds.
 
 ## Live session lifecycle
 
