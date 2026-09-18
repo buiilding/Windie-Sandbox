@@ -8,6 +8,7 @@
 mod control;
 mod event;
 mod id;
+mod live_events;
 mod manager;
 mod model;
 mod policy;
@@ -15,7 +16,8 @@ mod policy;
 pub use control::{SessionCancellation, SessionControl};
 pub use event::{SessionEvent, SessionEventKind, SessionEventRecord};
 pub use id::{SessionExecutionClaimId, SessionId, SessionInputId};
-pub use manager::{SessionManager, SessionSubscription};
+pub use live_events::{SessionEventHub, SessionSubscription, SessionSubscriptionError};
+pub use manager::SessionManager;
 pub use model::{
     ClaimedSession, IdleWakeupInterval, Session, SessionExecutionClaim, SessionExecutionOwner,
     SessionExecutionStart, SessionQueryResult, SessionResolution, SessionStatus,

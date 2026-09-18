@@ -25,8 +25,9 @@ The existing local API and SQLite runtime remain unchanged.
 | 4 — Conversation APIs | Deployed | Account-scoped `/v1` conversation, message, truncate, and fork routes are live. |
 | 5 — Cross-browser synchronization | Deployed | Durable account-change events and replayable `/v1/events` SSE are live. |
 | 6 — Cloud-synchronization milestone | Live verified | Google sign-in, same-account two-browser convergence, cross-account isolation, the isolated PostgreSQL acceptance test, and production restart/reconnect recovery all passed on 2026-09-17. |
-| 7 — Hosted sessions, Bifrost execution, and wakeups | Implemented locally | PostgreSQL session persistence, claim fencing, FIFO inputs, replayable session events, wakeups, and the hosted worker are implemented and tested locally; deployment and live proof remain pending. |
-| 8 onward | Not started | Inspector session integration and production hardening remain future work. |
+| 7 — Hosted sessions, Bifrost execution, and wakeups | Partially live verified | The PostgreSQL migration, session persistence, claim fencing, FIFO inputs, replayable session events, wakeups, private Bifrost gateway, Kimi Code completion, and shared replay-plus-live session-event delivery are deployed. Signed-in browser streaming has been observed. Queue-under-load, interrupted-run/restart recovery, and a post-deployment smooth-stream browser check remain required proof. |
+| 8 — Current Inspector bridge | Partially live verified | The temporary hosted Inspector uses the deployment-selected model, hosted session/query route, and durable per-session SSE. Its production bundle is live and a signed-in hosted response streamed; broader session proof remains tied to Phase 7. |
+| 9 — Production operations | Not started | Production hardening remains future work. |
 
 “Deployed” means the Phase 1–5 service is running behind its restricted public
 HTTPS boundary. The isolated PostgreSQL acceptance test proves the server-side
@@ -267,13 +268,23 @@ At this point the server is a complete hosted account and conversation service, 
 
 ### Phase 7 — Add hosted sessions, Bifrost execution, and wakeups
 
-Implementation status — 2026-09-17: implemented locally; not deployed or
-live-validated yet. `0002_sessions.sql` adds account-scoped sessions, durable
-FIFO inputs, replayable session events, fenced execution claims, and scheduled
-wakeups. The hosted worker streams private Bifrost responses into durable
-session SSE events and stores the final assistant message. The isolated
-PostgreSQL acceptance test is present but remains ignored until it is given a
-disposable `WINDIE_HOSTED_TEST_DATABASE_URL`.
+Deployment status — 2026-09-18: `0002_sessions.sql` and the Phase 7
+`windie-server` binary are deployed to the Droplet. The isolated PostgreSQL
+acceptance test passed against the separate `windie_test` database, which is
+explicitly denied access to `windie_hosted`. `0002_sessions.sql` adds
+account-scoped sessions, durable FIFO inputs, replayable session events, fenced
+execution claims, and scheduled wakeups. The hosted worker streams private
+Bifrost responses into durable session SSE events and stores the final
+assistant message. A private, loopback-only Bifrost gateway now runs the
+Windie-pinned Kimi Code provider under its own system account. Its credential
+is installed, and a direct private completion with `kimi-code/kimi-for-coding`
+passed. A signed-in browser has now received a hosted streamed response. Queue
+delivery while a model is still running and restart recovery of an interrupted
+run remain pending. On 2026-09-18 the shared live-event delivery implementation
+in `docs/plans/shared-live-session-event-delivery.md` was also deployed: a
+committed session event is delivered immediately to local SSE subscribers,
+PostgreSQL notifications wake other server instances, and durable replay
+remains the recovery path.
 
 Only after Phase 6 passes, add the hosted runtime:
 
@@ -343,6 +354,11 @@ Required verification before this phase is marked live:
   run as `failed` after restart.
 
 ### Phase 8 — Connect the current Inspector
+
+Implementation status — 2026-09-18: the temporary hosted client creates
+conversations with the deployment-selected model, resolves hosted sessions,
+sends through `/query`, and consumes per-session durable SSE. Its production
+bundle is live; signed-in end-to-end browser proof remains pending.
 
 Use the existing Inspector as the temporary hosted client:
 

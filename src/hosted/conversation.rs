@@ -20,12 +20,16 @@ use super::{
 #[derive(Clone)]
 pub(crate) struct HostedConversationOperations {
     store: HostedStore,
+    default_model: String,
 }
 
 impl HostedConversationOperations {
     /// Creates workflows backed by one private PostgreSQL store.
-    pub(crate) fn new(store: HostedStore) -> Self {
-        Self { store }
+    pub(crate) fn new(store: HostedStore, default_model: String) -> Self {
+        Self {
+            store,
+            default_model,
+        }
     }
 
     /// Lists the authenticated account's conversation summaries and event cursor.
@@ -54,7 +58,7 @@ impl HostedConversationOperations {
         account: &HostedAccount,
         command: CreateHostedConversation,
     ) -> Result<MutationResponse, HostedStoreError> {
-        let model = command.model.unwrap_or_else(|| "windie/hosted".to_string());
+        let model = command.model.unwrap_or_else(|| self.default_model.clone());
         self.store
             .create_conversation(account, &model, &command.idempotency_key)
             .await

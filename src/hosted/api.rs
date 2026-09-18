@@ -31,6 +31,7 @@ use super::{
     events,
     store::{HostedMessagePartInput, HostedStoreError},
 };
+use crate::session::SessionEventHub;
 
 /// Shared hosted request state. It contains no user-derived account ID.
 #[derive(Clone)]
@@ -38,6 +39,7 @@ struct HostedApiState {
     store: HostedStore,
     conversations: HostedConversationOperations,
     runtime: HostedRuntime,
+    live_events: SessionEventHub,
     auth: HostedAuth,
 }
 
@@ -45,15 +47,25 @@ struct HostedApiState {
 pub async fn serve(config: HostedConfig, store: HostedStore) -> anyhow::Result<()> {
     let allowed_origin = HeaderValue::from_str(&config.allowed_origin)
         .map_err(|error| anyhow::anyhow!("invalid WINDIE_HOSTED_ALLOWED_ORIGIN: {error}"))?;
-    let runtime = HostedRuntime::new(store.clone(), config.bifrost_base_url.clone());
+    let live_events = SessionEventHub::default();
+    events::start_session_event_listener(store.clone(), live_events.clone());
+    let runtime = HostedRuntime::new(
+        store.clone(),
+        config.bifrost_base_url.clone(),
+        live_events.clone(),
+    );
     let recovered = runtime.recover_interrupted_sessions().await?;
     if recovered > 0 {
         eprintln!("marked {recovered} interrupted hosted session(s) failed after restart");
     }
     runtime.start_wakeup_scheduler();
     let state = HostedApiState {
-        conversations: HostedConversationOperations::new(store.clone()),
+        conversations: HostedConversationOperations::new(
+            store.clone(),
+            config.default_model.clone(),
+        ),
         runtime,
+        live_events,
         store,
         auth: HostedAuth::new(config.supabase_url, config.supabase_publishable_key),
     };
@@ -661,6 +673,7 @@ async fn session_events(
         account,
         session_id,
         query.after.unwrap_or(0),
+        state.live_events,
     ))
     .keep_alive(KeepAlive::default()))
 }
@@ -674,9 +687,15 @@ async fn session_response(
         .session_input_count(account, &session.id)
         .await
         .map_err(HostedApiError::store)?;
-    Ok(Json(
-        json!({"session": session, "queue_depth": queue_depth}),
-    ))
+    let event_cursor = store
+        .session_event_cursor(account, &session.id)
+        .await
+        .map_err(HostedApiError::store)?;
+    Ok(Json(json!({
+        "session": session,
+        "queue_depth": queue_depth,
+        "event_cursor": event_cursor,
+    })))
 }
 
 fn mutation_response(response: crate::hosted::MutationResponse) -> Response {

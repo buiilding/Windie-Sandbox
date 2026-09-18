@@ -22,6 +22,11 @@ pub struct HostedConfig {
     pub allowed_origin: String,
     /// Private OpenAI-compatible Bifrost endpoint used by hosted workers.
     pub bifrost_base_url: String,
+    /// Default model assigned when a hosted conversation does not name one.
+    ///
+    /// This stays deployment configuration rather than a hard-coded provider
+    /// choice, so changing the hosted provider affects new conversations only.
+    pub default_model: String,
 }
 
 impl HostedConfig {
@@ -40,10 +45,17 @@ impl HostedConfig {
             .unwrap_or_else(|_| "https://app.windieos.com".to_string());
         let bifrost_base_url = std::env::var("WINDIE_HOSTED_BIFROST_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8080/v1".to_string());
+        let default_model = std::env::var("WINDIE_HOSTED_DEFAULT_MODEL")
+            .unwrap_or_else(|_| "windie/hosted".to_string());
 
         if !allowed_origin.starts_with("https://") && !allowed_origin.starts_with("http://") {
             return Err(anyhow!(
                 "WINDIE_HOSTED_ALLOWED_ORIGIN must be an http or https origin"
+            ));
+        }
+        if default_model.trim().is_empty() {
+            return Err(anyhow!(
+                "WINDIE_HOSTED_DEFAULT_MODEL must not be empty when configured"
             ));
         }
 
@@ -54,6 +66,7 @@ impl HostedConfig {
             address,
             allowed_origin,
             bifrost_base_url,
+            default_model,
         })
     }
 }

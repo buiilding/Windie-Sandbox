@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::conversation::{
@@ -26,9 +25,9 @@ use crate::plugin::PluginCatalog;
 use crate::runtime::RuntimeMessagePersistence;
 use crate::runtime::wakeup::{ToolDecisionWakeup, Wakeup};
 use crate::session::{
-    IdleWakeupInterval, Session, SessionEvent, SessionEventRecord, SessionExecutionClaim,
+    IdleWakeupInterval, Session, SessionEvent, SessionEventHub, SessionExecutionClaim,
     SessionExecutionOwner, SessionExecutionStart, SessionId, SessionQueryResult, SessionResolution,
-    SessionStatus,
+    SessionStatus, SessionSubscription,
 };
 use crate::store::{SessionRuntimeMessage, Store};
 use crate::tool::ToolProviderRegistry;
@@ -37,28 +36,7 @@ use crate::{
     runtime::wakeup::{IDLE_WAKEUP_PROMPT, MANUAL_WAKEUP_PROMPT},
 };
 
-const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
 const IDLE_WAKEUP_POLL_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Live subscription to events from one session.
-pub struct SessionSubscription {
-    receiver: broadcast::Receiver<SessionEventRecord>,
-}
-
-impl SessionSubscription {
-    /// Waits for the next live event from the subscribed session.
-    pub async fn recv(&mut self) -> Result<SessionEventRecord> {
-        loop {
-            match self.receiver.recv().await {
-                Ok(event) => return Ok(event),
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err(anyhow::anyhow!("session event stream closed"));
-                }
-            }
-        }
-    }
-}
 
 /// Backend-owned runtime session supervisor.
 #[derive(Clone)]
@@ -73,10 +51,8 @@ pub struct SessionManager {
     active: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     /// Per-session gates that serialize input acceptance and run handoff.
     gates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
-    /// Durable broadcast channel per session, keyed by session. This outlives
-    /// any one task so a single subscription survives pause/resume across
-    /// approval waits. Removed only on terminal completion.
-    channels: Arc<Mutex<HashMap<String, broadcast::Sender<SessionEventRecord>>>>,
+    /// Low-latency publication of committed records to active local clients.
+    live_events: SessionEventHub,
 }
 
 /// Complete input needed by one spawned session task.
@@ -84,7 +60,6 @@ struct SessionTaskInput {
     session_id: SessionId,
     claim: SessionExecutionClaim,
     command: operation::SessionExecutionCommand,
-    sender: broadcast::Sender<SessionEventRecord>,
 }
 
 impl SessionManager {
@@ -103,7 +78,7 @@ impl SessionManager {
             plugin_catalog: None,
             active: Arc::new(Mutex::new(HashMap::new())),
             gates: Arc::new(Mutex::new(HashMap::new())),
-            channels: Arc::new(Mutex::new(HashMap::new())),
+            live_events: SessionEventHub::default(),
         }
     }
 
@@ -142,10 +117,7 @@ impl SessionManager {
 
         let mut store = self.open_store()?;
         operation::remove_session(&mut store, session_id)?;
-        self.channels
-            .lock()
-            .expect("run manager lock poisoned")
-            .remove(session_id.as_str());
+        self.live_events.close(session_id);
         Ok(())
     }
 
@@ -173,10 +145,9 @@ impl SessionManager {
         for task in &tasks {
             task.abort();
         }
-        self.channels
-            .lock()
-            .expect("run manager lock poisoned")
-            .retain(|session_id, _| !session_ids.contains(session_id));
+        for session_id in &session_ids {
+            self.live_events.close(&SessionId::new(session_id.clone()));
+        }
         for task in tasks {
             let _ = task.await;
         }
@@ -390,7 +361,7 @@ impl SessionManager {
                     queue_depth,
                 },
             )?;
-            self.channel_for_session(session_id).send(record).ok();
+            self.live_events.publish(record);
             let session = store.load_session(session_id)?;
             return Ok(SessionQueryResult {
                 session,
@@ -521,7 +492,7 @@ impl SessionManager {
                 store.materialize_next_session_input(session_id, &claimed.claim)?
             {
                 let updated = store.load_session(session_id)?;
-                self.channel_for_session(session_id).send(record).ok();
+                self.live_events.publish(record);
                 drop(store);
                 self.spawn(
                     updated.id.clone(),
@@ -592,16 +563,9 @@ impl SessionManager {
             store.release_cancelled_session_execution(&session.id, claim)?;
         }
 
-        // Send the terminal event on the durable channel, then remove it so the
-        // stream closes after delivering the cancellation.
-        let sender = self
-            .channels
-            .lock()
-            .expect("run manager lock poisoned")
-            .remove(&session_key);
-        if let Some(sender) = sender {
-            let _ = sender.send(record);
-        }
+        // The durable event is sent before this process-local stream closes.
+        self.live_events.publish(record);
+        self.live_events.close(&session.id);
 
         Ok(())
     }
@@ -610,14 +574,8 @@ impl SessionManager {
     ///
     /// The receiver is bound to the session's durable channel, so it stays
     /// valid across approval pauses and resumes on the same session.
-    pub fn subscribe(&self, session_id: &SessionId) -> Option<SessionSubscription> {
-        self.channels
-            .lock()
-            .expect("run manager lock poisoned")
-            .get(session_id.as_str())
-            .map(|sender| SessionSubscription {
-                receiver: sender.subscribe(),
-            })
+    pub fn subscribe(&self, session_id: &SessionId) -> SessionSubscription {
+        self.live_events.subscribe(session_id)
     }
 
     /// Resumes a waiting session after a policy change.
@@ -697,16 +655,6 @@ impl SessionManager {
     ) {
         let session_key = session_id.as_str().to_string();
 
-        // Reuse the session's durable channel, creating it only on first spawn.
-        // This is what lets one subscription survive approval pauses and resumes.
-        let sender = {
-            let mut channels = self.channels.lock().expect("run manager lock poisoned");
-            channels
-                .entry(session_key.clone())
-                .or_insert_with(|| broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY).0)
-                .clone()
-        };
-
         let manager = self.clone();
         let run_id_for_task = session_id.clone();
         let task = tokio::spawn(async move {
@@ -717,7 +665,6 @@ impl SessionManager {
                     session_id: run_id_for_task.clone(),
                     claim: claim.clone(),
                     command,
-                    sender: sender.clone(),
                 })
                 .await;
             if let Err(error) = result {
@@ -751,7 +698,6 @@ impl SessionManager {
             session_id,
             claim,
             command,
-            sender,
         } = input;
         let mut store = self.open_store()?;
         let session = store.load_session(&session_id)?;
@@ -759,9 +705,12 @@ impl SessionManager {
             SessionEventRecorder::new(self.store_path.clone(), session_id.clone(), claim.clone());
         let output = SessionOutput {
             recorder: recorder.clone(),
-            sender: sender.clone(),
+            live_events: self.live_events.clone(),
         };
-        let messages = SessionMessages { recorder, sender };
+        let messages = SessionMessages {
+            recorder,
+            live_events: self.live_events.clone(),
+        };
         let runtime = RuntimeDependencies::for_session(
             &session,
             GatewayUrl::new(self.gateway_url.clone()),
@@ -783,7 +732,7 @@ impl SessionManager {
             outcome,
             record_idle_wakeup_completion,
         )? {
-            let _ = messages.sender.send(record);
+            self.live_events.publish(record);
         } else {
             store.release_cancelled_session_execution(&session_id, &claim)?;
         }
@@ -809,14 +758,8 @@ impl SessionManager {
         if record.is_none() {
             store.release_cancelled_session_execution(session_id, claim)?;
         }
-        if let (Some(record), Some(sender)) = (
-            record,
-            self.channels
-                .lock()
-                .expect("run manager lock poisoned")
-                .get(session_id.as_str()),
-        ) {
-            let _ = sender.send(record);
+        if let Some(record) = record {
+            self.live_events.publish(record);
         }
 
         Ok(())
@@ -858,7 +801,7 @@ impl SessionManager {
                     let Ok(updated) = store.load_session(session_id) else {
                         return;
                     };
-                    self.channel_for_session(session_id).send(record).ok();
+                    self.live_events.publish(record);
                     drop(store);
                     self.spawn(
                         updated.id,
@@ -887,10 +830,7 @@ impl SessionManager {
             session.status,
             SessionStatus::Completed | SessionStatus::Failed | SessionStatus::Cancelled
         ) {
-            self.channels
-                .lock()
-                .expect("run manager lock poisoned")
-                .remove(session_id.as_str());
+            self.live_events.close(session_id);
         }
     }
 
@@ -969,7 +909,7 @@ impl SessionManager {
         let record = commit.event.ok_or_else(|| {
             anyhow::anyhow!("wakeup session message commit did not create an event")
         })?;
-        self.channel_for_session(&session.id).send(record).ok();
+        self.live_events.publish(record);
         Ok(())
     }
 
@@ -979,15 +919,6 @@ impl SessionManager {
         gates
             .entry(session_id.as_str().to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    }
-
-    /// Returns the durable live-event channel, creating it when needed.
-    fn channel_for_session(&self, session_id: &SessionId) -> broadcast::Sender<SessionEventRecord> {
-        let mut channels = self.channels.lock().expect("run manager lock poisoned");
-        channels
-            .entry(session_id.as_str().to_string())
-            .or_insert_with(|| broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY).0)
             .clone()
     }
 
@@ -1087,7 +1018,7 @@ impl SessionManager {
 
 struct SessionMessages {
     recorder: SessionEventRecorder,
-    sender: broadcast::Sender<SessionEventRecord>,
+    live_events: SessionEventHub,
 }
 
 impl RuntimeMessagePersistence for SessionMessages {
@@ -1106,7 +1037,7 @@ impl RuntimeMessagePersistence for SessionMessages {
             content,
             metadata,
         )?;
-        let _ = self.sender.send(record);
+        self.live_events.publish(record);
         Ok(message_id)
     }
 
@@ -1127,20 +1058,20 @@ impl RuntimeMessagePersistence for SessionMessages {
             content,
             parts,
         )?;
-        let _ = self.sender.send(record);
+        self.live_events.publish(record);
         Ok(message_id)
     }
 }
 
 struct SessionOutput {
     recorder: SessionEventRecorder,
-    sender: broadcast::Sender<SessionEventRecord>,
+    live_events: SessionEventHub,
 }
 
 impl SessionOutput {
     fn record(&self, event: SessionEvent) -> Result<()> {
         let record = self.recorder.record(event)?;
-        let _ = self.sender.send(record);
+        self.live_events.publish(record);
 
         Ok(())
     }

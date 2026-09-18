@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{PgPool, Postgres, Row, Transaction, types::Json};
+use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgListener, types::Json};
 use uuid::Uuid;
 
 use super::account::HostedAccount;
@@ -29,6 +29,7 @@ use crate::{
 
 const INITIAL_MIGRATION: &str = "0001_account_conversations";
 const SESSIONS_MIGRATION: &str = "0002_sessions";
+const SESSION_EVENT_NOTIFICATION_CHANNEL: &str = "windie_session_events";
 
 /// PostgreSQL boundary for hosted Windie state.
 #[derive(Clone)]
@@ -1150,7 +1151,7 @@ impl HostedStore {
         &self,
         account: &HostedAccount,
         session_id: &SessionId,
-    ) -> Result<Session, HostedStoreError> {
+    ) -> Result<(Session, SessionEventRecord), HostedStoreError> {
         let mut transaction = self.pool.begin().await?;
         load_session_for_update(&mut transaction, &account.id, session_id).await?;
         let claim = session_execution_claim_in_transaction(&mut transaction, session_id).await?;
@@ -1168,11 +1169,13 @@ impl HostedStore {
             .execute(&mut *transaction)
             .await?;
         }
-        append_hosted_session_event(&mut transaction, session_id, SessionEvent::Cancelled).await?;
+        let record =
+            append_hosted_session_event(&mut transaction, session_id, SessionEvent::Cancelled)
+                .await?;
         let session =
             load_session_in_transaction(&mut transaction, &account.id, session_id).await?;
         transaction.commit().await?;
-        Ok(session)
+        Ok((session, record))
     }
 
     /// Fails any hosted worker claim left running by a process crash before
@@ -1236,6 +1239,52 @@ impl HostedStore {
         rows.iter()
             .map(|row| session_event_from_pg_row(row, session_id))
             .collect()
+    }
+
+    /// Opens a PostgreSQL listener used only to wake other hosted-server
+    /// processes after a durable session-event commit.
+    pub(crate) async fn session_event_listener(&self) -> Result<PgListener, HostedStoreError> {
+        let mut listener = PgListener::connect_with(&self.pool).await?;
+        listener.listen(SESSION_EVENT_NOTIFICATION_CHANNEL).await?;
+        Ok(listener)
+    }
+
+    /// Loads one durable event by its database-wide cursor for an internal
+    /// cross-instance notification. HTTP authorization still happens before a
+    /// browser can subscribe to the session hub.
+    pub(crate) async fn session_event_by_id(
+        &self,
+        event_id: i64,
+    ) -> Result<Option<SessionEventRecord>, HostedStoreError> {
+        let row = sqlx::query(
+            "SELECT id, session_id, event_type, payload, floor(extract(epoch FROM created_at) * 1000)::bigint AS created_at FROM session_events WHERE id = $1",
+        )
+        .bind(event_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let session_id = SessionId::new(row.get::<String, _>("session_id"));
+            session_event_from_pg_row(&row, &session_id)
+        })
+        .transpose()
+    }
+
+    /// Returns the durable replay cursor immediately before a client opens a
+    /// session event stream. Account ownership is checked first so the cursor
+    /// never reveals whether another account has session activity.
+    pub(crate) async fn session_event_cursor(
+        &self,
+        account: &HostedAccount,
+        session_id: &SessionId,
+    ) -> Result<i64, HostedStoreError> {
+        self.session(account, session_id).await?;
+        let cursor = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(id), 0) FROM session_events WHERE session_id = $1",
+        )
+        .bind(session_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(cursor)
     }
 
     /// Returns canonical root-to-current-head model context for one still
@@ -1572,12 +1621,17 @@ async fn append_hosted_session_event(
     .bind(Json(&event))
     .fetch_one(&mut **transaction)
     .await?;
-    Ok(SessionEventRecord {
+    let record = SessionEventRecord {
         id: row.get("id"),
         session_id: session_id.clone(),
         event,
         created_at: row.get("created_at"),
-    })
+    };
+    sqlx::query("SELECT pg_notify('windie_session_events', $1)")
+        .bind(record.id.to_string())
+        .execute(&mut **transaction)
+        .await?;
+    Ok(record)
 }
 
 /// Decodes one replayed event using the existing shared session event enum.
@@ -2441,6 +2495,10 @@ mod tests {
             .claim_session_execution(&account, &session.id, SessionExecutionStart::Runnable)
             .await
             .unwrap();
+        // A separate PostgreSQL connection observes only committed event IDs;
+        // it reloads the durable record rather than receiving model content in
+        // the notification payload.
+        let mut listener = store.session_event_listener().await.unwrap();
         assert!(matches!(
             store
                 .claim_session_execution(&account, &session.id, SessionExecutionStart::Runnable)
@@ -2490,6 +2548,18 @@ mod tests {
             queued_event.event,
             SessionEvent::InputQueued { .. }
         ));
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(2), listener.recv())
+            .await
+            .expect("committed session event should notify other hosted-server instances")
+            .unwrap();
+        assert_eq!(notification.payload(), queued_event.id.to_string());
+        let reloaded = store
+            .session_event_by_id(queued_event.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.id, queued_event.id);
+        assert!(matches!(reloaded.event, SessionEvent::InputQueued { .. }));
         assert_eq!(
             store
                 .session_input_count(&account, &session.id)

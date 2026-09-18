@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::time::{Duration, Interval};
 
 use crate::conversation::{Message, MessagePart};
-use crate::session::SessionEvent;
+use crate::session::{SessionEvent, SessionId, SessionSubscriptionError};
 
 use super::*;
 
@@ -15,8 +15,55 @@ const GLOBAL_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) struct SessionSseState {
     pub(super) replay: VecDeque<SessionEventRecord>,
-    pub(super) subscription: Option<SessionSubscription>,
+    pub(super) subscription: SessionSubscription,
     pub(super) store_path: Option<PathBuf>,
+    pub(super) session_id: SessionId,
+    pub(super) cursor: i64,
+}
+
+impl SessionSseState {
+    /// Reloads records after the last accepted event when in-memory delivery
+    /// lagged or ended. Durable storage is authoritative for this recovery.
+    pub(super) fn reload_after_cursor(&mut self) -> anyhow::Result<()> {
+        let store = match self.store_path.as_ref() {
+            Some(path) => Store::open_at(path),
+            None => Store::open(),
+        }?;
+        self.replay
+            .extend(store.load_session_events_after(&self.session_id, Some(self.cursor))?);
+        Ok(())
+    }
+
+    /// Waits for one next event without allowing a replay-to-live gap.
+    pub(super) async fn next_record(&mut self) -> Option<SessionEventRecord> {
+        loop {
+            if let Some(record) = self.replay.pop_front() {
+                if record.id > self.cursor {
+                    self.cursor = record.id;
+                    return Some(record);
+                }
+                continue;
+            }
+
+            match self.subscription.recv().await {
+                Ok(record) if record.id > self.cursor => {
+                    self.cursor = record.id;
+                    return Some(record);
+                }
+                Ok(_) => continue,
+                Err(SessionSubscriptionError::Lagged) => {
+                    if self.reload_after_cursor().is_err() {
+                        return None;
+                    }
+                }
+                Err(SessionSubscriptionError::Closed) => {
+                    if self.reload_after_cursor().is_err() || self.replay.is_empty() {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Polling state for the cross-process aggregate event stream.

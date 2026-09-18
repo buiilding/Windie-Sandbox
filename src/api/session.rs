@@ -407,24 +407,18 @@ pub(super) async fn session_events(
 {
     let session_id = SessionId::new(session_id);
     let store = open_store(&state)?;
-    let replay = store.load_session_events_after(&session_id, query.after)?;
     let subscription = state.session_manager.subscribe(&session_id);
+    let replay = store.load_session_events_after(&session_id, query.after)?;
     let stream = stream::unfold(
         SessionSseState {
             replay: replay.into(),
             subscription,
             store_path: state.store_path.clone(),
+            session_id,
+            cursor: query.after.unwrap_or(0),
         },
         |mut state| async move {
-            let record = if let Some(record) = state.replay.pop_front() {
-                record
-            } else {
-                let subscription = state.subscription.as_mut()?;
-                match subscription.recv().await {
-                    Ok(record) => record,
-                    Err(_) => return None,
-                }
-            };
+            let record = state.next_record().await?;
             let event_name = record.event.event_name();
             let data = session_event_data(state.store_path.as_deref(), &record);
             let sse = Event::default()

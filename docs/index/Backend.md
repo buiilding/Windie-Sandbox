@@ -175,6 +175,9 @@ installed, enabled, disabled, broken, or updating, does not install these packag
 - session/event.rs: event types for observable session activity. Records events from a running session/agent loop such as durable wakeup-message saves, streamed assistant text, tool calls, approvals, completion, failure, cancellation, and queued/started inputs.
 - session/id.rs: SessionId identifies a durable session; SessionInputId identifies one queued input inside that session; SessionExecutionClaimId is the unique fencing token for one execution attempt.
 - session/control.rs: explicit session controls such as cancellation, separate from wakeups that resume runtime work.
+- session/live_events.rs: shared process-local publication of committed session
+  records. Local and hosted SSE subscribe before durable replay, then use the
+  durable cursor to repair lag, reconnects, and missed live delivery.
 - session/manager.rs: manages live background session tasks, approvals, cancellation, and publishes session events. It also owns durable per-session idle-wakeup scheduling and explicit user-requested wakeups.
 - session/model.rs: durable session record, lifecycle status, execution-owner kind, unique execution claim, and typed idle-wakeup cadence. Exists so a session can outlive any one client and can be inspected, resumed, approved, or replayed later.
 - session/policy.rs: storage-independent session-head resolution and execution
@@ -466,6 +469,8 @@ surface auditable when files are added or moved.
 - `src/session/control.rs`: explicit control inputs for durable sessions.
 - `src/session/event.rs`: replayable session-event types.
 - `src/session/id.rs`: session, queued-input, and execution-claim identifiers.
+- `src/session/live_events.rs`: storage-independent live fan-out for already
+  committed event records.
 - `src/session/manager.rs`: live session supervision.
 - `src/session/mod.rs`: session-domain boundary.
 - `src/session/model.rs`: durable session row and lifecycle-status types.

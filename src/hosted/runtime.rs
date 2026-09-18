@@ -14,8 +14,8 @@ use super::{HostedAccount, HostedMessagePartInput, HostedStore, HostedStoreError
 use crate::{
     llm::{BaseUrl, BifrostClient, LlmStreamEvent},
     session::{
-        Session, SessionEvent, SessionExecutionClaim, SessionExecutionStart, SessionId,
-        SessionQueryResult, SessionStatus,
+        Session, SessionEvent, SessionEventHub, SessionExecutionClaim, SessionExecutionStart,
+        SessionId, SessionQueryResult, SessionStatus,
     },
 };
 
@@ -24,14 +24,20 @@ use crate::{
 pub(crate) struct HostedRuntime {
     store: HostedStore,
     bifrost_base_url: BaseUrl,
+    live_events: SessionEventHub,
 }
 
 impl HostedRuntime {
     /// Creates the worker using a private Bifrost endpoint.
-    pub(crate) fn new(store: HostedStore, bifrost_base_url: String) -> Self {
+    pub(crate) fn new(
+        store: HostedStore,
+        bifrost_base_url: String,
+        live_events: SessionEventHub,
+    ) -> Self {
         Self {
             store,
             bifrost_base_url: BaseUrl::new(bifrost_base_url),
+            live_events,
         }
     }
 
@@ -60,10 +66,11 @@ impl HostedRuntime {
         parts: Vec<HostedMessagePartInput>,
     ) -> Result<SessionQueryResult, HostedStoreError> {
         if session.status == SessionStatus::Running {
-            let (input_id, queue_depth, _) = self
+            let (input_id, queue_depth, record) = self
                 .store
                 .enqueue_session_input(&account, &session.id, &parts)
                 .await?;
+            self.live_events.publish(record);
             let session = self.store.session(&account, &session.id).await?;
             return Ok(SessionQueryResult {
                 session,
@@ -110,10 +117,13 @@ impl HostedRuntime {
             .store
             .claim_session_execution(&account, session_id, SessionExecutionStart::Runnable)
             .await?;
-        let _ = self
+        if let Some(record) = self
             .store
             .materialize_next_session_input(&account, session_id, &claim.claim)
-            .await?;
+            .await?
+        {
+            self.live_events.publish(record);
+        }
         let session = self.store.session(&account, session_id).await?;
         self.spawn(account, session.id.clone(), claim.claim);
         Ok(session)
@@ -125,7 +135,9 @@ impl HostedRuntime {
         account: &HostedAccount,
         session_id: &SessionId,
     ) -> Result<Session, HostedStoreError> {
-        self.store.stop_session(account, session_id).await
+        let (session, record) = self.store.stop_session(account, session_id).await?;
+        self.live_events.publish(record);
+        Ok(session)
     }
 
     /// Marks interrupted hosted work failed at process startup.
@@ -182,10 +194,13 @@ impl HostedRuntime {
     ) {
         let result = self.run_claimed(&account, &session_id, &claim).await;
         if let Err(error) = result {
-            let _ = self
+            if let Ok(Some(record)) = self
                 .store
                 .fail_claimed_session(&account, &session_id, &claim, &error.to_string())
-                .await;
+                .await
+            {
+                self.live_events.publish(record);
+            }
             if let Some(wakeup_id) = wakeup_id {
                 let _ = self.store.finish_wakeup(&wakeup_id, &claim, false).await;
             }
@@ -194,7 +209,7 @@ impl HostedRuntime {
         if let Some(wakeup_id) = wakeup_id {
             let _ = self.store.finish_wakeup(&wakeup_id, &claim, true).await;
         }
-        self.start_next_queued(account, session_id).await;
+        let _ = self.start_next_queued(account, session_id).await;
     }
 
     async fn run_claimed(
@@ -216,9 +231,10 @@ impl HostedRuntime {
         let event_account = account.clone();
         let event_session = session_id.clone();
         let event_claim = claim.clone();
+        let event_hub = self.live_events.clone();
         let event_writer = tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
-                event_store
+                let record = event_store
                     .append_session_execution_event(
                         &event_account,
                         &event_session,
@@ -226,6 +242,7 @@ impl HostedRuntime {
                         event,
                     )
                     .await?;
+                event_hub.publish(record);
             }
             Ok::<(), HostedStoreError>(())
         });
@@ -265,33 +282,39 @@ impl HostedRuntime {
         if !response.metadata.tool_calls.is_empty() {
             return Err(HostedStoreError::SessionConflict);
         }
-        self.store
+        let records = self
+            .store
             .complete_session_with_assistant(account, session_id, claim, &response.content)
             .await?;
+        for record in records {
+            self.live_events.publish(record);
+        }
         Ok(())
     }
 
-    async fn start_next_queued(&self, account: HostedAccount, session_id: SessionId) {
+    async fn start_next_queued(&self, account: HostedAccount, session_id: SessionId) -> bool {
         let Ok(depth) = self.store.session_input_count(&account, &session_id).await else {
-            return;
+            return false;
         };
         if depth == 0 {
-            return;
+            return false;
         }
         let Ok(claim) = self
             .store
             .claim_session_execution(&account, &session_id, SessionExecutionStart::Runnable)
             .await
         else {
-            return;
+            return false;
         };
-        let Ok(Some(_)) = self
+        let Ok(Some(record)) = self
             .store
             .materialize_next_session_input(&account, &session_id, &claim.claim)
             .await
         else {
-            return;
+            return false;
         };
+        self.live_events.publish(record);
         self.spawn(account, session_id, claim.claim);
+        true
     }
 }

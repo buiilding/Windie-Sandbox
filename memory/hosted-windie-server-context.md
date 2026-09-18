@@ -1,177 +1,203 @@
-```md
 # Hosted Windie server: situational context
 
-Read `docs/plans/main-hosted-windie-server.md` for the implementation plan.
-This document is context and implementation guidance, not a duplicate plan.
+Read this after a context reset before resuming hosted-server work. It records
+decisions, current implementation/deployment facts, and cautions; the phase
+plan remains the authority for work scope and completion status.
 
-## What the user wants
+## Read first
 
-Windie should become a real hosted product where a user can sign in, use the
-same Windie account from multiple browsers, and have durable cloud-backed
-conversations and later hosted model execution.
+Before changing hosted behavior, read:
 
-The user does not want a separate or reinvented conversation system.
+- `AGENTS.md`
+- `docs/index/Backend.md`
+- `docs/index/Frontend.md`
+- `docs/guides/hosted-windie-server.md`
+- `docs/decisions/0003-multi-device-sync-and-local-execution.md`
+- `docs/official-design/README.md`
+- `docs/plans/main-hosted-windie-server.md`
+- `docs/plans/shared-operation-persistence-refactor.md`
 
-Windie already has the correct foundational model:
+For every hosted feature, inspect its local counterpart first: the route in
+`src/api/`, workflow in `src/operation/`, SQLite behavior in `src/store/`, and
+its tests. Reuse domain rules, types, validation, response contracts, and test
+intent. Do not reuse local HTTP handlers unchanged: they carry local pairing,
+SQLite, `SessionManager`, and local-tool assumptions.
 
-- conversations are canonical parent-linked message trees;
-- a selected root-to-head path is the model-visible transcript;
-- sessions point at tree heads and do not copy conversation history;
-- backend-owned head/session resolution prevents stale browser state from
-  deciding ownership;
-- durable events support reconnecting clients;
-- execution claims fence stale session runners.
+## Product direction and boundaries
 
-The hosted server must preserve these rules.
-
-## Naming and boundaries
-
-Call it the **hosted server**, not the “control plane.”
-
-Use clear names such as:
+Call the service the **hosted server**, not the control plane.
 
 ```text
-hosted server
-HostedApi
-HostedStore
-HostedAuth
-HostedEvents
+Local today
+browser → local `windie api` → SQLite → Bifrost → local MCP/tool execution
+
+Hosted today
+browser → `windie-server` → PostgreSQL → private Bifrost → hosted model stream
+
+Hosted later
+browser → `windie-server` → PostgreSQL → model
+                                        → authorized device agent → tool result
 ```
 
-The existing local runtime and new hosted server are different deployment
-surfaces:
+The hosted server is not a replacement for the local runtime. Its canonical
+domain model must remain Windie's existing one:
+
+- conversations are parent-linked message trees;
+- the selected root-to-head path is model context;
+- sessions are durable branch-execution records, not copied conversations;
+- backend-owned session/head resolution prevents stale browser ownership;
+- revisions, idempotency keys, durable events, and execution claims prevent
+  duplicate or conflicting work.
+
+SQLite and PostgreSQL are both relational persistence implementations. Do not
+create a parallel cloud-chat model because PostgreSQL requires different SQL.
+Extract only narrow shared policies when a concrete feature needs both storage
+backends; do not build one huge generic database trait.
+
+The hosted server never executes a user's local filesystem, browser, or MCP
+tool. Later it owns the workflow: persist tool request, approval, authorized
+device assignment, result, and continuation. Device agents, VMs, remote
+control, and the final official chat UI remain later phases.
+
+## Authentication and account ownership
 
 ```text
-local `windie api` → loopback API + local SQLite + local runtime
-`windie-server`    → hosted API + PostgreSQL + account-owned cloud state
+Google sign-in → Supabase access token → hosted server validation
+→ stable Supabase user ID → Windie account → account-scoped PostgreSQL data
 ```
 
-Do not replace or casually alter the local API while building the hosted
-server. The local runtime remains useful and its established behavior is the
-reference implementation for conversation and session semantics.
+Supabase is the identity broker, not the product or conversation authority.
+The browser sends the bearer token only to the hosted API; it never receives a
+database credential or provider secret. The active Supabase project is
+`windie-auth`. Basic sign-in needs only `openid`, `email`, and `profile`.
 
-## Most important implementation rule
+Google branding is configured for Windie, but Google must accept verified
+ownership of `windieos.com` before its account chooser stops displaying the
+Supabase project hostname. Preserve the Supabase callback and redirect setup;
+complete domain verification in Google Search Console, request branding
+re-verification in Google Auth Platform, then wait for publication.
 
-Before implementing any hosted-server feature, inspect the equivalent existing
-code first.
+Windie-managed provider access is the initial hosted inference policy. Provider
+keys are server-only secrets.
 
-For every hosted route or persistence behavior:
+## Implemented hosted server
 
-1. Find the current local API route in `src/api/`.
-2. Read its handler and request/response contract.
-3. Read the corresponding workflow in `src/operation/`.
-4. Read the SQLite behavior in `src/store/`.
-5. Read existing tests for tree, session, event, and conflict behavior.
-6. Preserve the same domain rule in PostgreSQL unless there is an explicit,
-   documented reason to change it.
-7. Add hosted-server tests proving the preserved behavior.
+Phases 1–6 are implemented and live-verified: Google sign-in, same-account
+two-browser convergence, account isolation, durable PostgreSQL state, and
+restart recovery passed. The hosted server provides account-scoped
+conversation/message-tree operations, revision/idempotency handling, durable
+account events, and replayable SSE.
 
-Do not create “simpler” hosted semantics that weaken tree ownership, session
-claims, durable events, stale-head handling, or approval boundaries merely
-because PostgreSQL is new.
+Phase 7 is deployed and partially live-verified. PostgreSQL now contains
+sessions, FIFO session inputs, session events, execution claims, and wakeups.
+The hosted worker resolves selected heads, atomically claims execution,
+compiles the selected tree path, streams through private Bifrost, persists the
+assistant result/events, drains queued input, and supports durable wakeups.
+Tool calls intentionally stop the current hosted worker: device dispatch and
+approval continuation have not been implemented yet.
 
-The goal is:
+The deployed gateway uses a server-only Kimi Code credential and supports
+`kimi-code/kimi-for-coding`. Direct gateway and hosted browser streaming have
+been observed. Queue-under-load and interrupted-run/restart recovery still
+need explicit Phase 7 live proof before that phase is marked fully verified.
+
+Phase 8's limited Inspector bridge is deployed at `app.windieos.com`. It keeps
+Google/Supabase authentication, uses the hosted API, creates new conversations
+with the deployment default model, resolves/query sessions, renders live
+assistant text, and reloads the durable final message. It is a temporary proof
+surface, not the final official UI and not a reason to add unsupported local
+controls to the hosted server.
+
+## Current streaming behavior and implemented improvement
+
+The current hosted session stream is durable but visually chunkier than the
+local runtime:
 
 ```text
-same Windie domain model
-+ account ownership
-+ PostgreSQL durability
-+ cross-browser synchronization
+Bifrost delta → PostgreSQL session_events → 250 ms hosted DB poll → browser
 ```
 
-Not:
+The local API persists events then uses an in-process `SessionManager`
+subscription for immediate delivery. The hosted Inspector correctly appends
+received `assistant_delta` events; the main delay is the hosted event path,
+not merely rendering.
+
+The shared live-event delivery revision was deployed to the Droplet on
+2026-09-18. It preserves durability and reuses the local pattern:
 
 ```text
-new cloud chat app that happens to be named Windie
+commit PostgreSQL event → publish that returned record to a local event hub
+                         → immediately send to connected browsers
+reconnect → replay later PostgreSQL rows using the durable cursor
 ```
 
-## What is genuinely new
+`src/session/live_events.rs` now owns the shared process-local hub. The local
+`SessionManager` and hosted runtime publish the exact record returned after a
+durable commit. Hosted session SSE subscribes before replay, uses the durable
+cursor to suppress duplicates/repair lag, receives same-process events
+immediately, and uses a slow database fallback only for recovery.
 
-The hosted server must add concepts that the local runtime does not need:
+PostgreSQL `LISTEN`/`NOTIFY` sends only the committed event ID to other
+`windie-server` instances, which reload the record from PostgreSQL and publish
+it locally. Never broadcast before the database transaction commits. The
+implementation passed local Rust suites and the deployed service and private
+Bifrost health checks. A signed-in browser stream remains the required
+post-deployment user-visible proof.
 
-- many authenticated accounts instead of one locally paired account;
-- account-scoped authorization on every request and event subscription;
-- PostgreSQL persistence for shared account state;
-- durable revisions and idempotency keys for browser retries;
-- synchronization between separate browser sessions;
-- hosted deployment, backups, observability, and server-only secrets.
+## Deployment and operations
 
-The browser must never receive a database credential or talk to PostgreSQL
-directly. It talks only to the hosted Windie API.
+The production DigitalOcean Droplet is the hosted account/conversation server,
+not a future user remote-control VM. It has a private PostgreSQL database,
+loopback-only `windie-server`, private loopback Bifrost, and Cloudflare Tunnel
+public routing for `https://hosted-api.windieos.com`. The Inspector is hosted
+separately at `https://app.windieos.com`.
 
-## Supabase context
+The Droplet has 2 GiB RAM. PostgreSQL is conservatively tuned. `windie-server`
+and Bifrost run as separate unprivileged service accounts; provider data is not
+readable by the Windie application service. A dedicated local SSH deployment
+key exists. Never restore or use the older key exposed in a screenshot, and
+never record keys, credentials, database URLs, tunnel credentials, or server
+addresses in repository files or chat.
 
-Supabase is the identity provider, not the user-facing product and not the
-authority for Windie conversations.
+Production checks already established include public health, unauthenticated
+conversation rejection, restrictive CORS, active Cloudflare routing, private
+Bifrost health, a successful Kimi completion, and a compatible hosted
+Responses-stream request. Before every deployment, build/test locally as
+appropriate, create a release binary on the Droplet, restart only the affected
+service, then verify health and logs without printing environment files.
 
-Expected flow:
+An isolated PostgreSQL test database exists on the Droplet for hosted
+acceptance tests. Keep it separate from production; do not run test migrations
+or test commands against production data.
 
-```text
-user signs in with Google
-→ Supabase issues an access token
-→ hosted Windie server validates the token
-→ server maps the stable Supabase user ID to a Windie account
-→ server reads/writes only that account's data
-```
+## Implementation structure and cautions
 
-The connected Supabase project is named `windie-auth` and is active. Its
-actual Google return flow remains a required Phase 6 live-proof check.
+Hosted HTTP handlers should authenticate, validate input, call an operation or
+runtime method, and serialize the result. They must not accumulate direct
+PostgreSQL mutation logic. `HostedStore` owns account-scoped PostgreSQL
+transactions; local `Store` owns SQLite. The initial hosted conversation
+operation is not yet a full shared persistence abstraction, so extend it only
+when a concrete shared rule justifies a narrow extraction.
 
-The Google sign-in experience must be branded as **Windie**, not Supabase or a
-project reference. Configure the Google OAuth consent screen, app name, logo,
-authorized domain, privacy policy, terms, support contact, scopes, callback,
-and redirect URLs as described in the hosted-server plan.
+The Inspector's normal local runtime path requests local-only models, provider
+configuration, tools, plugins, approvals, pairing, and device behavior. The
+hosted bridge must continue exposing only hosted capabilities. Do not automate
+browser UI tests unless Peter asks; use terminal checks where possible and ask
+him to perform authenticated UI proof.
 
-Use minimal initial scopes: `openid`, `email`, and `profile`. Do not request
-Gmail, Drive, Calendar, or file access during basic Windie sign-in.
+The root checkout and Inspector Git submodule may have in-progress work.
+Preserve unrelated changes. For an explicit commit, inspect both statuses,
+stage only the intended files, commit the Inspector first when it changed, then
+commit the root submodule pointer; never push without explicit authorization.
 
-Windie-managed provider access is the chosen initial model policy. Provider
-credentials are server-only secrets; users do not configure or expose their own
-provider keys in the first hosted build.
+## Resume sequence
 
-## Synchronization nuance
-
-SSE replay is not fake streaming and must never rerun a model request.
-
-When a browser reconnects, it gives its last accepted durable event ID. The
-server reads later events already saved in PostgreSQL, sends them as catch-up,
-then stays connected for new events.
-
-The UI should treat historical events as recovery data and render authoritative
-saved conversation/session state. It should not animate old model-token deltas
-as if the model is generating again.
-
-## Scope discipline
-
-The initial hosted-server work is about:
-
-- accounts;
-- durable cloud conversation state;
-- cross-browser synchronization;
-- then hosted sessions, Bifrost execution, approvals, queues, and wakeups.
-
-Do not pull these later concerns into the initial build:
-
-- device agents;
-- registered computers;
-- VM provisioning;
-- remote control;
-- local filesystem/browser execution;
-- local MCP execution;
-- official UI redesign.
-
-They depend on a correct hosted account, conversation, session, and permission
-foundation first.
-
-## Communication preferences
-
-Explain architecture using concrete ownership and request flows before jargon.
-
-Be direct about what is verified versus proposed. A successful local build,
-unit test, or health endpoint is not proof that a hosted deployment, Google
-sign-in flow, database backup, SSE reconnect, or model response works in
-production.
-
-Preserve unrelated working-tree changes and untracked documentation. Do not
-overwrite the user’s plan or redesign it while implementing individual tasks.
-```
+1. Check `docs/plans/main-hosted-windie-server.md` for the authoritative next
+   phase and evidence gaps.
+2. Read the local equivalent before making any hosted change.
+3. Keep durable PostgreSQL events authoritative; never bypass account checks or
+   execution claims for convenience.
+4. Finish Phase 7 queue and restart-recovery proof, then manually confirm the
+   deployed replay-plus-live event path makes a signed-in stream feel smooth.
+5. Continue only with the next planned hosted capability; do not jump ahead to
+   device execution or remote control.
