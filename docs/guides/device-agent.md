@@ -1,8 +1,9 @@
 # Register a computer with Windie
 
-Implementation checkpoint: September 19, 2026. Enrollment and presence are
-implemented in the working tree, not deployed. This does **not** enable tools,
-plugin installation, remote desktop, or model execution on your computer.
+Deployment checkpoint: September 19, 2026. Enrollment and presence are live at
+`https://hosted-api.windieos.com` and `https://app.windieos.com`. This does
+**not** enable tools, plugin installation, remote desktop, or model execution
+on your computer. The human pairing/presence proof is still required.
 
 ## Operator setup (deployment requires explicit authorization)
 

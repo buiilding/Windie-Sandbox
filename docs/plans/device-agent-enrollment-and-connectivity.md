@@ -2,10 +2,9 @@
 
 ## Status and scope
 
-Implemented in the working tree — 2026-09-19. **Not deployed or live-verified.**
-Commands and API paths below now exist; the original design requirements are
-retained below. Deployment and the independent manual acceptance checklist
-remain pending. No tool execution or plugin installation was added.
+Deployed — 2026-09-19. The server and official UI are live; the independent
+human pairing/presence acceptance checklist remains pending. No tool execution
+or plugin installation was added.
 
 ### Implementation evidence
 
@@ -31,8 +30,16 @@ remain pending. No tool execution or plugin installation was added.
   atomic writes, local decline, finalize-response failure, redirect refusal,
   transport errors and terminal 401. Browser polling tests cover visibility,
   no overlap, 429 backoff, disposal and stopping after 401.
+- Deployment evidence: a root-only PostgreSQL archive was validated before the
+  service restart; production applied additive migration `0003_devices` and
+  returned healthy. A public Cloudflare smoke check proved route authentication,
+  enrollment initiation/poll/cancellation, credential isolation, `no-store`,
+  and the allowed browser CORS origin. Its temporary enrollment was cancelled
+  without registering a computer. The built Vercel artifact is live at
+  `app.windieos.com`; `/`, `/devices/connect`, `/computers`, and `/c/:id` all
+  resolve to its tested SPA shell.
 - Full Google/browser/OS-process/network/server-restart live proof remains
-  unchecked below. No automatic browser verification, commit, push or deployment.
+  unchecked below. No browser automation was used.
 
 Implementation placement follows the existing CLI parser; adjacent hosted
 workflow/auth adapters are kept in `hosted/device_api.rs`, and atomic database
