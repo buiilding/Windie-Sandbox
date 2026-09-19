@@ -17,6 +17,12 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
     let args = args.collect::<Vec<_>>();
 
     match args.as_slice() {
+        [command, action] if command == "agent" => match action.as_str() {
+            "connect" => Command::Agent(AgentCommand::Connect),
+            "run" => Command::Agent(AgentCommand::Run),
+            "status" => Command::Agent(AgentCommand::Status),
+            _ => Command::Invalid,
+        },
         [] => Command::Help,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" || arg == "-v" => Command::Version,

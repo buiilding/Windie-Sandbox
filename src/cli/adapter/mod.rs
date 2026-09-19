@@ -8,6 +8,7 @@ use anyhow::Result;
 
 use super::Command;
 
+mod agent;
 mod conversation;
 mod message;
 mod session;
@@ -17,6 +18,7 @@ mod tool;
 /// Dispatches one parsed command to its terminal adapter.
 pub async fn run(command: Command) -> Result<()> {
     match command {
+        Command::Agent(command) => agent::run(command).await,
         Command::Dev(command) => crate::dev::run_dev(command).await,
         Command::Release(command) => crate::dev::run_release(command).await,
         Command::Marketplace(command) => crate::dev::run_marketplace(command).await,

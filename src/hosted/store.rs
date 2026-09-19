@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgListener, types::Json};
 use uuid::Uuid;
 
+pub(crate) mod device;
+
 use super::account::HostedAccount;
 use crate::{
     conversation::{
@@ -193,6 +195,10 @@ impl HostedStore {
             (
                 SESSIONS_MIGRATION,
                 include_str!("../../migrations/hosted/0002_sessions.sql"),
+            ),
+            (
+                "0003_devices",
+                include_str!("../../migrations/hosted/0003_devices.sql"),
             ),
         ] {
             let applied = sqlx::query_scalar::<_, bool>(

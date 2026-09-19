@@ -26,7 +26,7 @@ mod tests;
 
 pub use adapter::run;
 pub use command::{
-    BenchmarkCommand, Command, DevCommand, DevComponent, EnvCommand, InsertPart,
+    AgentCommand, BenchmarkCommand, Command, DevCommand, DevComponent, EnvCommand, InsertPart,
     MarketplaceCommand, ReleaseCommand,
 };
 pub use onboard::TerminalOnboarding;

@@ -10,6 +10,7 @@ mod api;
 mod auth;
 mod config;
 mod conversation;
+mod device_api;
 mod events;
 mod runtime;
 mod store;

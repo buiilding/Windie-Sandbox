@@ -69,16 +69,24 @@ pub async fn serve(config: HostedConfig, store: HostedStore) -> anyhow::Result<(
         store,
         auth: HostedAuth::new(config.supabase_url, config.supabase_publishable_key),
     };
-    let app = router(state, allowed_origin);
+    let devices = super::device_api::router(
+        state.store.clone(),
+        state.auth.clone(),
+        allowed_origin.clone(),
+    )?;
+    let app = router(state, allowed_origin).merge(devices);
     let listener = TcpListener::bind(config.address).await.map_err(|error| {
         anyhow::anyhow!(
             "failed to bind hosted server at {}: {error}",
             config.address
         )
     })?;
-    axum::serve(listener, app)
-        .await
-        .map_err(|error| anyhow::anyhow!("hosted server failed: {error}"))
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("hosted server failed: {error}"))
 }
 
 fn router(state: HostedApiState, allowed_origin: HeaderValue) -> Router {

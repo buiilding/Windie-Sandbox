@@ -6,11 +6,13 @@
 
 #![allow(dead_code, private_bounds, private_interfaces)]
 
+pub mod agent;
 pub mod api;
 pub mod cli;
 pub mod config;
 pub mod conversation;
 pub mod dev;
+pub mod device;
 pub mod error;
 pub mod hosted;
 pub mod input;

@@ -1,5 +1,30 @@
 # Backend mental model
 
+## Registered-device enrollment and presence
+
+This is presence-only infrastructure, not remote tool execution. It reuses the
+existing CLI/library, verified hosted account mapping, and PostgreSQL migration
+runner; it does not start local API, SQLite sessions, Bifrost, or MCP.
+
+- `src/device/mod.rs`: typed IDs, enrollment/presence DTOs, timing constants,
+  principal-specific bearer digests, HMAC pairing codes and public errors.
+- `src/agent/mod.rs`: exact-origin HTTPS client and foreground presence loop.
+- `src/agent/enrollment.rs`: retry/recovery workflow with injected local consent.
+- `src/agent/storage.rs`: protected atomic credential records and OS lock.
+- `src/agent/tests.rs`: loopback transport/enrollment and terminal-auth tests.
+- `src/cli/adapter/agent.rs`: connect/run/status prompts, output and Ctrl-C.
+- `src/hosted/device_api.rs`: thirteen device routes, principal-specific auth,
+  code approval, size/rate guards and availability gate; separate from browser
+  conversation middleware in `hosted/api.rs`.
+- `src/hosted/store/device.rs`: atomic account binding, activation/revocation,
+  source/account throttles, retention and lease fencing against PostgreSQL.
+- `src/hosted/store/device/tests.rs`: isolated PostgreSQL lifecycle proofs.
+- `migrations/hosted/0003_devices.sql`: additive enrollment/credential/device/
+  presence/rate/audit tables. No plaintext bearer credentials or tool commands.
+
+See [device-agent operations](../guides/device-agent.md). Source implementation
+is not yet a production deployment or completed manual proof.
+
 ## Conversation and input
 
 Mental model:

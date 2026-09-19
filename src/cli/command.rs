@@ -8,6 +8,8 @@ use crate::perf::BenchmarkOptions;
 /// This is the CLI boundary's typed contract. Downstream code should match on
 /// this enum instead of inspecting raw argv strings.
 pub enum Command {
+    /// Pair or observe this computer without starting local model/tool execution.
+    Agent(AgentCommand),
     /// Run a repository development workflow through the public CLI.
     Dev(DevCommand),
     /// Run a repository release workflow through the public CLI.
@@ -170,6 +172,13 @@ pub enum Command {
         tool_schema: ToolSchema,
     },
     Version,
+}
+
+/// Foreground, presence-only device-agent commands.
+pub enum AgentCommand {
+    Connect,
+    Run,
+    Status,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -36,6 +36,7 @@ impl HostedAuth {
     pub(crate) fn new(supabase_url: String, publishable_key: String) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("hosted Supabase Auth client should initialize");
         Self {
@@ -57,6 +58,12 @@ impl HostedAuth {
             .and_then(|value| value.to_str().ok())
             .filter(|value| value.starts_with("Bearer "))
             .ok_or(HostedAuthError::MissingBearerToken)?;
+
+        // Device/enrollment bearers are never browser authority. Reject them
+        // locally instead of forwarding a machine credential to Supabase.
+        if authorization.starts_with("Bearer wd_") {
+            return Err(HostedAuthError::InvalidBearerToken);
+        }
 
         let response = self
             .client
@@ -87,5 +94,28 @@ impl HostedAuth {
             return Err(HostedAuthError::InvalidBearerToken);
         }
         Ok(SupabaseSubject(user.id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn device_credentials_never_reach_account_verification() {
+        let auth = HostedAuth::new("http://127.0.0.1:1".into(), "unused".into());
+        for kind in ["device", "enroll"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {}", crate::device::new_secret(kind).unwrap())
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(matches!(
+                auth.authenticate(&headers).await,
+                Err(HostedAuthError::InvalidBearerToken)
+            ));
+        }
     }
 }

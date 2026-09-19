@@ -3,6 +3,20 @@
 This file is the concrete CLI command reference. Keep primitive operations here
 instead of in `AGENTS.md`.
 
+## Device agent (presence only)
+
+```sh
+windie agent connect
+windie agent run
+windie agent status
+```
+
+Connect uses explicit browser approval and local account-ID confirmation. Run
+stays in the foreground and reports presence; status is read-only. No tools,
+local API, Bifrost or background service is started. Registration must first
+be enabled on a compatible hosted server. Source implementation is not deployed
+yet. See [setup and recovery](../guides/device-agent.md).
+
 ## Default command
 
 ```text

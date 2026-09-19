@@ -27,6 +27,24 @@ The existing hosted session envelope supplies saved-message IDs, whereas local
 SSE includes message snapshots. The official adapter hydrates missing messages
 in order, then upserts them; it does not use detached full-view reloads.
 
+## Registered-computer surfaces (working tree, not deployed)
+
+The official UI's account gate separately routes `/devices/connect` and
+`/computers` to `app/hosted/devices-screen.tsx`; `/` and `/c/:id` retain their
+existing transcript behavior. `lib/device-api.ts` reuses hosted authenticated
+HTTP, with cancellable 10-second requests. Codes stay in POST bodies. Preview
+never approves; approval and revoke each require an explicit user action.
+
+`lib/device-route.ts` stores only exact allowlisted same-origin device paths
+for the Google return. `lib/device-polling.ts` serializes visible-view presence
+polling, backs off failures, stops on 401 and ignores results after disposal.
+The screen then returns to sign-in; it does not endlessly retry expired tokens.
+These changes do not claim to fix the separately tracked chat SSE auth issue.
+
+The screen labels online as recent contact, not tool readiness; there are no
+plugin-install, tool-run or remote-desktop controls. Protocol/polling tests and
+build checks are terminal-based; manual authenticated UI proof remains pending.
+
 ## Local Inspector
 
 The frontend is the browser-based Windie Inspector at `vendor/windie-inspector/frontend/`.

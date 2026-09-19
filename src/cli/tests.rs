@@ -3,6 +3,26 @@
 use super::*;
 
 #[test]
+fn parses_presence_only_agent_commands() {
+    for action in ["connect", "run", "status"] {
+        assert!(matches!(
+            command_from_args(["windie", "agent", action].map(String::from)),
+            Command::Agent(_)
+        ));
+    }
+    for args in [
+        vec!["windie", "agent"],
+        vec!["windie", "agent", "execute"],
+        vec!["windie", "agent", "run", "--force"],
+    ] {
+        assert!(matches!(
+            command_from_args(args.into_iter().map(String::from)),
+            Command::Invalid
+        ));
+    }
+}
+
+#[test]
 fn reads_help_command_by_default() {
     let command = command_from_args(["windie".to_string()]);
 
