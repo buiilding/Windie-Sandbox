@@ -23,6 +23,14 @@ fn parses_presence_only_agent_commands() {
 }
 
 #[test]
+fn parses_explicit_agent_tool_opt_in() {
+    assert!(matches!(
+        command_from_args(["windie", "agent", "run", "--tools"].map(String::from)),
+        Command::Agent(AgentCommand::RunTools)
+    ));
+}
+
+#[test]
 fn reads_help_command_by_default() {
     let command = command_from_args(["windie".to_string()]);
 

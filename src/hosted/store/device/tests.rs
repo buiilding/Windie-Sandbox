@@ -64,6 +64,123 @@ pub(crate) fn request() -> EnrollmentRequest {
     }
 }
 
+/// Creates only the durable device rows needed by a protocol test. Enrollment
+/// itself is covered by the lifecycle acceptance test below; keeping this
+/// setup direct lets capability tests isolate report/lease semantics.
+async fn connected_device(
+    store: &HostedStore,
+    account: &HostedAccount,
+) -> (DevicePrincipal, DeviceId, LeaseId) {
+    let device_id = DeviceId::new();
+    let lease_id = LeaseId::new();
+    let digest = secret_digest("device", &new_secret("device").unwrap()).unwrap();
+    let metadata = DeviceMetadata {
+        name: "Capability test Mac".into(),
+        os: "macos".into(),
+        architecture: "aarch64".into(),
+        agent_version: "test".into(),
+        protocol_version: PROTOCOL_VERSION,
+    };
+    sqlx::query("INSERT INTO devices(id,account_id,metadata) VALUES($1,$2,$3)")
+        .bind(device_id.to_string())
+        .bind(&account.id)
+        .bind(sqlx::types::Json(serde_json::to_value(metadata).unwrap()))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO device_credentials(digest,device_id) VALUES($1,$2)")
+        .bind(&digest)
+        .bind(device_id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO device_presence(device_id,instance_id,lease_id,last_seen,expires_at) \
+         VALUES($1,$2,$3,now(),now()+interval '1 minute')",
+    )
+    .bind(device_id.to_string())
+    .bind(InstanceId::new().to_string())
+    .bind(lease_id.to_string())
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    (DevicePrincipal { digest }, device_id, lease_id)
+}
+
+#[tokio::test]
+#[ignore = "requires isolated WINDIE_HOSTED_TEST_DATABASE_URL (windie_test)"]
+async fn postgres_capability_report_is_idempotent_and_fenced_by_lease() {
+    use crate::plugin::{PluginCapabilitySnapshot, PluginIndex, PluginState, PluginSummary};
+
+    let f = Fixture::new().await;
+    let account = f
+        .store
+        .resolve_account("capability-test-account")
+        .await
+        .unwrap();
+    let (principal, device_id, lease_id) = connected_device(&f.store, &account).await;
+    let empty = CapabilityReport {
+        version: PROTOCOL_VERSION,
+        lease_id,
+        capabilities: PluginCapabilitySnapshot {
+            index: PluginIndex {
+                installed: Vec::new(),
+                available: Vec::new(),
+            },
+            providers: Vec::new(),
+        },
+    };
+
+    let first = f
+        .store
+        .publish_capabilities(&principal, &empty)
+        .await
+        .unwrap();
+    let repeated = f
+        .store
+        .publish_capabilities(&principal, &empty)
+        .await
+        .unwrap();
+    assert_eq!(first.revision, repeated.revision);
+
+    let mut changed = empty.clone();
+    changed.capabilities.index.installed.push(PluginSummary {
+        id: "fixture".into(),
+        name: "Fixture".into(),
+        purpose: "protocol test fixture".into(),
+        version: Some("1.0.0".into()),
+        state: PluginState::Installed,
+        component_kinds: Vec::new(),
+        capabilities: Vec::new(),
+        skills: Vec::new(),
+        mcps: Vec::new(),
+        apps: Vec::new(),
+    });
+    let revised = f
+        .store
+        .publish_capabilities(&principal, &changed)
+        .await
+        .unwrap();
+    assert_ne!(first.revision, revised.revision);
+
+    // A report from the former process cannot alter the current device state.
+    sqlx::query(
+        "UPDATE device_presence SET expires_at=now()-interval '1 second' WHERE device_id=$1",
+    )
+    .bind(device_id.to_string())
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        f.store
+            .publish_capabilities(&principal, &changed)
+            .await
+            .unwrap_err(),
+        DeviceError::StaleLease
+    );
+    f.finish().await;
+}
+
 #[tokio::test]
 #[ignore = "requires isolated WINDIE_HOSTED_TEST_DATABASE_URL (windie_test)"]
 async fn postgres_device_lifecycle_acceptance() {

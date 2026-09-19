@@ -12,9 +12,10 @@ use crate::llm::RuntimeLlm;
 use crate::output::RuntimeOutput;
 use crate::runtime::context::ContextBuilder;
 use crate::store::Store;
+use crate::tool::ToolApprovalRequest;
 use crate::tool::ToolProviderRegistry;
-use crate::tool::{PolicyDecision, ToolApprovalRequest, ToolExecutionResult, ToolPolicy};
 
+use super::progression::{ToolAction, assistant_requires_tools, next_tool_action};
 use super::retry::stream_with_retry;
 use super::tool_execution::{
     AutomaticToolResolution, PendingToolCall, active_tool_execution, attached_tool_can_execute,
@@ -130,12 +131,7 @@ where
                 };
                 let message = advance_turn(output, llm, store, turn_input, events).await?;
                 head_message_id = message.id.clone();
-                let has_tool_calls = message
-                    .metadata
-                    .as_ref()
-                    .is_some_and(|metadata| !metadata.tool_calls.is_empty());
-
-                if !has_tool_calls {
+                if !assistant_requires_tools(&message) {
                     return Ok(RuntimeOutcome::Completed { head_message_id });
                 }
             }
@@ -156,12 +152,11 @@ pub(crate) fn pending_approvals_at_head(
     let Some(tool_call) = execution.next_pending_tool_call().cloned() else {
         return Ok(Vec::new());
     };
-    let policy = ToolPolicy;
     let attached_tool =
         load_attached_tool_for_call(store, input.conversation_id, &tool_call, input.tools)?;
     let approval_mode = store.tool_approval_mode(input.conversation_id)?;
 
-    if let PolicyDecision::Ask { reason } = policy.decide(
+    if let ToolAction::RequestApproval { reason } = next_tool_action(
         &tool_call,
         attached_tool.as_ref(),
         attached_tool_can_execute(store, input.tools, attached_tool.as_ref()),
@@ -231,8 +226,6 @@ fn store_policy_denied_tool_results_at_head(
     tools: &ToolProviderRegistry,
     events: &impl RuntimeMessagePersistence,
 ) -> Result<()> {
-    let policy = ToolPolicy;
-
     loop {
         let messages = load_path_at_head(store, conversation_id, head_message_id.as_ref())?;
         let Some(execution) = active_tool_execution(&messages) else {
@@ -244,7 +237,7 @@ fn store_policy_denied_tool_results_at_head(
         let attached_tool = load_attached_tool_for_call(store, conversation_id, &tool_call, tools)?;
         let approval_mode = store.tool_approval_mode(conversation_id)?;
 
-        let PolicyDecision::Deny { reason } = policy.decide(
+        let ToolAction::PersistDenied(result) = next_tool_action(
             &tool_call,
             attached_tool.as_ref(),
             attached_tool_can_execute(store, tools, attached_tool.as_ref()),
@@ -256,11 +249,6 @@ fn store_policy_denied_tool_results_at_head(
             result_parent_message_id: execution.result_parent_message_id,
             tool_call,
         };
-        let result = ToolExecutionResult::failure(
-            pending.tool_call.id.clone(),
-            pending.tool_call.name(),
-            reason,
-        );
         let message_id = events.save_tool_result(
             store,
             conversation_id,

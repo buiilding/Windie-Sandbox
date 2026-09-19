@@ -27,7 +27,7 @@ The existing hosted session envelope supplies saved-message IDs, whereas local
 SSE includes message snapshots. The official adapter hydrates missing messages
 in order, then upserts them; it does not use detached full-view reloads.
 
-## Registered-computer surfaces (working tree, not deployed)
+## Registered-computer and approved-tool surfaces (working tree, not deployed)
 
 The official UI's account gate separately routes `/devices/connect` and
 `/computers` to `app/hosted/devices-screen.tsx`; `/` and `/c/:id` retain their
@@ -41,9 +41,14 @@ polling, backs off failures, stops on 401 and ignores results after disposal.
 The screen then returns to sign-in; it does not endlessly retry expired tokens.
 These changes do not claim to fix the separately tracked chat SSE auth issue.
 
-The screen labels online as recent contact, not tool readiness; there are no
-plugin-install, tool-run or remote-desktop controls. Protocol/polling tests and
-build checks are terminal-based; manual authenticated UI proof remains pending.
+The device screen labels online as recent contact, not a blanket permission.
+The transcript's compact tool section can explicitly bind an online Mac to a
+session, show an exact pending call/arguments, and approve or deny it. It does
+not install plugins, execute an arbitrary command, choose among devices, or
+offer remote desktop control. The coordinator keeps its authenticated event
+stream open through approval/tool waits, then hydrates the linked tool result
+and continued assistant response in order. Protocol/polling tests and build
+checks are terminal-based; the real device-tool UI proof remains pending.
 
 ## Local Inspector
 

@@ -14,7 +14,7 @@ Browser
 
 The existing local API and SQLite runtime remain unchanged.
 
-### Implementation status — 2026-09-17
+### Implementation status — 2026-09-18
 
 | Phase | Status | Meaning |
 | --- | --- | --- |
@@ -25,14 +25,18 @@ The existing local API and SQLite runtime remain unchanged.
 | 4 — Conversation APIs | Deployed | Account-scoped `/v1` conversation, message, truncate, and fork routes are live. |
 | 5 — Cross-browser synchronization | Deployed | Durable account-change events and replayable `/v1/events` SSE are live. |
 | 6 — Cloud-synchronization milestone | Live verified | Google sign-in, same-account two-browser convergence, cross-account isolation, the isolated PostgreSQL acceptance test, and production restart/reconnect recovery all passed on 2026-09-17. |
-| 7 — Hosted sessions, Bifrost execution, and wakeups | Partially live verified | The PostgreSQL migration, session persistence, claim fencing, FIFO inputs, replayable session events, wakeups, private Bifrost gateway, Kimi Code completion, and shared replay-plus-live session-event delivery are deployed. Signed-in browser streaming has been observed. Queue-under-load, interrupted-run/restart recovery, and a post-deployment smooth-stream browser check remain required proof. |
-| 8 — Current Inspector bridge | Partially live verified | The temporary hosted Inspector uses the deployment-selected model, hosted session/query route, and durable per-session SSE. Its production bundle is live and a signed-in hosted response streamed; broader session proof remains tied to Phase 7. |
-| 9 — Production operations | Not started | Production hardening remains future work. |
+| 7 — Hosted sessions, Bifrost execution, and wakeups | Partially live verified | PostgreSQL sessions/claims/queues/events/wakeups, private Bifrost/Kimi, and shared replay-plus-live delivery are deployed. Peter reported smooth streaming after the event-hub deployment. Queue-under-load and interrupted-run/restart recovery remain required live proof. |
+| 8 — Current Inspector bridge | Implemented; superseded in production | The temporary hosted Inspector provided signed-in hosted streaming. On September 18 the official UI replaced it at `app.windieos.com` under its separate integration plan; the Inspector release remains available for rollback. New-client acceptance is still pending. |
+| 9 — Production operations | Partial baseline; hardening incomplete | Restricted services, private database/gateway, HTTPS routing, and health checks exist. Automated backups/tested restore, rate limits, and the full operations acceptance checklist are not established as complete. |
 
 “Deployed” means the Phase 1–5 service is running behind its restricted public
 HTTPS boundary. The isolated PostgreSQL acceptance test proves the server-side
 Phase 6 rules, including durable recovery after a new database pool, and the
 signed-in browser reconnect proof confirms the deployed client recovers state.
+Those Phase 6 proofs were obtained with the earlier hosted client. They are
+not new-release acceptance for the official UI; track that separately in
+`docs/plans/official-ui-hosted-integration.md`. No backend changes were deployed
+as part of the September 18 official-client/refined-sign-in release.
 
 ### Phase 0 — Decisions and prerequisites
 
@@ -285,6 +289,10 @@ in `docs/plans/shared-live-session-event-delivery.md` was also deployed: a
 committed session event is delivered immediately to local SSE subscribers,
 PostgreSQL notifications wake other server instances, and durable replay
 remains the recovery path.
+Peter subsequently reported that streaming works well. The official client's
+later disappearing-final-response bug was a separate browser reconciliation
+issue, addressed in its own plan; do not confuse it with the old 250 ms hosted
+session polling path.
 
 Only after Phase 6 passes, add the hosted runtime:
 
@@ -355,22 +363,27 @@ Required verification before this phase is marked live:
 
 ### Phase 8 — Connect the current Inspector
 
-Implementation status — 2026-09-18: the temporary hosted client creates
+Historical implementation — 2026-09-18: the temporary hosted client creates
 conversations with the deployment-selected model, resolves hosted sessions,
 sends through `/query`, and consumes per-session durable SSE. Its production
-bundle is live; signed-in end-to-end browser proof remains pending.
+bundle was deployed and a signed-in hosted response streamed. The official
+client replaced it on the public hostname in release `47b8d49`; its new
+route/reconciliation/sign-in code has terminal checks but still needs Peter's
+authenticated browser acceptance. The earlier Inspector deployment is retained
+for rollback. See `docs/plans/official-ui-hosted-integration.md`.
 
-Use the existing Inspector as the temporary hosted client:
+Original bridge scope (now implemented as a temporary client):
 
 - retain Supabase Google sign-in;
 - change its production endpoint from the anonymous demo API to the hosted server;
 - replace local-runtime pairing UI with account-scoped hosted API state;
 - retain its tree, transcript, sessions, and SSE presentation logic;
-- keep the separate official UI prototype untouched until the server behavior is proven.
+- keep official UI work separate; its subsequent integration is tracked by the
+  official UI plan, not silently added to this bridge's completion criteria.
 
 ### Phase 9 — Production operations
 
-Before calling it live:
+Before calling production hardening complete (deployment alone is insufficient):
 
 - database migrations are reviewed and reversible where practical;
 - PostgreSQL has automated backups and a tested restore;

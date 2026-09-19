@@ -23,6 +23,9 @@ pub(super) fn command_from_args(args: impl IntoIterator<Item = String>) -> Comma
             "status" => Command::Agent(AgentCommand::Status),
             _ => Command::Invalid,
         },
+        [command, action, flag] if command == "agent" && action == "run" && flag == "--tools" => {
+            Command::Agent(AgentCommand::RunTools)
+        }
         [] => Command::Help,
         [arg] if arg == "--help" || arg == "-h" => Command::Help,
         [arg] if arg == "--version" || arg == "-V" || arg == "-v" => Command::Version,

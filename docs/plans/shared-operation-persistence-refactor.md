@@ -1,6 +1,11 @@
 # Shared operation and persistence refactor plan
 
-## Implementation status — 2026-09-17
+## Implementation status — updated 2026-09-18
+
+The conversation-tree extraction and initial session-policy slice below are
+implemented. The September 18 official-client work did not change these backend
+boundaries. This is not a claim that hosted execution, device dispatch, or all
+main-server phases are finished; their acceptance stays in the main plan.
 
 The initial conversation-tree slice is implemented:
 
@@ -59,17 +64,17 @@ src/hosted/store.rs
 This preserves Windie's existing conversation-tree semantics. It does not
 create a second cloud chat model.
 
-## Current state
+## Historical starting point
 
 The current local operation functions are mostly typed directly against the
 synchronous SQLite `Store`. The hosted server initially added
 `src/operation/hosted_conversation.rs` so HTTP handlers would not directly
 orchestrate PostgreSQL mutations.
 
-That file is an acceptable short-term boundary improvement, but it must not
-become a duplicate hosted equivalent for every local operation. Its tree rules
-need to migrate into the canonical shared conversation operation as this plan
-is executed.
+That file was a short-term boundary improvement, not a pattern for duplicating
+every local operation. It has since been removed; the shared tree policy and
+thin `src/hosted/conversation.rs` adapter described in the status section are
+the current implementation.
 
 ## Non-goals
 

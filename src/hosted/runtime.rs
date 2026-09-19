@@ -13,6 +13,7 @@ use tokio::{
 use super::{HostedAccount, HostedMessagePartInput, HostedStore, HostedStoreError};
 use crate::{
     llm::{BaseUrl, BifrostClient, LlmStreamEvent},
+    runtime::progression::active_tool_execution,
     session::{
         Session, SessionEvent, SessionEventHub, SessionExecutionClaim, SessionExecutionStart,
         SessionId, SessionQueryResult, SessionStatus,
@@ -79,7 +80,10 @@ impl HostedRuntime {
                 queue_depth,
             });
         }
-        if session.status == SessionStatus::WaitingForApproval {
+        if matches!(
+            session.status,
+            SessionStatus::WaitingForApproval | SessionStatus::WaitingForTool
+        ) {
             return Err(HostedStoreError::SessionConflict);
         }
         let claim = self
@@ -110,7 +114,10 @@ impl HostedRuntime {
         session_id: &SessionId,
     ) -> Result<Session, HostedStoreError> {
         let session = self.store.session(&account, session_id).await?;
-        if session.status == SessionStatus::WaitingForApproval {
+        if matches!(
+            session.status,
+            SessionStatus::WaitingForApproval | SessionStatus::WaitingForTool
+        ) {
             return Err(HostedStoreError::SessionConflict);
         }
         let claim = self
@@ -151,6 +158,14 @@ impl HostedRuntime {
         let runtime = self.clone();
         tokio::spawn(async move {
             loop {
+                match runtime.store.expire_one_pending_device_work().await {
+                    Ok(records) => {
+                        for record in records {
+                            runtime.live_events.publish(record);
+                        }
+                    }
+                    Err(error) => eprintln!("hosted device-work expiry failed: {error}"),
+                }
                 match runtime.store.claim_due_wakeup().await {
                     Ok(Some((account, claimed, wakeup_id))) => runtime.spawn_with_wakeup(
                         account,
@@ -218,10 +233,30 @@ impl HostedRuntime {
         session_id: &SessionId,
         claim: &SessionExecutionClaim,
     ) -> Result<(), HostedStoreError> {
-        let (session, messages) = self
+        let (session, context) = self
             .store
-            .model_messages_for_claim(account, session_id, claim)
+            .model_context_for_claim(account, session_id, claim)
             .await?;
+        if let Some(active) = active_tool_execution(&context.messages) {
+            if let Some(call) = active.next_pending_tool_call() {
+                let records = self
+                    .store
+                    .park_existing_device_tool_approval(
+                        account,
+                        session_id,
+                        claim,
+                        active.assistant_message_id.as_str(),
+                        active.result_parent_message_id.as_str(),
+                        call,
+                        "tool requires approval",
+                    )
+                    .await?;
+                for record in records {
+                    self.live_events.publish(record);
+                }
+                return Ok(());
+            }
+        }
         let client = BifrostClient::new(
             self.bifrost_base_url.clone(),
             crate::llm::ModelName::new(session.model),
@@ -247,30 +282,36 @@ impl HostedRuntime {
             Ok::<(), HostedStoreError>(())
         });
         let response = client
-            .stream(&messages, &[], session.reasoning.as_ref(), None, |event| {
-                let event = match event {
-                    LlmStreamEvent::AssistantDelta(text) => SessionEvent::AssistantDelta {
-                        text: text.to_string(),
-                    },
-                    LlmStreamEvent::ReasoningDelta(text) => SessionEvent::ReasoningDelta {
-                        text: text.to_string(),
-                    },
-                    LlmStreamEvent::ToolCallDelta {
-                        index,
-                        id,
-                        name,
-                        arguments_delta,
-                    } => SessionEvent::ToolCallDelta {
-                        index,
-                        id: id.map(ToOwned::to_owned),
-                        name: name.map(ToOwned::to_owned),
-                        arguments_delta: arguments_delta.map(ToOwned::to_owned),
-                    },
-                };
-                sender
-                    .send(event)
-                    .map_err(|_| anyhow::anyhow!("hosted session event writer stopped"))
-            })
+            .stream(
+                &context.messages,
+                &context.tool_schemas,
+                session.reasoning.as_ref(),
+                None,
+                |event| {
+                    let event = match event {
+                        LlmStreamEvent::AssistantDelta(text) => SessionEvent::AssistantDelta {
+                            text: text.to_string(),
+                        },
+                        LlmStreamEvent::ReasoningDelta(text) => SessionEvent::ReasoningDelta {
+                            text: text.to_string(),
+                        },
+                        LlmStreamEvent::ToolCallDelta {
+                            index,
+                            id,
+                            name,
+                            arguments_delta,
+                        } => SessionEvent::ToolCallDelta {
+                            index,
+                            id: id.map(ToOwned::to_owned),
+                            name: name.map(ToOwned::to_owned),
+                            arguments_delta: arguments_delta.map(ToOwned::to_owned),
+                        },
+                    };
+                    sender
+                        .send(event)
+                        .map_err(|_| anyhow::anyhow!("hosted session event writer stopped"))
+                },
+            )
             .await;
         drop(sender);
         event_writer.await.map_err(|error| {
@@ -279,12 +320,61 @@ impl HostedRuntime {
         let response = response.map_err(|error| {
             HostedStoreError::Database(sqlx::Error::Protocol(error.to_string()))
         })?;
-        if !response.metadata.tool_calls.is_empty() {
-            return Err(HostedStoreError::SessionConflict);
+        if let Some(call) = response
+            .metadata
+            .tool_calls
+            .iter()
+            .min_by_key(|call| call.index)
+        {
+            // The store reuses the shared policy decision and persists a
+            // manual approval wait. Streaming/model work ends here; only a
+            // later browser approval can create a device assignment.
+            let records = match self
+                .store
+                .park_claimed_session_for_device_approval(
+                    account,
+                    session_id,
+                    claim,
+                    &response.content,
+                    &response.metadata,
+                    call,
+                    "tool requires approval",
+                )
+                .await
+            {
+                Ok(records) => records,
+                // A tool can disappear or become stale between model context
+                // assembly and this transaction. Persist the shared-policy
+                // failure so the model gets an honest result on continuation.
+                Err(HostedStoreError::SessionConflict) => {
+                    self.store
+                        .park_claimed_session_with_denied_tool(
+                            account,
+                            session_id,
+                            claim,
+                            &response.content,
+                            &response.metadata,
+                            call,
+                            "attached tool is unavailable on the bound device",
+                        )
+                        .await?
+                }
+                Err(error) => return Err(error),
+            };
+            for record in records {
+                self.live_events.publish(record);
+            }
+            return Ok(());
         }
         let records = self
             .store
-            .complete_session_with_assistant(account, session_id, claim, &response.content)
+            .complete_session_with_assistant_metadata(
+                account,
+                session_id,
+                claim,
+                &response.content,
+                &response.metadata,
+            )
             .await?;
         for record in records {
             self.live_events.publish(record);

@@ -4,7 +4,8 @@
 //! in turn and tool-execution modules.
 
 pub(crate) mod context;
-mod retry;
+pub(crate) mod progression;
+pub(crate) mod retry;
 mod tool_execution;
 mod turn;
 pub(crate) mod wakeup;

@@ -2,9 +2,10 @@
 
 ## Status and scope
 
-Deployed — 2026-09-19. The server and official UI are live; the independent
-human pairing/presence acceptance checklist remains pending. No tool execution
-or plugin installation was added.
+Deployed — 2026-09-19. The server and official UI are live. Peter confirmed
+Google pairing, foreground-agent activation, and online presence in Computers;
+the remaining independent enrollment checks stay pending. No tool execution or
+plugin installation was added.
 
 ### Implementation evidence
 
@@ -38,8 +39,9 @@ or plugin installation was added.
   without registering a computer. The built Vercel artifact is live at
   `app.windieos.com`; `/`, `/devices/connect`, `/computers`, and `/c/:id` all
   resolve to its tested SPA shell.
-- Full Google/browser/OS-process/network/server-restart live proof remains
-  unchecked below. No browser automation was used.
+- Peter manually confirmed Google pairing, explicit local activation, and the
+  same Mac online in Computers. The remaining isolation, recovery, and
+  revocation proofs stay unchecked below. No browser automation was used.
 
 Implementation placement follows the existing CLI parser; adjacent hosted
 workflow/auth adapters are kept in `hosted/device_api.rs`, and atomic database
@@ -412,8 +414,8 @@ Terminal tests must cover:
 
 Manual/live proof (record each independently; all start unchecked):
 
-- [ ] Pair the Mac through Google sign-in and explicit browser + local approval.
-- [ ] Run the agent and see the same device online in the account's Computers view.
+- [x] Pair the Mac through Google sign-in and explicit browser + local approval.
+- [x] Run the agent and see the same device online in the account's Computers view.
 - [ ] A second account cannot see or revoke that device.
 - [ ] Stop/kill the agent; graceful release or lease expiry yields offline state.
 - [ ] Restart it and recover the same device ID without a new registration.

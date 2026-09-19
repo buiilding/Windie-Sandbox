@@ -13,8 +13,8 @@ mod store;
 
 pub use catalog::{
     AppSummary, MarketplaceIndex, MarketplacePlugin, MarketplacePresentation, MarketplaceVersion,
-    McpSummary, PluginCatalog, PluginIndex, PluginState, PluginSummary, SkillSummary,
-    bundled as bundled_index,
+    McpSummary, PluginCapabilitySnapshot, PluginCatalog, PluginIndex, PluginProviderCapability,
+    PluginState, PluginSummary, SkillSummary, bundled as bundled_index, project_installed_plugin,
 };
 pub use installer::MarketplaceInstaller;
 pub use manifest::{

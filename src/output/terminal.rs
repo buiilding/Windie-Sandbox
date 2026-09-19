@@ -538,6 +538,10 @@ impl TerminalOutput {
                 println!("tool result saved {message_id}");
             }
             SessionEvent::WaitingForApproval => println!("waiting for approval"),
+            SessionEvent::WaitingForTool {
+                assignment_id,
+                device_id,
+            } => println!("waiting for tool assignment {assignment_id} on device {device_id}"),
             SessionEvent::Completed { message_id } => {
                 println!("completed {}", message_id.as_deref().unwrap_or("(empty)"))
             }

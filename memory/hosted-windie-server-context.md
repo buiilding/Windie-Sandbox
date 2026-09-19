@@ -4,6 +4,11 @@ Read this after a context reset before resuming hosted-server work. It records
 decisions, current implementation/deployment facts, and cautions; the phase
 plan remains the authority for work scope and completion status.
 
+Last updated: 2026-09-19, after deploying registered-device enrollment and
+presence and confirming Peter's Mac pairing/presence proof.
+Deployment facts below are checkpoint evidence; recheck live state before
+changing production.
+
 ## Read first
 
 Before changing hosted behavior, read:
@@ -16,6 +21,8 @@ Before changing hosted behavior, read:
 - `docs/official-design/README.md`
 - `docs/plans/main-hosted-windie-server.md`
 - `docs/plans/shared-operation-persistence-refactor.md`
+- `docs/plans/official-ui-hosted-integration.md`
+- `docs/plans/device-agent-enrollment-and-connectivity.md`
 
 For every hosted feature, inspect its local counterpart first: the route in
 `src/api/`, workflow in `src/operation/`, SQLite behavior in `src/store/`, and
@@ -57,7 +64,31 @@ backends; do not build one huge generic database trait.
 The hosted server never executes a user's local filesystem, browser, or MCP
 tool. Later it owns the workflow: persist tool request, approval, authorized
 device assignment, result, and continuation. Device agents, VMs, remote
-control, and the final official chat UI remain later phases.
+control, and full official UI capabilities remain later work. The official
+transcript client is now deployed; do not mistake its computer-control branding
+for implemented hosted device execution.
+
+## Registered-device checkpoint
+
+Device enrollment and foreground presence were deployed on September 19:
+
+- `windie-server` runs the additive `0003_devices` migration behind the
+  existing private Cloudflare Tunnel;
+- the official UI exposes `/devices/connect` and `/computers` at
+  `app.windieos.com`;
+- production smoke checks passed for health, device-route authentication,
+  public enrollment creation/poll/cancellation, credential separation,
+  `no-store`, and allowed-origin CORS;
+- Peter confirmed his Mac paired through Google, activated `windie agent run`,
+  and appeared online in Computers.
+
+This is **presence only**. It does not activate a local API, SQLite, Bifrost,
+MCP process, plugin, tool, remote desktop, or model-directed computer action.
+Do not describe an online computer as tool-ready.
+
+Do not mark all enrollment acceptance complete from the pairing report alone:
+second-account isolation, offline/reconnect, hosted-service restart recovery,
+and revocation while running are still independent checks.
 
 ## Authentication and account ownership
 
@@ -101,26 +132,27 @@ The deployed gateway uses a server-only Kimi Code credential and supports
 been observed. Queue-under-load and interrupted-run/restart recovery still
 need explicit Phase 7 live proof before that phase is marked fully verified.
 
-Phase 8's limited Inspector bridge is deployed at `app.windieos.com`. It keeps
+Phase 8's limited Inspector bridge previously ran at `app.windieos.com`. It kept
 Google/Supabase authentication, uses the hosted API, creates new conversations
 with the deployment default model, resolves/query sessions, renders live
 assistant text, and reloads the durable final message. It is a temporary proof
 surface, not the final official UI and not a reason to add unsupported local
-controls to the hosted server.
+controls to the hosted server. On September 18 the official React/Vite UI
+replaced this proof client on the public hostname; see the client and deployment
+checkpoint below. This does not by itself complete any remaining phase proofs.
 
 ## Current streaming behavior and implemented improvement
 
-The current hosted session stream is durable but visually chunkier than the
-local runtime:
+The earlier hosted session stream was durable but visually chunkier than the
+local runtime because it used this path:
 
 ```text
 Bifrost delta → PostgreSQL session_events → 250 ms hosted DB poll → browser
 ```
 
 The local API persists events then uses an in-process `SessionManager`
-subscription for immediate delivery. The hosted Inspector correctly appends
-received `assistant_delta` events; the main delay is the hosted event path,
-not merely rendering.
+subscription for immediate delivery. That was the reference for replacing
+the hosted 250 ms session polling path, not a reason to replace persistence.
 
 The shared live-event delivery revision was deployed to the Droplet on
 2026-09-18. It preserves durability and reuses the local pattern:
@@ -141,16 +173,96 @@ PostgreSQL `LISTEN`/`NOTIFY` sends only the committed event ID to other
 `windie-server` instances, which reload the record from PostgreSQL and publish
 it locally. Never broadcast before the database transaction commits. The
 implementation passed local Rust suites and the deployed service and private
-Bifrost health checks. A signed-in browser stream remains the required
-post-deployment user-visible proof.
+Bifrost health checks. Peter subsequently reported that it streams well.
+Later disappearing responses were a separate official-client reconciliation
+problem, not evidence that the new event hub should be removed.
+
+## Official client: requirements and reconciliation
+
+Peter explicitly rejected repeatedly patching the temporary hosted Inspector
+or duplicating its weak reload lifecycle. Read the **local Inspector interacting
+with the local API** first: `useSessionRuntime.js`, `useConversationStore.js`,
+`useSessionPreview.js`, `useSessionTransport.js`, and `lib/sessionEvent.js`.
+Reuse the responsibilities and lifecycle, adapted to the deployed `/v1` payloads.
+
+The official UI is in the independent Git repository
+`vendor/windie-UI-official/` (remote `buiilding/windie-UI-official`). At this
+checkpoint it is NOT a registered root Git submodule; root status shows the
+directory as untracked. Commit inside it, not as an accidental embedded gitlink.
+
+Required navigation:
+
+- `/` is New Chat, with no database creation until the first send.
+- First send creates a conversation and adopts `/c/<server-issued-id>` without
+  reopening or clearing the turn being submitted.
+- `/c/<id>` loads only that conversation. Its transcript/composer stay blank
+  until loaded. Missing/unauthorized IDs show an error on that route, never the
+  New Chat landing. The shell may remain visible while loading.
+- Backend owns session resolution; a unique tree leaf is only a display choice.
+  Multiple branches require choosing a head, not guessing session ownership.
+
+Client structure after refactoring:
+
+- `app/hosted/use-hosted-windie.ts`: thin React external-store/lifecycle binding.
+- `app/hosted/conversation-client.ts`: navigation generations, account list,
+  query bootstrap, backend session resolution, per-session replay cursors.
+- `app/hosted/transcript-state.ts`: canonical message upserts, preview projection,
+  route visibility, and stable keys for streamed/saved assistant rows.
+- `lib/hosted-api.ts`, `lib/hosted-types.ts`, `lib/sse.ts`: typed authenticated
+  requests and ordered asynchronous SSE delivery.
+
+Concrete bugs found and addressed:
+
+- Ordinary immediate hosted queries do NOT emit `input_started`; queued inputs
+  do. Like local Inspector, load the saved user node after query and before
+  subscribing/replaying. Do not wait indefinitely for a nonexistent event.
+- Local SSE hydrates saved messages; current hosted SSE envelopes contain IDs.
+  Hydrate missing saved nodes in the ordered event adapter, then upsert them
+  before clearing previews. Do not launch detached full-view reloads.
+- Terminal events previously overtook pending saved-message fetches; account
+  refreshes could restore the old user head and hide a finished assistant.
+  Await reconciliation and advance the cursor only afterward. Failed hydration
+  retains the preview and replays from before the unprocessed saved event.
+- Account invalidations must not navigate or reset an active preview/head;
+  late responses from a previous route are fenced by the view generation.
+- Streamed and saved assistant rows now use the same component and key.
+- Token refresh reconnects without clearing current state. Account changes
+  remount the client. Running-session replay reconstructs previews offscreen.
+
+The client refactor did not change/deploy Rust or PostgreSQL. Tests cover route
+races, missing routes, duplicate sends, two successive turns, account/save
+interleaving, hydration failure/retry, token refresh, replay, second-browser
+activation, and fragmented/sequential SSE. These are terminal-run regressions,
+not authenticated visual/browser proof.
+
+## Sign-in design and exact approved copy
+
+`app/hosted/auth-screen.tsx` is presentation-only; OAuth stays in
+`lib/hosted-auth.ts`. The gate now sits OUTSIDE `SidebarProvider`: that flex
+wrapper previously shrink-wrapped the page into the narrow left column shown
+in Peter's screenshot. Only authenticated chat is wrapped by the sidebar.
+
+The design uses the existing warm dark palette, a small top-left Windie wordmark,
+centered unboxed content, subtle amber accents, and a light Google button with
+the provider mark. Loading/configuration errors use the same standalone layout.
+
+Approved copy:
+
+- Eyebrow: `AI that controls computers` (replaced `YOUR SPACE TO THINK`).
+- Heading: `Welcome to Windie.`
+- Description: `Tell Windie what you need.` / `Let it take care of the clicks.`
+- Action: `Continue with Google`.
+
+Do not reintroduce the earlier thought/idea description or change authentication
+behavior while making styling adjustments.
 
 ## Deployment and operations
 
 The production DigitalOcean Droplet is the hosted account/conversation server,
 not a future user remote-control VM. It has a private PostgreSQL database,
 loopback-only `windie-server`, private loopback Bifrost, and Cloudflare Tunnel
-public routing for `https://hosted-api.windieos.com`. The Inspector is hosted
-separately at `https://app.windieos.com`.
+public routing for `https://hosted-api.windieos.com`. The official browser UI is
+hosted separately by Vercel at `https://app.windieos.com`.
 
 The Droplet has 2 GiB RAM. PostgreSQL is conservatively tuned. `windie-server`
 and Bifrost run as separate unprivileged service accounts; provider data is not
@@ -170,6 +282,53 @@ An isolated PostgreSQL test database exists on the Droplet for hosted
 acceptance tests. Keep it separate from production; do not run test migrations
 or test commands against production data.
 
+### Official UI deployment checkpoint — September 18
+
+Peter explicitly authorized commit, push, and publication to `app.windieos.com`.
+
+- Official UI `7bf438c`: hosted integration, route and transcript refactor.
+- Official UI `47b8d49`: redesigned sign-in, approved copy, tests, `vercel.json`.
+  Pushed to `origin/main`; this also pushed the preceding local UI commits.
+- Root `fe55d1a7`: integration plan/frontend index documentation, committed in
+  the prior step. Do not infer that the root branch was pushed with the UI.
+- Vercel existing project: `frontend`, scope `peterbuics-8590s-projects`.
+- Current release:
+  `https://frontend-5485uixh3-peterbuics-8590s-projects.vercel.app`
+  (`dpl_13shrJXCRdCwtLCzPRn93Neq7jqc`).
+- Previous Inspector rollback release:
+  `https://frontend-cwakw419b-peterbuics-8590s-projects.vercel.app`
+  (`dpl_6xzRR9beKZfZeahbWGptfLxxvNHt`).
+
+Build used `VITE_WINDIE_API_URL=https://hosted-api.windieos.com npm run build`.
+Public Supabase settings came from ignored local environment configuration;
+never print/commit secret files. Development still uses `/hosted-api` through
+the Vite proxy at `http://localhost:3000`; that proxy is not available in a
+production static bundle.
+
+Deployment used a prebuilt static output with a filesystem-first route then
+`/index.html` fallback. The Vercel project had legacy CRA/build-directory settings;
+do not blindly run its old remote build against the Vite source. The UI's new
+`vercel.json` declares Vite, `dist`, and deep-link rewrites. The exact tested
+bundle was uploaded with `vercel deploy --prebuilt --prod --skip-domain`, then
+`vercel alias set <release-url> app.windieos.com`. No DNS or Droplet change.
+
+Verified after publication:
+
+- 28 tests, TypeScript/Vite build, targeted lint, and whitespace checks passed.
+  Full-project lint still has unrelated generated-component findings.
+- `/` and `/c/deployment-route-check` on the public hostname returned HTTP 200
+  with HTML byte-identical to the release (the latter is only a shell test).
+- Served JS/CSS matched local release bytes; the JS contains the production API,
+  public auth configuration, and approved new copy.
+- Production CORS allows `https://app.windieos.com`; unauthenticated conversation
+  requests return 401.
+
+Still unverified for this official UI release: actual Google login, visual
+layout, send/stream/final-response continuity, deep-link loading of a real
+conversation, two-browser behavior, and browser recovery. Peter was asked to
+perform these manually. Do not relabel old Inspector acceptance as proof of
+the new official UI. No browser automation was used.
+
 ## Implementation structure and cautions
 
 Hosted HTTP handlers should authenticate, validate input, call an operation or
@@ -185,10 +344,13 @@ hosted bridge must continue exposing only hosted capabilities. Do not automate
 browser UI tests unless Peter asks; use terminal checks where possible and ask
 him to perform authenticated UI proof.
 
-The root checkout and Inspector Git submodule may have in-progress work.
-Preserve unrelated changes. For an explicit commit, inspect both statuses,
-stage only the intended files, commit the Inspector first when it changed, then
-commit the root submodule pointer; never push without explicit authorization.
+The root checkout, Inspector submodule, and independent official UI repository
+may have in-progress work. Preserve unrelated changes. For an explicit commit,
+inspect all relevant statuses and stage only intended files. If Inspector
+changed, commit it before its root pointer. Do not add the official UI as a
+gitlink without an intentional submodule decision. Never push without explicit
+authorization. `.playwright-cli/` and `output/` in the official UI were left
+untracked, as were unrelated Inspector edits; do not include them in commits.
 
 ## Resume sequence
 
@@ -197,7 +359,10 @@ commit the root submodule pointer; never push without explicit authorization.
 2. Read the local equivalent before making any hosted change.
 3. Keep durable PostgreSQL events authoritative; never bypass account checks or
    execution claims for convenience.
-4. Finish Phase 7 queue and restart-recovery proof, then manually confirm the
-   deployed replay-plus-live event path makes a signed-in stream feel smooth.
-5. Continue only with the next planned hosted capability; do not jump ahead to
+4. For current UI follow-up, first collect Peter's live official-client results:
+   Google login, direct conversation URL, two successive sends whose assistant
+   replies remain visible, New Chat, and refresh/reconnect. Diagnose the actual
+   deployed release before adding another state/reload workaround.
+5. Keep Phase 7 queue and interrupted-run/restart proof gaps explicit. Continue
+   only with the next requested/planned capability; do not jump ahead to
    device execution or remote control.

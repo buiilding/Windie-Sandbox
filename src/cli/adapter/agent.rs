@@ -95,14 +95,24 @@ pub(super) async fn run(command: crate::cli::AgentCommand) -> Result<()> {
             };
             Ok(())
         }
-        crate::cli::AgentCommand::Run => {
+        crate::cli::AgentCommand::Run | crate::cli::AgentCommand::RunTools => {
             let c = existing.context("Not paired. Run windie agent connect.")?;
             anyhow::ensure!(
                 c.device_id.is_some(),
                 "Pairing is incomplete. Run windie agent connect."
             );
+            let tools_enabled = matches!(command, crate::cli::AgentCommand::RunTools);
+            if tools_enabled {
+                println!(
+                    "Tools enabled: only approved hosted assignments for locally enabled plugins may run."
+                );
+            }
             let mut lease = None;
-            let result = tokio::select! {result=agent::presence(&client,&c,&mut lease,|s|println!("{s}"))=>result,_=tokio::signal::ctrl_c()=>Ok(())};
+            let result = if tools_enabled {
+                tokio::select! {result=agent::presence_with_tools(&client,&c,&storage,&mut lease,|s|println!("{s}"))=>result,_=tokio::signal::ctrl_c()=>Ok(())}
+            } else {
+                tokio::select! {result=agent::presence(&client,&c,&mut lease,|s|println!("{s}"))=>result,_=tokio::signal::ctrl_c()=>Ok(())}
+            };
             if result.is_ok()
                 && let Some(lease) = lease
             {

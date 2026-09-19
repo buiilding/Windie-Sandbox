@@ -1,5 +1,25 @@
 # Shared Live Session Event Delivery
 
+## Implementation status — 2026-09-18
+
+Implemented and deployed to the Droplet:
+
+| Slice | Status / evidence |
+| --- | --- |
+| Shared hub | `src/session/live_events.rs` owns the shared process-local subscription primitive; local `SessionManager` uses it. |
+| Hosted live publication | Hosted runtime publishes committed records; hosted session SSE subscribes before replay and deduplicates by durable cursor. |
+| Cross-instance notification | PostgreSQL `pg_notify` sends event IDs after commit; the listener reloads durable records and publishes locally. |
+| Recovery path | Durable replay handles reconnect/lag; hosted session SSE has a five-second recovery fallback. Account-event polling is unchanged. |
+| Compatibility checks | Local Rust suites and deployed server/private-gateway health checks were recorded as passed at deployment. This status update does not claim they were rerun. |
+| User-visible latency | Peter reported that streaming works well after deployment. This confirms observed responsiveness, not every failure/multi-instance scenario. |
+
+Do not mark all acceptance criteria below complete from that feedback alone.
+Queue-under-load and interrupted execution/restart proofs remain open in the
+main server plan. Full multi-instance/missed-notification and post-deployment
+reconnect proof should retain their explicit test/run evidence. The official
+UI now has a separate saved-message reconciliation refactor and pending browser
+acceptance; a disappearing final row was not proof of a server delivery failure.
+
 ## Purpose
 
 Make hosted assistant streaming feel as immediate as the local runtime without
@@ -10,7 +30,7 @@ This is a focused session-event transport plan. It does not redesign
 conversations, session persistence, the Inspector, Bifrost, account-event
 SSE, device execution, or the official UI.
 
-## Current behavior
+## Baseline before implementation
 
 Both runtimes save the same `SessionEvent` / `SessionEventRecord` domain
 events. Their live-delivery paths differ:
@@ -19,16 +39,16 @@ events. Their live-delivery paths differ:
 Local API
 session writes SQLite event → SessionManager broadcast → SSE → browser
 
-Hosted API today
+Hosted API before this change
 hosted worker writes PostgreSQL event → 250 ms PostgreSQL poll → SSE → browser
 ```
 
-The hosted worker already saves one durable event per model delta. Its
-`src/hosted/events.rs` polling interval is therefore the main source of
-visible batching. The hosted Inspector appends every received
+The hosted worker already saved one durable event per model delta. Its former
+`src/hosted/events.rs` session polling interval was the main source of
+visible batching. The hosted Inspector appended every received
 `assistant_delta`; it cannot display events that have not reached it yet.
 
-The desired common pattern is:
+The implemented common pattern is:
 
 ```text
 persist committed event → publish the exact record live → browser receives it

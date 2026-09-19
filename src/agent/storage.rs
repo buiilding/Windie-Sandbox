@@ -3,14 +3,14 @@
 
 use crate::device::*;
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Credentials {
     pub server: String,
     pub enrollment_secret: String,
@@ -20,6 +20,7 @@ pub(crate) struct Credentials {
     pub device_id: Option<DeviceId>,
 }
 /// Pending and active state share one atomic record; device_id marks successful activation.
+#[derive(Clone)]
 pub(crate) struct Storage {
     root: PathBuf,
 }
@@ -71,6 +72,55 @@ impl Storage {
         self.save_before_rename(value, || Ok(()))
     }
 
+    /// Loads one fixed, owner-only JSON record used by another agent concern.
+    /// Callers supply compile-time file names; this is not a general file API.
+    pub(crate) fn load_record<T: DeserializeOwned>(&self, name: &'static str) -> Result<Option<T>> {
+        ensure!(
+            valid_record_name(name),
+            "Invalid protected agent record name"
+        );
+        let path = self.root.join(name);
+        if !path.try_exists()? {
+            if fs::symlink_metadata(&path).is_ok() {
+                anyhow::bail!("Unsafe protected agent record path");
+            }
+            return Ok(None);
+        }
+        let file = secure_open(&path, false)?;
+        let mut text = String::new();
+        file.take(524_289).read_to_string(&mut text)?;
+        ensure!(text.len() <= 524_288, "Protected agent record is too large");
+        Ok(Some(serde_json::from_str(&text).map_err(|_| {
+            anyhow::anyhow!("Invalid protected agent record; preserve it for recovery")
+        })?))
+    }
+
+    /// Atomically replaces one fixed owner-only JSON record after flushing it.
+    pub(crate) fn save_record<T: Serialize>(&self, name: &'static str, value: &T) -> Result<()> {
+        ensure!(
+            valid_record_name(name),
+            "Invalid protected agent record name"
+        );
+        check_directory(&self.root, true)?;
+        let target = self.root.join(name);
+        if fs::symlink_metadata(&target).is_ok() {
+            secure_open(&target, false)?;
+        }
+        let temporary = self.root.join(format!("pending-{}", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = secure_open(&temporary, true)?;
+            file.write_all(&serde_json::to_vec(value)?)?;
+            file.sync_all()?;
+            fs::rename(&temporary, &target)?;
+            File::open(&self.root)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+
     /// Injection point proves failures before the atomic rename preserve old state.
     fn save_before_rename(
         &self,
@@ -109,6 +159,14 @@ impl Storage {
         File::open(&self.root)?.sync_all()?;
         Ok(())
     }
+}
+fn valid_record_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 80
+        && name.ends_with(".json")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
 }
 fn create_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]

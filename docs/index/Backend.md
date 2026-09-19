@@ -1,29 +1,45 @@
 # Backend mental model
 
-## Registered-device enrollment and presence
+## Registered-device enrollment, presence, and hosted tool work
 
-This is presence-only infrastructure, not remote tool execution. It reuses the
-existing CLI/library, verified hosted account mapping, and PostgreSQL migration
-runner; it does not start local API, SQLite sessions, Bifrost, or MCP.
+The registered-device path is an outbound, authenticated bridge from a user's
+computer to the hosted server. Enrollment and presence do not authorize any
+tool by themselves. A separate `windie agent run --tools` opt-in reports the
+Mac's already-installed capabilities and accepts an individually approved,
+device-bound assignment. The hosted server owns the model/session workflow;
+the Mac reuses the existing package, SQLite catalog, registry, MCP executor,
+and result normalization. It does not start a local API, local sessions, or
+Bifrost to serve hosted work.
 
-- `src/device/mod.rs`: typed IDs, enrollment/presence DTOs, timing constants,
-  principal-specific bearer digests, HMAC pairing codes and public errors.
-- `src/agent/mod.rs`: exact-origin HTTPS client and foreground presence loop.
+This describes source in the current working tree. The first real package/MCP
+round trip and deployment are still pending their isolated PostgreSQL and
+manual Mac proofs.
+
+- `src/device/mod.rs`: typed enrollment, capability-report, assignment, start,
+  and result DTOs; timing constants; principal-specific bearer digests; HMAC
+  pairing codes; and public errors.
+- `src/agent/mod.rs`: exact-origin HTTPS client, foreground presence/work
+  loops, and existing local capability projection.
+- `src/agent/execution.rs`, `src/agent/journal.rs`: adapter and protected
+  recovery journal around the existing local package reader and MCP registry.
 - `src/agent/enrollment.rs`: retry/recovery workflow with injected local consent.
 - `src/agent/storage.rs`: protected atomic credential records and OS lock.
 - `src/agent/tests.rs`: loopback transport/enrollment and terminal-auth tests.
 - `src/cli/adapter/agent.rs`: connect/run/status prompts, output and Ctrl-C.
-- `src/hosted/device_api.rs`: thirteen device routes, principal-specific auth,
-  code approval, size/rate guards and availability gate; separate from browser
-  conversation middleware in `hosted/api.rs`.
-- `src/hosted/store/device.rs`: atomic account binding, activation/revocation,
-  source/account throttles, retention and lease fencing against PostgreSQL.
-- `src/hosted/store/device/tests.rs`: isolated PostgreSQL lifecycle proofs.
-- `migrations/hosted/0003_devices.sql`: additive enrollment/credential/device/
-  presence/rate/audit tables. No plaintext bearer credentials or tool commands.
+- `src/hosted/device_api.rs`: principal-specific device HTTP routes for
+  enrollment, presence, reports, work polling/start/result, size/rate guards,
+  and availability; separate from browser conversation middleware in
+  `hosted/api.rs`.
+- `src/hosted/store/device.rs`: account-scoped enrollment, immutable session
+  binding, revision-bound attachments/approvals/assignments/results, expiry,
+  lease fencing, and revocation transactions in PostgreSQL.
+- `src/hosted/store/device/tests.rs`: isolated PostgreSQL lifecycle and
+  capability-report proofs.
+- `migrations/hosted/0003_devices.sql`, `0004_device_tool_work.sql`: additive
+  device identity/presence and hosted tool-work tables. No plaintext bearer
+  credentials, arbitrary commands, or package paths cross the boundary.
 
-See [device-agent operations](../guides/device-agent.md). Source implementation
-is not yet a production deployment or completed manual proof.
+See [device-agent operations](../guides/device-agent.md).
 
 ## Conversation and input
 

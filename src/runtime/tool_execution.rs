@@ -5,21 +5,20 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
-use serde_json::Value;
-
-use crate::conversation::{ConversationId, Message, MessageId, Role, ToolCall, ToolCallId};
+use crate::conversation::{ConversationId, MessageId, ToolCall, ToolCallId};
 use crate::error;
 use crate::plugin::PluginCatalog;
 use crate::store::Store;
-use crate::tool::{
-    ATTACH_MCP_TOOL_NAME, BUILTIN_PROVIDER_ID, READ_SKILL_TOOL_NAME, ToolProviderRegistry,
+use crate::tool::control::{
+    AttachmentFacts, ControlRequest, plan_provider_attachment, validate_mcp_membership,
 };
-use crate::tool::{
-    AttachedTool, PolicyDecision, ToolExecutionResult, ToolPolicy, ToolProviderKind, ToolSchemaName,
-};
+use crate::tool::{AttachedTool, ToolExecutionResult, ToolProviderKind, ToolSchemaName};
+use crate::tool::{BUILTIN_PROVIDER_ID, ToolProviderRegistry};
+use anyhow::Result;
 
 use super::RuntimeMessagePersistence;
+pub(crate) use super::progression::{PendingToolCall, active_tool_execution};
+use super::progression::{ToolAction, next_tool_action};
 use super::turn::load_path_at_head;
 
 pub(crate) enum AutomaticToolResolution {
@@ -48,22 +47,17 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
         result_parent_message_id: execution.result_parent_message_id,
         tool_call,
     };
-    let policy = ToolPolicy;
     let attached_tool =
         load_attached_tool_for_call(store, conversation_id, &pending.tool_call, tools)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
-    let result = match policy.decide(
+    let result = match next_tool_action(
         &pending.tool_call,
         attached_tool.as_ref(),
         attached_tool_can_execute(store, tools, attached_tool.as_ref()),
         approval_mode,
     ) {
-        PolicyDecision::Deny { reason } => ToolExecutionResult::failure(
-            pending.tool_call.id.clone(),
-            pending.tool_call.name(),
-            reason,
-        ),
-        PolicyDecision::Allow => {
+        ToolAction::PersistDenied(result) => result,
+        ToolAction::Execute => {
             execute_provider_tool_call(
                 store,
                 conversation_id,
@@ -74,7 +68,9 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
             )
             .await?
         }
-        PolicyDecision::Ask { .. } => return Ok(AutomaticToolResolution::WaitingForApproval),
+        ToolAction::RequestApproval { .. } => {
+            return Ok(AutomaticToolResolution::WaitingForApproval);
+        }
     };
 
     let message_id = events.save_tool_result(
@@ -90,84 +86,9 @@ pub(crate) async fn resolve_next_automatic_tool_call_at_head(
     Ok(AutomaticToolResolution::Resolved)
 }
 
-pub(crate) struct PendingToolCall {
-    pub(crate) result_parent_message_id: MessageId,
-    pub(crate) tool_call: ToolCall,
-}
-
 pub(crate) enum PendingToolExecution {
     Finished(ToolExecutionResult),
     Execute(AttachedTool),
-}
-
-pub(crate) struct ActiveToolExecution {
-    pub(crate) assistant_message_id: MessageId,
-    pub(crate) result_parent_message_id: MessageId,
-    requested_tool_calls: Vec<ToolCall>,
-    resolved_tool_call_ids: HashSet<String>,
-}
-
-impl ActiveToolExecution {
-    pub(crate) fn next_pending_tool_call(&self) -> Option<&ToolCall> {
-        self.requested_tool_calls
-            .iter()
-            .find(|tool_call| !self.resolved_tool_call_ids.contains(tool_call.id.as_str()))
-    }
-
-    fn has_requested_tool_call(&self, tool_call_id: &ToolCallId) -> bool {
-        self.requested_tool_calls
-            .iter()
-            .any(|tool_call| &tool_call.id == tool_call_id)
-    }
-
-    fn has_tool_result(&self, tool_call_id: &ToolCallId) -> bool {
-        self.resolved_tool_call_ids.contains(tool_call_id.as_str())
-    }
-}
-
-pub(crate) fn active_tool_execution(messages: &[Message]) -> Option<ActiveToolExecution> {
-    let (assistant_index, assistant) = messages.iter().enumerate().rev().find(|(_, message)| {
-        message.role == Role::Assistant
-            && message
-                .metadata
-                .as_ref()
-                .is_some_and(|metadata| !metadata.tool_calls.is_empty())
-    })?;
-    let assistant_message_id = assistant.id.as_ref()?.clone();
-    let requested_tool_calls = assistant.metadata.as_ref()?.tool_calls.clone();
-    let requested_tool_call_ids = requested_tool_calls
-        .iter()
-        .map(|tool_call| tool_call.id.as_str().to_string())
-        .collect::<HashSet<_>>();
-    let mut result_parent_message_id = assistant_message_id.clone();
-    let mut resolved_tool_call_ids = HashSet::new();
-
-    for message in &messages[assistant_index + 1..] {
-        if message.role != Role::Tool {
-            break;
-        }
-        let Some(message_id) = message.id.as_ref() else {
-            continue;
-        };
-        let Some(tool_call_id) = message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.tool_call_id.as_ref())
-        else {
-            continue;
-        };
-        if requested_tool_call_ids.contains(tool_call_id.as_str()) {
-            resolved_tool_call_ids.insert(tool_call_id.as_str().to_string());
-            result_parent_message_id = message_id.clone();
-        }
-    }
-
-    Some(ActiveToolExecution {
-        assistant_message_id,
-        result_parent_message_id,
-        requested_tool_calls,
-        resolved_tool_call_ids,
-    })
 }
 
 /// Tree-wide: tool lookup ignores head, same tool set for any branch.
@@ -177,25 +98,18 @@ pub(crate) fn prepare_pending_tool_execution(
     pending: &PendingToolCall,
     registry: &ToolProviderRegistry,
 ) -> Result<PendingToolExecution> {
-    let policy = ToolPolicy;
     let attached_tool =
         load_attached_tool_for_call(store, conversation_id, &pending.tool_call, registry)?;
     let approval_mode = store.tool_approval_mode(conversation_id)?;
 
-    match policy.decide(
+    match next_tool_action(
         &pending.tool_call,
         attached_tool.as_ref(),
         attached_tool_can_execute(store, registry, attached_tool.as_ref()),
         approval_mode,
     ) {
-        PolicyDecision::Deny { reason } => Ok(PendingToolExecution::Finished(
-            ToolExecutionResult::failure(
-                pending.tool_call.id.clone(),
-                pending.tool_call.name(),
-                reason,
-            ),
-        )),
-        PolicyDecision::Allow | PolicyDecision::Ask { .. } => {
+        ToolAction::PersistDenied(result) => Ok(PendingToolExecution::Finished(result)),
+        ToolAction::Execute | ToolAction::RequestApproval { .. } => {
             let Some(attached_tool) = attached_tool else {
                 return Err(error::invalid_request(format!(
                     "Tool is not attached: {}",
@@ -373,22 +287,22 @@ async fn execute_builtin_tool_call(
         ));
     }
 
-    match attached_tool.provider.tool_name.as_str() {
-        READ_SKILL_TOOL_NAME => {
-            let arguments = match parse_builtin_arguments(pending) {
-                Ok(arguments) => arguments,
-                Err(error) => return Ok(builtin_failure(pending, &error.to_string())),
-            };
-            let Some(plugin_id) = arguments.get("plugin_id").and_then(Value::as_str) else {
-                return Ok(builtin_failure(pending, "plugin_id is required"));
-            };
-            let Some(skill_id) = arguments.get("skill_id").and_then(Value::as_str) else {
-                return Ok(builtin_failure(pending, "skill_id is required"));
-            };
+    let request = match ControlRequest::parse(
+        attached_tool.provider.tool_name.as_str(),
+        &pending.tool_call,
+    ) {
+        Ok(request) => request,
+        Err(error) => return Ok(builtin_failure(pending, &error.to_string())),
+    };
+    match request {
+        ControlRequest::ReadSkill {
+            plugin_id,
+            skill_id,
+        } => {
             let Some(plugin_catalog) = plugin_catalog else {
                 return Ok(builtin_failure(pending, "plugin catalog is unavailable"));
             };
-            match plugin_catalog.read_skill(plugin_id, skill_id) {
+            match plugin_catalog.read_skill(&plugin_id, &skill_id) {
                 Ok(instructions) => Ok(ToolExecutionResult {
                     tool_call_id: pending.tool_call.id.clone(),
                     tool_name: pending.tool_call.name().to_string(),
@@ -399,34 +313,27 @@ async fn execute_builtin_tool_call(
                 Err(error) => Ok(builtin_failure(pending, &error.to_string())),
             }
         }
-        ATTACH_MCP_TOOL_NAME => {
-            let arguments = match parse_builtin_arguments(pending) {
-                Ok(arguments) => arguments,
-                Err(error) => return Ok(builtin_failure(pending, &error.to_string())),
-            };
-            let Some(plugin_id) = arguments.get("plugin_id").and_then(Value::as_str) else {
-                return Ok(builtin_failure(pending, "plugin_id is required"));
-            };
-            let Some(mcp_id) = arguments.get("mcp_id").and_then(Value::as_str) else {
-                return Ok(builtin_failure(pending, "mcp_id is required"));
-            };
+        ControlRequest::AttachMcp { plugin_id, mcp_id } => {
             let Some(plugin_catalog) = plugin_catalog else {
                 return Ok(builtin_failure(pending, "plugin catalog is unavailable"));
             };
-            let Some(plugin) = plugin_catalog.plugin_store().installed_plugin(plugin_id)? else {
+            let Some(plugin) = plugin_catalog.plugin_store().installed_plugin(&plugin_id)? else {
                 return Ok(builtin_failure(
                     pending,
                     &format!("installed plugin does not exist: {plugin_id}"),
                 ));
             };
-            let is_mcp = plugin.manifest.components.iter().any(|component| {
-                component.kind == crate::plugin::PluginComponentKind::Mcp && component.id == mcp_id
-            });
-            if !is_mcp {
-                return Ok(builtin_failure(
-                    pending,
-                    &format!("MCP does not exist in plugin: {plugin_id}/{mcp_id}"),
-                ));
+            if let Err(error) = validate_mcp_membership(
+                &plugin_id,
+                &mcp_id,
+                plugin
+                    .manifest
+                    .components
+                    .iter()
+                    .filter(|component| component.kind == crate::plugin::PluginComponentKind::Mcp)
+                    .map(|component| component.id.as_str()),
+            ) {
+                return Ok(builtin_failure(pending, &error.to_string()));
             }
             match attach_provider_to_conversation(
                 store,
@@ -444,17 +351,7 @@ async fn execute_builtin_tool_call(
                 Err(error) => Ok(builtin_failure(pending, &error.to_string())),
             }
         }
-        _ => Ok(ToolExecutionResult::failure(
-            pending.tool_call.id.clone(),
-            pending.tool_call.name(),
-            "unknown built-in tool",
-        )),
     }
-}
-
-fn parse_builtin_arguments(pending: &PendingToolCall) -> Result<Value> {
-    serde_json::from_str::<Value>(pending.tool_call.arguments())
-        .map_err(|error| error::invalid_request(format!("invalid tool arguments: {error}")))
 }
 
 fn builtin_failure(pending: &PendingToolCall, message: &str) -> ToolExecutionResult {
@@ -472,37 +369,24 @@ fn attach_provider_to_conversation(
     provider_id: &crate::tool::ToolProviderId,
     registry: &ToolProviderRegistry,
 ) -> Result<()> {
-    if registry.provider_manifest(provider_id).is_none() {
-        return Err(error::not_found(format!(
-            "provider does not exist: {provider_id}"
-        )));
-    }
-    if !store.provider_is_enabled(provider_id)? {
-        return Err(error::invalid_request(format!(
-            "provider is not installed, enabled, and healthy: {provider_id}"
-        )));
-    }
     let existing_names = store
         .load_attached_tools(conversation_id)?
         .into_iter()
         .map(|tool| tool.schema_name)
         .collect::<HashSet<_>>();
-    let Some(catalog) = store.load_provider_tool_catalog(provider_id)? else {
-        return Err(error::invalid_request(format!(
-            "provider has no discovered tool catalog: {provider_id}"
-        )));
-    };
-    if catalog.status == crate::store::ProviderCatalogStatus::Unavailable {
-        return Err(error::invalid_request(format!(
-            "provider tool catalog is unavailable: {provider_id}"
-        )));
-    }
-    let new_tools = catalog
-        .tools
-        .into_iter()
-        .filter(|tool| !existing_names.contains(&tool.schema_name))
-        .map(|tool| tool.attached_tool())
-        .collect::<Vec<_>>();
+    let catalog = store.load_provider_tool_catalog(provider_id)?;
+    let new_tools = plan_provider_attachment(
+        provider_id,
+        AttachmentFacts {
+            registered: registry.provider_manifest(provider_id).is_some(),
+            enabled: store.provider_is_enabled(provider_id)?,
+            unavailable: catalog.as_ref().is_some_and(|catalog| {
+                catalog.status == crate::store::ProviderCatalogStatus::Unavailable
+            }),
+            tools: catalog.as_ref().map(|catalog| catalog.tools.as_slice()),
+        },
+        &existing_names,
+    )?;
     store.insert_attached_tools(conversation_id, &new_tools)
 }
 

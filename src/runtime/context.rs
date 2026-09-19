@@ -36,6 +36,16 @@ pub struct ContextParts {
     pub compaction: Option<Compaction>,
 }
 
+/// Loaded inputs to the storage-independent model compiler. Adapters decide
+/// which control tools they implement; an empty list never advertises local
+/// capabilities to a hosted text-only session.
+pub struct ModelContextInputs {
+    pub history: ContextParts,
+    pub attached_schemas: Vec<ToolSchema>,
+    pub plugin_index: Option<String>,
+    pub control_schemas: Vec<ToolSchema>,
+}
+
 impl ContextBuilder {
     /// Loads the persisted model-facing messages for an explicit path head.
     ///
@@ -76,18 +86,39 @@ impl ContextBuilder {
         tools: &ToolProviderRegistry,
         plugin_catalog: Option<&PluginCatalog>,
     ) -> Result<ModelContext> {
-        let mut context = ModelContext {
-            messages: Self::build_persisted_messages(store, conversation_id, head_message_id)?,
-            tool_schemas: store.load_tool_schemas(conversation_id)?,
-        };
+        Ok(Self::assemble(ModelContextInputs {
+            history: ContextParts {
+                path: match head_message_id {
+                    Some(head) => store.load_path_to_message(conversation_id, head)?,
+                    None => Vec::new(),
+                },
+                system_prompt: store.system_prompt(conversation_id)?,
+                compaction: store.latest_compaction(conversation_id)?,
+            },
+            attached_schemas: store.load_tool_schemas(conversation_id)?,
+            plugin_index: plugin_catalog
+                .map(|catalog| catalog.compact_index(store, tools))
+                .transpose()?,
+            control_schemas: tools
+                .builtin_tools()
+                .iter()
+                .map(|definition| definition.attached_tool().schema())
+                .collect(),
+        }))
+    }
 
-        if let Some(plugin_catalog) = plugin_catalog {
-            let index = plugin_catalog.compact_index(store, tools)?;
+    /// Compiles already-loaded facts without SQLite, filesystem, or transport
+    /// access. Local execution, inspection, and hosted execution all enter here.
+    pub fn assemble(inputs: ModelContextInputs) -> ModelContext {
+        let mut context = ModelContext {
+            messages: Self::flatten(inputs.history),
+            tool_schemas: inputs.attached_schemas,
+        };
+        if let Some(index) = inputs.plugin_index {
             context.messages.insert(0, plugin_index_message(index));
         }
-
-        append_builtin_schemas(&mut context.tool_schemas, tools);
-        Ok(context)
+        append_control_schemas(&mut context.tool_schemas, inputs.control_schemas);
+        context
     }
 
     /// Flattens loaded context parts into messages sent to model.
@@ -131,15 +162,15 @@ fn plugin_index_message(index: String) -> Message {
 }
 
 /// Appends Windie-owned control schemas without shadowing an attached schema.
-fn append_builtin_schemas(tool_schemas: &mut Vec<ToolSchema>, tools: &ToolProviderRegistry) {
+fn append_control_schemas(tool_schemas: &mut Vec<ToolSchema>, controls: Vec<ToolSchema>) {
     let mut names = tool_schemas
         .iter()
         .map(|tool| tool.name.as_str().to_string())
         .collect::<std::collections::HashSet<_>>();
 
-    for definition in tools.builtin_tools() {
-        if names.insert(definition.schema_name.as_str().to_string()) {
-            tool_schemas.push(definition.attached_tool().schema());
+    for schema in controls {
+        if names.insert(schema.name.as_str().to_string()) {
+            tool_schemas.push(schema);
         }
     }
 }

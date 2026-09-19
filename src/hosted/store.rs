@@ -27,10 +27,12 @@ use crate::{
         SessionExecutionStart, SessionId, SessionInputId, SessionResolution, SessionStatus,
         can_start, resolve_sessions_at_head,
     },
+    tool::ToolProviderRegistry,
 };
 
 const INITIAL_MIGRATION: &str = "0001_account_conversations";
 const SESSIONS_MIGRATION: &str = "0002_sessions";
+const DEVICE_TOOL_WORK_MIGRATION: &str = "0004_device_tool_work";
 const SESSION_EVENT_NOTIFICATION_CHANNEL: &str = "windie_session_events";
 
 /// PostgreSQL boundary for hosted Windie state.
@@ -115,6 +117,11 @@ pub(crate) struct HostedMessage {
     pub(crate) role: String,
     pub(crate) content: String,
     pub(crate) parts: Vec<HostedMessagePart>,
+    /// Assistant tool calls and linked tool-result IDs are durable transcript
+    /// data, not transient stream hints. Browser clients need this to render
+    /// approval/tool rows after a refresh or SSE replay.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metadata: Option<crate::conversation::MessageMetadata>,
 }
 
 /// Read-safe projection of one stored message part.
@@ -199,6 +206,10 @@ impl HostedStore {
             (
                 "0003_devices",
                 include_str!("../../migrations/hosted/0003_devices.sql"),
+            ),
+            (
+                DEVICE_TOOL_WORK_MIGRATION,
+                include_str!("../../migrations/hosted/0004_device_tool_work.sql"),
             ),
         ] {
             let applied = sqlx::query_scalar::<_, bool>(
@@ -366,14 +377,15 @@ impl HostedStore {
             expected_revision,
         )
         .await?;
+        ensure_no_active_device_tool_work(&mut transaction, conversation_id).await?;
         conversation_tree_in_transaction(&mut transaction, conversation_id)
             .await?
             .validate_append_parent(parent_message_id)?;
         let message_id = Uuid::new_v4().to_string();
         let content = prepared_content(&prepared);
         sqlx::query(
-            "INSERT INTO messages (id, conversation_id, parent_message_id, role, content) \
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO messages (id, conversation_id, parent_message_id, role, content, metadata) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&message_id)
         .bind(conversation_id)
@@ -428,6 +440,7 @@ impl HostedStore {
             expected_revision,
         )
         .await?;
+        ensure_no_active_device_tool_work(&mut transaction, conversation_id).await?;
         conversation_tree_in_transaction(&mut transaction, conversation_id)
             .await?
             .require_message(message_id)?;
@@ -494,6 +507,7 @@ impl HostedStore {
             expected_revision,
         )
         .await?;
+        ensure_no_active_device_tool_work(&mut transaction, conversation_id).await?;
         let plan = conversation_tree_in_transaction(&mut transaction, conversation_id)
             .await?
             .plan_remove_message(message_id)?;
@@ -552,6 +566,7 @@ impl HostedStore {
             expected_revision,
         )
         .await?;
+        ensure_no_active_device_tool_work(&mut transaction, conversation_id).await?;
         let plan = conversation_tree_in_transaction(&mut transaction, conversation_id)
             .await?
             .plan_truncate_after(checkpoint_id)?;
@@ -630,14 +645,15 @@ impl HostedStore {
                 .as_ref()
                 .and_then(|parent| copied_ids.get(parent));
             sqlx::query(
-                "INSERT INTO messages (id, conversation_id, parent_message_id, role, content) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO messages (id, conversation_id, parent_message_id, role, content, metadata) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(&new_id)
             .bind(&fork_id)
             .bind(new_parent)
             .bind(&message.role)
             .bind(&message.content)
+            .bind(message.metadata.as_ref().map(Json))
             .execute(&mut *transaction)
             .await?;
             copy_message_parts(&mut transaction, old_id, &new_id).await?;
@@ -1033,8 +1049,8 @@ impl HostedStore {
         Ok(record)
     }
 
-    /// Saves the completed assistant message, advances the session head, and
-    /// releases the claim in one transaction.
+    /// Saves a completed metadata-free assistant message, advances the session
+    /// head, and releases the claim in one transaction.
     pub(crate) async fn complete_session_with_assistant(
         &self,
         account: &HostedAccount,
@@ -1042,17 +1058,39 @@ impl HostedStore {
         claim: &SessionExecutionClaim,
         content: &str,
     ) -> Result<Vec<SessionEventRecord>, HostedStoreError> {
+        self.complete_session_with_assistant_metadata(
+            account,
+            session_id,
+            claim,
+            content,
+            &crate::conversation::MessageMetadata::default(),
+        )
+        .await
+    }
+
+    /// Completes a text-only turn while preserving all provider metadata on
+    /// the saved assistant node. Tool-bearing turns use a separate parked
+    /// assignment transition instead of marking the session done.
+    pub(crate) async fn complete_session_with_assistant_metadata(
+        &self,
+        account: &HostedAccount,
+        session_id: &SessionId,
+        claim: &SessionExecutionClaim,
+        content: &str,
+        metadata: &crate::conversation::MessageMetadata,
+    ) -> Result<Vec<SessionEventRecord>, HostedStoreError> {
         let mut transaction = self.pool.begin().await?;
         let session =
             claimed_session_for_update(&mut transaction, &account.id, session_id, claim).await?;
         let message_id = Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO messages (id, conversation_id, parent_message_id, role, content) VALUES ($1, $2, $3, 'assistant', $4)",
+            "INSERT INTO messages (id, conversation_id, parent_message_id, role, content, metadata) VALUES ($1, $2, $3, 'assistant', $4, $5)",
         )
         .bind(&message_id)
         .bind(session.conversation_id.as_str())
         .bind(session.current_head_message_id.as_ref().map(|id| id.as_str()))
         .bind(content)
+        .bind((!metadata.is_empty()).then(|| Json(metadata)))
         .execute(&mut *transaction)
         .await?;
         if !content.is_empty() {
@@ -1294,18 +1332,19 @@ impl HostedStore {
     }
 
     /// Returns canonical root-to-current-head model context for one still
-    /// claimed execution. The hosted runtime deliberately passes no local MCP
-    /// schemas, so model-requested tools cannot execute on the server.
-    pub(crate) async fn model_messages_for_claim(
+    /// claimed execution. Context assembly is shared with the local runtime;
+    /// hosted persistence only loads its already-authorized path and attached
+    /// schemas.
+    pub(crate) async fn model_context_for_claim(
         &self,
         account: &HostedAccount,
         session_id: &SessionId,
         claim: &SessionExecutionClaim,
-    ) -> Result<(Session, Vec<Message>), HostedStoreError> {
+    ) -> Result<(Session, crate::runtime::context::ModelContext), HostedStoreError> {
         let mut transaction = self.pool.begin().await?;
         let session =
             claimed_session_for_update(&mut transaction, &account.id, session_id, claim).await?;
-        let model_messages = model_path_in_transaction(
+        let path = model_path_in_transaction(
             &mut transaction,
             session.conversation_id.as_str(),
             session
@@ -1314,8 +1353,72 @@ impl HostedStore {
                 .map(|id| id.as_str()),
         )
         .await?;
+        let schemas = sqlx::query(
+            "SELECT h.schema_json FROM hosted_tool_attachments h \
+             JOIN sessions s ON s.id=h.session_id \
+             JOIN device_presence p ON p.device_id=s.bound_device_id AND p.expires_at > now() \
+             JOIN LATERAL (SELECT revision FROM device_capability_reports r \
+                 WHERE r.device_id=p.device_id AND r.lease_id=p.lease_id \
+                 ORDER BY r.created_at DESC LIMIT 1) current_report ON true \
+             WHERE h.session_id=$1 AND h.capability_revision=current_report.revision \
+             ORDER BY h.schema_name",
+        )
+        .bind(session_id.as_str())
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .map(|row| {
+            serde_json::from_value::<crate::tool::ToolSchema>(
+                row.get::<Json<Value>, _>("schema_json").0,
+            )
+            .map_err(|_| HostedStoreError::InvalidSession)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        // A hosted server never inspects its own package directory to decide
+        // what a user's Mac can do.  The current report for this *bound,
+        // online* device is the only source for the compact plugin index and
+        // Windie-owned controls.  An unbound/text-only session therefore
+        // advertises neither.
+        let capabilities = sqlx::query(
+            "SELECT r.capabilities_json FROM sessions s \
+             JOIN device_presence p ON p.device_id=s.bound_device_id AND p.expires_at > now() \
+             JOIN device_capability_reports r ON r.device_id=p.device_id AND r.lease_id=p.lease_id \
+             WHERE s.id=$1 \
+             ORDER BY r.created_at DESC LIMIT 1",
+        )
+        .bind(session_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .map(|row| {
+            serde_json::from_value::<crate::plugin::PluginCapabilitySnapshot>(
+                row.get::<Json<Value>, _>("capabilities_json").0,
+            )
+            .map_err(|_| HostedStoreError::InvalidSession)
+        })
+        .transpose()?;
         transaction.commit().await?;
-        Ok((session, model_messages))
+        let controls = capabilities.as_ref().map_or_else(Vec::new, |_| {
+            ToolProviderRegistry::new()
+                .builtin_tools()
+                .into_iter()
+                .map(|definition| definition.attached_tool().schema())
+                .collect()
+        });
+        Ok((
+            session,
+            crate::runtime::context::ContextBuilder::assemble(
+                crate::runtime::context::ModelContextInputs {
+                    history: crate::runtime::context::ContextParts {
+                        path,
+                        system_prompt: None,
+                        compaction: None,
+                    },
+                    attached_schemas: schemas,
+                    plugin_index: capabilities.map(|snapshot| snapshot.index.render()),
+                    control_schemas: controls,
+                },
+            ),
+        ))
     }
 
     /// Counts durable queued work for an account-owned session.
@@ -1369,7 +1472,7 @@ impl HostedStore {
     ) -> Result<Option<(HostedAccount, ClaimedSession, String)>, HostedStoreError> {
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT w.id AS wakeup_id, s.id AS session_id, a.id AS account_id, a.auth_subject \
+            "SELECT w.id AS wakeup_id, w.trigger_type, s.id AS session_id, a.id AS account_id, a.auth_subject \
              FROM wakeups w \
              JOIN sessions s ON s.id = w.session_id \
              JOIN accounts a ON a.id = s.account_id \
@@ -1388,11 +1491,18 @@ impl HostedStore {
         };
         let session_id = SessionId::new(row.get::<String, _>("session_id"));
         let wakeup_id: String = row.get("wakeup_id");
+        let trigger_type: String = row.get("trigger_type");
         let session = load_session_for_update(&mut transaction, &account.id, &session_id).await?;
+        let can_claim = if matches!(trigger_type.as_str(), "device_tool_result" | "tool_result") {
+            session.status == SessionStatus::WaitingForTool
+                && session.current_head_message_id.is_some()
+        } else {
+            can_start(&session, &SessionExecutionStart::Runnable, now_millis())
+        };
         if session_execution_claim_in_transaction(&mut transaction, &session_id)
             .await?
             .is_some()
-            || !can_start(&session, &SessionExecutionStart::Runnable, now_millis())
+            || !can_claim
         {
             transaction.commit().await?;
             return Ok(None);
@@ -1707,7 +1817,7 @@ async fn messages_in_transaction(
     conversation_id: &str,
 ) -> Result<Vec<HostedMessage>, HostedStoreError> {
     let rows = sqlx::query(
-        "SELECT id, parent_message_id, role, content FROM messages \
+        "SELECT id, parent_message_id, role, content, metadata FROM messages \
          WHERE conversation_id = $1 ORDER BY position ASC",
     )
     .bind(conversation_id)
@@ -1744,6 +1854,9 @@ async fn messages_in_transaction(
             role: row.get("role"),
             content: row.get("content"),
             parts,
+            metadata: row
+                .get::<Option<Json<crate::conversation::MessageMetadata>>, _>("metadata")
+                .map(|metadata| metadata.0),
         });
     }
     Ok(messages)
@@ -1759,7 +1872,7 @@ async fn model_path_in_transaction(
     head_message_id: Option<&str>,
 ) -> Result<Vec<Message>, HostedStoreError> {
     let rows = sqlx::query(
-        "SELECT id, parent_message_id, role, content FROM messages WHERE conversation_id = $1 ORDER BY position ASC",
+        "SELECT id, parent_message_id, role, content, metadata FROM messages WHERE conversation_id = $1 ORDER BY position ASC",
     )
     .bind(conversation_id)
     .fetch_all(&mut **transaction)
@@ -1816,7 +1929,9 @@ async fn model_path_in_transaction(
             role,
             content: row.get("content"),
             parts,
-            metadata: None,
+            metadata: row
+                .get::<Option<Json<crate::conversation::MessageMetadata>>, _>("metadata")
+                .map(|metadata| metadata.0),
         });
     }
     Ok(messages)
@@ -1874,6 +1989,28 @@ async fn lock_conversation(
         });
     }
     Ok(())
+}
+
+/// Prevents raw conversation mutations from detaching an assistant call or a
+/// future tool-result parent while hosted execution is suspended. Query input
+/// uses the session queue instead; it does not mutate the canonical path out
+/// from under a pending approval/assignment.
+async fn ensure_no_active_device_tool_work(
+    transaction: &mut Transaction<'_, Postgres>,
+    conversation_id: &str,
+) -> Result<(), HostedStoreError> {
+    let blocked = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM sessions WHERE conversation_id=$1 \
+         AND status IN ('waiting_for_approval','waiting_for_tool') FOR UPDATE LIMIT 1",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    if blocked.is_some() {
+        Err(HostedStoreError::SessionConflict)
+    } else {
+        Ok(())
+    }
 }
 
 async fn bump_revision(
@@ -1999,6 +2136,45 @@ fn prepare_parts(parts: &[HostedMessagePartInput]) -> Result<Vec<PreparedPart>, 
     Ok(prepared)
 }
 
+/// Converts a normalized executor result into hosted durable parts without
+/// routing raw local bytes through the browser's base64 input contract.
+fn prepare_unsaved_parts(
+    parts: &[crate::conversation::UnsavedMessagePart],
+) -> Result<Vec<PreparedPart>, HostedStoreError> {
+    if parts.is_empty() || parts.len() > 64 {
+        return Err(HostedStoreError::EmptyMessage);
+    }
+    let mut total_image_bytes = 0usize;
+    let prepared = parts
+        .iter()
+        .map(|part| match part {
+            crate::conversation::UnsavedMessagePart::Text(text) => {
+                Ok(PreparedPart::Text(text.clone()))
+            }
+            crate::conversation::UnsavedMessagePart::Image(image) => {
+                total_image_bytes = total_image_bytes.saturating_add(image.bytes.len());
+                if image.mime_type.is_empty()
+                    || image.bytes.is_empty()
+                    || total_image_bytes > 4 * 1024 * 1024
+                {
+                    return Err(HostedStoreError::EmptyMessage);
+                }
+                Ok(PreparedPart::Image {
+                    mime_type: image.mime_type.clone(),
+                    bytes: image.bytes.clone(),
+                })
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if prepared
+        .iter()
+        .all(|part| matches!(part, PreparedPart::Text(text) if text.is_empty()))
+    {
+        return Err(HostedStoreError::EmptyMessage);
+    }
+    Ok(prepared)
+}
+
 fn prepared_content(parts: &[PreparedPart]) -> String {
     parts
         .iter()
@@ -2099,6 +2275,7 @@ mod tests {
                 role: "user".into(),
                 content: "one".into(),
                 parts: vec![],
+                metadata: None,
             },
             HostedMessage {
                 id: "child".into(),
@@ -2106,6 +2283,7 @@ mod tests {
                 role: "assistant".into(),
                 content: "two".into(),
                 parts: vec![],
+                metadata: None,
             },
         ];
         assert_eq!(
@@ -2122,6 +2300,7 @@ mod tests {
             role: "user".into(),
             content: "one".into(),
             parts: vec![],
+            metadata: None,
         }];
         assert!(matches!(
             selected_path(&messages, "one"),
@@ -2528,12 +2707,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let (_, model_path) = store
-            .model_messages_for_claim(&account, &session.id, &claim.claim)
+        let (_, model_context) = store
+            .model_context_for_claim(&account, &session.id, &claim.claim)
             .await
             .unwrap();
         assert!(matches!(
-            model_path.last().unwrap().parts.as_slice(),
+            model_context.messages.last().unwrap().parts.as_slice(),
             [
                 crate::conversation::MessagePart::Text(_),
                 crate::conversation::MessagePart::Image(_)

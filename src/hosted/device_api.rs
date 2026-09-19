@@ -71,7 +71,7 @@ pub(super) fn router(
     ))
 }
 fn routes(service: Service) -> Router {
-    Router::new()
+    let enrollment_and_presence = Router::new()
         .route("/v1/device-enrollments", post(initiate))
         .route("/v1/device-enrollments/lookup", post(lookup))
         .route("/v1/device-enrollments/approve", post(approve))
@@ -85,7 +85,15 @@ fn routes(service: Service) -> Router {
         .route("/v1/agent/connect", post(connect))
         .route("/v1/agent/heartbeat", post(heartbeat))
         .route("/v1/agent/disconnect", post(disconnect))
-        .layer(DefaultBodyLimit::max(4096))
+        .layer(DefaultBodyLimit::max(4096));
+    let work = Router::new()
+        .route("/v1/agent/capabilities", post(capabilities))
+        .route("/v1/agent/work/next", post(next_work))
+        .route("/v1/agent/work/{id}/start", post(start_work))
+        .route("/v1/agent/work/{id}/result", post(finish_work))
+        .layer(DefaultBodyLimit::max(524_288));
+    enrollment_and_presence
+        .merge(work)
         .layer(middleware::from_fn_with_state(service.clone(), guard))
         .with_state(service)
 }
@@ -333,6 +341,56 @@ async fn disconnect(
     Ok(Json(
         s.store
             .heartbeat_device(&device(&h)?, r.lease_id, true)
+            .await?,
+    ))
+}
+async fn capabilities(
+    State(s): State<Service>,
+    h: HeaderMap,
+    Json(r): Json<CapabilityReport>,
+) -> Result<Json<CapabilityAccepted>, DeviceError> {
+    Ok(Json(s.store.publish_capabilities(&device(&h)?, &r).await?))
+}
+async fn next_work(
+    State(s): State<Service>,
+    h: HeaderMap,
+    Json(r): Json<LeaseRequest>,
+) -> Result<Json<Option<DeviceWorkAssignment>>, DeviceError> {
+    // v1 uses bounded outbound long-polling so the agent never needs an
+    // inbound listener or a WebSocket command broker. The store transaction
+    // is short-lived on every probe; no database lock is held while waiting.
+    let principal = device(&h)?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(work) = s.store.next_device_work(&principal, r.lease_id).await? {
+            return Ok(Json(Some(work)));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(Json(None));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+async fn start_work(
+    State(s): State<Service>,
+    h: HeaderMap,
+    Path(id): Path<DeviceWorkId>,
+    Json(r): Json<DeviceWorkAuthorization>,
+) -> Result<StatusCode, DeviceError> {
+    s.store
+        .start_device_work(&device(&h)?, id, r.lease_id, &r.execution_token)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn finish_work(
+    State(s): State<Service>,
+    h: HeaderMap,
+    Path(id): Path<DeviceWorkId>,
+    Json(r): Json<DeviceWorkResultRequest>,
+) -> Result<Json<DeviceWorkResultAccepted>, DeviceError> {
+    Ok(Json(
+        s.store
+            .finish_device_work(&device(&h)?, id, &r.authorization, &r.result)
             .await?,
     ))
 }

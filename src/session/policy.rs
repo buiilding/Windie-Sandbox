@@ -30,13 +30,17 @@ pub(crate) fn can_start(session: &Session, start: &SessionExecutionStart, now_mi
     match start {
         SessionExecutionStart::Runnable => !matches!(
             session.status,
-            SessionStatus::Running | SessionStatus::WaitingForApproval
+            SessionStatus::Running
+                | SessionStatus::WaitingForApproval
+                | SessionStatus::WaitingForTool
         ),
         SessionExecutionStart::RunnableAtHead(head) => {
             session.current_head_message_id.as_ref() == head.as_ref()
                 && !matches!(
                     session.status,
-                    SessionStatus::Running | SessionStatus::WaitingForApproval
+                    SessionStatus::Running
+                        | SessionStatus::WaitingForApproval
+                        | SessionStatus::WaitingForTool
                 )
         }
         SessionExecutionStart::WaitingForApproval => {
@@ -55,12 +59,16 @@ pub(crate) fn can_start(session: &Session, start: &SessionExecutionStart, now_mi
                 && now_millis >= *eligible_before
                 && !matches!(
                     session.status,
-                    SessionStatus::Running | SessionStatus::WaitingForApproval
+                    SessionStatus::Running
+                        | SessionStatus::WaitingForApproval
+                        | SessionStatus::WaitingForTool
                 )
         }
         SessionExecutionStart::ManualWakeup => !matches!(
             session.status,
-            SessionStatus::Running | SessionStatus::WaitingForApproval
+            SessionStatus::Running
+                | SessionStatus::WaitingForApproval
+                | SessionStatus::WaitingForTool
         ),
     }
 }

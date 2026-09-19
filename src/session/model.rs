@@ -62,6 +62,9 @@ pub enum SessionStatus {
     Ready,
     Running,
     WaitingForApproval,
+    /// A device assignment is durably pending or executing. No model request
+    /// runs until its correlated result becomes canonical conversation history.
+    WaitingForTool,
     Completed,
     Failed,
     Cancelled,
@@ -160,6 +163,7 @@ impl SessionStatus {
             "ready" => Some(Self::Ready),
             "running" => Some(Self::Running),
             "waiting_for_approval" => Some(Self::WaitingForApproval),
+            "waiting_for_tool" => Some(Self::WaitingForTool),
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
             "cancelled" => Some(Self::Cancelled),
@@ -173,6 +177,7 @@ impl SessionStatus {
             Self::Ready => "ready",
             Self::Running => "running",
             Self::WaitingForApproval => "waiting_for_approval",
+            Self::WaitingForTool => "waiting_for_tool",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",

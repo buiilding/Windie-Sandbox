@@ -11,6 +11,9 @@ pub const LEASE_SECONDS: i64 = 90;
 pub const HEARTBEAT_SECONDS: u64 = 20;
 pub const POLL_SECONDS: u64 = 3;
 pub const REQUEST_SECONDS: u64 = 10;
+/// Work polling is deliberately separate from enrollment and presence.
+pub const WORK_REQUEST_SECONDS: u64 = 30;
+pub const WORK_POLL_SECONDS: u64 = 20;
 pub const PRODUCTION_API: &str = "https://hosted-api.windieos.com";
 pub const PAIRING_URL: &str = "https://app.windieos.com/devices/connect";
 
@@ -36,6 +39,128 @@ identifier!(EnrollmentId);
 identifier!(RequestId);
 identifier!(InstanceId);
 identifier!(LeaseId);
+identifier!(CapabilityRevision);
+identifier!(DeviceWorkId);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// A versioned, non-secret description of executable local capabilities.
+///
+/// This is not an authorization grant. The hosted server binds an exact report
+/// revision to a session and revalidates it before any assignment is started.
+pub struct CapabilityReport {
+    pub version: u32,
+    pub lease_id: LeaseId,
+    pub capabilities: crate::plugin::PluginCapabilitySnapshot,
+}
+
+impl CapabilityReport {
+    /// Validates the bounded, descriptive portion of a capability report
+    /// before it crosses into hosted persistence. Provider execution is still
+    /// separately checked when an assignment is created and started.
+    pub fn validate(&self) -> Result<(), DeviceError> {
+        if self.version != PROTOCOL_VERSION
+            || self.capabilities.index.installed.len() > 128
+            || self.capabilities.providers.len() > 256
+        {
+            return Err(DeviceError::InvalidRequest);
+        }
+        let mut provider_ids = std::collections::HashSet::new();
+        for provider in &self.capabilities.providers {
+            if provider.plugin_id.is_empty()
+                || provider.component_id.is_empty()
+                || !provider_ids.insert(provider.provider_id.as_str())
+                || provider.tools.len() > 128
+                || provider.tools.iter().any(|tool| {
+                    !tool.schema_name.is_valid()
+                        || tool.description.trim().is_empty()
+                        || tool.provider.provider_id != provider.provider_id
+                })
+            {
+                return Err(DeviceError::InvalidRequest);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Server acknowledgement for an idempotent device capability report.
+pub struct CapabilityAccepted {
+    pub revision: CapabilityRevision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+/// Bounded assignment payload. It never carries a shell command or filesystem
+/// path chosen by the hosted service.
+pub enum DeviceWork {
+    McpCall {
+        tool_call_id: String,
+        plugin_id: String,
+        component_id: String,
+        provider_id: String,
+        schema_name: String,
+        tool_name: String,
+        /// Exact model-facing schema authorized in the capability snapshot.
+        /// The agent compares it against its local registry before executor
+        /// entry so a changed package cannot reuse an old assignment identity.
+        schema: crate::tool::ToolSchema,
+        arguments: String,
+    },
+    ReadSkill {
+        tool_call_id: String,
+        plugin_id: String,
+        skill_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One server-issued delivery, immutable across retries.
+pub struct DeviceWorkAssignment {
+    pub id: DeviceWorkId,
+    pub lease_id: LeaseId,
+    /// Server-assigned capability report revision that authorized this exact
+    /// delivery. The server fences stale work before local executor entry.
+    pub capability_revision: CapabilityRevision,
+    pub execution_token: String,
+    pub work: DeviceWork,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// Agent result wire shape. This intentionally mirrors the normalized Windie
+/// result instead of serializing `ToolExecutionResult`, whose rich parts are
+/// deliberately skipped in its local serde representation.
+pub struct DeviceWorkResult {
+    pub success: bool,
+    pub content: String,
+    #[serde(default)]
+    pub parts: Vec<crate::conversation::UnsavedMessagePart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Idempotent server acknowledgement for a submitted assignment result.
+pub struct DeviceWorkResultAccepted {
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// Request fields required to start or submit an already-delivered assignment.
+pub struct DeviceWorkAuthorization {
+    pub lease_id: LeaseId,
+    pub execution_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceWorkResultRequest {
+    #[serde(flatten)]
+    pub authorization: DeviceWorkAuthorization,
+    pub result: DeviceWorkResult,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

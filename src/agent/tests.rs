@@ -125,6 +125,67 @@ async fn presence_stops_after_one_rejected_credential_without_local_runtime() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn completed_journal_retries_only_the_saved_result_after_lost_acknowledgement() {
+    use crate::agent::journal::{WorkJournal, WorkJournalState};
+
+    let root = std::env::temp_dir().join(format!("windie-agent-recovery-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let storage = storage::Storage::at(root.join("agent")).unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let result_hits = hits.clone();
+    let assignment_id = DeviceWorkId::new();
+    let (client, task) = serve(Router::new().route(
+        "/v1/agent/work/{id}/result",
+        post(move || {
+            let result_hits = result_hits.clone();
+            async move {
+                result_hits.fetch_add(1, Ordering::SeqCst);
+                Json(DeviceWorkResultAccepted { accepted: true })
+            }
+        }),
+    ))
+    .await;
+    let credentials = fresh_credentials(client.server.clone()).unwrap();
+    let assignment = DeviceWorkAssignment {
+        id: assignment_id,
+        lease_id: LeaseId::new(),
+        capability_revision: CapabilityRevision::new(),
+        execution_token: "test-token".into(),
+        work: DeviceWork::ReadSkill {
+            tool_call_id: "call-1".into(),
+            plugin_id: "plugin".into(),
+            skill_id: "skill".into(),
+        },
+        expires_at: i64::MAX,
+    };
+    let journal = WorkJournal::new(&storage);
+    let mut entry = journal.accept(assignment).unwrap();
+    journal.mark_executing(&mut entry).unwrap();
+    journal
+        .complete(
+            &mut entry,
+            DeviceWorkResult {
+                success: true,
+                content: "already executed".into(),
+                parts: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    recover_journaled_work(&client, &credentials, &storage)
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        journal.load().unwrap().unwrap().state,
+        WorkJournalState::Completed
+    );
+    task.abort();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn enrollment_local_decline_and_lost_finalize_response_recover_safely() {
     for confirm in [false, true] {
         let base =

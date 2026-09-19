@@ -136,6 +136,26 @@ fn router(state: HostedApiState, allowed_origin: HeaderValue) -> Router {
             post(continue_conversation),
         )
         .route("/v1/sessions/{session_id}", get(get_session))
+        .route(
+            "/v1/sessions/{session_id}/device",
+            post(bind_session_device),
+        )
+        .route(
+            "/v1/sessions/{session_id}/tools/attach",
+            post(attach_session_mcp),
+        )
+        .route(
+            "/v1/sessions/{session_id}/approvals",
+            get(list_session_tool_approvals),
+        )
+        .route(
+            "/v1/sessions/{session_id}/approvals/{approval_id}/approve",
+            post(approve_session_tool),
+        )
+        .route(
+            "/v1/sessions/{session_id}/approvals/{approval_id}/deny",
+            post(deny_session_tool),
+        )
         .route("/v1/sessions/{session_id}/events", get(session_events))
         .route("/v1/sessions/{session_id}/stop", post(stop_session))
         .route("/v1/sessions/{session_id}/wakeup", post(schedule_wakeup))
@@ -199,6 +219,26 @@ struct HostedApiError {
 }
 
 impl HostedApiError {
+    fn device(error: crate::device::DeviceError) -> Self {
+        let status = match error {
+            crate::device::DeviceError::NotFound => StatusCode::NOT_FOUND,
+            crate::device::DeviceError::Conflict | crate::device::DeviceError::StaleLease => {
+                StatusCode::CONFLICT
+            }
+            crate::device::DeviceError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        Self {
+            status,
+            body: ErrorBody {
+                error: "device_binding_failed",
+                message: error.to_string(),
+                expected_revision: None,
+                current_revision: None,
+            },
+        }
+    }
+
     fn auth(error: HostedAuthError) -> Self {
         let status = match error {
             HostedAuthError::MissingBearerToken | HostedAuthError::InvalidBearerToken => {
@@ -555,8 +595,14 @@ async fn query_conversation(
         .session_input_count(&account, &result.session.id)
         .await
         .map_err(HostedApiError::store)?;
+    let bound_device_id = state
+        .store
+        .session_bound_device_id(&account, &result.session.id)
+        .await
+        .map_err(HostedApiError::store)?;
     Ok(Json(json!({
         "session": result.session,
+        "bound_device_id": bound_device_id,
         "queued": result.queued,
         "queue_depth": queue_depth,
         "queue_id": result.input_id.map(|id| id.as_str().to_string()),
@@ -607,6 +653,122 @@ async fn get_session(
     let session = state
         .store
         .session(&account, &crate::session::SessionId::new(session_id))
+        .await
+        .map_err(HostedApiError::store)?;
+    session_response(&state.store, &account, session).await
+}
+
+#[derive(Debug, Deserialize)]
+struct BindSessionDeviceRequest {
+    device_id: crate::device::DeviceId,
+}
+
+/// Explicit browser-selected execution binding. This route only changes hosted
+/// session context; it never forwards a command to the selected device.
+async fn bind_session_device(
+    State(state): State<HostedApiState>,
+    Extension(account): Extension<HostedAccount>,
+    Path(session_id): Path<String>,
+    Json(request): Json<BindSessionDeviceRequest>,
+) -> Result<StatusCode, HostedApiError> {
+    state
+        .store
+        .bind_session_device(
+            &account,
+            &crate::session::SessionId::new(session_id),
+            request.device_id,
+        )
+        .await
+        .map_err(HostedApiError::device)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachSessionMcpRequest {
+    plugin_id: String,
+    component_id: String,
+}
+
+/// Explicit hosted attachment using the shared attachment planner. It exposes
+/// schemas only after current report and immutable binding validation.
+async fn attach_session_mcp(
+    State(state): State<HostedApiState>,
+    Extension(account): Extension<HostedAccount>,
+    Path(session_id): Path<String>,
+    Json(request): Json<AttachSessionMcpRequest>,
+) -> Result<Json<Vec<crate::tool::AttachedTool>>, HostedApiError> {
+    let attached = state
+        .store
+        .attach_device_mcp(
+            &account,
+            &crate::session::SessionId::new(session_id),
+            &request.plugin_id,
+            &request.component_id,
+        )
+        .await
+        .map_err(HostedApiError::device)?;
+    Ok(Json(attached))
+}
+
+/// Lists the durable approvals that still block this account-owned session.
+async fn list_session_tool_approvals(
+    State(state): State<HostedApiState>,
+    Extension(account): Extension<HostedAccount>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, HostedApiError> {
+    let session_id = crate::session::SessionId::new(session_id);
+    let approvals = state
+        .store
+        .pending_device_tool_approvals(&account, &session_id)
+        .await
+        .map_err(HostedApiError::store)?;
+    Ok(Json(json!({"approvals": approvals})))
+}
+
+/// Turns exactly one user-approved model request into an assignment. The
+/// device receives no work from this HTTP request itself; its outbound poll
+/// observes the committed assignment afterwards.
+async fn approve_session_tool(
+    State(state): State<HostedApiState>,
+    Extension(account): Extension<HostedAccount>,
+    Path((session_id, approval_id)): Path<(String, String)>,
+) -> Result<Json<Value>, HostedApiError> {
+    let session_id = crate::session::SessionId::new(session_id);
+    let records = state
+        .store
+        .approve_device_tool_approval(&account, &session_id, &approval_id)
+        .await
+        .map_err(HostedApiError::store)?;
+    for record in records {
+        state.live_events.publish(record);
+    }
+    let session = state
+        .store
+        .session(&account, &session_id)
+        .await
+        .map_err(HostedApiError::store)?;
+    session_response(&state.store, &account, session).await
+}
+
+/// Saves a normal linked failure result for a rejected request, then lets the
+/// scheduler continue the same session on a fresh claim.
+async fn deny_session_tool(
+    State(state): State<HostedApiState>,
+    Extension(account): Extension<HostedAccount>,
+    Path((session_id, approval_id)): Path<(String, String)>,
+) -> Result<Json<Value>, HostedApiError> {
+    let session_id = crate::session::SessionId::new(session_id);
+    let records = state
+        .store
+        .deny_device_tool_approval(&account, &session_id, &approval_id)
+        .await
+        .map_err(HostedApiError::store)?;
+    for record in records {
+        state.live_events.publish(record);
+    }
+    let session = state
+        .store
+        .session(&account, &session_id)
         .await
         .map_err(HostedApiError::store)?;
     session_response(&state.store, &account, session).await
@@ -699,8 +861,13 @@ async fn session_response(
         .session_event_cursor(account, &session.id)
         .await
         .map_err(HostedApiError::store)?;
+    let bound_device_id = store
+        .session_bound_device_id(account, &session.id)
+        .await
+        .map_err(HostedApiError::store)?;
     Ok(Json(json!({
         "session": session,
+        "bound_device_id": bound_device_id,
         "queue_depth": queue_depth,
         "event_cursor": event_cursor,
     })))

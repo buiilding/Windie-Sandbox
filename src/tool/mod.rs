@@ -8,6 +8,7 @@
 
 pub mod approval;
 mod builtin;
+pub mod control;
 mod lifecycle;
 mod manifest;
 pub mod policy;

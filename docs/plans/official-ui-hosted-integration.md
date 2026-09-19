@@ -8,6 +8,32 @@ This is a browser-client integration plan. It does not redesign the hosted
 server, change PostgreSQL ownership, add device agents, add VM control, or
 turn the official UI into a second runtime.
 
+## Implementation status — 2026-09-18
+
+The official UI replaced the temporary Inspector at `app.windieos.com` on
+September 18. Code is deployed, but authenticated acceptance of this release
+is still pending; earlier Inspector proofs do not verify the new client.
+
+| Phase | Status | Evidence / remaining work |
+| --- | --- | --- |
+| 1 — Hosted contract | Implemented and deployed | Typed `/v1` HTTP requests, account/session SSE, bearer authentication, and production API configuration. |
+| 2 — Authentication/bootstrap | Partially implemented; deployed | Supabase Google login, token rotation, sign-out, and account-keyed client remount are wired. Explicit API authorization-failure handling that clears cached transcript state and returns to sign-in is still missing. New-release Google/account-isolation checks remain pending. |
+| 3 — Canonical conversations/routing | Implemented and deployed; live acceptance pending | `/` is New Chat; first send creates `/c/<id>`; direct links wait for their own tree; missing IDs stay errors; navigation races are tested. |
+| 4 — Query/stream reconciliation | Implemented and deployed; live acceptance pending | Local-Inspector-style query bootstrap, ordered saved-message hydration/upserts, stable assistant rows, replay cursors, token refresh, and stop route. Terminal regression tests pass; browser continuity/recovery/stop checks remain pending. |
+| 5 — Feature boundaries | Implemented and deployed | Unsupported device, voice, upload, tool, and message-action controls remain disabled. Computer-control sign-in copy is product direction, not an implemented hosted execution capability. |
+| 6 — Test/deploy | Deployed; acceptance incomplete | 28 tests, TypeScript/Vite build, targeted lint, production asset equality, deep-link shell, CORS, and unauthenticated API rejection passed. Full-project lint has existing component findings; authenticated browser checks remain open. |
+
+Published commits in `buiilding/windie-UI-official`:
+
+- `7bf438c`: hosted client integration and transcript reconciliation.
+- `47b8d49`: standalone sign-in redesign, approved computer-control copy,
+  sign-in tests, and Vercel configuration. Pushed to `origin/main`.
+
+Release: `https://frontend-5485uixh3-peterbuics-8590s-projects.vercel.app`.
+Inspector rollback: `https://frontend-cwakw419b-peterbuics-8590s-projects.vercel.app`.
+Both belong to the existing Vercel `frontend` project. The public hostname was
+explicitly aliased to the new release after deployment became Ready.
+
 ## Goal
 
 ```text
@@ -25,7 +51,7 @@ heads, session resolution, execution state, durable events, and final
 messages. The official UI owns only rendering and short-lived interaction
 state.
 
-## Current starting point
+## Current implementation
 
 The official UI at `vendor/windie-UI-official/` now has Supabase authentication,
 typed hosted requests, addressable conversations, and durable session SSE.
@@ -66,24 +92,27 @@ ordered saved-message reconciliation.
 - Keep the temporary Inspector deploy available until the official client
   passes the live acceptance checks below.
 
-## Target client structure
+## Implemented client structure
 
-Keep the official visual components independent from HTTP details. Add a small,
-typed hosted-client layer inside the official UI:
+The visual components use a typed hosted-client layer:
 
 ```text
 vendor/windie-UI-official/
 ├── app/
 │   ├── page.tsx                    transcript and dock presentation
-│   └── hosted/                     hosted UI composition/state hooks
+│   └── hosted/
+│       ├── auth-screen.tsx         sign-in/loading/error presentation
+│       ├── use-hosted-windie.ts    React lifecycle and external-store binding
+│       ├── conversation-client.ts route, account, and session coordination
+│       └── transcript-state.ts    canonical message/preview projection
 ├── lib/
-│   ├── auth.ts                     browser Supabase client and account session
+│   ├── hosted-auth.ts              browser Supabase client and account session
 │   ├── hosted-api.ts               typed authenticated `/v1` requests
 │   ├── hosted-types.ts             API payload and UI mapping types
-│   ├── session-stream.ts           SSE parsing, cursor, reconnect, cancellation
+│   ├── sse.ts                     SSE parsing and ordered async delivery
 │   ├── conversation-tree.ts        selected path and leaf/head helpers
-│   └── transcript-state.ts         pure UI reducer for durable + transient state
-└── .env.example                    public API/Supabase configuration names only
+│   └── conversation-route.ts       /c/<id> URL mapping
+└── vercel.json                     Vite build and SPA deep-link fallback
 ```
 
 The exact file split may stay smaller if clarity is better. The important
@@ -231,13 +260,35 @@ Manual hosted checks, performed by Peter in browsers:
 5. Refresh during or after a session and confirm replay/recovery.
 6. Confirm mock-only controls neither claim success nor alter hosted state.
 
-Only after those pass:
+The original rollout gate was to complete those checks before switching the
+hostname. Peter subsequently explicitly authorized deployment; the following
+deployment steps are complete, but that authorization does not mark the manual
+checks above as passed:
 
 1. build the official UI with production public variables;
 2. deploy its static bundle to `app.windieos.com`;
 3. retain a versioned rollback artifact for the temporary hosted Inspector;
 4. verify public HTTPS, authentication, API origin, SSE, and the full
    browser-to-server-to-Bifrost-to-browser flow.
+
+Release checklist:
+
+- [x] Build with public Supabase settings and the absolute hosted API URL, not
+  the development-only `/hosted-api` proxy.
+- [x] Publish and alias the official UI to `app.windieos.com`; retain the prior
+  Inspector deployment as a rollback target.
+- [x] Verify public `/` and `/c/deployment-route-check` return the release HTML,
+  and served JS/CSS match the built artifact byte-for-byte.
+- [x] Verify production-origin CORS and HTTP 401 for unauthenticated
+  conversation requests. These do not prove authenticated user isolation.
+- [ ] Verify Google login and sign-out in the deployed official UI.
+- [ ] Verify real conversation deep links, New Chat, Back/Forward, and two
+  successive streamed responses remaining visible after completion.
+- [ ] Verify same-account two-browser convergence and different-account isolation.
+- [ ] Verify stream reconnect, refresh recovery, stop, and unsupported controls.
+- [ ] Implement/test API authorization-failure cache clearing and sign-in return.
+- [ ] Resolve existing full-project lint failures before claiming a clean
+  full lint gate; targeted changed-file lint already passes.
 
 ## Explicitly deferred
 
@@ -255,7 +306,7 @@ that all later Windie surfaces already work.
 
 ## September 18 client reconciliation refactor
 
-Implemented locally:
+Implemented and deployed in the release above:
 
 - `app/hosted/use-hosted-windie.ts`: React lifecycle/external-store binding.
 - `app/hosted/conversation-client.ts`: fenced route loading, account summaries,
@@ -276,12 +327,14 @@ Implemented locally:
   subscribed idle session starts streaming.
 - A streamed assistant and its saved response use the same component and key.
 
-Verification: 25 terminal-run tests, the TypeScript/Vite build, and targeted
+Verification: 28 terminal-run tests (25 client/transport/tree/route tests plus
+3 sign-in presentation tests), the TypeScript/Vite build, and targeted
 lint for the changed client files pass. Full-project lint still reports
 unrelated existing component findings. Local `/` and `/c/<id>` HTTP shell
 requests both return 200 (not proof of authenticated rendering). Tests
 include navigation races, missing routes, duplicate sends, saved-message/account
 event interleaving, failed hydration/replay, token rotation, second-browser
-session activation, two successive completed turns, and sequential/fragmented SSE. Browser visual acceptance
-and production deployment of this refactor remain unverified; Peter performs
-the browser checks unless he explicitly requests browser automation.
+session activation, two successive completed turns, and sequential/fragmented
+SSE. Production deployment and HTTP/asset checks passed; authenticated browser
+and visual acceptance remain unverified. Peter performs those checks unless
+he explicitly requests browser automation.

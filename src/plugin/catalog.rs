@@ -12,7 +12,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Store;
-use crate::tool::{ProviderInstallState, ProviderReadiness, ToolProviderId, ToolProviderRegistry};
+use crate::tool::{
+    ProviderInstallState, ProviderReadiness, ToolDefinition, ToolProviderId, ToolProviderRegistry,
+};
 
 use super::manifest::{validate_github_repository_url, validate_relative_path};
 use super::{InstalledPlugin, PluginStore};
@@ -69,13 +71,34 @@ pub struct MarketplacePresentation {
 /// This contains discovery metadata only. MCP schemas and complete skill
 /// instructions are loaded through explicit built-in tools when the model
 /// needs them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginIndex {
     pub installed: Vec<PluginSummary>,
     pub available: Vec<PluginSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A device's model-facing index plus its current executable provider mapping.
+///
+/// The compact index remains discovery-only. The provider entries carry the
+/// exact schema-to-local-provider facts needed to validate a later hosted
+/// attachment without exposing package paths or command lines.
+pub struct PluginCapabilitySnapshot {
+    pub index: PluginIndex,
+    pub providers: Vec<PluginProviderCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Current persisted catalog facts for one installed MCP component.
+pub struct PluginProviderCapability {
+    pub plugin_id: String,
+    pub component_id: String,
+    pub provider_id: ToolProviderId,
+    pub state: PluginState,
+    pub tools: Vec<ToolDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// One plugin entry in the model-facing index.
 pub struct PluginSummary {
     pub id: String,
@@ -90,7 +113,8 @@ pub struct PluginSummary {
     pub apps: Vec<AppSummary>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 /// Aggregate plugin state shown in the compact index.
 pub enum PluginState {
     Available,
@@ -116,7 +140,7 @@ impl fmt::Display for PluginState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Metadata for one skill nested inside a plugin.
 pub struct SkillSummary {
     pub id: String,
@@ -124,7 +148,7 @@ pub struct SkillSummary {
     pub description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Metadata and runtime state for one MCP nested inside a plugin.
 pub struct McpSummary {
     pub id: String,
@@ -134,7 +158,7 @@ pub struct McpSummary {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Metadata for one app connector nested inside a plugin.
 pub struct AppSummary {
     pub id: String,
@@ -180,17 +204,23 @@ impl PluginCatalog {
     pub fn build_index(
         &self,
         store: &Store,
-        _registry: &ToolProviderRegistry,
+        registry: &ToolProviderRegistry,
     ) -> Result<PluginIndex> {
-        let installed_plugins = self.plugin_store.installed_plugins()?;
-        let installed_ids = installed_plugins
-            .iter()
-            .map(|plugin| plugin.manifest.plugin.id.clone())
-            .collect::<HashSet<_>>();
+        Ok(self.build_capability_snapshot(store, registry)?.index)
+    }
 
-        let installed = installed_plugins
-            .into_iter()
-            .fold(Vec::<InstalledPlugin>::new(), |mut plugins, plugin| {
+    /// Builds both the compact index and the current executable provider facts
+    /// from the same package and SQLite inputs. This never starts discovery or
+    /// an MCP process; it reports only already persisted catalogs.
+    pub fn build_capability_snapshot(
+        &self,
+        store: &Store,
+        _registry: &ToolProviderRegistry,
+    ) -> Result<PluginCapabilitySnapshot> {
+        let installed_plugins = self.plugin_store.installed_plugins()?;
+        let installed_plugins = installed_plugins.into_iter().fold(
+            Vec::<InstalledPlugin>::new(),
+            |mut plugins, plugin| {
                 if let Some(existing) = plugins
                     .iter_mut()
                     .find(|existing| existing.manifest.plugin.id == plugin.manifest.plugin.id)
@@ -202,37 +232,35 @@ impl PluginCatalog {
                     plugins.push(plugin);
                 }
                 plugins
-            })
-            .into_iter()
-            .map(|plugin| installed_summary(&plugin, store))
+            },
+        );
+        let installed = installed_plugins
+            .iter()
+            .map(|plugin| installed_summary(plugin, store))
             .collect::<Result<Vec<_>>>()?;
+        let providers = installed_plugins
+            .iter()
+            .map(|plugin| provider_capabilities(plugin, store))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
 
         let marketplace = self
             .marketplace
             .read()
             .expect("plugin marketplace lock poisoned")
             .clone();
-        let mut available = marketplace
-            .plugins
-            .into_iter()
-            .filter(|plugin| !installed_ids.contains(&plugin.id))
-            .map(available_summary)
-            .collect::<Vec<_>>();
-
-        let mut installed = installed;
-        installed.sort_by(|left, right| left.id.cmp(&right.id));
-        available.sort_by(|left, right| left.id.cmp(&right.id));
-
-        Ok(PluginIndex {
-            installed,
-            available,
+        Ok(PluginCapabilitySnapshot {
+            index: PluginIndex::from_installed(installed, marketplace),
+            providers,
         })
     }
 
     /// Renders the compact plugin index inserted into each model request.
     pub fn compact_index(&self, store: &Store, registry: &ToolProviderRegistry) -> Result<String> {
         let index = self.build_index(store, registry)?;
-        Ok(render_compact_index(&index))
+        Ok(index.render())
     }
 
     /// Reads one installed skill after validating both plugin and component IDs.
@@ -279,32 +307,108 @@ fn installed_summary(plugin: &InstalledPlugin, store: &Store) -> Result<PluginSu
             state: PluginState::Installed,
         })
         .collect::<Vec<_>>();
+    Ok(project_installed_plugin(
+        &plugin.manifest,
+        skills,
+        mcps,
+        apps,
+    ))
+}
+
+fn provider_capabilities(
+    plugin: &InstalledPlugin,
+    store: &Store,
+) -> Result<Vec<PluginProviderCapability>> {
+    plugin
+        .mcp_metadata()?
+        .into_iter()
+        .map(|mcp| {
+            let provider_id = ToolProviderId::new(&mcp.id);
+            let state = component_state(store, &mcp.id)?;
+            let tools = match store.load_provider_tool_catalog(&provider_id)? {
+                Some(catalog)
+                    if state == PluginState::Enabled
+                        && catalog.status == crate::store::ProviderCatalogStatus::Fresh =>
+                {
+                    catalog.tools
+                }
+                _ => Vec::new(),
+            };
+            Ok(PluginProviderCapability {
+                plugin_id: plugin.manifest.plugin.id.clone(),
+                component_id: mcp.id,
+                provider_id,
+                state,
+                tools,
+            })
+        })
+        .collect()
+}
+
+/// Projects package metadata and loaded component facts without reading a file
+/// or database. Local catalog loading and device reports use this same shape.
+pub fn project_installed_plugin(
+    manifest: &super::PluginManifest,
+    skills: Vec<SkillSummary>,
+    mcps: Vec<McpSummary>,
+    apps: Vec<AppSummary>,
+) -> PluginSummary {
     let state = aggregate_plugin_state(&mcps, !skills.is_empty() || !apps.is_empty());
-    let component_kinds = plugin
-        .manifest
+    let component_kinds = manifest
         .components
         .iter()
         .map(|component| component.kind.to_string())
         .collect();
-    let capabilities = plugin
-        .manifest
+    let capabilities = manifest
         .components
         .iter()
         .flat_map(|component| component.windie.capabilities.iter().cloned())
         .collect::<Vec<_>>();
 
-    Ok(PluginSummary {
-        id: plugin.manifest.plugin.id.clone(),
-        name: plugin.manifest.presentation.name.clone(),
-        purpose: plugin.manifest.presentation.description.clone(),
-        version: Some(plugin.manifest.plugin.version.clone()),
+    PluginSummary {
+        id: manifest.plugin.id.clone(),
+        name: manifest.presentation.name.clone(),
+        purpose: manifest.presentation.description.clone(),
+        version: Some(manifest.plugin.version.clone()),
         state,
         component_kinds,
         capabilities,
         skills,
         mcps,
         apps,
-    })
+    }
+}
+
+impl PluginIndex {
+    /// Combines authoritative installed facts with discovery-only marketplace
+    /// entries. A marketplace listing never grants executable capabilities.
+    pub fn from_installed(
+        mut installed: Vec<PluginSummary>,
+        marketplace: MarketplaceIndex,
+    ) -> Self {
+        let installed_ids = installed
+            .iter()
+            .map(|plugin| plugin.id.clone())
+            .collect::<HashSet<_>>();
+        let mut available = marketplace
+            .plugins
+            .into_iter()
+            .filter(|plugin| !installed_ids.contains(&plugin.id))
+            .map(available_summary)
+            .collect::<Vec<_>>();
+        installed.sort_by(|left, right| left.id.cmp(&right.id));
+        available.sort_by(|left, right| left.id.cmp(&right.id));
+        Self {
+            installed,
+            available,
+        }
+    }
+
+    /// Produces exactly the compact metadata used by the local model compiler.
+    /// Full skill instructions and MCP schemas are deliberately absent.
+    pub fn render(&self) -> String {
+        render_compact_index(self)
+    }
 }
 
 fn available_summary(plugin: MarketplacePlugin) -> PluginSummary {

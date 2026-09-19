@@ -174,10 +174,14 @@ pub enum Command {
     Version,
 }
 
-/// Foreground, presence-only device-agent commands.
+/// Foreground registered-device agent commands.
 pub enum AgentCommand {
     Connect,
+    /// Keeps a computer visible without accepting hosted tool assignments.
     Run,
+    /// Explicitly enables delivery of approved hosted work to local installed
+    /// plugins. Pairing and ordinary presence never imply this consent.
+    RunTools,
     Status,
 }
 
