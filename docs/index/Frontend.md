@@ -27,7 +27,7 @@ The existing hosted session envelope supplies saved-message IDs, whereas local
 SSE includes message snapshots. The official adapter hydrates missing messages
 in order, then upserts them; it does not use detached full-view reloads.
 
-## Registered-computer and approved-tool surfaces (working tree, not deployed)
+## Registered-computer and approved-tool surfaces
 
 The official UI's account gate separately routes `/devices/connect` and
 `/computers` to `app/hosted/devices-screen.tsx`; `/` and `/c/:id` retain their
@@ -48,7 +48,9 @@ not install plugins, execute an arbitrary command, choose among devices, or
 offer remote desktop control. The coordinator keeps its authenticated event
 stream open through approval/tool waits, then hydrates the linked tool result
 and continued assistant response in order. Protocol/polling tests and build
-checks are terminal-based; the real device-tool UI proof remains pending.
+checks are terminal-based. A live product proof has bound Peter's Mac, attached
+Desktop Commander, approved a tool call, saved its device result, and completed
+the continued session. Recovery and broader UI acceptance remain separate.
 
 ## Local Inspector
 

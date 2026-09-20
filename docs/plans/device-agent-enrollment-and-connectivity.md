@@ -2,10 +2,13 @@
 
 ## Status and scope
 
-Deployed — 2026-09-19. The server and official UI are live. Peter confirmed
-Google pairing, foreground-agent activation, and online presence in Computers;
-the remaining independent enrollment checks stay pending. No tool execution or
-plugin installation was added.
+Deployed — 2026-09-19; extended checkpoint — 2026-09-20. The server and
+official UI are live. Peter confirmed Google pairing, foreground-agent
+activation, and online presence in Computers; the remaining independent
+enrollment checks stay pending. The later tool-round-trip work added a separate
+`windie agent run --tools` opt-in and Peter confirmed that it connects, but no
+plugin installation or tool execution belongs to—or completes—this enrollment
+plan.
 
 ### Implementation evidence
 

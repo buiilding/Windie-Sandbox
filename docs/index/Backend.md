@@ -11,9 +11,10 @@ the Mac reuses the existing package, SQLite catalog, registry, MCP executor,
 and result normalization. It does not start a local API, local sessions, or
 Bifrost to serve hosted work.
 
-This describes source in the current working tree. The first real package/MCP
-round trip and deployment are still pending their isolated PostgreSQL and
-manual Mac proofs.
+The protocol is deployed and a user-approved Desktop Commander MCP call has
+completed through the paired Mac: capability report, attachment, assignment,
+result persistence, and same-session continuation all occurred. Isolated
+PostgreSQL protocol acceptance and recovery/no-duplicate proofs remain open.
 
 - `src/device/mod.rs`: typed enrollment, capability-report, assignment, start,
   and result DTOs; timing constants; principal-specific bearer digests; HMAC

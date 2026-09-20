@@ -4,8 +4,9 @@ Deployment checkpoint: September 2026. Enrollment, presence, and the additive
 hosted device-tool protocol are live at `https://hosted-api.windieos.com` and
 `https://app.windieos.com`. Tool execution remains an explicit per-agent
 `--tools` opt-in; it does **not** enable plugin installation, remote desktop,
-or arbitrary model execution on a computer. The first real MCP tool round trip
-and its human acceptance proof are still required.
+or arbitrary model execution on a computer. A user-approved Desktop Commander
+tool round trip has completed; recovery and broader acceptance proofs remain
+required.
 
 ## Operator setup (deployment requires explicit authorization)
 

@@ -14,7 +14,7 @@ Browser
 
 The existing local API and SQLite runtime remain unchanged.
 
-### Implementation status — 2026-09-18
+### Implementation status — 2026-09-20
 
 | Phase | Status | Meaning |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ The existing local API and SQLite runtime remain unchanged.
 | 5 — Cross-browser synchronization | Deployed | Durable account-change events and replayable `/v1/events` SSE are live. |
 | 6 — Cloud-synchronization milestone | Live verified | Google sign-in, same-account two-browser convergence, cross-account isolation, the isolated PostgreSQL acceptance test, and production restart/reconnect recovery all passed on 2026-09-17. |
 | 7 — Hosted sessions, Bifrost execution, and wakeups | Partially live verified | PostgreSQL sessions/claims/queues/events/wakeups, private Bifrost/Kimi, and shared replay-plus-live delivery are deployed. Peter reported smooth streaming after the event-hub deployment. Queue-under-load and interrupted-run/restart recovery remain required live proof. |
-| 8 — Current Inspector bridge | Implemented; superseded in production | The temporary hosted Inspector provided signed-in hosted streaming. On September 18 the official UI replaced it at `app.windieos.com` under its separate integration plan; the Inspector release remains available for rollback. New-client acceptance is still pending. |
+| 8 — Current Inspector bridge | Implemented; superseded in production | The temporary hosted Inspector provided signed-in hosted streaming. The official UI replaced it at `app.windieos.com`; its September 20 production configuration repair now uses the absolute hosted API URL rather than the development proxy. Authenticated official-client acceptance remains separate and incomplete. |
 | 9 — Production operations | Partial baseline; hardening incomplete | Restricted services, private database/gateway, HTTPS routing, and health checks exist. Automated backups/tested restore, rate limits, and the full operations acceptance checklist are not established as complete. |
 
 “Deployed” means the Phase 1–5 service is running behind its restricted public
@@ -35,8 +35,25 @@ Phase 6 rules, including durable recovery after a new database pool, and the
 signed-in browser reconnect proof confirms the deployed client recovers state.
 Those Phase 6 proofs were obtained with the earlier hosted client. They are
 not new-release acceptance for the official UI; track that separately in
-`docs/plans/official-ui-hosted-integration.md`. No backend changes were deployed
-as part of the September 18 official-client/refined-sign-in release.
+`docs/plans/official-ui-hosted-integration.md`.
+
+### September 20 device-tool protocol and client-configuration checkpoint
+
+- The additive `0004_device_tool_work` migration and the compatible
+  `windie-server` binary are deployed. Loopback and public health checks passed,
+  unauthenticated device-self access correctly returns `401`, and CORS accepts
+  `https://app.windieos.com`.
+- The official UI production bundle was repaired after it initially inherited
+  the development-only `/hosted-api` proxy. Production now uses public Vite
+  variables, an absolute `https://hosted-api.windieos.com` API URL, and ignores
+  local dotenv files during its Vercel build. Terminal checks confirmed the
+  served bundle contains the absolute API URL and not the development proxy.
+- Peter started the current Mac agent with `windie agent run --tools`; it
+  connected and reported its explicitly enabled local capabilities. This proves
+  agent transport and the opt-in mode. Peter then bound that Mac to a hosted
+  session, attached Desktop Commander, approved a `create_directory` call, and
+  received a durable tool result followed by same-session completion. Recovery,
+  account-isolation, and no-duplicate-execution proofs remain separate.
 
 ### Phase 0 — Decisions and prerequisites
 

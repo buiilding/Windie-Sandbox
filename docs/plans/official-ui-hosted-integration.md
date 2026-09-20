@@ -8,31 +8,66 @@ This is a browser-client integration plan. It does not redesign the hosted
 server, change PostgreSQL ownership, add device agents, add VM control, or
 turn the official UI into a second runtime.
 
-## Implementation status — 2026-09-18
+## Implementation status — 2026-09-20
 
 The official UI replaced the temporary Inspector at `app.windieos.com` on
-September 18. Code is deployed, but authenticated acceptance of this release
-is still pending; earlier Inspector proofs do not verify the new client.
+September 18. A September 20 production-configuration repair corrected an
+initial bundle that used the local development API proxy. The deployed client
+has now completed a live Mac binding, MCP attachment, approval, tool-result,
+and continued-response cycle. Broader authenticated acceptance remains open;
+earlier Inspector proofs do not fill those gaps.
 
 | Phase | Status | Evidence / remaining work |
 | --- | --- | --- |
-| 1 — Hosted contract | Implemented and deployed | Typed `/v1` HTTP requests, account/session SSE, bearer authentication, and production API configuration. |
+| 1 — Hosted contract | Implemented and deployed | Typed `/v1` HTTP requests, account/session SSE, bearer authentication, and a production bundle verified to use the absolute hosted API URL. |
 | 2 — Authentication/bootstrap | Partially implemented; deployed | Supabase Google login, token rotation, sign-out, and account-keyed client remount are wired. Explicit API authorization-failure handling that clears cached transcript state and returns to sign-in is still missing. New-release Google/account-isolation checks remain pending. |
 | 3 — Canonical conversations/routing | Implemented and deployed; live acceptance pending | `/` is New Chat; first send creates `/c/<id>`; direct links wait for their own tree; missing IDs stay errors; navigation races are tested. |
 | 4 — Query/stream reconciliation | Implemented and deployed; live acceptance pending | Local-Inspector-style query bootstrap, ordered saved-message hydration/upserts, stable assistant rows, replay cursors, token refresh, and stop route. Terminal regression tests pass; browser continuity/recovery/stop checks remain pending. |
-| 5 — Feature boundaries | Implemented and deployed | Unsupported device, voice, upload, tool, and message-action controls remain disabled. Computer-control sign-in copy is product direction, not an implemented hosted execution capability. |
-| 6 — Test/deploy | Deployed; acceptance incomplete | 28 tests, TypeScript/Vite build, targeted lint, production asset equality, deep-link shell, CORS, and unauthenticated API rejection passed. Full-project lint has existing component findings; authenticated browser checks remain open. |
+| 5 — Feature boundaries | Partially extended; deployed | Voice, upload, and unsupported message actions remain disabled. Device binding and approval controls completed one user-approved Desktop Commander action; remote desktop and arbitrary command controls remain absent. |
+| 6 — Test/deploy | Deployed; acceptance incomplete | The Vite production variables, dotenv exclusion, absolute API bundle, deep-link shell, CORS, and unauthenticated API rejection are terminal-verified. A live device-tool cycle also passed; broader auth/navigation/recovery checks remain open. |
 
 Published commits in `buiilding/windie-UI-official`:
 
 - `7bf438c`: hosted client integration and transcript reconciliation.
 - `47b8d49`: standalone sign-in redesign, approved computer-control copy,
   sign-in tests, and Vercel configuration. Pushed to `origin/main`.
+- `7d08f1b`: hosted device-tool controls.
+- `1133f54` and `d455ff4`: prevent local dotenv values from entering Vercel
+  production builds.
 
-Release: `https://frontend-5485uixh3-peterbuics-8590s-projects.vercel.app`.
+Current release: `https://frontend-peu1vo5az-peterbuics-8590s-projects.vercel.app`.
 Inspector rollback: `https://frontend-cwakw419b-peterbuics-8590s-projects.vercel.app`.
 Both belong to the existing Vercel `frontend` project. The public hostname was
 explicitly aliased to the new release after deployment became Ready.
+
+### September 20 production configuration repair
+
+The first device-tool release showed “Windie is not configured” because the
+Vercel project still had legacy Create React App variables and the Vite API
+setting initially inherited the local `/hosted-api` development proxy. This was
+not a hosted-server outage.
+
+- Production Vercel settings now provide the public `VITE_WINDIE_API_URL`,
+  `VITE_SUPABASE_URL`, and `VITE_SUPABASE_PUBLISHABLE_KEY` values.
+- `.vercelignore` excludes `.env*`, and Vite disables dotenv loading in
+  production while retaining the local development proxy.
+- The served JavaScript was checked from the public release: it contains
+  `https://hosted-api.windieos.com`, does not contain the `/hosted-api` proxy,
+  and the public app and hosted API health endpoints return `200`.
+
+These checks prove deployment configuration only. They do not replace the
+remaining manual Google-login, deep-link, streaming, and recovery acceptance
+listed below.
+
+### September 20 live device-tool proof
+
+In a deployed official-UI conversation, Peter selected the paired Mac. The
+model received the reported plugin index and `windie__attach_mcp`, attached all
+26 Desktop Commander schemas, and received approval for the attachment and a
+`desktop_commander__create_directory` call. The hosted database recorded the
+device assignment as `result_saved`, emitted `tool_result_saved`, and completed
+the same session. This is a concrete end-to-end execution proof; it does not
+prove crash recovery, another-account isolation, or general tool safety.
 
 ## Goal
 

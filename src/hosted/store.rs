@@ -392,6 +392,7 @@ impl HostedStore {
         .bind(parent_message_id)
         .bind(role)
         .bind(&content)
+        .bind(Option::<Json<Value>>::None)
         .execute(&mut *transaction)
         .await?;
         insert_parts(&mut transaction, &message_id, &prepared).await?;

@@ -4,8 +4,9 @@ Read this after a context reset before resuming hosted-server work. It records
 decisions, current implementation/deployment facts, and cautions; the phase
 plan remains the authority for work scope and completion status.
 
-Last updated: 2026-09-19, after deploying registered-device enrollment and
-presence and confirming Peter's Mac pairing/presence proof.
+Last updated: 2026-09-20, after deploying the device-tool protocol, repairing
+the official UI's production configuration, and confirming the Mac's
+execution-enabled agent connection.
 Deployment facts below are checkpoint evidence; recheck live state before
 changing production.
 
@@ -299,6 +300,56 @@ or test commands against production data.
   receives an approved assignment, returns its result, and the same session
   continues without duplicate execution.
 
+### Agent opt-in and Vercel configuration checkpoint — September 20 UTC
+
+- Peter ran the current `windie agent run --tools` build on the paired Mac. It
+  printed that only approved hosted assignments for locally enabled plugins may
+  run, then connected online with explicitly enabled local capabilities. This
+  establishes agent transport and the execution opt-in; it does **not** prove
+  an installed plugin, approved assignment, MCP call, result persistence, or
+  continued model turn.
+- `packages/parallel-search` is available as a first discovery/assignment
+  smoke package. Its MCP endpoint is remote (`https://search.parallel.ai/mcp`),
+  so a successful search would not prove Mac-local tool execution. The final
+  first-version proof must instead use a small local development MCP package
+  that returns a caller-provided nonce plus the actual macOS/architecture.
+- Do not invent a CLI installer: `windie install` installs Windie dependencies,
+  not packages. Existing package installation is currently through the local
+  Inspector/API. The hosted marketplace Install → choose computer flow is
+  still later work.
+- The first Vercel device-tool deployment rendered “Windie is not configured”
+  because the Vite production build lacked the public `VITE_*` settings and
+  inherited the local `/hosted-api` proxy. Production now supplies public Vite
+  API/Supabase values; `.vercelignore` excludes `.env*`; and Vite disables
+  dotenv loading in production while retaining it locally. The current public
+  bundle was terminal-checked to use `https://hosted-api.windieos.com`, not the
+  development proxy. This configuration check does not replace authenticated
+  UI acceptance.
+
+### Verified Desktop Commander hosted round trip — September 20 UTC
+
+This is the first concrete device-execution proof and must be distinguished
+from the earlier presence/capability checkpoints:
+
+- Peter selected his execution-enabled Mac in the deployed official UI. The
+  model then saw the capability index with Basic Memory, Chrome DevTools, and
+  Desktop Commander plus `windie__attach_mcp` and `windie__read_skill`.
+- It attached all 26 Desktop Commander schemas through the normal control-tool
+  flow. Peter approved the attachment and a
+  `desktop_commander__create_directory` call.
+- Read-only production database evidence for that one session showed the
+  approved attachment, an assignment with `result_saved`, then ordered
+  `waiting_for_tool`, `tool_result_saved`, and `completed` session events.
+  The Mac agent is the only holder of the device credential, so the hosted
+  server did not execute the local MCP call itself.
+
+This verifies the intended Browser → hosted server → approved Mac → durable
+result → continued hosted session flow. It does **not** prove safety across
+all Desktop Commander actions, a nonce-bearing local fixture, another-account
+isolation, revocation, restart/lost-acknowledgement recovery, or no-duplicate
+side effects. Keep those as explicit remaining work; do not describe the
+device-execution system as production-hardened.
+
 ### Official UI deployment checkpoint — September 18 (superseded)
 
 Peter explicitly authorized commit, push, and publication to `app.windieos.com`.
@@ -380,6 +431,8 @@ untracked, as were unrelated Inspector edits; do not include them in commits.
    Google login, direct conversation URL, two successive sends whose assistant
    replies remain visible, New Chat, and refresh/reconnect. Diagnose the actual
    deployed release before adding another state/reload workaround.
-5. Keep Phase 7 queue and interrupted-run/restart proof gaps explicit. Continue
-   only with the next requested/planned capability; do not jump ahead to
-   device execution or remote control.
+5. Keep Phase 7 queue and interrupted-run/restart proof gaps explicit. The
+   current requested capability is the device-tool round trip: install/enable a
+   real local development MCP package, restart `windie agent run --tools`, then
+   prove one approved assignment, persisted result, continued response, and
+   no-duplicate recovery. Do not jump ahead to remote control.

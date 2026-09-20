@@ -2,16 +2,16 @@
 
 ## Status, outcome, and scope
 
-Implementation checkpoint — 2026-09-19. The source work described in Phases
+Implementation checkpoint — 2026-09-20. The source work described in Phases
 1–5 is now present in this working tree: shared capability/context/progression
 helpers are used by the local path and hosted adapter; PostgreSQL persistence,
 agent work/report/journal transport, hosted approval/continuation, and the
-minimal transcript controls have been added. This is **not** a completion
-claim: isolated-PostgreSQL protocol acceptance, a real development MCP
-package, the full local-process round trip, manual browser proof, and rollback
-exercise remain pending. The compatible hosted-server and official-UI rollout
-is deployed; enrollment/presence's remaining independent live checks remain
-recorded in the
+minimal transcript controls have been added. A live Desktop Commander round
+trip now proves the normal hosted path. This is **not** a completion claim:
+isolated-PostgreSQL protocol acceptance, a nonce-bearing local development
+fixture, recovery/rollback exercise, and the remaining adversarial proofs stay
+open. The compatible hosted-server and official-UI rollout is deployed;
+enrollment/presence's remaining independent live checks remain recorded in the
 [enrollment plan](device-agent-enrollment-and-connectivity.md).
 
 Current verification evidence:
@@ -24,6 +24,45 @@ Current verification evidence:
 - A prior full Rust run could not finish because the development machine ran
   out of disk space while plugin tests created temporary package files; do not
   treat that as a successful full-suite result.
+
+### Deployment and live-agent checkpoint — 2026-09-20
+
+- Root commit `9e14cfdf` is deployed to the Droplet with additive migration
+  `0004_device_tool_work`. The server is healthy locally and through the public
+  API; an unauthenticated agent-self request correctly returns `401`.
+- Peter ran the current release build with `windie agent run --tools`. The Mac
+  reported itself online with explicitly enabled local capabilities. This is a
+  real agent transport/opt-in proof, but it is not a real package/MCP execution.
+- `packages/parallel-search` is a useful discovery and assignment smoke test:
+  it is a streamable HTTP MCP package backed by Parallel's remote service. It
+  cannot prove that a tool action happened on the Mac. The required full proof
+  remains a small local development MCP package returning a caller nonce and
+  actual local OS/architecture.
+- There is currently no CLI package-install command. `windie install` installs
+  Windie dependencies, not marketplace packages. Existing local installation
+  is exposed through the local Inspector/API; do not document or use a
+  nonexistent agent-specific installer.
+
+### Live Desktop Commander round trip — 2026-09-20
+
+The first normal product path is now verified without a mock browser response:
+
+- Peter selected his execution-enabled Mac in a deployed hosted conversation.
+- The model received the reported plugin index plus `windie__attach_mcp`, then
+  attached 26 Desktop Commander schemas for that immutable session/device
+  binding.
+- Peter approved the attachment and the user-visible
+  `desktop_commander__create_directory` request. This is a local side effect,
+  not a read-only fixture.
+- The authenticated device completed one assignment. PostgreSQL records its
+  `result_saved` status; the same session recorded `waiting_for_tool`,
+  `tool_result_saved`, and a final `completed` event in order.
+
+This proves agent transport, reported capabilities, schema attachment, explicit
+approval, device-side MCP execution, durable result persistence, and model
+continuation. It does not meet the full definition of done below: no
+nonce-bearing fixture, crash/retry proof, recovery proof, or adversarial
+account/revocation proof was run in this exercise.
 
 Deliver one complete hosted conversation turn that executes a tool on Peter's
 registered Mac, persists its result, and continues the model response in the
@@ -496,7 +535,11 @@ Run the repository's Rust library/all-target checks and documentation checker,
 plus official UI tests, build, and focused lint. Record actual commands/results;
 do not relabel old enrollment or text-chat proofs as tool-execution proof.
 
-Manual/live acceptance (all pending):
+Manual/live acceptance (remaining checks):
+
+- [x] Bind the paired Mac in hosted chat, attach Desktop Commander, approve a
+  real tool request, persist its result, and complete the same hosted session.
+  This was the `create_directory` exercise above.
 
 - [ ] Explicitly set up the development plugin on the paired Mac using existing
   installation code; start the execution-enabled agent with no local API or LLM.

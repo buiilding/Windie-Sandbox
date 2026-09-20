@@ -7,9 +7,10 @@ document, not a replacement for the architectural decision in
 
 Implementation checkpoint: **2026-09-20 UTC**. The current production server
 has applied the additive `0004_device_tool_work` migration and exposes the
-device-tool protocol; the matching official UI is deployed. This is not a
-real-MCP-execution completion claim: the first Mac tool round trip, recovery,
-and authenticated browser acceptance remain pending.
+device-tool protocol; the matching official UI is deployed. A user-approved
+Desktop Commander call completed on Peter's Mac and continued its hosted
+session. Recovery, isolated protocol acceptance, and broader authenticated
+browser acceptance remain pending.
 
 ## Purpose
 
@@ -69,8 +70,9 @@ conversation server. Responsibilities remain separate:
 - Windie owns account-scoped conversations, graph heads, sessions, wakeups,
   queues, and durable runtime state. Registered-computer capability reports,
   device-bound assignments, approvals, persisted results, and continuation are
-  deployed protocol surfaces. A real MCP execution proof remains required
-  before describing them as verified user functionality.
+  deployed protocol surfaces. The first user-approved Desktop Commander MCP
+  execution is verified; recovery, isolation, and broader tool coverage remain
+  required before describing the system as production-hardened.
 - Bifrost receives server-side inference requests, communicates with configured
   providers, and streams responses back to Windie. Windie persists execution
   events and streams them to authenticated browser subscribers.
