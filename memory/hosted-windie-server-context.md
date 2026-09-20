@@ -62,11 +62,11 @@ Extract only narrow shared policies when a concrete feature needs both storage
 backends; do not build one huge generic database trait.
 
 The hosted server never executes a user's local filesystem, browser, or MCP
-tool. Later it owns the workflow: persist tool request, approval, authorized
-device assignment, result, and continuation. Device agents, VMs, remote
-control, and full official UI capabilities remain later work. The official
-transcript client is now deployed; do not mistake its computer-control branding
-for implemented hosted device execution.
+tool. It now owns the deployed protocol for persisting a tool request,
+approval, authorized-device assignment, result, and continuation. The Mac must
+still explicitly run `windie agent run --tools` and execute through its local
+registry/MCP executor. The first real MCP round trip, recovery proof, VMs,
+remote control, and broader official UI capabilities remain later work.
 
 ## Registered-device checkpoint
 
@@ -124,8 +124,10 @@ sessions, FIFO session inputs, session events, execution claims, and wakeups.
 The hosted worker resolves selected heads, atomically claims execution,
 compiles the selected tree path, streams through private Bifrost, persists the
 assistant result/events, drains queued input, and supports durable wakeups.
-Tool calls intentionally stop the current hosted worker: device dispatch and
-approval continuation have not been implemented yet.
+The hosted worker now parks on a device tool call, persists approval and
+device-bound work, and continues only after its correlated result is accepted.
+The protocol is deployed, but no real development MCP package has yet completed
+the Mac-to-server-to-model acceptance proof.
 
 The deployed gateway uses a server-only Kimi Code credential and supports
 `kimi-code/kimi-for-coding`. Direct gateway and hosted browser streaming have
@@ -282,7 +284,22 @@ An isolated PostgreSQL test database exists on the Droplet for hosted
 acceptance tests. Keep it separate from production; do not run test migrations
 or test commands against production data.
 
-### Official UI deployment checkpoint — September 18
+### Device-tool protocol rollout — September 20 UTC
+
+- Root source commit `9e14cfdf` was built serially on the Droplet and installed
+  as a retained release binary; the prior binary is preserved for rollback.
+- PostgreSQL applied `0004_device_tool_work`; `windie-server`, `cloudflared`,
+  and public `/health` were active after restart. The device self route returned
+  `401` without an agent credential, as intended.
+- Official UI commit `7d08f1b` was deployed through the existing Vercel project
+  and aliased to `https://app.windieos.com`; `/` and `/c/<id>` shell checks
+  succeeded, and API CORS accepted that origin.
+- This is deployment evidence only. Do not claim that a real tool ran until a
+  registered Mac with an installed MCP package runs `windie agent run --tools`,
+  receives an approved assignment, returns its result, and the same session
+  continues without duplicate execution.
+
+### Official UI deployment checkpoint — September 18 (superseded)
 
 Peter explicitly authorized commit, push, and publication to `app.windieos.com`.
 
@@ -292,7 +309,7 @@ Peter explicitly authorized commit, push, and publication to `app.windieos.com`.
 - Root `fe55d1a7`: integration plan/frontend index documentation, committed in
   the prior step. Do not infer that the root branch was pushed with the UI.
 - Vercel existing project: `frontend`, scope `peterbuics-8590s-projects`.
-- Current release:
+- Release at that checkpoint:
   `https://frontend-5485uixh3-peterbuics-8590s-projects.vercel.app`
   (`dpl_13shrJXCRdCwtLCzPRn93Neq7jqc`).
 - Previous Inspector rollback release:

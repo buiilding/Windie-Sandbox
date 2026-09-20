@@ -3,8 +3,9 @@
 ## Status
 
 Partially implemented. The authenticated hosted conversation/session foundation
-is deployed. Registered-device execution remains proposed; it is not enabled
-by the current official UI.
+and the first registered-device execution protocol are deployed. The official
+UI can bind a device and approve an exact tool call; a real MCP tool round trip,
+recovery proof, and authenticated browser acceptance remain pending.
 
 Implementation checkpoint: 2026-09-18. Detailed phase completion and verification
 remain in the [hosted server plan](../plans/main-hosted-windie-server.md) and
@@ -189,7 +190,7 @@ on 15 URL paths, including health and excluding automatic HEAD/CORS OPTIONS.
 | Continue without new user input | Implemented | Not exposed |
 | Schedule wakeups | Implemented | Not exposed |
 | Durable session-input queue | Implemented through the existing query route | Not fully exposed: composer is disabled while running; no dedicated queue status UI |
-| Device tool execution and approval/result continuation | Deferred | Not available |
+| Device tool execution and approval/result continuation | Deployed protocol; real MCP proof pending | Device binding and exact-call approval controls are connected |
 
 The client can handle a query response marked queued, but that alone is not a
 complete queue UI. To expose queueing, allow another send while a session runs,

@@ -5,10 +5,11 @@ execution milestone for Windie. It is a deployment handoff and orientation
 document, not a replacement for the architectural decision in
 [`0003-multi-device-sync-and-local-execution.md`](../decisions/0003-multi-device-sync-and-local-execution.md).
 
-Implementation checkpoint: **2026-09-18**. Deployment and verification statements
-below summarize the recorded evidence in the plans; they are not a fresh live
-infrastructure audit. A September 19 working-tree addition implements device
-enrollment/presence (not deployed); remote tool dispatch remains proposed.
+Implementation checkpoint: **2026-09-20 UTC**. The current production server
+has applied the additive `0004_device_tool_work` migration and exposes the
+device-tool protocol; the matching official UI is deployed. This is not a
+real-MCP-execution completion claim: the first Mac tool round trip, recovery,
+and authenticated browser acceptance remain pending.
 
 ## Purpose
 
@@ -66,8 +67,10 @@ their subjects to Windie accounts. Bifrost is the LLM gateway, not a second
 conversation server. Responsibilities remain separate:
 
 - Windie owns account-scoped conversations, graph heads, sessions, wakeups,
-  queues, and durable runtime state. Registered computers, tool dispatch, and
-  approval/result continuation are the next extension, not deployed behavior.
+  queues, and durable runtime state. Registered-computer capability reports,
+  device-bound assignments, approvals, persisted results, and continuation are
+  deployed protocol surfaces. A real MCP execution proof remains required
+  before describing them as verified user functionality.
 - Bifrost receives server-side inference requests, communicates with configured
   providers, and streams responses back to Windie. Windie persists execution
   events and streams them to authenticated browser subscribers.
@@ -266,10 +269,12 @@ The enrollment/connectivity prerequisite is now implemented in source. See
 [enrollment plan](../plans/device-agent-enrollment-and-connectivity.md).
 It adds `windie agent connect/run/status`, account-scoped registration/revocation,
 fenced presence leases, and browser pairing/Computers views. PostgreSQL proofs
-use only the isolated test database. Production deployment and manual proofs
-remain pending. **Online does not mean tools can execute yet.** The steps below
-remain the subsequent tool-execution target, not functionality delivered by
-enrollment alone.
+use only the isolated test database. The production rollout includes the
+additive tool-work migration and matching official UI; manual tool proof remains
+pending. **Online does not mean tools can execute:** an agent must explicitly
+run with `--tools`, report an installed capability, be bound to the session,
+and receive an approved assignment. The steps below describe the required
+end-to-end proof.
 
 Build an end-to-end device execution slice before expanding to general computer
 control. Both the hosted dispatch side and the device agent are required.

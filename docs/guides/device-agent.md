@@ -1,14 +1,17 @@
 # Register a computer with Windie
 
-Deployment checkpoint: September 19, 2026. Enrollment and presence are live at
-`https://hosted-api.windieos.com` and `https://app.windieos.com`. This does
-**not** enable tools, plugin installation, remote desktop, or model execution
-on your computer. The human pairing/presence proof is still required.
+Deployment checkpoint: September 2026. Enrollment, presence, and the additive
+hosted device-tool protocol are live at `https://hosted-api.windieos.com` and
+`https://app.windieos.com`. Tool execution remains an explicit per-agent
+`--tools` opt-in; it does **not** enable plugin installation, remote desktop,
+or arbitrary model execution on a computer. The first real MCP tool round trip
+and its human acceptance proof are still required.
 
 ## Operator setup (deployment requires explicit authorization)
 
 1. Build/test the updated `windie-server` and existing `windie` executable.
-   The server applies additive migration `0003_devices` at startup. Back up the
+   The server applies additive migrations `0003_devices` and
+   `0004_device_tool_work` at startup. Back up the
    production database before the authorized rollout; do not run acceptance
    tests against production.
 2. Configure `WINDIE_DEVICE_ENROLLMENT_KEY` in the server's protected environment
@@ -96,6 +99,18 @@ an existing secret to a different server. Redirects are not followed. The CLI
 always prints the trusted production pairing URL; when developing, manually
 open `/devices/connect` on the local official UI wired to the same test server.
 Do not switch an already paired production profile to a development origin.
+
+To opt in to hosted tool assignments after the device has an installed,
+enabled MCP capability, run:
+
+```sh
+windie agent run --tools
+```
+
+This foreground mode reports the existing local capability catalog and accepts
+only individual, server-recorded assignments for this device. It does not start
+the local API or Bifrost. The hosted session must bind the device and the user
+must approve the exact call.
 
 ## Tests and manual proof
 

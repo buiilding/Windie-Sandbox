@@ -8,9 +8,10 @@ helpers are used by the local path and hosted adapter; PostgreSQL persistence,
 agent work/report/journal transport, hosted approval/continuation, and the
 minimal transcript controls have been added. This is **not** a completion
 claim: isolated-PostgreSQL protocol acceptance, a real development MCP
-package, the full local-process round trip, manual browser proof, deployment,
-and rollback readiness remain pending. Enrollment/presence is already deployed;
-its remaining independent live checks remain recorded in the
+package, the full local-process round trip, manual browser proof, and rollback
+exercise remain pending. The compatible hosted-server and official-UI rollout
+is deployed; enrollment/presence's remaining independent live checks remain
+recorded in the
 [enrollment plan](device-agent-enrollment-and-connectivity.md).
 
 Current verification evidence:
