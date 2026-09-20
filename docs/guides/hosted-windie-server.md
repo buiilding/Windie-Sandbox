@@ -9,8 +9,8 @@ Implementation checkpoint: **2026-09-20 UTC**. The current production server
 has applied the additive `0004_device_tool_work` migration and exposes the
 device-tool protocol; the matching official UI is deployed. A user-approved
 Desktop Commander call completed on Peter's Mac and continued its hosted
-session. Recovery, isolated protocol acceptance, and broader authenticated
-browser acceptance remain pending.
+session. The focused isolated PostgreSQL acceptance tests pass. Recovery and
+broader authenticated browser acceptance remain pending.
 
 ## Purpose
 

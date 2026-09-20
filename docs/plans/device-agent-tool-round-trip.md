@@ -8,9 +8,9 @@ helpers are used by the local path and hosted adapter; PostgreSQL persistence,
 agent work/report/journal transport, hosted approval/continuation, and the
 minimal transcript controls have been added. A live Desktop Commander round
 trip now proves the normal hosted path. This is **not** a completion claim:
-isolated-PostgreSQL protocol acceptance, a nonce-bearing local development
-fixture, recovery/rollback exercise, and the remaining adversarial proofs stay
-open. The compatible hosted-server and official-UI rollout is deployed;
+the focused isolated PostgreSQL acceptance suite passes, while a nonce-bearing
+local development fixture, recovery/rollback exercise, and the remaining
+adversarial proofs stay open. The compatible hosted-server and official-UI rollout is deployed;
 enrollment/presence's remaining independent live checks remain recorded in the
 [enrollment plan](device-agent-enrollment-and-connectivity.md).
 
@@ -19,15 +19,16 @@ Current verification evidence:
 - `cargo check --all-targets --quiet` passes.
 - The focused journal lost-acknowledgement recovery test passes.
 - The official UI test suite and production build pass.
-- The new isolated PostgreSQL capability-report proof is registered and safely
-  ignored until `WINDIE_HOSTED_TEST_DATABASE_URL` targets `windie_test`.
+- The five focused isolated PostgreSQL acceptance tests pass against the
+  dedicated `windie_test` database: account sync, session execution, device
+  HTTP, capability-report lease fencing, and device lifecycle.
 - A prior full Rust run could not finish because the development machine ran
   out of disk space while plugin tests created temporary package files; do not
   treat that as a successful full-suite result.
 
 ### Deployment and live-agent checkpoint — 2026-09-20
 
-- Root commit `9e14cfdf` is deployed to the Droplet with additive migration
+- Root commit `095dab05` is deployed to the Droplet with additive migration
   `0004_device_tool_work`. The server is healthy locally and through the public
   API; an unauthenticated agent-self request correctly returns `401`.
 - Peter ran the current release build with `windie agent run --tools`. The Mac

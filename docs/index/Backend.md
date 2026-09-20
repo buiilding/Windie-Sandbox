@@ -13,8 +13,10 @@ Bifrost to serve hosted work.
 
 The protocol is deployed and a user-approved Desktop Commander MCP call has
 completed through the paired Mac: capability report, attachment, assignment,
-result persistence, and same-session continuation all occurred. Isolated
-PostgreSQL protocol acceptance and recovery/no-duplicate proofs remain open.
+result persistence, and same-session continuation all occurred. The five
+focused isolated PostgreSQL acceptance tests for account sync, session
+execution, device HTTP, lease fencing, and device lifecycle pass. Recovery and
+no-duplicate proofs remain open.
 
 - `src/device/mod.rs`: typed enrollment, capability-report, assignment, start,
   and result DTOs; timing constants; principal-specific bearer digests; HMAC

@@ -283,12 +283,15 @@ service, then verify health and logs without printing environment files.
 
 An isolated PostgreSQL test database exists on the Droplet for hosted
 acceptance tests. Keep it separate from production; do not run test migrations
-or test commands against production data.
+or test commands against production data. On September 20, the focused suite
+passed there for account sync, session execution, device HTTP, capability-report
+lease fencing, and device lifecycle.
 
 ### Device-tool protocol rollout — September 20 UTC
 
-- Root source commit `9e14cfdf` was built serially on the Droplet and installed
-  as a retained release binary; the prior binary is preserved for rollback.
+- Root source commit `095dab05` was built serially on the Droplet, passed the
+  focused isolated PostgreSQL suite, and was installed as the live release
+  binary; the prior binary is preserved for rollback.
 - PostgreSQL applied `0004_device_tool_work`; `windie-server`, `cloudflared`,
   and public `/health` were active after restart. The device self route returned
   `401` without an agent credential, as intended.
